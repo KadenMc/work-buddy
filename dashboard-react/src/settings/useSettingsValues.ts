@@ -21,6 +21,8 @@ export interface SettingsValuesState {
   readonly error?: string;
   write(settingId: SettingId, value: unknown): Promise<void>;
   reset(settingId: SettingId): Promise<void>;
+  /** Adopt a canonical mutation response returned by an embedded control. */
+  adopt(value: EffectiveSettingValue): void;
 }
 
 function replaceValue(
@@ -77,7 +79,18 @@ export function useSettingsValues(
           setStatus("unavailable");
           return;
         }
-        setSnapshot(next);
+        setSnapshot((previous) => {
+          if (!previous) return next;
+          let reconciled = next;
+          for (const value of previous.values.values()) {
+            const previousRevision = value.revision.match(/^(.*:)(\d+)$/);
+            const nextRevision = next.values.get(value.settingId)?.revision.match(/^(.*:)(\d+)$/);
+            if (previousRevision && nextRevision && previousRevision[1] === nextRevision[1] && Number(previousRevision[2]) > Number(nextRevision[2])) {
+              reconciled = replaceValue(reconciled, value);
+            }
+          }
+          return reconciled;
+        });
         setStatus("ready");
       })
       .catch((reason: unknown) => {
@@ -100,6 +113,10 @@ export function useSettingsValues(
     },
     [],
   );
+
+  const adopt = useCallback((value: EffectiveSettingValue) => {
+    setSnapshot((previous) => previous ? replaceValue(previous, value) : previous);
+  }, []);
 
   const write = useCallback(
     async (settingId: SettingId, value: unknown) => {
@@ -165,5 +182,6 @@ export function useSettingsValues(
     error,
     write,
     reset,
+    adopt,
   };
 }

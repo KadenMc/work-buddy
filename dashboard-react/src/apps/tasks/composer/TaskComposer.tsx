@@ -2,6 +2,7 @@ import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -14,49 +15,23 @@ import type {
 } from "../../../dashboard/contributions/contracts";
 import { useDashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
 import { useWidgetDraft } from "../../../dashboard/drafts";
-import { Button, InlineAlert, TextAreaField } from "../../../ui";
+import { HelpTarget } from "../../../dashboard/help";
+import { AssistDraftButton, useAssistedDraft } from "../../../dashboard/assistance";
+import { Button, InlineAlert } from "../../../ui";
 import { createCorrelationId, createWidgetIntent } from "../../../widget-library/shared";
 import {
   TASK_INTENTS,
   type TaskBatchPreview,
   type TaskQuickAddInput,
-  type TaskUrgency,
+  type TaskProposal,
 } from "../contracts";
-
-export interface TaskCreateDraft {
-  readonly title: string;
-  readonly attention_state: string;
-  readonly urgency: TaskUrgency;
-  readonly due_date: string;
-  readonly deadline_date: string;
-  readonly project: string;
-  readonly namespaces: string;
-  readonly summary: string;
-  readonly desired_outcome: string;
-  readonly next_action: string;
-  readonly definition_of_done: string;
-  readonly dependencies: string;
-  readonly batch_lines: readonly string[];
-}
-
-export const EMPTY_TASK_CREATE_DRAFT: TaskCreateDraft = {
-  title: "",
-  attention_state: "inbox",
-  urgency: "medium",
-  due_date: "",
-  deadline_date: "",
-  project: "",
-  namespaces: "",
-  summary: "",
-  desired_outcome: "",
-  next_action: "",
-  definition_of_done: "",
-  dependencies: "",
-  batch_lines: [],
-};
-
-export const isTaskCreateDraftPristine = (value: TaskCreateDraft): boolean =>
-  JSON.stringify(value) === JSON.stringify(EMPTY_TASK_CREATE_DRAFT);
+import { TaskDraftFields } from "./TaskDraftFields";
+import {
+  EMPTY_TASK_CREATE_DRAFT, additionalTaskProposalParameters, canClearRealizedProposal, draftFromTaskProposal, isTaskCreateDraftPristine, newTaskStructures,
+  retainedProposalResolution, taskDraftFields, taskDraftFingerprint, taskDraftSha256, taskProposalParameters, taskProposalResolution,
+  type TaskCreateDraft,
+} from "./taskDraft";
+export { EMPTY_TASK_CREATE_DRAFT, isTaskCreateDraftPristine, type TaskCreateDraft } from "./taskDraft";
 
 export interface BatchPreviewRow {
   readonly title: string;
@@ -76,11 +51,6 @@ export function parseTaskBatch(text: string): readonly BatchPreviewRow[] {
       return { title, duplicate };
     });
 }
-
-const csv = (value: string): readonly string[] =>
-  value.split(",").map((part) => part.trim()).filter(Boolean);
-
-const optional = (value: string): string | null => value.trim() || null;
 
 function acceptedMessage(result: IntentResult, fallback: string): string {
   return result.message?.trim() || fallback;
@@ -103,14 +73,85 @@ export default function TaskComposer({
     readonly preview: TaskBatchPreview;
   } | null>(null);
   const [structureConfirmation, setStructureConfirmation] = useState<readonly string[]>([]);
-  const [message, setMessage] = useState<{ tone: "danger" | "success" | "warning"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ tone: "danger" | "success" | "warning"; text: string; taskId?: string } | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Readonly<Record<string, string>>>({});
   const draft = useWidgetDraft("task-create", EMPTY_TASK_CREATE_DRAFT, {
     isPristine: isTaskCreateDraftPristine,
   });
   const value = draft.value;
   const batchRows = serverPreview?.preview.rows ?? [];
-  const readOnly = input.access.mode === "read_only";
+  const readOnly = input.access.mode === "read_only" || presentation.interactionMode === "arrange";
+  const proposalReadOnly = readOnly || presentation.interactionMode !== "operate";
+  const assistance = useAssistedDraft("task-create", draft, {
+    title: "Shape this task", interactionMode: presentation.interactionMode,
+    readOnly: readOnly || submitting || value.batch_lines.length > 0,
+    onOpen: () => setDetailsOpen(true),
+  });
+  const proposalChanged = value.proposal_ref !== undefined && value.proposal_ref.draftFingerprint !== taskDraftFingerprint(value);
+  const selectedLinkedProposal = [input.observedProposal, input.selectedProposal]
+    .filter((proposal): proposal is TaskProposal => proposal != null && value.proposal_ref !== undefined
+      && proposal.thread_id === value.proposal_ref.threadId && proposal.proposal_event_id >= value.proposal_ref.proposalEventId)
+    .sort((left, right) => right.proposal_event_id - left.proposal_event_id
+      || Number(taskProposalResolution(right) !== undefined) - Number(taskProposalResolution(left) !== undefined))[0];
+  const resolution = (selectedLinkedProposal && taskProposalResolution(selectedLinkedProposal))
+    ?? retainedProposalResolution(value.proposal_ref);
+  const proposalNeedsReview = value.proposal_ref !== undefined && (selectedLinkedProposal === undefined
+    || selectedLinkedProposal.status !== "ready" || selectedLinkedProposal.proposal_event_id !== value.proposal_ref.proposalEventId);
+  const proposalOutdated = selectedLinkedProposal !== undefined && selectedLinkedProposal !== null && selectedLinkedProposal.proposal_event_id !== value.proposal_ref?.proposalEventId;
+  const requiresDetailedReview = value.proposal_ref?.requiresDetailedReview === true
+    || (selectedLinkedProposal != null && additionalTaskProposalParameters(selectedLinkedProposal).length > 0);
+
+  useEffect(() => {
+    if (proposalReadOnly || submitting || !draft.ready || selectedLinkedProposal === undefined) return;
+    const current = draft.getSnapshot();
+    const reference = current.value.proposal_ref;
+    const terminal = taskProposalResolution(selectedLinkedProposal);
+    if (!current.ready || current.status === "error" || current.status === "conflict" || !reference || !terminal
+      || reference.threadId !== selectedLinkedProposal.thread_id || terminal.proposalEventId < reference.proposalEventId) return;
+    // A prior save-success message is superseded by this validated terminal
+    // outcome. Preserve actual storage/decision errors for human recovery.
+    setMessage((notice) => notice?.tone === "success" ? null : notice);
+    // A retained hint only suppresses old decisions. It cannot authorize a
+    // clear, and later edits cannot be cleared by replaying old terminal news.
+    if (!retainedProposalResolution(reference) && canClearRealizedProposal(current.value, selectedLinkedProposal)) {
+      void draft.clear({ ifRevision: current.revision }).then((cleared) => {
+        if (!cleared) return;
+        setFieldErrors({});
+        setStructureConfirmation([]);
+        setMessage({ tone: "success", text: "Task created from the saved proposal.", taskId: selectedLinkedProposal.realization!.task_id });
+        announce("Task created from the saved proposal. Quick Add is ready for another task.");
+      });
+    } else if (JSON.stringify(retainedProposalResolution(reference)) !== JSON.stringify(terminal)) {
+      draft.compareAndSet(current.revision, { ...current.value, proposal_ref: { ...reference, resolution: terminal } });
+    }
+  }, [announce, draft.clear, draft.compareAndSet, draft.getSnapshot, draft.ready, draft.revision, proposalReadOnly, selectedLinkedProposal, submitting]);
+
+  const useRetainedFields = async () => {
+    if (proposalReadOnly || submitting || !resolution) return;
+    const current = draft.getSnapshot();
+    if (!current.ready || current.status === "error" || current.status === "conflict") return;
+    const { proposal_ref: _reference, proposal_pending: _pending, ...fields } = current.value;
+    setSubmitting(true);
+    try {
+      // The host revokes old helpers and atomically replaces the stored value;
+      // there is never a delete-then-restore window for retained human edits.
+      if (!await draft.reset(fields, { ifRevision: current.revision })) {
+        const latest = draft.getSnapshot();
+        if (latest.revision === current.revision + 1 && (latest.status === "error" || latest.status === "conflict")) {
+          setMessage({ tone: "danger", text: "The new draft could not be confirmed in storage. Your fields remain open; resolve the draft storage error before submitting." });
+        }
+        return;
+      }
+      setStructureConfirmation([]);
+      setFieldErrors({});
+      setMessage({ tone: "success", text: "These fields are now a new draft. No task has been created from it." });
+      announce("Retained fields are now a new draft. Review them before adding a task.");
+    } catch (error) {
+      setMessage({ tone: "danger", text: error instanceof Error ? error.message : "The retained fields could not be saved as a new draft." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const fieldError = (...keys: readonly string[]): string | undefined => {
     for (const [key, text] of Object.entries(fieldErrors)) {
@@ -164,17 +205,17 @@ export default function TaskComposer({
   };
 
   const createOne = async (structureApproved: boolean) => {
-    if (readOnly || submitting || value.title.trim().length === 0) return;
-    const knownProjects = new Set(input.options.projects.map((option) => option.value.toLocaleLowerCase()));
-    const knownNamespaces = new Set(input.options.namespaces.map((option) => option.value.toLocaleLowerCase()));
-    const requestedStructures = [
-      ...(value.project.trim() && !knownProjects.has(value.project.trim().toLocaleLowerCase())
-        ? [`project “${value.project.trim()}”`]
-        : []),
-      ...csv(value.namespaces)
-        .filter((namespace) => !knownNamespaces.has(namespace.toLocaleLowerCase()))
-        .map((namespace) => `namespace “${namespace}”`),
-    ];
+    if (readOnly || submitting || value.title.trim().length === 0 || (value.proposal_ref !== undefined && proposalReadOnly)) return;
+    if (resolution || proposalNeedsReview) return;
+    if (requiresDetailedReview) {
+      setMessage({ tone: "warning", text: "This proposal includes additional task settings. Review and create it in the proposal details below." });
+      return;
+    }
+    if (proposalOutdated || value.proposal_pending !== undefined || proposalChanged) {
+      setMessage({ tone: "warning", text: proposalOutdated ? "The saved proposal changed. Review its current revision before creating a task; your Quick Add edits are preserved." : value.proposal_pending ? "Retry the pending proposal save before creating a task. Your draft is preserved." : "Save your proposal changes before creating the task, so the reviewed proposal matches these fields." });
+      return;
+    }
+    const requestedStructures = newTaskStructures(value, input.options);
     if (requestedStructures.length > 0 && !structureApproved) {
       setStructureConfirmation(requestedStructures);
       const text = "Confirm the new task structure before creating this task.";
@@ -189,27 +230,85 @@ export default function TaskComposer({
     try {
       await draft.flush();
       const result = await dispatch(
-        TASK_INTENTS.create,
-        {
-          title: value.title.trim(),
-          attention_state: value.attention_state,
-          urgency: value.urgency,
-          due_date: optional(value.due_date),
-          deadline_date: optional(value.deadline_date),
-          project: optional(value.project),
-          namespaces: csv(value.namespaces),
-          summary: optional(value.summary),
-          desired_outcome: optional(value.desired_outcome),
-          next_action: optional(value.next_action),
-          definition_of_done: optional(value.definition_of_done),
-          dependencies: csv(value.dependencies),
-        },
+        value.proposal_ref ? TASK_INTENTS.proposalAccept : TASK_INTENTS.create,
+        value.proposal_ref ? { thread_id: value.proposal_ref.threadId, expected_proposal_event_id: value.proposal_ref.proposalEventId } : taskDraftFields(value),
         clientMutationId,
       );
+      if (value.proposal_ref && result.status === "accepted") {
+        const proposal = (result.value as unknown as { proposal?: TaskProposal })?.proposal;
+        if (proposal?.status !== "realized") {
+          setMessage({ tone: "warning", text: "The proposal is still being resolved. Open it to check progress; do not create another task." });
+          return;
+        }
+      }
       await finish(result, revision, "create the task");
       if (result.status === "accepted") setStructureConfirmation([]);
     } catch (error) {
       const text = error instanceof Error ? error.message : "Task draft could not be saved.";
+      setMessage({ tone: "danger", text });
+      announce(text, "assertive");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const saveProposal = async () => {
+    if (proposalReadOnly || submitting || !value.title.trim() || value.batch_lines.length > 0) return;
+    if (resolution || (proposalNeedsReview && value.proposal_pending === undefined)) return;
+    if (requiresDetailedReview && value.proposal_pending === undefined) {
+      setMessage({ tone: "warning", text: "This proposal includes additional task settings. Edit and create it in the full proposal review so those settings are preserved." });
+      return;
+    }
+    setSubmitting(true);
+    setMessage(null);
+    try {
+      await draft.flush();
+      let pending = value.proposal_pending;
+      if (!pending) {
+        pending = {
+          clientMutationId: createCorrelationId(value.proposal_ref ? "task-proposal-revise" : "task-proposal"),
+          parameters: taskProposalParameters(value), draftFingerprint: taskDraftFingerprint(value),
+          origin: value.proposal_ref ? {} : { kind: "task_quick_add", id: `${presentation.viewId}:${presentation.instanceId}`, label: "Tasks Quick Add", revision: draft.revision, sha256: await taskDraftSha256(value) },
+          ...(value.proposal_ref ? { revisionOf: { threadId: value.proposal_ref.threadId, proposalEventId: value.proposal_ref.proposalEventId } } : {}),
+        };
+        draft.setValue((current) => ({ ...current, proposal_pending: pending }));
+        await draft.flush();
+      }
+      const result = await dispatch(
+        pending.revisionOf ? TASK_INTENTS.proposalRevise : TASK_INTENTS.proposalCreate,
+        pending.revisionOf ? {
+          thread_id: pending.revisionOf.threadId,
+          expected_proposal_event_id: pending.revisionOf.proposalEventId,
+          parameters: pending.parameters,
+        } : { action: { name: "task_create", parameters: pending.parameters }, origin: pending.origin },
+        pending.clientMutationId,
+      );
+      const proposal = (result.value as unknown as { proposal?: TaskProposal } | undefined)?.proposal;
+      if (result.status !== "accepted" || !proposal) {
+        setMessage({ tone: result.status === "conflict" ? "warning" : "danger", text: result.message ?? "The proposal could not be saved. Your draft is preserved." });
+        setFieldErrors(result.fieldErrors ?? {});
+        if (result.status === "conflict" && pending.revisionOf) {
+          await dispatch(TASK_INTENTS.locationChange, { patch: { proposal: pending.revisionOf.threadId, task: null }, replace: true }, createCorrelationId("proposal-refresh"));
+        }
+        return;
+      }
+      // Replaying a confirmed mutation returns the current Thread projection,
+      // which another tab may already have revised. Never bind that new event
+      // fence to the old submitted fields and thereby approve unseen changes.
+      const fingerprint = taskDraftFingerprint(draftFromTaskProposal(proposal));
+      draft.setValue((current) => {
+        const { proposal_pending: _pending, ...fields } = current;
+        return { ...fields, proposal_ref: { threadId: proposal.thread_id, proposalEventId: proposal.proposal_event_id, draftFingerprint: fingerprint, requiresDetailedReview: additionalTaskProposalParameters(proposal).length > 0, ...(taskProposalResolution(proposal) ? { resolution: taskProposalResolution(proposal) } : {}) } };
+      });
+      await draft.flush();
+      const text = proposal.status === "ready"
+        ? "Proposal saved. No task has been created. Review it below, or share its link."
+        : "Proposal retrieved. Review its current state below. Your Quick Add draft is preserved.";
+      setMessage({ tone: "success", text });
+      announce(text);
+      await dispatch(TASK_INTENTS.locationChange, { patch: { proposal: proposal.thread_id, task: null } }, createCorrelationId("proposal-open"));
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "The proposal save could not be confirmed. Retry safely with this draft.";
       setMessage({ tone: "danger", text });
       announce(text, "assertive");
     } finally {
@@ -305,6 +404,10 @@ export default function TaskComposer({
     const rows = parseTaskBatch(text);
     if (rows.length < 2) return;
     event.preventDefault();
+    if (value.proposal_ref || value.proposal_pending) {
+      setMessage({ tone: "warning", text: "This draft is attached to a proposal. Review it or clear this draft before starting a batch." });
+      return;
+    }
     const retainedTitle = value.title.trim();
     const lines = [
       ...(retainedTitle ? [retainedTitle] : []),
@@ -332,7 +435,7 @@ export default function TaskComposer({
   return (
     <form ref={formRef} className="wb-task-composer" onSubmit={submitOne} noValidate>
       {draft.error ? <InlineAlert tone="danger">{draft.error} Your draft remains open.</InlineAlert> : null}
-      {message ? <InlineAlert tone={message.tone}>{message.text}</InlineAlert> : null}
+      {message ? <InlineAlert tone={message.tone}>{message.text}{message.taskId ? <> <a href={`/app/tasks?task=${encodeURIComponent(message.taskId)}`}>Open existing task</a></> : null}</InlineAlert> : null}
       {structureConfirmation.length > 0 ? (
         <InlineAlert tone="warning">
           <span>
@@ -340,7 +443,7 @@ export default function TaskComposer({
           </span>{" "}
           <Button
             size="small"
-            disabled={readOnly || submitting}
+            disabled={readOnly || submitting || !!resolution || proposalNeedsReview || (value.proposal_ref !== undefined && proposalReadOnly)}
             onClick={() => void createOne(true)}
           >
             Confirm structure and add
@@ -357,7 +460,9 @@ export default function TaskComposer({
                 {previewing
                   ? `Checking ${value.batch_lines.length} rows against Tasks…`
                   : serverPreview === null
-                    ? "Server preview unavailable. Cancel and paste again to retry."
+                    ? presentation.interactionMode === "preview"
+                      ? `${value.batch_lines.length} local rows · validation and creation are paused in Preview.`
+                      : "Server preview unavailable. Cancel and paste again to retry."
                     : `${batchRows.length} rows · ${batchRows.filter((row) => row.duplicate).length} duplicates skipped · ${batchRows.filter((row) => !row.valid).length} invalid skipped`}
               </p>
             </div>
@@ -382,6 +487,11 @@ export default function TaskComposer({
                 ) : null}
               </li>
             ))}
+            {serverPreview === null && presentation.interactionMode === "preview"
+              ? value.batch_lines.map((title, index) => <li key={`local:${index}`}>
+                <span>{title}</span><span className="wb-task-badge">Preview only</span>
+              </li>)
+              : null}
           </ol>
           <Button
             variant="primary"
@@ -396,45 +506,64 @@ export default function TaskComposer({
           <div className="wb-task-composer__fast-path">
             <label className="wb-task-field wb-task-field--grow">
               <span>New task</span>
-              <input
-                ref={titleRef}
-                autoComplete="off"
-                value={value.title}
-                disabled={readOnly || submitting}
-                aria-invalid={fieldError("title", "description") ? "true" : undefined}
-                aria-describedby={fieldError("title", "description") ? "wb-task-create-title-error" : "wb-task-create-title-help"}
-                placeholder="What needs doing?"
-                onChange={(event) => update("title", event.target.value)}
-                onKeyDown={enterFastPath}
-                onPaste={capturePaste}
-              />
+              <HelpTarget content={{
+                summary: resolution ? "Retained fields from a closed proposal." : value.proposal_ref ? "Edit the draft linked to this proposal." : "Capture a task, or paste a batch.",
+                details: resolution
+                  ? "This proposal is closed. Your retained fields have not been submitted again. Choose Use retained fields for a new draft to start a separate task."
+                  : value.proposal_ref
+                    ? "Creating the task accepts this saved proposal without making a second copy. Save changed fields to the proposal before accepting it."
+                    : "Press Enter to add the task. New tasks default to Inbox; Add details lets you choose another state. Paste several lines to preview a batch before creating anything.",
+              }} placement="bottom start">
+                <input
+                  {...assistance.fieldProps(["title"])}
+                  ref={titleRef}
+                  autoComplete="off"
+                  value={value.title}
+                  disabled={readOnly || submitting}
+                  aria-invalid={fieldError("title", "description") ? "true" : undefined}
+                  aria-describedby={fieldError("title", "description") ? "wb-task-create-title-error" : undefined}
+                  placeholder="What needs doing?"
+                  onChange={(event) => update("title", event.target.value)}
+                  onKeyDown={enterFastPath}
+                  onPaste={capturePaste}
+                />
+              </HelpTarget>
             </label>
-            <Button type="submit" variant="primary" disabled={readOnly || submitting || value.title.trim().length === 0}>
-              {submitting ? "Adding…" : "Add task"}
+            <Button type="submit" variant="primary" disabled={readOnly || submitting || value.title.trim().length === 0 || requiresDetailedReview || !!resolution || proposalNeedsReview || (value.proposal_ref !== undefined && proposalReadOnly)}>
+              {submitting ? "Saving…" : resolution?.status === "realized" ? "Task already created" : resolution?.status === "rejected" ? "Proposal dismissed" : value.proposal_ref ? "Create task from proposal" : "Add task"}
             </Button>
           </div>
-          <p id="wb-task-create-title-help" className="wb-task-field-help">Press Enter to add to Inbox. Paste several lines to preview a batch.</p>
           {fieldError("title", "description") ? <p id="wb-task-create-title-error" className="wb-task-field-error">{fieldError("title", "description")}</p> : null}
 
-          <Button size="small" variant="ghost" onClick={() => setDetailsOpen((open) => !open)} aria-expanded={detailsOpen}>
-            {detailsOpen ? "Hide details" : "Add details"}
-          </Button>
+          <div className="wb-task-field__inline">
+            <Button size="small" variant="ghost" onClick={() => setDetailsOpen((open) => !open)} aria-expanded={detailsOpen}>
+              {detailsOpen ? "Hide details" : "Add details"}
+            </Button>
+            <AssistDraftButton assistance={assistance} />
+            <HelpTarget content={{ summary: "Save a proposal for review.", details: "Keep these fields as a proposal in Tasks without creating a task. You can return through its proposal link, revise it, then choose Create task." }} reactAriaComposite>
+              <Button size="small" disabled={proposalReadOnly || submitting || !!resolution || !value.title.trim() || (!value.proposal_pending && (proposalNeedsReview || requiresDetailedReview || (value.proposal_ref !== undefined && !proposalChanged)))} onClick={() => void saveProposal()}>
+                {value.proposal_pending ? "Retry proposal save" : value.proposal_ref ? "Save proposal changes" : "Save proposal"}
+              </Button>
+            </HelpTarget>
+            {value.proposal_ref && resolution?.status !== "realized" ? <a href={`/app/tasks?proposal=${encodeURIComponent(value.proposal_ref.threadId)}`}>Review saved proposal</a> : null}
+          </div>
+          {resolution ? <InlineAlert tone={resolution.status === "realized" ? "success" : "warning"}>
+            {resolution.status === "realized" ? <>This proposal already created a task. Your retained fields are preserved. <a href={`/app/tasks?task=${encodeURIComponent(resolution.taskId)}`}>Open existing task</a></> : "This proposal was dismissed. Your source draft is preserved; no task was created."}
+            <Button size="small" disabled={proposalReadOnly || submitting} onClick={() => void useRetainedFields()}>Use retained fields for a new draft</Button>
+          </InlineAlert> : null}
+          {!resolution && proposalNeedsReview && !proposalOutdated ? <InlineAlert tone="warning">Review the saved proposal before making another decision. Your fields and any exact pending retry are preserved.</InlineAlert> : null}
+          {!resolution && proposalChanged ? <InlineAlert tone="warning">Your draft has changes that are not yet in the saved proposal.</InlineAlert> : null}
+          {!resolution && requiresDetailedReview ? <InlineAlert tone="warning">This proposal includes additional task settings. Edit, review, and create it in the proposal details below so those settings are preserved.</InlineAlert> : null}
+          {!resolution && proposalOutdated && selectedLinkedProposal ? <InlineAlert tone="warning">The saved proposal has a newer revision. Your Quick Add edits are preserved.
+            <Button size="small" disabled={readOnly || submitting} onClick={() => {
+              const current = draftFromTaskProposal(selectedLinkedProposal);
+              draft.setValue({ ...current, proposal_ref: { threadId: selectedLinkedProposal.thread_id, proposalEventId: selectedLinkedProposal.proposal_event_id, draftFingerprint: taskDraftFingerprint(current), requiresDetailedReview: additionalTaskProposalParameters(selectedLinkedProposal).length > 0 } });
+              setMessage(null); setFieldErrors({});
+            }}>Discard Quick Add edits and load current proposal</Button>
+          </InlineAlert> : null}
 
           {detailsOpen ? (
-            <div className="wb-task-composer__details">
-              <label className="wb-task-field"><span>State</span><select value={value.attention_state} aria-invalid={fieldError("attention_state", "state") ? "true" : undefined} aria-describedby={fieldError("attention_state", "state") ? "wb-task-create-state-error" : undefined} onChange={(event) => update("attention_state", event.target.value)}><option value="inbox">Inbox</option><option value="mit">Most Important</option><option value="active">Active</option><option value="focused">Focused</option><option value="waiting">Waiting</option></select>{fieldError("attention_state", "state") ? <small id="wb-task-create-state-error" className="wb-task-field-error">{fieldError("attention_state", "state")}</small> : null}</label>
-              <label className="wb-task-field"><span>Urgency</span><select value={value.urgency} aria-invalid={fieldError("urgency") ? "true" : undefined} aria-describedby={fieldError("urgency") ? "wb-task-create-urgency-error" : undefined} onChange={(event) => update("urgency", event.target.value as TaskUrgency)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>{fieldError("urgency") ? <small id="wb-task-create-urgency-error" className="wb-task-field-error">{fieldError("urgency")}</small> : null}</label>
-              <label className="wb-task-field"><span>Due date</span><input type="date" value={value.due_date} aria-invalid={fieldError("due_date") ? "true" : undefined} aria-describedby={fieldError("due_date") ? "wb-task-create-due-error" : undefined} onChange={(event) => update("due_date", event.target.value)} />{fieldError("due_date") ? <small id="wb-task-create-due-error" className="wb-task-field-error">{fieldError("due_date")}</small> : null}</label>
-              <label className="wb-task-field"><span>Hard deadline</span><input type="date" value={value.deadline_date} aria-invalid={fieldError("deadline_date") ? "true" : undefined} aria-describedby={fieldError("deadline_date") ? "wb-task-create-deadline-error" : undefined} onChange={(event) => update("deadline_date", event.target.value)} />{fieldError("deadline_date") ? <small id="wb-task-create-deadline-error" className="wb-task-field-error">{fieldError("deadline_date")}</small> : null}</label>
-              <label className="wb-task-field"><span>Project</span><input list="wb-task-project-options" value={value.project} onChange={(event) => update("project", event.target.value)} /></label>
-              <label className="wb-task-field"><span>Namespaces</span><input value={value.namespaces} placeholder="personal, errands" onChange={(event) => update("namespaces", event.target.value)} /></label>
-              <datalist id="wb-task-project-options">{input.options.projects.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</datalist>
-              <TextAreaField label="Summary" value={value.summary} rows={2} aria-invalid={fieldError("summary", "summary_text") ? "true" : undefined} description={fieldError("summary", "summary_text")} onChange={(next) => update("summary", next)} />
-              <TextAreaField label="Desired outcome" value={value.desired_outcome} rows={2} aria-invalid={fieldError("desired_outcome", "outcome_text") ? "true" : undefined} description={fieldError("desired_outcome", "outcome_text")} onChange={(next) => update("desired_outcome", next)} />
-              <TextAreaField label="Next action" value={value.next_action} rows={2} aria-invalid={fieldError("next_action", "next_action_text") ? "true" : undefined} description={fieldError("next_action", "next_action_text")} onChange={(next) => update("next_action", next)} />
-              <TextAreaField label="Definition of done" value={value.definition_of_done} rows={2} aria-invalid={fieldError("definition_of_done") ? "true" : undefined} description={fieldError("definition_of_done")} onChange={(next) => update("definition_of_done", next)} />
-              <label className="wb-task-field wb-task-field--wide"><span>Dependencies</span><input value={value.dependencies} placeholder="Comma-separated" aria-invalid={fieldError("dependencies") ? "true" : undefined} aria-describedby={fieldError("dependencies") ? "wb-task-create-dependencies-error" : undefined} onChange={(event) => update("dependencies", event.target.value)} />{fieldError("dependencies") ? <small id="wb-task-create-dependencies-error" className="wb-task-field-error">{fieldError("dependencies")}</small> : null}</label>
-            </div>
+            <TaskDraftFields value={value} options={input.options} disabled={readOnly || submitting} idPrefix="wb-task-create" errors={fieldErrors} update={update} fieldProps={assistance.fieldProps} />
           ) : null}
         </>
       )}

@@ -11,6 +11,7 @@ import {
 
 import type {
   JsonValue,
+  JsonSchemaReference,
   ViewId,
   WidgetDefinition,
   WidgetDraftDeclaration,
@@ -246,6 +247,8 @@ export function WidgetDraftScopeProvider({
 }
 
 export interface WidgetDraftHandle<Value> {
+  readonly identity: WidgetDraftIdentity;
+  readonly schema: JsonSchemaReference;
   readonly value: Value;
   readonly revision: number;
   readonly ready: boolean;
@@ -253,7 +256,15 @@ export interface WidgetDraftHandle<Value> {
   readonly status: WidgetDraftStatus;
   readonly error?: string;
   setValue(next: Value | ((current: Value) => Value)): number;
+  /** Synchronous live read, including edits not yet painted by React. */
+  getSnapshot(): { readonly value: Value; readonly revision: number; readonly ready: boolean; readonly status: WidgetDraftStatus };
+  /** A host-only CAS seam; assistants never receive this handle. */
+  compareAndSet(expectedRevision: number, next: Value): number | undefined;
+  /** Host lifecycle fence for helpers bound to a particular editing lifetime. */
+  subscribeReset(listener: () => void): () => void;
   flush(): Promise<void>;
+  /** Start a new editing lifetime with one atomic replacement save, never a delete. */
+  reset(value: Value, options?: { readonly ifRevision?: number }): Promise<boolean>;
   clear(options?: { readonly ifRevision?: number }): Promise<boolean>;
 }
 
@@ -307,6 +318,7 @@ export function useWidgetDraft<Value>(
   const stateRef = useRef(state);
   const persistedRevisionRef = useRef<number | undefined>(undefined);
   const writeChainRef = useRef<Promise<void>>(Promise.resolve());
+  const resetListenersRef = useRef(new Set<() => void>());
   const commitState = useCallback((next: DraftState<Value>) => {
     stateRef.current = next;
     setState(next);
@@ -429,27 +441,63 @@ export function useWidgetDraft<Value>(
       throw new Error(stateRef.current.error ?? "Draft could not be persisted");
     }
   }, []);
-  const clear = useCallback(
-    async (clearOptions?: { readonly ifRevision?: number }): Promise<boolean> => {
+  const getSnapshot = useCallback(() => stateRef.current, []);
+  const subscribeReset = useCallback((listener: () => void) => {
+    resetListenersRef.current.add(listener);
+    return () => { resetListenersRef.current.delete(listener); };
+  }, []);
+  const compareAndSet = useCallback((expectedRevision: number, next: Value) => {
+    const current = stateRef.current;
+    if (!current.ready || current.revision !== expectedRevision || current.status === "error" || current.status === "conflict") return undefined;
+    const serialized = asJsonValue(next);
+    if (serialized.bytes > declaration.maxBytes) throw new Error("Assisted draft exceeds its byte limit");
+    return setValue(next);
+  }, [declaration.maxBytes, setValue]);
+  const resetValue = useCallback(
+    async (
+      next: Value,
+      persistReplacement: boolean,
+      resetOptions?: { readonly ifRevision?: number },
+    ): Promise<boolean> => {
       const current = stateRef.current;
       if (
-        clearOptions?.ifRevision !== undefined &&
-        clearOptions.ifRevision !== current.revision
+        resetOptions?.ifRevision !== undefined &&
+        resetOptions.ifRevision !== current.revision
       ) {
         return false;
       }
+      if (persistReplacement) {
+        if (!current.ready || current.status === "error" || current.status === "conflict") return false;
+        const serialized = asJsonValue(next);
+        if (serialized.bytes > declaration.maxBytes) throw new Error(`Draft exceeds its ${declaration.maxBytes}-byte limit`);
+      }
       const revision = current.revision + 1;
+      // A helper belongs to one editing lifetime, regardless of whether the
+      // next lifetime begins blank or retains explicitly chosen form fields.
+      for (const listener of resetListenersRef.current) listener();
       commitState({
-        value: initialValueRef.current,
+        value: next,
         revision,
         ready: true,
         status: "saving",
       });
-      enqueueValue(initialValueRef.current, revision, false);
+      // Replacement keeps the prior durable record until the repository's
+      // existing CAS save commits. Only clear uses the established delete path.
+      enqueueValue(next, revision, persistReplacement);
       await writeChainRef.current;
-      return stateRef.current.status === "pristine";
+      return persistReplacement
+        ? stateRef.current.revision === revision && stateRef.current.status === "saved"
+        : stateRef.current.status === "pristine";
     },
-    [commitState, enqueueValue],
+    [commitState, declaration.maxBytes, enqueueValue],
+  );
+  const reset = useCallback(
+    (next: Value, resetOptions?: { readonly ifRevision?: number }) => resetValue(next, true, resetOptions),
+    [resetValue],
+  );
+  const clear = useCallback(
+    (clearOptions?: { readonly ifRevision?: number }) => resetValue(initialValueRef.current, false, clearOptions),
+    [resetValue],
   );
   const dirty = state.ready && !isPristineRef.current(state.value);
 
@@ -460,11 +508,23 @@ export function useWidgetDraft<Value>(
 
   return {
     ...state,
+    identity,
+    schema: declaration.schema,
     dirty,
     setValue,
+    getSnapshot,
+    compareAndSet,
+    subscribeReset,
     flush,
+    reset,
     clear,
   };
+}
+
+/** Assistance is available only where the owning widget explicitly opts in. */
+export function useWidgetAssistanceDeclaration(draftName: string) {
+  const scope = useContext(WidgetDraftScopeContext);
+  return scope?.definition.assistableDrafts?.find((candidate) => candidate.draftName === draftName);
 }
 
 export function useWidgetDraftScopeStatus(): {

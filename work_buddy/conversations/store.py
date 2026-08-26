@@ -357,7 +357,8 @@ def create_conversation(
                 json.dumps(conv.metadata),
             ),
         )
-        conn.commit()
+        if own_conn:
+            conn.commit()
         logger.info("Created conversation %s: %s", conv.conversation_id, title)
         return conv
     finally:
@@ -383,6 +384,25 @@ def get_conversation(
     finally:
         if own_conn:
             conn.close()
+
+
+def get_message(
+    conversation_id: str,
+    message_id: str,
+    conn: sqlite3.Connection | None = None,
+) -> ConversationMessage | None:
+    """Read one exact message without crossing its conversation binding."""
+    own_conn = conn is None
+    active = get_connection() if own_conn else conn
+    try:
+        row = active.execute(
+            "SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?",
+            (conversation_id, message_id),
+        ).fetchone()
+        return None if row is None else ConversationMessage.from_row(dict(row))
+    finally:
+        if own_conn:
+            active.close()
 
 
 def get_conversation_with_messages(
@@ -592,6 +612,8 @@ def add_message(
                 or existing.role != msg.role
                 or existing.content != msg.content
                 or existing.message_type != msg.message_type
+                or existing.response_type != msg.response_type
+                or existing.choices != msg.choices
                 or existing.context != msg.context
             ):
                 raise sqlite3.IntegrityError(
@@ -602,7 +624,8 @@ def add_message(
             "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
             (now, conversation_id),
         )
-        conn.commit()
+        if own_conn:
+            conn.commit()
         return msg
     finally:
         if own_conn:
@@ -676,7 +699,8 @@ def send_agent_message_idempotent(
                 "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
                 (now, conversation_id),
             )
-            conn.commit()
+            if own_conn:
+                conn.commit()
             return candidate, True
 
         row = conn.execute(
@@ -696,7 +720,8 @@ def send_agent_message_idempotent(
             raise sqlite3.IntegrityError(
                 "message_id was reused across a conversation or role boundary"
             )
-        conn.commit()
+        if own_conn:
+            conn.commit()
         return existing, False
     except Exception:
         if own_conn and conn.in_transaction:
@@ -824,6 +849,10 @@ def respond_to_message_with_user_message(
     repeated on the update, making the operation single-winner even if two
     callers race to answer the same question.
     """
+    response_context = dict(context or {})
+    if response_context.get("in_reply_to", message_id) != message_id:
+        raise ValueError("Answer context does not match the exact question")
+    response_context["in_reply_to"] = message_id
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
@@ -849,7 +878,7 @@ def respond_to_message_with_user_message(
                     ConversationMessage.from_row(dict(replay_row)),
                     conversation_id=conversation_id,
                     content=response,
-                    context=context,
+                    context=response_context,
                     ingress=ingress,
                 )
                 if own_conn:
@@ -870,7 +899,7 @@ def respond_to_message_with_user_message(
             conversation_id=conversation_id,
             content=response,
             message_id=user_message_id,
-            context=context,
+            context=response_context,
             ingress=ingress,
         )
         if not inserted:
@@ -894,7 +923,8 @@ def respond_to_message_with_user_message(
             "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
             (user_msg.created_at, conversation_id),
         )
-        conn.commit()
+        if own_conn:
+            conn.commit()
         return user_msg
     except Exception:
         if own_conn and conn.in_transaction:
@@ -939,7 +969,8 @@ def post_user_message(
                 "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
                 (user_msg.created_at, conversation_id),
             )
-        conn.commit()
+        if own_conn:
+            conn.commit()
         return user_msg
     except Exception:
         if own_conn and conn.in_transaction:
@@ -1255,7 +1286,8 @@ def activate_agent_lease(
                  AND generation = ? AND status = 'starting'""",
             (pid, now, now, conversation_id, consumer, generation),
         )
-        conn.commit()
+        if own_conn:
+            conn.commit()
         return cursor.rowcount == 1
     except Exception:
         if own_conn and conn.in_transaction:
@@ -2003,7 +2035,8 @@ def ack_user_message(
                 consumption_receipt_id=consumption_receipt_id,
             )
             if mismatch is not None:
-                conn.commit()
+                if own_conn:
+                    conn.commit()
                 return mismatch
             if consumption_receipt_id:
                 conn.execute(
@@ -2012,7 +2045,8 @@ def ack_user_message(
                        WHERE receipt_id = ?""",
                     (_now(), consumption_receipt_id),
                 )
-            conn.commit()
+            if own_conn:
+                conn.commit()
             return {"status": "acked", "acked": True, "message_id": message_id}
 
         next_row = _next_user_message(
@@ -2021,10 +2055,12 @@ def ack_user_message(
             consumer=consumer,
         )
         if next_row is None:
-            conn.commit()
+            if own_conn:
+                conn.commit()
             return {"status": "empty", "acked": False}
         if str(next_row["message_id"]) != message_id:
-            conn.commit()
+            if own_conn:
+                conn.commit()
             return {
                 "status": "out_of_order",
                 "acked": False,
@@ -2041,7 +2077,8 @@ def ack_user_message(
             consumption_receipt_id=consumption_receipt_id,
         )
         if mismatch is not None:
-            conn.commit()
+            if own_conn:
+                conn.commit()
             return mismatch
         now = _now()
         conn.execute(
@@ -2067,7 +2104,8 @@ def ack_user_message(
                    WHERE receipt_id = ?""",
                 (now, consumption_receipt_id),
             )
-        conn.commit()
+        if own_conn:
+            conn.commit()
         return {"status": "acked", "acked": True, "message_id": message_id}
     except Exception:
         if own_conn and conn.in_transaction:

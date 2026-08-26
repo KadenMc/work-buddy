@@ -1,6 +1,6 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState, type ComponentType } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../test/setup";
@@ -157,6 +157,58 @@ describe("WidgetHost", () => {
       screen.getByRole("heading", { name: "Loading widget" }),
     ).toBeInTheDocument();
     expect(load).not.toHaveBeenCalled();
+  });
+
+  it("updates presentation from the measured content box without remounting or losing an unsaved draft", async () => {
+    const observed = new Map<Element, (width: number) => void>();
+    vi.stubGlobal("ResizeObserver", class implements ResizeObserver {
+      readonly callback: ResizeObserverCallback;
+      readonly targets = new Set<Element>();
+      constructor(callback: ResizeObserverCallback) { this.callback = callback; }
+      observe(target: Element) {
+        this.targets.add(target);
+        observed.set(target, (width) => this.callback([
+          { target, contentRect: { width } } as ResizeObserverEntry,
+        ], this));
+      }
+      unobserve(target: Element) { this.targets.delete(target); observed.delete(target); }
+      disconnect() { for (const target of this.targets) observed.delete(target); this.targets.clear(); }
+    });
+    try {
+      const unmounted = vi.fn();
+      const Renderer = ({ presentation }: WidgetRendererProps) => {
+        const [draft, setDraft] = useState("");
+        useEffect(() => () => unmounted(), []);
+        return <>
+          <label>Unsaved draft<input value={draft} onChange={(event) => setDraft(event.target.value)} /></label>
+          <output aria-label="Available content width">{presentation.width}</output>
+        </>;
+      };
+      const load = vi.fn();
+      const view = renderHost(createModule(Renderer, load), { width: 1296 });
+      const availableWidth = await screen.findByLabelText("Available content width");
+      expect(availableWidth).toHaveTextContent("1296");
+      const draft = screen.getByRole("textbox", { name: "Unsaved draft" });
+      await userEvent.type(draft, "Keep this while assistance opens");
+      const content = view.container.querySelector(".wb-widget-frame__content")!;
+      const resizeContent = observed.get(content);
+      expect(resizeContent).toBeDefined();
+
+      act(() => resizeContent!(745));
+      await waitFor(() => expect(availableWidth).toHaveTextContent("745"));
+      expect(draft).toHaveValue("Keep this while assistance opens");
+      act(() => resizeContent!(1200));
+      await waitFor(() => expect(availableWidth).toHaveTextContent("1200"));
+      expect(draft).toHaveValue("Keep this while assistance opens");
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(unmounted).not.toHaveBeenCalled();
+
+      view.unmount();
+      expect(unmounted).toHaveBeenCalledTimes(1);
+      expect(observed.has(content)).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps stale content visible with a truthful host banner", async () => {

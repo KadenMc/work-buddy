@@ -20,7 +20,21 @@ parents:
 dev_notes: |-
   The provider argument to useChatConversation must be referentially stable, a fresh instance each render re-subscribes and reloads. Send results and errors that resolve after the hook rebinds to another provider or conversation are dropped by a captured-identity guard, keep that guard when extending the send path.
 
-  The autoscroll effect keys on message COUNT, so a last message whose content grows in place will not re-stick a pinned view (the house store appends discrete messages). An unread boundary seeded at the first message is legitimate, the separator renders above index 0.
+  Do not infer a first assistant turn from `agentLiveness: alive`. Co-work's
+  document agent is deliberately live while it waits without greeting. A host
+  that promises the first turn opts into `expectsInitialAssistantTurn`; its
+  `starting` presentation is passive and must not inherit `thinking` locks.
+
+  Transcript copying stays implemented once in `ChatCopyAction`. A host may
+  suppress ChatPanel's default header placement and compose that same action in
+  an outer panel header; do not mirror the formatter or clipboard behavior.
+
+  The normal autoscroll effect keys on message COUNT because the house store
+  appends discrete messages. A host whose accessory or appendix changes after a
+  message is present must advance `transcriptExtensionRevision`; this re-sticks
+  only a reader already pinned at latest and never overrides scroll lock. An
+  unread boundary seeded at the first message is legitimate, the separator
+  renders above index 0.
 
   The shared package must never import an App domain. `renderMessageAccessory` is deliberately additive rather than a whole-message renderer: canonical message content stays under house ownership, the accessory follows it, and built-in question controls remain last. `transcriptAppendix` stays inside the transcript scroller. Labels such as Working on, About, and action-snapshot identity belong to a host adapter; the generic surface must not render them by default.
 
@@ -30,7 +44,11 @@ dev_notes: |-
   turn. It allocates the ID before host preparation, prevents `prepareSend`
   from replacing it, and retains the exact prepared envelope across an
   uncertain transport retry. Clear that envelope only after acknowledged
-  success or when the provider, conversation, or submitted draft changes.
+  success or when the provider, conversation, submitted draft, or opaque
+  `sendScopeKey` changes. Explicitly authorized hosts rotate that scope on
+  lifecycle/model changes without replacing the canonical provider or panel;
+  this preserves unsent text but prevents an old prepared envelope crossing a
+  new authorization boundary.
 
   Keep transport out of `widget-library/chat`. The generic same-origin HTTP implementation lives at `dashboard-react/src/dashboard/conversations/`; App adapters inject it through the provider seam.
 
@@ -41,17 +59,26 @@ dev_notes: |-
   The HTTP adapter also fences its internal cache and `onEnvelope` callback. A successful PATCH, conflict envelope, host `replaceSnapshot`, invalidation, or explicit refresh supersedes older GETs before they can adopt; hook-level sequencing alone is too late to protect feature-owned lifecycle state.
 
   Selection mutations outrank subscription reloads in `useChatExecutionProfile`. A reload issued while selection is pending must not apply its stale snapshot or error; successful/authoritative mutation results clear it, while a non-authoritative mutation failure triggers one fresh post-mutation reconciliation. Execution-required host actions are unavailable whenever the snapshot is read-only, not merely when the provider/model is unavailable.
+
+  The optional executionDisabled prop lets an explicitly prepared host permit model selection while composition awaits authorization. Omission preserves composerDisabled coupling. It never overrides read-only, sending, thinking or selection-in-progress protections. Keep the same provider/panel instance through lifecycle changes.
+
+  The primary-action callback runs synchronously behind a ref guard, allowing a
+  host to freeze an authorization payload before its first await. Keep the action
+  and Send keyed separately without remounting the textarea. Retain draft/error
+  state on action failure; disabling message composition must not implicitly
+  disable an explicitly supplied launch action. Structured response controls stay
+  disabled while the primary action is present.
 ---
 
 Reusable React chat components for conversational surfaces in the React dashboard, at `dashboard-react/src/widget-library/chat/`. They render the same backend conversations the root dashboard's chat sidebar shows, behind a typed, transport-agnostic provider seam. The root dashboard's own surface remains `services/dashboard/chat-sidebar` and is unchanged by these primitives.
 
 ## Components
 
-- **ConversationChat**: the canonical connected conversation surface. It binds a stable provider and opaque conversation id, owns loading, retry, send errors, activity, locally-authored turn reveal, and message observation, and composes `ChatPanel`. It knows nothing about the host App's domain.
-- **ChatPanel**: message log plus composer with a header slot and the standard host states, including a read-only banner. Forwards the composer's optional `initialValue` and `onDraftChange` draft seam, so a host can retain the unsent draft across reloads.
+- **ConversationChat**: the canonical connected conversation surface. It binds a stable provider and opaque conversation id, owns loading, retry, send errors, activity, locally-authored turn reveal, and message observation, and composes `ChatPanel`. A host that promises an initial assistant-authored message may opt into passive, non-locking first-turn feedback. It knows nothing about the host App's domain.
+- **ChatPanel**: message log plus composer with a header slot and the standard host states, including a read-only banner. It owns the canonical icon-based **Copy chat** action when messages exist; a composed host may relocate that same action to an outer header. Forwards the composer's optional `initialValue` and `onDraftChange` draft seam, so a host can retain the unsent draft across reloads.
 - **ChatPanelState**: the canonical loading, empty, or error shell for a host that does not yet have a ready conversation. The host supplies state kind, direct copy, and at most one action without recreating panel markup or importing private chat styles.
-- **ChatMessageList**: author attribution, timestamps, unread boundary with scroll lock and jump-to-latest, inline choice and boolean answers, typing indicator, and the terminal **No response received.** notice. A turn authored in the mounted surface is brought into view even when ordinary incoming-message scroll lock is active.
-- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, and the draft is retained on send failure. After delivery acknowledgement, the draft clears because the canonical user bubble is visible. While that turn awaits a reply, the textbox can hold the next draft but submission and execution selection remain disabled. A synchronous submit guard prevents Enter-plus-click or two same-tick submit events from dispatching one draft twice before React paints the disabled state. It grows with its content and enables its own scrollbar only after reaching the CSS height cap. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
+- **ChatMessageList**: author attribution, timestamps, unread boundary with scroll lock and jump-to-latest, inline choice and boolean answers, accessible typing/starting indicator, and the terminal **No response received.** notice. Native selection and the plain-text export preserve a space after `Speaker:`. A turn authored in the mounted surface is brought into view even when ordinary incoming-message scroll lock is active.
+- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, and the draft is retained on send failure. After delivery acknowledgement, the draft clears because the canonical user bubble is visible. While that turn awaits a reply, the textbox can hold the next draft but submission and execution selection remain disabled. A synchronous submit guard prevents Enter-plus-click or two same-tick submit events from dispatching one draft twice before React paints the disabled state. It grows with its content and enables its own scrollbar only after reaching the CSS height cap. Its focus outline is inset so clipped hosts retain the complete indicator. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
 - **ChatExecutionPicker**: an optional, compact **Run with** control that shows
   one atomic provider/model choice grouped by provider. Server-authored
   availability and descriptions stay visible and accessible; unavailable
@@ -66,8 +93,15 @@ than forking it:
   canonical message's content and before any built-in answer controls;
 - `transcriptAppendix` adds auxiliary content at the end of the scrollable
   transcript;
+- `transcriptExtensionRevision` tells the transcript that late accessory or
+  appendix content changed its layout. A reader already at latest stays pinned,
+  while a reader who scrolled upward keeps that position;
 - `onMessagesChange` lets a host observe canonical messages for surrounding UI
-  such as an unread tab marker.
+  such as an unread tab marker;
+- `showTranscriptCopyAction={false}` suppresses only ChatPanel's default header
+  placement when a composed host renders the exported `ChatCopyAction` in its
+  own header. The formatter remains canonical: one `Speaker: message` block per
+  turn, separated by blank lines, without timestamps, models or controls.
 
 These are React composition seams, not persisted widget input. The shared
 surface continues to own message identity, ordering, author semantics,
@@ -80,6 +114,21 @@ Co-work's About/Working on labels or internal action-snapshot metadata.
 itself, a separately placeable Dashboard Core widget. A cohesive durable App
 such as Co-work may embed it while retaining one durable widget boundary.
 
+### Composer primary action
+
+A host may supply `composerPrimaryAction` through `ChatPanel` or
+`ConversationChat` (`primaryAction` on `ChatComposer`) to replace Send with one
+explicit action such as **Launch**. The host owns its label, callback, disabled
+and pending state, optional pending label, focus ref and contextual help. The
+shared composer owns placement and duplicate-action protection.
+
+This action is not a message or form submit: it does not call send preparation,
+consume an inline question, clear the draft, or launch when Enter is typed in
+the textarea. Activating the focused action with Enter or Space remains normal
+button behavior. Read-only, thinking, in-flight and model-selection locks still
+apply. Omitting the action preserves ordinary Co-work Send behavior. Layout and
+resizing belong to the containing workspace, not the Chat component.
+
 ## Optional execution profile
 
 Model selection is reusable without becoming part of transcript transport.
@@ -90,7 +139,10 @@ containing App passes that control to the shared Chat surface only when its
 conversation has a selectable agent runtime.
 
 The server supplies the provider/model catalog and the current validated pair.
-The browser does not persist a competing default in local storage or settings.
+Per-conversation selection does not persist a competing browser default.
+System Settings may own the default for new chats through a separate
+Settings-backed execution adapter; the shared picker is reused without moving
+that authority into transcript transport.
 Selection is atomic and revisioned; if another surface wins a race, the shared
 hook adopts the newer server snapshot and reports that the requested switch did
 not land.
@@ -111,8 +163,14 @@ same inline error surface and retains the draft; it must not fail only in the
 console. Activity mapping treats a latest user turn with a live or unknown
 driver as waiting for a reply, an explicit stopped driver as terminal, and a
 latest assistant turn as idle even when its long-lived driver remains active.
-The terminal presentation is informational and recoverable through ordinary
-composition; there is no shared Start or Restart control.
+An empty transcript is idle regardless of liveness. Only an explicit
+`expectsInitialAssistantTurn` host promise promotes open/live/empty to
+non-locking `starting`; it renders the accessible ellipsis but leaves Send and
+execution selection available. The ordinary `thinking` state keeps its locks.
+The terminal presentation is informational; there is no shared Start or Restart
+policy. Ordinary Co-work composition may resume its driver. An explicitly
+disclosed form host supplies **Launch** through the optional composer primary
+action and disables message submission until that authorization succeeds.
 
 Outbound message identity is caller-stable. The shared surface generates
 `message_id` once per logical authored turn before host preparation and reuses

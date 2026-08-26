@@ -1,0 +1,109 @@
+.wb-workspace-side-panel {
+  min-inline-size: 0;
+  min-block-size: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  /* The library writes overflow:hidden inline. Clip without a second scroll owner. */
+  overflow: clip !important;
+}
+
+/* Panel applies className to its inner content wrapper, not the sizing element. */
+.wb-workspace-side-panel__panel {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: 100%;
+}
+
+/* Override library inline flex/display sizing, without removing either subtree. */
+.wb-workspace-side-panel > [data-workspace-pane][hidden],
+.wb-workspace-side-panel__separator[hidden] {
+  display: none !important;
+}
+
+.wb-workspace-side-panel[data-workspace-panel-mode="primary-only"]
+  > [data-workspace-pane="primary"],
+.wb-workspace-side-panel[data-workspace-panel-mode="side-only"]
+  > [data-workspace-pane="side"] {
+  flex: 1 1 100% !important;
+  inline-size: 100%;
+}
+
+.wb-workspace-side-panel[data-workspace-panel-mode="stacked"] {
+  flex-direction: column !important;
+}
+
+.wb-workspace-side-panel[data-workspace-panel-mode="stacked"]
+  > [data-workspace-pane] {
+  flex: 1 1 auto !important;
+  inline-size: 100%;
+  max-block-size: none !important;
+}
+
+.wb-workspace-side-panel[data-workspace-panel-mode="stacked"]
+  > [data-workspace-pane] > .wb-workspace-side-panel__panel {
+  block-size: auto;
+  max-block-size: none !important;
+}
+
+/* Co-work's tokenized divider, shared by every workspace side panel. */
+.wb-workspace-side-panel__separator {
+  position: relative;
+  inline-size: 11px;
+  align-self: stretch;
+  cursor: col-resize;
+}
+
+.wb-workspace-side-panel__separator::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  inline-size: 1px;
+  background: var(--wb-color-border-default);
+  transition:
+    inline-size var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
+    background-color var(--wb-motion-duration-fast)
+      var(--wb-motion-easing-standard);
+}
+
+.wb-workspace-side-panel__separator:hover::before,
+.wb-workspace-side-panel__separator:active::before,
+.wb-workspace-side-panel__separator:focus-visible::before,
+.wb-workspace-side-panel__separator[data-separator="focus"]::before,
+.wb-workspace-side-panel__separator[data-separator="active"]::before {
+  inline-size: 3px;
+  background: var(--wb-color-border-interactive);
+}
+
+.wb-workspace-side-panel__separator:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-workspace-side-panel__separator::before {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .wb-workspace-side-panel__separator::before {
+    background: CanvasText;
+  }
+
+  .wb-workspace-side-panel__separator:hover::before,
+  .wb-workspace-side-panel__separator:active::before,
+  .wb-workspace-side-panel__separator:focus-visible::before,
+  .wb-workspace-side-panel__separator[data-separator="focus"]::before,
+  .wb-workspace-side-panel__separator[data-separator="active"]::before {
+    background: Highlight;
+  }
+
+  .wb-workspace-side-panel__separator:focus-visible {
+    outline: 1px solid Highlight;
+    box-shadow: none;
+  }
+}

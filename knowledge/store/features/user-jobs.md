@@ -29,22 +29,28 @@ Drop a markdown file with cron frontmatter into `<paths.data_root>/user_jobs/` (
 ## Three ways to author a job
 
 1. **Drop a file directly** — author the markdown with frontmatter (schema below) under `<paths.data_root>/user_jobs/`. Power-user path; assumes you know cron syntax and the registry.
-2. **Dashboard Add-job form** — Jobs tab → `+ Add job`. Fills the same fields with live cron preview, parameter-schema rendering, and a schedule-aware Jitter input. Posts to ``POST /api/user_jobs``.
-3. **Dashboard chat walkthrough** — Jobs tab → `+ Add job` → `💬 Help me fill this out`. Opens the chat sidebar (see ``services/dashboard/chat-sidebar``); a Claude session asks plain-English questions, drives the visible Add-job form via the schema-driven form bridge (see ``services/dashboard/form-bridge``), and clicks the form's own **Create job** button on confirmation. The agent never writes the underlying file directly — going through the form bridge keeps the agent path identical to the manual-form path.
+2. **Dashboard job form** — `/app/jobs` (legacy Jobs tab → `+ Add job` redirects here). The native widget exposes live cron preview, registry parameter guidance, and schedule-aware Jitter validation. Its human-authorized `POST /api/jobs/authoring` delegates the existing `user_job_create` capability with `overwrite: false`.
+3. **Dashboard assisted form** — choose **AI help** in that same widget. After opt-in and provider/model disclosure, the shared conversation component suggests typed patches that fill the visible fields. User edits win conflicts; changes have receipts and conditional Undo. Only the user's **Create job** click submits. Chat, including a message saying "yes", cannot schedule or overwrite a job. See `services/dashboard/react/assisted-drafts`.
 
-All three paths converge on ``work_buddy.sidecar.scheduler.jobs.create_user_job_file``. The Add-job form's UI mapping (input ids, validation) is declared once in ``work_buddy.dashboard.forms_jobs.JOBS_FORM_SCHEMA``; both the chat agent's brief and the form-bridge frontend are generated from it.
+Jobs assistance can search the same registered capability/workflow authoring
+catalog shown by the form: exact names, slash aliases, one-line descriptions and
+reduced parameter schemas. This lets it recommend `web_search` or another exact
+operation without guessing. The lookup is metadata-only and disclosure-accounted;
+it cannot run the result, search the web, start a workflow or create the job.
 
-## Validation at create time (gates ALL three paths)
+The capability/manual/assisted paths converge on `work_buddy.sidecar.scheduler.jobs.create_user_job_file`. Non-overwriting creation uses exclusive file creation, so concurrent requests cannot replace each other. React's assistable fields are declared once in `work_buddy/dashboard/assistance/form_schemas.json`, consumed by Python and TypeScript; there is no new form bridge, scheduler store, or duplicate chat implementation. The normal domain validation remains authoritative. Direct file authoring still relies on scheduler load-time parsing.
 
-``create_user_job_file`` validates the inputs before writing the file. Specifically:
+## Validation at create time
+
+``create_user_job_file`` validates capability and dashboard submissions before writing the file. Directly authored files instead pass through scheduler load-time parsing. Specifically:
 
 * **Name** — must match ``[A-Za-z0-9][A-Za-z0-9_-]{0,63}`` (no spaces, no leading dash/underscore). Returns ``{success: false, error: '...'}``.
 * **Schedule** — exactly 5 cron fields, each parseable by ``parse_cron_field`` (range-checked).
 * **Capability / workflow names** — must exist in the MCP registry. The validator strips a leading ``/`` (so ``/morning-routine`` works), then prioritizes a slash-command-to-registry resolution: if the user typed ``wb-morning`` (or just ``morning`` for a slash command stem), the error names the underlying registry entry explicitly: *"`wb-morning` is the slash-command name; the underlying workflow is `morning-routine`"*. Falls back to a ``difflib`` close-match suggestion if no slash-command match.
 * **Workflow params** — when ``job_type=workflow`` and the workflow declares a ``params_schema``, params are pre-validated for unknown keys and missing required keys. Mismatches surface immediately at create time instead of on first cron fire.
-* **Jitter** — ``jitter_seconds`` must be a non-negative integer. Bad input (negative, non-numeric) returns ``{success: false, error: 'jitter_seconds must be a non-negative integer, ...'}`` from the create path; jobs already on disk with bad input log a WARN and fall back to ``0``. The schedule-aware ceiling (see Jitter section) is enforced UI-side only; the underlying create function accepts any non-negative integer.
+* **Jitter** — ``jitter_seconds`` must be a non-negative integer. Bad input (negative, non-numeric) returns ``{success: false, error: 'jitter_seconds must be a non-negative integer, ...'}`` from the create path; jobs already on disk with bad input log a WARN and fall back to ``0``. The React form and its authorized API both enforce the schedule-aware ceiling; the underlying file authoring function accepts any non-negative integer.
 
-Failures return a typed ``{success: false, error: str, errors_by_field: {field: msg}, suggestions: [str]}`` shape. The dashboard form highlights the offending input in red; the chat agent reads ``errors_by_field`` and follows the recovery rules in its brief (search the registry, push the corrected value via ``form_field_set``, retry).
+Failures return a typed ``{success: false, error: str, errors_by_field: {field: msg}, suggestions: [str]}`` shape. The dashboard retains the draft, highlights offending inputs, and lets the user correct them manually or ask for another suggestion. Assistant patches are draft edits, not validated scheduling results.
 
 ## Where the file goes
 
@@ -92,19 +98,19 @@ The Add-job form caps the value per schedule. Worked examples:
 | `0 * * * *`    | hourly    | 300 s (cap)|
 | `0 9 * * *`    | daily     | 300 s (cap)|
 
-The form pulls these from ``/api/cron/describe``, which returns ``interval_seconds`` + ``max_jitter_seconds`` alongside the human description. The chat-walkthrough agent's ``form_field_set`` calls are clamped to the same ceiling — a value that exceeds the cap for the current schedule lands at the cap rather than the form rejecting it.
+The form pulls these from ``/api/cron/describe``, which returns ``interval_seconds`` + ``max_jitter_seconds`` alongside the human description. Out-of-range assistant suggestions remain visible and fail the same submit validation as manual input; they are not silently clamped or submitted.
 
-The ceiling is **UI-side only**: ``create_user_job_file`` accepts any non-negative integer, so users hand-editing a `.md` file can override the recommendation. Use that escape hatch sparingly.
+The ceiling applies to both the React form and its API. `create_user_job_file` still accepts any non-negative integer, so users hand-editing a `.md` file or using the existing capability can deliberately exceed that UI policy.
 
 ### Tick-quantization caveat
 
-The scheduler ticks every ``health_check_interval`` (default 30 s), so values < 30 are quantized away in practice. The form's Jitter input shows an amber `⚠ Too small to take effect` warning for sub-30s values, distinct from the green `✓ Randomly delays firing…` for values that actually shift fire time. ``jitter_seconds: 0`` (the default) bypasses the pending-fire queue and fires inline on cron match.
+The scheduler ticks every ``health_check_interval`` (default 30 s), so values < 30 are quantized away in practice. React authoring keeps a visible warning for nonzero jitter below 30 seconds; optional-delay and schedule-ceiling guidance lives in the field's Hover Help. Legacy editing retains its amber `⚠ Too small to take effect` warning and green `✓ Randomly delays firing…` hint. ``jitter_seconds: 0`` (the default) bypasses the pending-fire queue and fires inline on cron match.
 
 ### Dashboard surfacing
 
 * The Jobs tab's **Next Run** column reads ``effective_at`` (next_at + offset, or queued pending due time) so the displayed time matches actual fire time, not the raw cron minute.
 * A dedicated **Jitter** column shows the configured ``jitter_seconds`` (`+90s` for a jittered job, em-dash otherwise). Header tooltip explains what jitter is; per-cell tooltips name the offset window.
-* The Add-job form has a numeric **Jitter** input next to Schedule. Disabled until a valid schedule is typed; ``max`` updates live as the schedule changes; an existing value is clamped down when the schedule narrows.
+* The React authoring form has a numeric **Jitter** input next to Schedule. Its maximum updates live; narrowing the schedule surfaces an explicit validation error without silently rewriting an authored value. Legacy editing retains its existing clamping behavior.
 
 Observability under each job in ``sidecar_state.json``:
 

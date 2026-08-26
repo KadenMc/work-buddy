@@ -38,8 +38,10 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert registry.headers["Cache-Control"] == "no-store"
     body = registry.get_json()
     assert body["definitions"][0]["setting_id"] == SETTING_ID
-    assert len(body["placements"]) == 2
-    assert body["pages"][0]["navigation_category"] == "built-in"
+    assert len(body["placements"]) == 5
+    assert body["pages"][0]["navigation_group"] == "system"
+    assert body["pages"][0]["label"] == "Dashboard AI"
+    assert "navigation_category" not in body["pages"][0]
 
     values = client.get(
         "/api/settings/values?context_id=wb.settings.app.journal"
@@ -51,6 +53,33 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert snapshot["values"][0]["effective_value"] == "05:00"
 
 
+def test_execution_catalog_is_probe_only_no_store_and_available_in_read_only(client, monkeypatch, tmp_path):
+    from work_buddy.agent_execution import registry as execution_registry
+    from work_buddy.agent_execution.models import (
+        ModelDescriptor,
+        ProviderAvailability,
+        ProviderDescriptor,
+    )
+
+    calls = []
+    descriptor = ProviderDescriptor(id="test", label="Fixture", availability=ProviderAvailability.READY, auth_mode="fixture", models=(ModelDescriptor(id="model", label="Fixture model"),))
+
+    def providers(*, refresh=False):
+        calls.append(refresh)
+        return (descriptor,)
+
+    monkeypatch.setattr(execution_registry, "get_providers", providers)
+    monkeypatch.setattr(execution_registry, "default_selection", lambda: pytest.fail("catalog must not read a default"))
+    monkeypatch.setitem(dash_service._cfg, "dashboard", {"read_only": True})
+    first = client.get("/api/settings/execution-catalog")
+    second = client.get("/api/settings/execution-catalog?refresh=1")
+    assert first.status_code == second.status_code == 200
+    assert first.headers["Cache-Control"] == "no-store"
+    assert first.get_json() == {"providers": [descriptor.to_dict()], "read_only": True}
+    assert calls == [False, True]
+    assert not (tmp_path / "settings.db").exists()
+
+
 def test_cowork_context_and_immediate_shortcut_map_contract(client) -> None:
     configured = {**DEFAULT_SHORTCUTS, "accept": "Enter"}
     values = client.get(
@@ -58,7 +87,7 @@ def test_cowork_context_and_immediate_shortcut_map_contract(client) -> None:
     )
     assert values.status_code == 200
     snapshot = values.get_json()
-    assert snapshot["registry_revision"] == "settings-registry:3"
+    assert snapshot["registry_revision"] == "settings-registry:6"
     assert snapshot["values"] == [
         {
             "apply_status": "effective",

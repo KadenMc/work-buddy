@@ -52,6 +52,11 @@ function MutationProbe() {
       <button type="button" onClick={() => void state.write(settingId, "04:00")}>
         Write
       </button>
+      <button type="button" onClick={() => {
+        if (value) state.adopt({ ...value, effectiveValue: "03:00", source: "profile", isModified: true, revision: "value:2" });
+      }}>
+        Adopt
+      </button>
     </>
   );
 }
@@ -64,6 +69,43 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("useSettingsValues", () => {
+  it("retains an embedded control's newer canonical value over a delayed read", async () => {
+    const record = (revision: string, effectiveValue: string) => ({
+      setting_id: "wb.journal.day-boundary",
+      scope: { kind: "profile", subject_id: "default" },
+      effective_value: effectiveValue,
+      source: "profile",
+      is_modified: true,
+      revision,
+    });
+    const response = (revision: string, effectiveValue: string) => Response.json({
+      schema_version: 1,
+      registry_revision: "settings-registry:1",
+      observed_at: "2026-08-26T00:00:00Z",
+      read_only: false,
+      values: [record(revision, effectiveValue)],
+    });
+    let finish!: (response: Response) => void;
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response("value:0", "05:00"))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetcher);
+    render(<DashboardEventProvider><MutationProbe /></DashboardEventProvider>);
+    await screen.findByText("value:0:05:00");
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    act(() => MockEventSource.instances[0]!.message({
+      event_type: "settings.changed",
+      payload: { setting_ids: ["wb.journal.day-boundary"] },
+      ts: 1_789_000_000,
+    }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "Adopt" }));
+    await screen.findByText("value:2:03:00");
+    await act(async () => { finish(response("value:1", "04:00")); });
+    expect(screen.getByText("value:2:03:00")).toBeInTheDocument();
+    expect(screen.queryByText("value:1:04:00")).not.toBeInTheDocument();
+  });
+
   it("reconciles the current page through the host EventSource after settings.changed", async () => {
     let request = 0;
     const fetchMock = vi.fn(async () => {

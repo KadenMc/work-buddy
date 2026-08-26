@@ -29,6 +29,24 @@ dev_notes: |-
   The placeholder cell's callback ref must keep the same identity across ordinary parent renders. React cleans up a changed callback ref before invoking its replacement; on the durable path that unnecessary release/adopt cycle reparents the permanent wrapper through the offstage stash, and Chromium resets descendant scroll positions during the move. Memoize the ref on the host operations and widget-instance identity so real unmounts, instance changes, and host changes still release and adopt normally. Regression coverage must prove that a data-only parent rerender performs no wrapper append/reparent and preserves nested `scrollTop`.
 
   Draft repositories use schema-versioned records, compare-and-swap revisions, retention metadata, and cross-tab signaling. Production uses IndexedDB; tests inject in-memory repositories. Arrange and Preview safety is enforced by the host from declared intent effects, not by inspecting DOM elements or HTTP methods.
+
+  Use `HelpTarget` or a primitive's `help` prop for contextual explanations.
+  Tooltip descriptions augment existing `aria-describedby` references, including
+  validation errors; they must not replace them.
+
+  `dashboard/layout/WorkspaceSidePanel` wraps the installed resizable-panels
+  Group/Panel/Separator and keeps both subtrees mounted across split and
+  single-pane modes. Hosts supply a stable preference key and panel IDs, content
+  and responsive policy. Validate stored layouts and tolerate unavailable storage;
+  only settled split user interactions persist sizes. Bridge HelpTarget through
+  the library separator's element ref and focus capture without replacing its
+  keyboard handlers. Preserve Co-work's existing layout key and panel IDs.
+
+  `AssistedDraftWorkspace` is rendered around standard-grid content, not around
+  App or the view chrome. Its opaque outlet identity keeps root-owned assistance
+  bound to the originating view; rendering there, rather than portaling from the
+  root, preserves the existing Help context. Keep presentation retention separate
+  from `definition.durable` authority and from WidgetHost draft-scope re-keying.
 ---
 
 The widget platform is the standard composition model for React dashboard views. It preserves extensive personalization without turning every shareable App into an unrelated page implementation.
@@ -63,6 +81,30 @@ Dashboard Core owns layout editing, constraint enforcement, collision feedback, 
 
 Desktop customization uses the grid. Mobile uses document flow and drag-reordering of a canonical sequence. Responsive changes may reflow or scroll content, but they must not silently remove primary controls or hide that a capability exists.
 
+`WidgetHost` supplies the renderer's measured content-box width in
+`presentation.width`; the grid estimate is only a fallback before a positive
+measurement. The frame reuses the shared container-measurement hook, so opening
+a sibling assistance dock, resizing a grid cell, or re-homing a durable widget
+updates presentation without remounting its renderer or changing draft identity.
+Responsive widgets must use this available width, not assume the whole browser
+viewport belongs to them.
+
+### Workspace side panels
+
+A contextual side panel belongs beside the normal content area, below the
+view's page chrome; it is not a grid widget and does not squeeze global
+navigation. The shared layout primitive owns the orange drag divider,
+keyboard resizing, reset-to-default gesture and width persistence. Co-work and
+form AI help use that same primitive while retaining their own responsive and
+content policies. Stored preferences contain only layout sizes.
+
+A responsive presentation change must not end a live form conversation or
+discard an unsent message. Assistable standard widgets share the keep-alive
+placement mechanism without becoming App-owned durable widgets: host draft
+persistence, Arrange inertness, Preview forks and effect fences still apply.
+Only real removal, replacement, identity or editing-lifetime changes detach the
+form. Contextual Hover Help uses the existing provider around the visible view.
+
 ## Operate, Arrange, and Preview
 
 - **Operate** enables normal widget interaction and outward effects.
@@ -81,6 +123,13 @@ A widget definition may declare itself durable. Dashboard Core then keeps its re
 
 Widgets declare meaningful drafts; the host owns persistence, schema versions, revisions, clearing, and cross-tab behavior. Draft identity includes profile/workspace, publisher App, view, widget instance, widget type, draft name, and scope. Widgets do not persist arbitrary DOM inputs or create incompatible storage formats.
 
+An eligible widget may additionally declare `assistableDrafts`, referencing the shared machine-readable form schema. Dashboard Core binds a contextual assistance dock to that exact host-owned draft; it is not a separate placeable chat widget or a Co-work editor adapter. Typed allowlisted patches update visible fields, preserve concurrent user edits, and expose conditional Undo. Submission remains the App's explicit human action. See `services/dashboard/react/assisted-drafts`.
+
 Short-lived notices and confirmation requests are reusable dashboard infrastructure. They are distinct from the durable notification/request system. Contextual Hover Help is another host mode with layered ownership: Dashboard, view placement, widget, and primitive. Help and Customize are mutually exclusive.
+
+Optional explanations belong on existing controls or headings through shared
+Hover Help. Current state, validation, required disclosures, confirmations, and
+recovery actions remain visible without Help; they must also work on narrow
+layouts where Hover Help is unavailable.
 
 See `services/dashboard/react` for contribution hosting and migration boundaries, and `services/dashboard/react/appearance` for the visual contract every widget must honor.

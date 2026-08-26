@@ -109,6 +109,13 @@ export interface WidgetDraftDeclaration {
   readonly scope: WidgetDraftScope;
 }
 
+/** Opt one host-owned draft into the canonical assisted-form manifest. */
+export interface AssistableDraftDeclaration {
+  readonly draftName: string;
+  readonly schema: JsonSchemaReference;
+  readonly submitPolicy: "user_only";
+}
+
 export interface WidgetLayoutPlacement extends GridSize {
   readonly x: number;
   readonly y: number;
@@ -150,6 +157,7 @@ export interface WidgetDefinition {
   /** Semantic effect policy for every outward intent; local UI actions do not belong here. */
   readonly outputIntentEffects?: readonly WidgetIntentEffectDeclaration[];
   readonly drafts?: readonly WidgetDraftDeclaration[];
+  readonly assistableDrafts?: readonly AssistableDraftDeclaration[];
   readonly sizeContract: WidgetSizeContract;
   readonly multiplicity: WidgetMultiplicity;
   readonly rendererModuleId: WidgetModuleId;

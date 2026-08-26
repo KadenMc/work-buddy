@@ -548,8 +548,11 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
     }
     assert calls["input"] == "private brief"
     assert calls["shell"] is False
-    assert calls["stdout"] is subprocess.DEVNULL
+    assert isinstance(calls["stdout"], int)
+    assert calls["stdout"] >= 0
     assert calls["stderr"] is subprocess.DEVNULL
+    assert calls["encoding"] == "utf-8"
+    assert calls["errors"] == "strict"
     assert not Path(calls["cwd"]).exists()
     assert len(isolated_config_paths) == 1
     assert not isolated_config_paths[0].exists()
@@ -1162,7 +1165,11 @@ def test_registry_default_is_deterministic_without_probe_and_dispatches_validate
 
 def test_global_registry_preserves_configured_supported_claude_default(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    from work_buddy.settings import store as settings_store
+
+    monkeypatch.setattr(settings_store, "_db_path", lambda: tmp_path / "settings.db")
     monkeypatch.setattr(
         execution_registry,
         "load_config",

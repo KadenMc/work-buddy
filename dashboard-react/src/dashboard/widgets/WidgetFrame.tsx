@@ -1,7 +1,8 @@
-import { forwardRef, type ReactNode, useId } from "react";
+import { forwardRef, type ReactNode, useEffect, useId } from "react";
 
 import type { WidgetPresentationContext } from "../contributions/contracts";
 import { HelpTarget, type HelpContent } from "../help";
+import { useContentWidth } from "../layout/useContentWidth";
 
 export interface WidgetFrameProps {
   readonly title: string;
@@ -14,6 +15,7 @@ export interface WidgetFrameProps {
   readonly busy?: boolean;
   readonly className?: string;
   readonly interactionMode?: WidgetPresentationContext["interactionMode"];
+  readonly onContentWidthChange?: (width: number) => void;
 }
 
 export const WidgetFrame = forwardRef<HTMLElement, WidgetFrameProps>(function WidgetFrame({
@@ -27,8 +29,15 @@ export const WidgetFrame = forwardRef<HTMLElement, WidgetFrameProps>(function Wi
   busy = false,
   className = "",
   interactionMode = "operate",
+  onContentWidthChange,
 }: WidgetFrameProps, ref) {
   const titleId = useId();
+  const { width: contentWidth, ref: containerRef } = useContentWidth();
+  useEffect(() => {
+    // The content-box measurement excludes frame padding and scrollbar space.
+    // Hidden/parked frames keep their last useful width until visible again.
+    if (contentWidth > 0) onContentWidthChange?.(contentWidth);
+  }, [contentWidth, onContentWidthChange]);
   return (
     <section
       ref={ref}
@@ -63,6 +72,7 @@ export const WidgetFrame = forwardRef<HTMLElement, WidgetFrameProps>(function Wi
         ) : null}
       </header>
       <div
+        ref={onContentWidthChange === undefined ? undefined : containerRef}
         className="wb-widget-frame__content"
         data-scroll-boundary-policy="native"
         inert={interactionMode === "arrange"}

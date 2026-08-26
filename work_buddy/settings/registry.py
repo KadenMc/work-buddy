@@ -1,8 +1,8 @@
 """Declarative native Settings contributions for Work Buddy applications.
 
 Definitions, pages, and placements remain separate on purpose. Each setting is
-defined once and rendered on its owning App page. Views link to that canonical
-page instead of creating duplicate navigation or editing surfaces.
+defined once and rendered on its owning System or App page. Views link to that
+canonical page instead of creating duplicate navigation or editing surfaces.
 """
 
 from __future__ import annotations
@@ -14,8 +14,13 @@ from work_buddy.journal_day import DEFAULT_DAY_BOUNDARY, parse_local_time
 
 
 SCHEMA_VERSION = 1
-REGISTRY_REVISION = "settings-registry:3"
+REGISTRY_REVISION = "settings-registry:6"
 JOURNAL_DAY_BOUNDARY_ID = "wb.journal.day-boundary"
+JOURNAL_SMART_PROCESSING_ID = "wb.journal.smart-processing"
+DASHBOARD_ASSISTANCE_ID = "wb.dashboard.assistance"
+DASHBOARD_ASSISTANCE_TIER_ID = "wb.dashboard.assistance-tier"
+DASHBOARD_CHAT_EXECUTION_DEFAULT_ID = "wb.dashboard.chat-execution-default"
+DASHBOARD_AI_CONTEXT_ID = "wb.settings.system.dashboard-ai"
 COWORK_REVIEW_NAV_BINDING_ID = "wb.cowork.review.nav-binding"
 PROFILE_SCOPE_ID = "default"
 
@@ -43,6 +48,95 @@ COWORK_REVIEW_SHORTCUT_COMMANDS = (
         "Choose the direct negative decision for the current item.",
     ),
     ("defer", "Defer", "Leave the current suggestion for later."),
+)
+
+
+_ADDITIONAL_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    *tuple({
+        "setting_id": setting_id, "definition_version": 1, "value_version": 1,
+        "owner": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
+        "provenance": {"complement_id": "wb.dashboard", "label": "Dashboard", "trust_tier": "native"},
+        "title": title, "short_description": description,
+        "long_description": (
+            "Only Start authorizes sharing the disclosed form and chat with your selected model; "
+            "submission stays yours."
+        ) if setting_id == DASHBOARD_ASSISTANCE_ID else (
+            "Retained for compatibility; this legacy tier no longer selects interactive chat models."
+        ),
+        "keywords": ["assistant", "draft", "model", "privacy", "form"], "tags": ["assistance", "privacy"],
+        "value_schema": {"type": "string", "enum": [item[0] for item in options]},
+        "default_value": default, "allowed_scopes": ["profile"], "default_scope": "profile",
+        "applies_to": [{"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"}],
+        "affects": [{"ref": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
+                     "note": "Controls opt-in conversational assistance on supported widget drafts."}],
+        "presentation": {"control": "select", "apply_behavior": "immediate", "options": [
+            {"value": value, "label": label} for value, label in options
+        ]}, "visibility": "frontend", "sensitivity": "ordinary",
+    } for setting_id, title, description, default, options in (
+        (DASHBOARD_ASSISTANCE_ID, "Form assistance", "Allow an assistant to help shape supported forms.", "disabled",
+         (("disabled", "Off — no model assistance"), ("enabled", "Allow form assistance"))),
+        (DASHBOARD_ASSISTANCE_TIER_ID, "Legacy assistant model tier", "Preserved legacy inference preference; not used by interactive chats.", "frontier_fast",
+         (("frontier_fast", "Frontier fast"), ("frontier_balanced", "Frontier balanced"), ("frontier_best", "Frontier best"))),
+    )),
+    {
+        "setting_id": DASHBOARD_CHAT_EXECUTION_DEFAULT_ID,
+        "definition_version": 1,
+        "value_version": 1,
+        "owner": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
+        "provenance": {"complement_id": "wb.dashboard", "label": "Dashboard", "trust_tier": "native"},
+        "title": "Default chat model",
+        "short_description": "New chats start with this model; each chat keeps its own choice.",
+        "long_description": "Changing the default does not start a model or change existing chats.",
+        "keywords": ["assistant", "chat", "model", "provider", "default", "Claude", "Codex", "local"],
+        "tags": ["assistance", "execution"],
+        "value_schema": {
+            "type": "object",
+            "properties": {
+                "provider_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "model_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            },
+            "required": ["provider_id", "model_id"],
+            "additionalProperties": False,
+        },
+        "default_value": {"provider_id": "claude-code", "model_id": "sonnet"},
+        "allowed_scopes": ["profile"],
+        "default_scope": "profile",
+        "applies_to": [{"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"}],
+        "affects": [{
+            "ref": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
+            "note": "Sets the initial provider/model for new, unbound dashboard chats only.",
+        }],
+        "presentation": {"control": "execution-profile", "apply_behavior": "immediate"},
+        "visibility": "frontend",
+        "sensitivity": "ordinary",
+    },
+    {
+        "setting_id": JOURNAL_SMART_PROCESSING_ID,
+        "definition_version": 1, "value_version": 1,
+        "owner": {"kind": "app", "id": "wb.journal", "label": "Journal"},
+        "provenance": {"complement_id": "wb.journal", "label": "Journal", "trust_tier": "native"},
+        "title": "Smart capture",
+        "short_description": "Allow optional model processing after your exact capture is saved.",
+        "long_description": (
+            "Off by default. Enabling Smart allows up to 32 KiB of the exact saved capture "
+            "to reach the configured model when you choose Smart. Quick Capture displays "
+            "the concrete provider and model before submission. No tools or web access; "
+            "task proposals still require review and acceptance. Direct capture and Save "
+            "and propose task do not use a model. Provider selection follows journal.smart_processing.tier."
+        ),
+        "keywords": ["smart", "capture", "model", "privacy", "automatic routing"],
+        "tags": ["journal", "privacy"],
+        "value_schema": {"type": "string", "enum": ["disabled", "enabled"]},
+        "default_value": "disabled", "allowed_scopes": ["profile"], "default_scope": "profile",
+        "applies_to": [{"kind": "app", "id": "wb.journal", "label": "Journal"}],
+        "affects": [{"ref": {"kind": "view", "id": "wb.journal.main", "label": "Journal view"},
+                     "note": "Controls whether Smart processing is available; does not submit any capture."}],
+        "presentation": {"control": "select", "apply_behavior": "immediate", "options": [
+            {"value": "disabled", "label": "Off — no model processing"},
+            {"value": "enabled", "label": "Allow Smart capture"},
+        ]},
+        "visibility": "frontend", "sensitivity": "ordinary",
+    },
 )
 
 
@@ -191,7 +285,19 @@ _DEFINITIONS: tuple[dict[str, Any], ...] = (
 )
 
 
+_DEFINITIONS += _ADDITIONAL_DEFINITIONS
+
+
 _PAGES: tuple[dict[str, Any], ...] = (
+    {
+        "page_id": DASHBOARD_AI_CONTEXT_ID, "context_id": DASHBOARD_AI_CONTEXT_ID,
+        "context": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
+        "owner": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
+        "route": "/app/settings/system/dashboard-ai", "label": "Dashboard AI",
+        "description": "Shared chat defaults and form assistance across the dashboard.",
+        "navigation_group": "system", "order": 30,
+        "sections": [{"section_id": "assistance", "label": "Chat and form assistance", "order": 10}],
+    },
     {
         "page_id": "wb.settings.app.journal",
         "context_id": "wb.settings.app.journal",
@@ -208,7 +314,8 @@ _PAGES: tuple[dict[str, Any], ...] = (
                 "section_id": "day-behavior",
                 "label": "Day behavior",
                 "order": 10,
-            }
+            },
+            {"section_id": "capture", "label": "Capture and privacy", "order": 20},
         ],
     },
     {
@@ -235,6 +342,20 @@ _PAGES: tuple[dict[str, Any], ...] = (
 
 
 _PLACEMENTS: tuple[dict[str, Any], ...] = (
+    *tuple({
+        "placement_id": f"wb.settings.placement.system.dashboard-ai.{suffix}",
+        "setting_id": setting_id, "page_id": DASHBOARD_AI_CONTEXT_ID,
+        "context_id": DASHBOARD_AI_CONTEXT_ID, "section_id": "assistance", "order": order,
+    } for suffix, setting_id, order in (
+        ("assistance", DASHBOARD_ASSISTANCE_ID, 10),
+        ("chat-execution-default", DASHBOARD_CHAT_EXECUTION_DEFAULT_ID, 20),
+    )),
+    {
+        "placement_id": "wb.settings.placement.app.journal.smart-processing",
+        "setting_id": JOURNAL_SMART_PROCESSING_ID,
+        "page_id": "wb.settings.app.journal", "context_id": "wb.settings.app.journal",
+        "section_id": "capture", "order": 20,
+    },
     {
         "placement_id": "wb.settings.placement.app.journal.day-boundary",
         "setting_id": JOURNAL_DAY_BOUNDARY_ID,

@@ -10,6 +10,7 @@ import { useDashboardAnnouncer } from "../../../dashboard/accessibility/Dashboar
 import { useWidgetDraft } from "../../../dashboard/drafts";
 import { Button, InlineAlert, TextAreaField } from "../../../ui";
 import { createCorrelationId, createWidgetIntent } from "../../../widget-library/shared";
+import { formatActorLabel } from "../../../widget-library/shared/format";
 import { LinkedLocalFilesPanel } from "../../cowork/documents/LinkedLocalFilesPanel";
 import {
   HttpCoworkLocalFileClient,
@@ -472,7 +473,7 @@ export function TaskDetail({
       </section>
 
       <section className="wb-task-document" aria-labelledby="wb-task-document-title">
-        <div className="wb-task-section-heading"><div><h3 id="wb-task-document-title">Knowledge document</h3><p>{task.document.updated_at ? `Edited ${task.document.updated_at}${task.document.updated_by ? ` by ${task.document.updated_by}` : ""}` : "Long-form context lives in Co-work."}</p></div><div>{task.document.state === "available" ? <Button size="small" disabled={deleted} onClick={() => void openDocument()}>Open in Co-work</Button> : <Button size="small" variant="primary" disabled={!canMutate || busy} onClick={() => void action(TASK_INTENTS.createDocument)}>Create knowledge document</Button>}</div></div>
+        <div className="wb-task-section-heading"><div><h3 id="wb-task-document-title">Knowledge document</h3><p>{task.document.updated_at ? `Edited ${task.document.updated_at}${task.document.updated_by ? ` by ${formatActorLabel(task.document.updated_by)}` : ""}` : "Long-form context lives in Co-work."}</p></div><div>{task.document.state === "available" ? <Button size="small" disabled={deleted} onClick={() => void openDocument()}>Open in Co-work</Button> : <Button size="small" variant="primary" disabled={!canMutate || busy} onClick={() => void action(TASK_INTENTS.createDocument)}>Create knowledge document</Button>}</div></div>
         {task.document.excerpt ? <blockquote>{task.document.excerpt}</blockquote> : <p className="wb-task-muted">No knowledge excerpt yet.</p>}
       </section>
 
@@ -537,7 +538,7 @@ export function TaskDetail({
         ) : null}
       </section>
 
-      <details className="wb-task-history"><summary>History and provenance</summary><p>Created {task.provenance.created_at || "at an unknown time"} by {task.provenance.created_by} via {task.provenance.source}.</p><ol>{task.history.map((entry) => <li key={entry.history_id}><time dateTime={entry.occurred_at}>{entry.occurred_at}</time><span><strong>{entry.action}</strong> · {entry.summary} · {entry.actor}</span></li>)}</ol></details>
+      <details className="wb-task-history"><summary>History and provenance</summary><p>Created {task.provenance.created_at || "at an unknown time"} by {formatActorLabel(task.provenance.created_by)} via {task.provenance.source}.</p><ol>{task.history.map((entry) => <li key={entry.history_id}><time dateTime={entry.occurred_at}>{entry.occurred_at}</time><span><strong>{entry.action}</strong> · {entry.summary} · {formatActorLabel(entry.actor)}</span></li>)}</ol></details>
     </article>
   );
 }

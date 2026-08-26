@@ -1,0 +1,125 @@
+@layer wb.widgets {
+  .wb-assistance-workspace,
+  .wb-assistance-workspace__body {
+    min-inline-size: 0;
+    min-block-size: 0;
+  }
+  .wb-assistance-workspace {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wb-space-3);
+  }
+  .wb-assistance-workspace[data-assistance-open="true"] > .wb-assistance-workspace__body {
+    block-size: var(--wb-assistance-workspace-height, 32rem);
+    /* On a short viewport, let the page reach the measured controls instead
+       of clipping them. History still scrolls inside the canonical transcript. */
+    min-block-size: max(24rem, var(--wb-assistance-workspace-content-minimum, 0px));
+  }
+  .wb-assistance-workspace__body > .wb-workspace-side-panel { block-size: 100%; }
+  .wb-assistance-workspace__form {
+    min-inline-size: 0;
+    min-block-size: 0;
+  }
+  .wb-assistance-workspace[data-assistance-open="true"] .wb-assistance-workspace__form {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .wb-assistance-workspace__panel {
+    min-inline-size: 0;
+    min-block-size: 0;
+    overflow: clip !important;
+  }
+  .wb-assistance-dock {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wb-space-4);
+    min-inline-size: 0;
+    min-block-size: 0;
+    block-size: 100%;
+    overflow: clip;
+    padding: var(--wb-space-5);
+    border: var(--wb-border-width) solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-surface);
+    background: var(--wb-color-surface-raised);
+    color: var(--wb-color-text-primary);
+    box-shadow: var(--wb-shadow-raised);
+  }
+  .wb-assistance-dock[hidden] { display: none; }
+  .wb-assistance-dock > header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--wb-space-4);
+  }
+  .wb-assistance-dock__header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--wb-space-2);
+  }
+  .wb-assistance-dock h2 { font-size: var(--wb-font-size-md); margin: 0; }
+  .wb-assistance-dock p { margin: 0; }
+  .wb-assistance-dock__body {
+    /* Bound the canonical Chat: its transcript owns scrolling, not this host. */
+    display: flex;
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    min-block-size: 0;
+    /* Unlike hidden, clip cannot be scrolled by focus/scrollIntoView. A
+       dropdown must not move Launch or the composer outside the visible dock. */
+    overflow: clip;
+  }
+  .wb-assistance-dock__body > * { flex: 1 1 auto; min-inline-size: 0; }
+  .wb-assistance-dock__body > .wb-chat-panel { overflow: clip; }
+  .wb-assistance-lifecycle { display: grid; gap: var(--wb-space-3); min-inline-size: 0; inline-size: 100%; }
+  .wb-assistance-start,
+  .wb-assistance-disclosure {
+    display: grid;
+    gap: var(--wb-space-3);
+    font-size: var(--wb-font-size-sm);
+  }
+  .wb-assistance-disclosure { font-size: var(--wb-font-size-xs); }
+  .wb-assistance-start:focus-visible,
+  .wb-assistance-session-actions summary:focus-visible,
+  .wb-assistance-history summary:focus-visible {
+    outline: var(--wb-focus-width) solid var(--wb-color-focus-ring);
+    outline-offset: calc(-1 * var(--wb-focus-width));
+  }
+  .wb-assistance-state { font-size: var(--wb-font-size-xs); color: var(--wb-color-text-muted); }
+  .wb-assistance-context { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wb-color-text-muted); font-size: var(--wb-font-size-xs); }
+  .wb-assistance-session-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--wb-space-3); }
+  .wb-assistance-session-actions summary,
+  .wb-assistance-history summary { cursor: pointer; padding-block: var(--wb-space-2); font-size: var(--wb-font-size-xs); }
+  .wb-assistance-receipts { display: grid; gap: var(--wb-space-5); }
+  .wb-assistance-receipt { border-block-start: var(--wb-border-width) dashed currentColor; padding-block-start: var(--wb-space-5); overflow-wrap: anywhere; }
+  .wb-chat-msg__bubble > .wb-assistance-receipts {
+    gap: var(--wb-space-3);
+    margin-block-start: var(--wb-space-3);
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-xs);
+  }
+  .wb-chat-msg__bubble > .wb-assistance-receipts .wb-assistance-receipt {
+    display: grid;
+    gap: var(--wb-space-2);
+    padding-block-start: var(--wb-space-3);
+  }
+  .wb-assistance-receipts-fallback {
+    margin-block-start: var(--wb-space-3);
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-xs);
+  }
+  .wb-assistance-receipts-fallback > summary { cursor: pointer; padding-block: var(--wb-space-2); }
+  .wb-assistance-receipts-fallback > .wb-assistance-receipts { margin-block-start: var(--wb-space-3); }
+  .wb-assistance-actions { display: flex; flex-wrap: wrap; gap: var(--wb-space-3); }
+  .wb-assistance-history { flex: 0 0 auto; max-block-size: 40%; overflow: auto; }
+  .wb-assistance-history__conversation { block-size: 18rem; min-block-size: 0; margin-block: var(--wb-space-3); }
+  .wb-assistance-cancellation { margin: var(--wb-space-4); }
+  [data-assisted-state="applied"] { outline: var(--wb-focus-width) dashed var(--wb-color-border-interactive); outline-offset: var(--wb-space-2); }
+  [data-assisted-state="pending"] { outline: var(--wb-focus-width) dotted var(--wb-color-border-interactive); outline-offset: var(--wb-space-2); }
+  .wb-assistance-workspace[data-compact="true"] .wb-assistance-dock { padding: var(--wb-space-4); }
+  @media (forced-colors: active) {
+    .wb-assistance-dock { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; }
+    [data-assisted-state] { outline-color: Highlight; }
+  }
+}

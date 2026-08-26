@@ -6,6 +6,12 @@ import type { CoworkDocumentSummary } from "../contracts";
 import { CoworkHttpClient } from "../providers/CoworkHttpClient";
 import { CoworkRetirementDialog } from "./CoworkRetirementDialog";
 
+// Lifecycle settlement is independent of the separately tested local-authority
+// handshake. Match the other Co-work dialog fixtures at that existing seam.
+vi.mock("../../../security/humanAuthority", () => ({
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+}));
+
 const documentSummary: CoworkDocumentSummary = {
   documentId: "doc-1",
   path: "drafts/source.md",

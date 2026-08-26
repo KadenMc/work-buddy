@@ -173,6 +173,7 @@ function normalizeControl(value: unknown): StandardSettingControl {
   }
   if (!isRecord(value)) throw new Error("Unsupported settings control");
   const kind = requiredString(value, "kind", "control");
+  if (kind === "execution-profile") return { kind };
   if (kind === "time") {
     return { kind: "time", minuteStep: numeric(value.minute_step ?? value.minuteStep, 15) };
   }

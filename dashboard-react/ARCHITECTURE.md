@@ -195,12 +195,65 @@ one-column compact DOM flow from the persisted canonical mobile order, so visual
 focus, and assistive-technology order agree. Desktop Customize mode exposes explicit
 Earlier/Later controls for editing this mobile order without relying on drag geometry.
 
+### Shared workspace side panels
+
+`src/dashboard/layout/WorkspaceSidePanel.tsx` owns the reusable horizontal split,
+using the installed resizable-panels Group, Panel, and Separator. Hosts supply content,
+stable panel IDs and a layout preference key, size constraints, and responsive policy.
+The primitive owns pointer and keyboard resizing, double-click reset, and validated,
+failure-tolerant browser persistence of settled user-chosen split sizes. Stored layout
+preferences contain no draft, conversation, or domain authority.
+
+Primary and side subtrees stay mounted across split, primary-only, side-only, and
+stacked modes; inactive panes are hidden and inert. The divider retains the library's
+keyboard behavior while `HelpTarget` reaches its DOM ref and focus-capture events.
+Chat does not own this layout or resize implementation.
+
+Co-work uses the same primitive without changing `wb.cowork.workspace-layout` or its
+`editor` and `rail` panel IDs. `src/apps/cowork/surface/workspacePanelLayout.ts` holds
+its existing size policy and identifiers. Co-work still owns the Editor/Review/Chat
+selection, narrow tabs, full-workspace bottom dock, and ordinary auto-waking Chat.
+
+### Contextual form assistance
+
+`AssistedDraftRuntimeProvider` owns session bindings, receipts, and cancellation at
+the application root. `AssistedDraftWorkspace` renders the matching dock around
+`ViewHost`'s grid/mobile content, below page chrome and inside the existing Hover Help
+provider. A portal originating at the root would retain the root's React context,
+not inherit the destination's Help context. An opaque outlet token limits presentation
+to the originating workspace; the complete draft identity remains the authority.
+
+The dock composes canonical `ConversationChat`, its execution picker and
+`ChatPanelState`. The optional `composerPrimaryAction` places **Launch** in the Send
+position until explicitly authorized, then the same composer returns to **Send**.
+Launch is not an authored turn: it neither sends nor clears unsent text. Pending and
+uncertain launches retain their frozen disclosure; **Retry Launch** reuses that
+attempt, while **Launch with current fields** authorizes a new one. The HTTP Start
+protocol, control-revision fences, scoped Stop, and human-only form submission remain
+unchanged. Omitting the primary action preserves ordinary Chat behavior.
+
+Responsive policy uses the workspace's measured width and available viewport height.
+Compact workspaces expose **Form** and **AI help** selectors without unmounting either
+pane; focused form controls stay visible, and Close returns focus to the opener after
+the form is unhidden. Required disclosure, errors, and recovery are visible without
+Hover Help. Non-shrinking controls plus a short font-scaled transcript viewport define
+the minimum height, so short windows can use ordinary page scrolling to reach every
+action. Message history remains in the canonical transcript scroller and does not
+inflate that minimum. A hidden pane retains its last valid measurement until shown.
+
+`ViewHost` also uses its existing keep-alive placement for standard widgets declaring
+`assistableDrafts`, preserving live form bindings through the actual desktop/mobile
+grid switch. This is presentation retention, not `definition.durable` authority:
+host-owned drafts, Arrange inertness, Preview forks, effect fences, and ordinary
+hide/remove controls still apply. Genuine removal, replacement, scope changes, reset,
+and leaving the form host retain their cancellation or revocation boundaries.
+
 ### Durable widgets
 
 Most widgets re-hydrate from their latest snapshot whenever the grid remounts, which a
 customize toggle or an interaction-recovery pass triggers. An app-owned **durable** widget
-(`durable: true` on its `WidgetDefinition`) is the exception. A keep-alive host above the grid
-keeps its one live element mounted across every such remount, and light placeholder cells
+(`durable: true` on its `WidgetDefinition`) is an authority-bearing exception. A keep-alive
+host above the grid keeps its one live element mounted across every such remount, and light placeholder cells
 re-home that element as the grid rebuilds, so its live local state, real DOM nodes, and focus
 survive intact. Like a single-surface view, a durable widget owns everything below its frame
 and may read its own URL, listen to its own streams, and call its own routes directly, so the
@@ -295,14 +348,16 @@ src/dashboard/contributions/     JSON-compatible contracts, validation, registry
 src/dashboard/providers/         Dashboard View API implementations/helpers
 src/dashboard/events/            singleton SSE normalization and reconciliation signals
 src/dashboard/views/             provider session and generic view composition
+src/dashboard/assistance/        root session authority, view-local dock, host-draft patch/recovery
 src/dashboard/customize/         cross-view customize-mode controller and the navbar entry toggle
 src/dashboard/widgets/           generic host, frame, states, menus, catalog/replacement
-src/dashboard/widgets/durable/   keep-alive host, durable cell, and context for durable widgets
-src/dashboard/layout/            Work Buddy layout model, operations, RGL adapter, mobile order
+src/dashboard/widgets/durable/   shared keep-alive placement, separate from durable-widget authority
+src/dashboard/layout/            layout model, RGL adapter, mobile order, WorkspaceSidePanel
 src/dashboard/personalization/   portable patches, reducer/edit history, repositories/migrations
 src/dashboard/accessibility/     host announcer and focus helpers
 src/theme/                        Theme Contract runtime, semantic tokens, accessibility overrides
 src/widget-library/               reusable Capture, Timeline, and Notes publishers/renderers
+src/widget-library/chat/          canonical conversation, composer, state, and execution controls
 src/apps/journal/                 Journal view policy, bindings, fixtures, chrome, providers
 src/dev/widget-lab/               development-only widget/theme/state/performance matrix
 tests/e2e/                        routing, interaction, accessibility, theme, and browser coverage

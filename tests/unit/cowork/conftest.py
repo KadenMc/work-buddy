@@ -135,6 +135,7 @@ def fake_document_agent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]
         lambda **_kwargs: catalog,
     )
     monkeypatch.setattr(execution_registry, "validate_selection", _validate)
+    monkeypatch.setattr(execution_registry, "get_providers", lambda **_kwargs: catalog.providers)
     return calls
 
 

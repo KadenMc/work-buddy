@@ -8,13 +8,13 @@ import {
   type RefCallback,
   type ReactNode,
 } from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
 import {
   coworkHumanAuthorityHeaders,
   exactHumanAuthorityHeaders,
 } from "../../../security/humanAuthority";
 
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
+import { WorkspaceSidePanel } from "../../../dashboard/layout/WorkspaceSidePanel";
 import {
   HelpTarget,
   useDashboardHelpEnabled,
@@ -109,12 +109,12 @@ import {
   EDITOR_DEFAULT_SIZE,
   EDITOR_MIN_SIZE,
   EDITOR_PANEL_ID,
+  LAYOUT_STORAGE_ID,
   RAIL_DEFAULT_SIZE,
   RAIL_MAX_SIZE,
   RAIL_MIN_SIZE,
   RAIL_PANEL_ID,
-  useResizableRail,
-} from "./useResizableRail";
+} from "./workspacePanelLayout";
 import {
   coworkScrollPositionStorageKey,
   usePersistedScrollPosition,
@@ -343,7 +343,8 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
  * editor and the review rail are two resizable panels: react-resizable-panels sizes them as
  * percentages of the body, so the rail drags across a wide range in both directions and holds
  * its proportion when the window changes. The separator carries `role="separator"` with arrow
- * keys and double-click-to-reset from the library, and `useResizableRail` persists the split.
+ * keys and double-click-to-reset from the library. WorkspaceSidePanel owns the shared divider
+ * and persistence; Co-work retains its original layout id, panel ids, and percentage policy.
  *
  * The layout root is a plain `<div>`: the workspace card is one durable widget, and the grid
  * host renders the single `<main>` above it while the WidgetFrame provides the named region.
@@ -375,25 +376,25 @@ function CoworkWorkspaceLayout({
   readonly paneTabs?: ReactNode;
 }) {
   const helping = useDashboardHelpEnabled();
-  const { defaultLayout, onLayoutChanged } = useResizableRail();
   return (
     <div className={`wb-cowork${helping ? " is-helping" : ""}`}>
       {showHealth ? <CoworkHealthStrip health={health} /> : null}
       {paneTabs}
-      <Group
+      <WorkspaceSidePanel
         className="wb-cowork__body"
-        data-narrow={narrow}
-        orientation="horizontal"
-        defaultLayout={defaultLayout}
-        onLayoutChanged={onLayoutChanged}
-      >
-        <Panel
-          id={EDITOR_PANEL_ID}
-          className="wb-cowork__editor-panel"
-          defaultSize={EDITOR_DEFAULT_SIZE}
-          minSize={EDITOR_MIN_SIZE}
-          data-pane-active={!narrow || activePane === "editor"}
-        >
+        layoutId={LAYOUT_STORAGE_ID}
+        primaryId={EDITOR_PANEL_ID}
+        sideId={RAIL_PANEL_ID}
+        mode={narrow ? (activePane === "editor" ? "primary-only" : "side-only") : "split"}
+        primaryDefaultSize={EDITOR_DEFAULT_SIZE}
+        primaryMinSize={EDITOR_MIN_SIZE}
+        sideDefaultSize={RAIL_DEFAULT_SIZE}
+        sideMinSize={RAIL_MIN_SIZE}
+        sideMaxSize={RAIL_MAX_SIZE}
+        primaryClassName="wb-cowork__editor-panel"
+        sideClassName="wb-cowork__rail-panel"
+        resizeLabel="Resize the Co-work side panel"
+        primary={
           <div
             id="wb-cowork-mobile-panel-editor"
             className="wb-cowork__editor-shell"
@@ -409,20 +410,8 @@ function CoworkWorkspaceLayout({
               </div>
             </HelpTarget>
           </div>
-        </Panel>
-        <Separator
-          className="wb-cowork__rail-separator"
-          aria-label="Resize the Co-work side panel"
-          hidden={narrow}
-        />
-        <Panel
-          id={RAIL_PANEL_ID}
-          className="wb-cowork__rail-panel"
-          defaultSize={RAIL_DEFAULT_SIZE}
-          minSize={RAIL_MIN_SIZE}
-          maxSize={RAIL_MAX_SIZE}
-          data-pane-active={!narrow || activePane !== "editor"}
-        >
+        }
+        side={
           <aside
             className="wb-cowork__rail"
             aria-label="Co-work side panel"
@@ -431,8 +420,8 @@ function CoworkWorkspaceLayout({
           >
             {rail}
           </aside>
-        </Panel>
-      </Group>
+        }
+      />
       {workspaceBottomDock}
     </div>
   );

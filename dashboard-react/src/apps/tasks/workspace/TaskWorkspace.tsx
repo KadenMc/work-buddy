@@ -25,6 +25,7 @@ import {
 } from "../contracts";
 import { TaskDetail } from "./TaskDetail";
 import { TaskList } from "./TaskList";
+import { TaskProposalDetail } from "./TaskProposalDetail";
 
 const LENSES: readonly { readonly value: TaskLens; readonly label: string }[] = [
   { value: "focused", label: "Focused" },
@@ -54,19 +55,32 @@ export const tomorrow = (current = new Date()): string => {
   return `${year}-${month}-${day}`;
 };
 
-const useMobileLayout = (): boolean => {
-  const [mobile, setMobile] = useState(
-    () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches,
-  );
+type WorkspaceLayout = "wide" | "compact" | "stacked";
+
+const useWorkspaceLayout = (width: number): WorkspaceLayout => {
+  const [viewportLayout, setViewportLayout] = useState<WorkspaceLayout>(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return "wide";
+    return window.matchMedia("(max-width: 767px)").matches
+      ? "stacked"
+      : window.matchMedia("(max-width: 1100px)").matches ? "compact" : "wide";
+  });
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
-    const media = window.matchMedia("(max-width: 767px)");
-    const update = () => setMobile(media.matches);
+    const stacked = window.matchMedia("(max-width: 767px)");
+    const compact = window.matchMedia("(max-width: 1100px)");
+    const update = () => setViewportLayout(stacked.matches ? "stacked" : compact.matches ? "compact" : "wide");
     update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    stacked.addEventListener("change", update);
+    compact.addEventListener("change", update);
+    return () => {
+      stacked.removeEventListener("change", update);
+      compact.removeEventListener("change", update);
+    };
   }, []);
-  return mobile;
+  // The host already measures the space left by adjacent widgets and assistance.
+  // Preserve viewport-mobile behavior, and use it while host width is unknown.
+  if (viewportLayout === "stacked" || !Number.isFinite(width) || width <= 0) return viewportLayout;
+  return width <= 767 ? "stacked" : width <= 1100 ? "compact" : "wide";
 };
 
 interface FilterControlsProps {
@@ -107,7 +121,7 @@ export default function TaskWorkspace({
   });
   const [filterOpen, setFilterOpen] = useState(false);
   const [mobilePane, setMobilePane] = useState<"list" | "details">(
-    input.selectedTask === null ? "list" : "details",
+    input.selectedTask === null && !input.selectedProposal ? "list" : "details",
   );
   const [notice, setNotice] = useState<{ tone: "danger" | "success" | "warning"; text: string } | null>(null);
   const [pendingDeleteUndo, setPendingDeleteUndo] = useState<{
@@ -124,12 +138,15 @@ export default function TaskWorkspace({
   const taskRefs = useRef(new Map<string, HTMLButtonElement>());
   const selectedOriginRef = useRef<string | null>(input.query.task);
   const readOnly = input.access.mode === "read_only";
-  const mobile = useMobileLayout();
+  const layout = useWorkspaceLayout(presentation.width);
+  const mobile = layout === "stacked";
+  const hasSelection = input.selectedTask !== null || Boolean(input.selectedProposal);
 
   useEffect(() => setSearch(input.query.q), [input.query.q]);
   useEffect(() => {
-    if (input.selectedTask === null && mobilePane === "details") setMobilePane("list");
-  }, [input.selectedTask, mobilePane]);
+    if (!hasSelection && mobilePane === "details") setMobilePane("list");
+  }, [hasSelection, mobilePane]);
+  useEffect(() => { if (input.query.proposal) setMobilePane("details"); }, [input.query.proposal]);
   useEffect(() => {
     setFilters({
       project: input.query.project,
@@ -193,7 +210,7 @@ export default function TaskWorkspace({
   const closeDetails = () => {
     const origin = selectedOriginRef.current;
     setMobilePane("list");
-    navigate({ task: null });
+    navigate({ task: null, proposal: null });
     window.requestAnimationFrame(() => {
       if (origin) taskRefs.current.get(origin)?.focus({ preventScroll: true });
     });
@@ -286,7 +303,7 @@ export default function TaskWorkspace({
   ) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const panes: readonly ("list" | "details")[] = input.selectedTask === null
+    const panes: readonly ("list" | "details")[] = !hasSelection
       ? ["list"]
       : ["list", "details"];
     const currentIndex = panes.indexOf(current);
@@ -302,7 +319,7 @@ export default function TaskWorkspace({
   };
 
   return (
-    <section className="wb-task-workspace" aria-label="Task workspace">
+    <section className="wb-task-workspace" data-layout={layout} aria-label="Task workspace">
       {notice ? <InlineAlert tone={notice.tone}>{notice.text}</InlineAlert> : null}
 
       <nav className="wb-task-lenses" aria-label="Task lenses">
@@ -312,7 +329,7 @@ export default function TaskWorkspace({
             size="small"
             variant={input.query.lens === lens.value ? "primary" : "ghost"}
             aria-current={input.query.lens === lens.value ? "page" : undefined}
-            onClick={() => navigate({ lens: lens.value, task: null })}
+            onClick={() => navigate({ lens: lens.value, task: null, proposal: null })}
           >
             {lens.label} <span className="wb-task-lens-count">{input.facets.counts[lens.value]}</span>
           </Button>
@@ -320,7 +337,7 @@ export default function TaskWorkspace({
       </nav>
 
       <div className="wb-task-workspace__toolbar">
-        <form className="wb-task-search" role="search" onSubmit={(event) => { event.preventDefault(); navigate({ q: search, task: null }); }}>
+        <form className="wb-task-search" role="search" onSubmit={(event) => { event.preventDefault(); navigate({ q: search, task: null, proposal: null }); }}>
           <label><span>Search tasks</span><span className="wb-task-search__control"><MagnifyingGlass aria-hidden="true" /><input type="search" value={search} placeholder="Title, tag, project…" onChange={(event) => setSearch(event.target.value)} /><Button type="submit" size="small">Search</Button></span></label>
         </form>
         <Button ref={filterTriggerRef} className="wb-task-filter-trigger" aria-expanded={filterOpen} onClick={() => setFilterOpen(true)}><Funnel aria-hidden="true" /> Filters</Button>
@@ -328,7 +345,7 @@ export default function TaskWorkspace({
 
       <div className="wb-task-workspace__mobile-tabs" role="tablist" aria-label="Task workspace panes">
         <button ref={mobileListTabRef} id="wb-task-list-tab" type="button" role="tab" tabIndex={mobilePane === "list" ? 0 : -1} aria-selected={mobilePane === "list"} aria-controls="wb-task-list-panel" onKeyDown={(event) => navigateMobileTabs(event, "list")} onClick={() => setMobilePane("list")}>List</button>
-        <button ref={mobileDetailTabRef} id="wb-task-detail-tab" type="button" role="tab" tabIndex={mobilePane === "details" ? 0 : -1} aria-selected={mobilePane === "details"} aria-controls="wb-task-detail-panel" disabled={input.selectedTask === null} onKeyDown={(event) => navigateMobileTabs(event, "details")} onClick={() => setMobilePane("details")}>Details</button>
+        <button ref={mobileDetailTabRef} id="wb-task-detail-tab" type="button" role="tab" tabIndex={mobilePane === "details" ? 0 : -1} aria-selected={mobilePane === "details"} aria-controls="wb-task-detail-panel" disabled={!hasSelection} onKeyDown={(event) => navigateMobileTabs(event, "details")} onClick={() => setMobilePane("details")}>Details</button>
       </div>
 
       <div className="wb-task-workspace__body">
@@ -345,7 +362,7 @@ export default function TaskWorkspace({
         </section>
 
         <section id="wb-task-detail-panel" className="wb-task-detail-pane" role="tabpanel" aria-labelledby="wb-task-detail-tab" hidden={mobile && mobilePane !== "details"} inert={mobile && mobilePane !== "details" ? true : undefined}>
-          {input.selectedTask === null ? <div className="wb-task-empty"><p>Select a task to see and edit its details.</p></div> : <TaskDetail key={`${input.selectedTask.task_id}:${input.selectedTask.revision}`} task={input.selectedTask} readOnly={readOnly} presentation={presentation} emit={emit} onClose={closeDetails} undoDeleteRevision={pendingDeleteUndo?.taskId === input.selectedTask.task_id ? pendingDeleteUndo.revision : null} onDeleteAcknowledged={(revision) => setPendingDeleteUndo({ taskId: input.selectedTask!.task_id, revision })} onDeleteUndone={() => setPendingDeleteUndo(null)} />}
+          {input.selectedProposal ? <TaskProposalDetail key={input.query.proposal} selection={input.selectedProposal} options={input.options} readOnly={readOnly} presentation={presentation} emit={emit} onClose={closeDetails} /> : input.selectedTask === null ? <div className="wb-task-empty"><p>Select a task to see and edit its details.</p></div> : <TaskDetail key={`${input.selectedTask.task_id}:${input.selectedTask.revision}`} task={input.selectedTask} readOnly={readOnly} presentation={presentation} emit={emit} onClose={closeDetails} undoDeleteRevision={pendingDeleteUndo?.taskId === input.selectedTask.task_id ? pendingDeleteUndo.revision : null} onDeleteAcknowledged={(revision) => setPendingDeleteUndo({ taskId: input.selectedTask!.task_id, revision })} onDeleteUndone={() => setPendingDeleteUndo(null)} />}
         </section>
       </div>
 

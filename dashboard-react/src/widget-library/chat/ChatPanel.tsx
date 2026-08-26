@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 
 import { Button, InlineAlert } from "../../ui";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type ChatComposerPrimaryAction } from "./ChatComposer";
 import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import { ChatMessageList } from "./ChatMessageList";
+import { ChatCopyAction } from "./ChatTranscriptCopy";
 import type {
   ChatAgentActivity,
   ChatMessage,
@@ -106,10 +107,14 @@ export interface ChatPanelProps {
   readonly renderMessageAccessory?: (message: ChatMessage) => ReactNode;
   /** Additive content rendered after all canonical messages in the scroller. */
   readonly transcriptAppendix?: ReactNode;
+  /** Opaque revision for accessory/appendix layout changes. */
+  readonly transcriptExtensionRevision?: string | number;
   /** Extra host-level reason to disable structured question responses. */
   readonly responsesDisabled?: boolean;
   /** Whether the shared passive stopped-agent notice should be rendered. */
   readonly showStoppedNotice?: boolean;
+  /** Render the canonical transcript copy action in this panel's own header. */
+  readonly showTranscriptCopyAction?: boolean;
   /**
    * Send intent for freeform messages and inline question answers. Inline
    * answers pass the answered question's message id as inReplyTo.
@@ -123,6 +128,8 @@ export interface ChatPanelProps {
   readonly composerAccessory?: ReactNode;
   /** Compact additive context rendered in the shared composer footer. */
   readonly composerFooterAccessory?: ReactNode;
+  /** Explicit host action in place of Send, without submitting the composer draft. */
+  readonly composerPrimaryAction?: ChatComposerPrimaryAction;
   /** Seed the composer draft once on mount, e.g. from a retained unsent draft. */
   readonly initialValue?: string;
   /**
@@ -147,6 +154,8 @@ export interface ChatPanelProps {
   readonly noMessagesLabel?: string;
   /** Server-authoritative provider/model selection for the next agent turn. */
   readonly execution?: ChatExecutionControl;
+  /** Override the composer's model lock without enabling input before a host's explicit Start. */
+  readonly executionDisabled?: boolean;
 }
 
 interface StateCopy {
@@ -175,8 +184,10 @@ export function ChatPanel({
   agentActivity = "idle",
   renderMessageAccessory,
   transcriptAppendix,
+  transcriptExtensionRevision,
   responsesDisabled = false,
   showStoppedNotice = true,
+  showTranscriptCopyAction = true,
   onSend,
   sending = false,
   sendErrorMessage,
@@ -184,6 +195,7 @@ export function ChatPanel({
   composerPlaceholder,
   composerAccessory,
   composerFooterAccessory,
+  composerPrimaryAction,
   initialValue,
   onDraftChange,
   readOnlyReason,
@@ -195,12 +207,20 @@ export function ChatPanel({
   revealLatestMessageToken,
   noMessagesLabel,
   execution,
+  executionDisabled,
 }: ChatPanelProps) {
   const label = title ?? "Conversation";
   const readOnly =
     status === "read-only" || execution?.snapshot?.readOnly === true;
+  const executionLocked =
+    readOnly ||
+    (executionDisabled ?? composerDisabled) ||
+    sending ||
+    agentActivity === "thinking" ||
+    composerPrimaryAction?.pending === true;
   const structuredResponsesDisabled =
     responsesDisabled ||
+    composerPrimaryAction !== undefined ||
     readOnly ||
     agentActivity === "thinking" ||
     composerDisabled ||
@@ -208,17 +228,29 @@ export function ChatPanel({
     sending;
 
   const renderHeader = () => {
-    if (header !== undefined) {
-      return <header className="wb-chat-panel__header">{header}</header>;
-    }
-    if (title !== undefined) {
-      return (
-        <header className="wb-chat-panel__header">
-          <h2 className="wb-chat-panel__title">{title}</h2>
-        </header>
-      );
-    }
-    return null;
+    const content =
+      header !== undefined ? (
+        header
+      ) : title !== undefined ? (
+        <h2 className="wb-chat-panel__title">{title}</h2>
+      ) : null;
+    const copyAction =
+      showTranscriptCopyAction &&
+      (status === "ready" || status === "read-only") &&
+      messages.length > 0 ? (
+        <ChatCopyAction messages={messages} />
+      ) : null;
+    if (content === null && copyAction === null) return null;
+    return (
+      <header className="wb-chat-panel__header">
+        {content === null ? null : (
+          <div className="wb-chat-panel__header-content">{content}</div>
+        )}
+        {copyAction === null ? null : (
+          <div className="wb-chat-panel__actions">{copyAction}</div>
+        )}
+      </header>
+    );
   };
 
   const renderTranscript = () => (
@@ -228,6 +260,7 @@ export function ChatPanel({
       agentActivity={agentActivity}
       renderMessageAccessory={renderMessageAccessory}
       transcriptAppendix={transcriptAppendix}
+      transcriptExtensionRevision={transcriptExtensionRevision}
       onRespond={
         onSend === undefined
           ? undefined
@@ -277,11 +310,13 @@ export function ChatPanel({
             initialValue={initialValue}
             onDraftChange={onDraftChange}
             execution={execution}
+            executionDisabled={executionDisabled}
             accessory={composerAccessory}
             footerAccessory={composerFooterAccessory}
+            primaryAction={composerPrimaryAction}
           />
         ) : execution === undefined ? null : (
-          <ChatExecutionPicker control={execution} />
+          <ChatExecutionPicker control={execution} disabled={executionLocked} />
         )}
       </>
     );
@@ -313,7 +348,7 @@ export function ChatPanel({
         }
         header={renderHeader()}
         execution={execution}
-        executionDisabled={sending || agentActivity === "thinking"}
+        executionDisabled={executionLocked}
       />
     );
   }

@@ -225,6 +225,25 @@
     }
   }
 
+  .wb-chat-panel__header-content {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .wb-chat-panel__actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--wb-space-2);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wb-chat-typing__dot {
+      animation: none;
+      opacity: 0.65;
+    }
+  }
+
   .wb-chat-stopped {
     flex: 0 0 auto;
   }
@@ -270,7 +289,10 @@
 
   .wb-chat-composer__input:focus-visible {
     outline: var(--wb-focus-width) solid var(--wb-color-focus-ring);
-    outline-offset: 1px;
+    /* The composer can sit flush against a clipped panel on every edge. Paint
+       its complete focus indicator inside the control instead of relying on
+       host-specific padding or overflow exceptions. */
+    outline-offset: calc(-1 * var(--wb-focus-width));
   }
 
   .wb-chat-composer__input[data-disabled] {

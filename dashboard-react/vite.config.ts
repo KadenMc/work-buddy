@@ -5,7 +5,9 @@ const dashboardProxyTarget =
   process.env.WB_DASHBOARD_PROXY_TARGET || "http://127.0.0.1:5127";
 
 const dashboardProxy = {
-  "/api": dashboardProxyTarget,
+  // Local identity binds the browser Origin to its loopback Host. Preserve
+  // that Host through dev/preview rather than rewriting it to the API port.
+  "/api": { target: dashboardProxyTarget, changeOrigin: false },
   "/favicon.svg": dashboardProxyTarget,
   "/app/favicon.svg": {
     target: dashboardProxyTarget,

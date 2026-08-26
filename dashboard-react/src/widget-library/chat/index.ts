@@ -43,7 +43,17 @@ export {
   type UseChatConversationResult,
 } from "./useChatConversation";
 export { ChatMessageList, type ChatMessageListProps } from "./ChatMessageList";
-export { ChatComposer, type ChatComposerProps } from "./ChatComposer";
+export {
+  ChatCopyAction,
+  chatMessageAuthorLabel,
+  formatChatTranscript,
+  type ChatCopyActionProps,
+} from "./ChatTranscriptCopy";
+export {
+  ChatComposer,
+  type ChatComposerPrimaryAction,
+  type ChatComposerProps,
+} from "./ChatComposer";
 export {
   ChatExecutionPicker,
   type ChatExecutionPickerProps,

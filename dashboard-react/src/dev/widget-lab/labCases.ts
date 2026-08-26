@@ -12,6 +12,8 @@ import {
 } from "../../apps/journal/fixtures/states";
 import { TASKS_WIDGET_TYPE_IDS } from "../../apps/tasks/bindings";
 import { tasksWidgetLabInputs } from "../../apps/tasks/fixtures/widgetLab";
+import { JOBS_WIDGET_ID } from "../../apps/jobs/contribution";
+import type { JobAuthoringInput } from "../../apps/jobs/contracts";
 import {
   asViewId,
   asWidgetInstanceId,
@@ -81,6 +83,25 @@ const inputForType = (
   }
   if (widgetTypeId === TASKS_WIDGET_TYPE_IDS.workspace) {
     return taskInputs.workspace;
+  }
+  if (widgetTypeId === JOBS_WIDGET_ID) {
+    return {
+      access: status === "read-only"
+        ? { mode: "read_only", reason: "Widget Lab read-only fixture." }
+        : { mode: "read_write" },
+      timeZone: "America/New_York",
+      capabilities: [{
+        name: "journal_state",
+        description: "Read the current Journal state.",
+        parameters: {},
+      }],
+      workflows: [{
+        name: "morning-routine",
+        description: "Prepare a daily work plan.",
+        parameters: {},
+      }],
+      openAssistance: false,
+    } satisfies JobAuthoringInput;
   }
   throw new Error(
     `Widget Lab needs a deterministic binding for ${widgetTypeId}`,

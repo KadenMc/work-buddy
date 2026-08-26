@@ -35,6 +35,18 @@ from typing import Any, Iterable
 
 
 _SESSION_ACL: dict[str, frozenset[str]] = {}
+_ASSISTED_DRAFT_CAPABILITIES = frozenset(
+    {
+        "assisted_draft_context_get",
+        "assisted_draft_propose_patch",
+        "assisted_draft_reference_search",
+        "conversation_send",
+        "conversation_ask",
+        "conversation_poll",
+        "conversation_receive",
+        "conversation_ack",
+    }
+)
 _COWORK_EXECUTION_CAPABILITIES = frozenset(
     {
         "cowork_action_snapshot_get",
@@ -65,13 +77,19 @@ _COWORK_TRUTH_ANALYSIS_CAPABILITIES = frozenset(
 
 
 def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
-    """Return the non-overridable least-authority ACL for hosted Co-work."""
+    """Return the non-overridable least-authority ACL for hosted agents."""
 
     from work_buddy.cowork.execution_identity import (
         cowork_generation_from_session,
         cowork_truth_analysis_run_from_session,
         cowork_verify_job_from_session,
     )
+    from work_buddy.dashboard.assistance.execution_identity import (
+        assistance_generation_from_session,
+    )
+
+    if assistance_generation_from_session(session_id) is not None:
+        return _ASSISTED_DRAFT_CAPABILITIES
 
     # Verify workers are intentionally narrower than the persistent document
     # agent.  The submit operation derives and validates the bound role from

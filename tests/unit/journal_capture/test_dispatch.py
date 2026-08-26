@@ -4,6 +4,7 @@ import pytest
 
 from work_buddy.journal_capture.content_adapter import JournalContentAdapter
 from work_buddy.journal_capture.dispatch import JournalSourceDispatcher
+from work_buddy.journal_capture.models import JournalCaptureConflict
 from work_buddy.journal_capture.service import JournalCaptureService
 from work_buddy.journal_capture.store import JournalCaptureStore
 from work_buddy.settings import get_journal_day_window
@@ -29,7 +30,11 @@ def _write(_rel, abs_path, content, **_kw):
     return True
 
 
-def test_pending_source_command_recovers_once_after_process_restart(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ack_lease,delivery", [
+    ("current", "drain"), ("expired", "drain"), ("expired", "exact"),
+    ("claimed", "drain"), ("claimed", "exact"), ("expired_authorization", "exact"),
+])
+def test_pending_source_command_recovers_once_after_process_restart(tmp_path, monkeypatch, ack_lease, delivery):
     sources = SourceStore.create(tmp_path / "sources")
     tenant = "tenant-journal-recovery"
     issuer = ActorRef("installation-authority", "trusted-ingress", "service", tenant)
@@ -95,12 +100,37 @@ def test_pending_source_command_recovers_once_after_process_restart(tmp_path, mo
         service_principal=service_actor,
     )
 
-    first = dispatcher.drain()
+    actual_delivery = dispatcher._deliver_capture
+    delivered_commands = []
+    def deliver_then_advance_lease(effect):
+        result = actual_delivery(effect)
+        delivered_commands.append(effect.effect_id)
+        if ack_lease != "current":
+            with sources.write_transaction() as conn:
+                conn.execute("UPDATE source_outbox SET lease_until=? WHERE effect_id=?",
+                             ("2000-01-01T00:00:00+00:00", effect.effect_id))
+                if ack_lease == "claimed":
+                    conn.execute("UPDATE source_outbox SET lease_owner='another-worker',lease_until=? WHERE effect_id=?",
+                                 ("2999-01-01T00:00:00+00:00", effect.effect_id))
+                elif ack_lease == "expired_authorization":
+                    conn.execute("UPDATE source_outbox SET authorization_expires_at=? WHERE effect_id=?",
+                                 ("2000-01-01T00:00:00+00:00", effect.effect_id))
+        return result
+    monkeypatch.setattr(dispatcher, "_deliver_capture", deliver_then_advance_lease)
+    if delivery == "exact":
+        assert dispatcher.deliver_exact(committed.effect_id) == store.get_capture_by_source_effect(committed.effect_id).capture_id
+    else:
+        first = dispatcher.drain()
+        assert first.delivered == (0 if ack_lease == "claimed" else 1)
+        assert first.deferred == (1 if ack_lease == "claimed" else 0)
     second = dispatcher.drain()
 
-    assert first.delivered == 1
     assert second.delivered == 0
-    assert SourceOutbox(sources).get(committed.effect_id).status == "succeeded"
+    effect = SourceOutbox(sources).get(committed.effect_id)
+    assert effect.status == ("leased" if ack_lease == "claimed" else "paused" if ack_lease == "expired_authorization" else "succeeded")
+    if ack_lease == "claimed":
+        assert effect.lease_owner == "another-worker"
+    assert delivered_commands == [committed.effect_id]
     captures = store.list_captures("2026-08-09", limit=10)
     assert len(captures) == 1
     assert len(store.list_running_notes("2026-08-09")) == 1
@@ -142,6 +172,7 @@ def test_source_redaction_scrubs_only_journal_owned_exact_bytes(
         command_type="journal.capture.materialize",
         parameters={
             "client_mutation_id": "capture-redaction-1",
+            "follow_up_action": "task_proposal",
             "day_id": _day_id(),
             "target_id": "running_notes",
             "mode": "dumb",
@@ -236,6 +267,22 @@ def test_source_redaction_scrubs_only_journal_owned_exact_bytes(
     assert entry is not None
     assert entry.markdown == "[redacted]"
     assert entry.resolution_state == "redacted"
+    proposal_effect = next(effect for effect in store.effects_for_capture(capture.capture_id)
+                           if effect.effect_type == "task_proposal")
+    assert proposal_effect.state.value == "paused"
+    assert proposal_effect.payload is None
+    assert proposal_effect.error_code == "journal_proposal_source_withdrawn"
+    class ProposalMustNotRun:
+        def create_task_proposal(self, **_kwargs):
+            raise AssertionError("A removed source cannot create a new Thread")
+        def get(self, _thread_id):
+            raise AssertionError("No Thread exists for the canceled proposal")
+    dispatcher.journal.proposal_service = ProposalMustNotRun()
+    assert dispatcher.journal.reconcile_proposals()["delivery_checked"] == 0
+    dispatcher.journal.deliver_proposal(capture.capture_id)
+    with pytest.raises(JournalCaptureConflict, match="source was removed"):
+        store.reauthorize_effect(capture.capture_id, "task_proposal",
+                                 authorization_fingerprint="fresh", authorization_expires_at=None)
     assert store.list_running_notes("2026-08-09") == []
     with sources.connect() as conn:
         usage = conn.execute(

@@ -26,8 +26,8 @@ from work_buddy.agent_execution.disclosure import (
     DisclosureSelector,
     create_source_bound_run,
 )
-from work_buddy.journal_capture.models import CaptureTarget, JournalCapture
-from work_buddy.journal_capture.service import SmartCaptureResult
+from work_buddy.journal_capture.models import CaptureTarget, JournalCapture, JournalSmartAvailability
+from work_buddy.journal_capture.service import SmartCaptureResult, TaskProposalFollowUp
 from work_buddy.journal_capture.store import JournalCaptureStore
 from work_buddy.llm.response import LLMResponse
 from work_buddy.llm.tiers import ModelTier, resolve_tier
@@ -48,8 +48,18 @@ _OUTPUT_SCHEMA: dict[str, Any] = {
         "target": {"type": "string", "enum": ["log", "running_notes"]},
         "summary": {"type": "string"},
         "effects": {"type": "array", "items": {"type": "string"}},
+        "follow_up": {
+            "anyOf": [
+                {"type": "null"},
+                {"type": "object", "properties": {
+                    "kind": {"type": "string", "enum": ["task_proposal"]},
+                    "task_text": {"type": "string", "maxLength": 500},
+                    "rationale": {"type": "string", "maxLength": 1000},
+                }, "required": ["kind", "task_text", "rationale"], "additionalProperties": False},
+            ],
+        },
     },
-    "required": ["target", "summary", "effects"],
+    "required": ["target", "summary", "effects", "follow_up"],
     "additionalProperties": False,
 }
 _SYSTEM = """You classify one already-saved Journal capture.
@@ -61,6 +71,10 @@ Choose exactly one destination:
 Return the required structured fields. Keep summary under 240 characters and
 effects to at most three short, factual phrases. Never rewrite the original
 capture, invent facts, or claim that the classification changed the saved text.
+If this is a concrete actionable intention, choose running_notes and optionally
+attach ONE task_proposal follow_up with a concise task_text and rationale.
+Otherwise follow_up is null. This only proposes a task for human review; it
+never creates a task. Do not output URLs, IDs, tools, or other action kinds.
 """
 
 
@@ -205,6 +219,7 @@ class JournalSourceBoundSmartProcessor:
             producer_ref=f"agent-execution:{run_id}",
             model_id=response.model or self.spec.model_id,
             disclosure_manifest_sha256=binding.manifest_sha256,
+            follow_up=result["follow_up"],
         )
 
     def _call_model(self, exact: bytes) -> LLMResponse:
@@ -217,7 +232,7 @@ class JournalSourceBoundSmartProcessor:
             system=_SYSTEM,
             user=user,
             output_schema=_OUTPUT_SCHEMA,
-            max_tokens=384,
+            max_tokens=768,
             temperature=0.0,
             cache_ttl_minutes=0,
             trace_id=None,
@@ -227,11 +242,13 @@ class JournalSourceBoundSmartProcessor:
     @staticmethod
     def _validated_result(
         response: LLMResponse,
-    ) -> dict[str, CaptureTarget | str | tuple[str, ...]]:
+    ) -> dict[str, Any]:
         if response.is_error():
             raise JournalSmartProcessingError("smart_model_failed")
         value = response.structured_output
         if not isinstance(value, Mapping):
+            raise JournalSmartProcessingError("smart_model_invalid_output")
+        if set(value) - {"target", "summary", "effects", "follow_up"}:
             raise JournalSmartProcessingError("smart_model_invalid_output")
         try:
             target = CaptureTarget(str(value.get("target") or ""))
@@ -255,10 +272,25 @@ class JournalSourceBoundSmartProcessor:
             )
         ):
             raise JournalSmartProcessingError("smart_model_invalid_output")
+        follow_up = value.get("follow_up")
+        typed_follow_up = None
+        if follow_up is not None:
+            if (not isinstance(follow_up, Mapping)
+                    or set(follow_up) != {"kind", "task_text", "rationale"}
+                    or follow_up.get("kind") != "task_proposal"
+                    or not isinstance(follow_up.get("task_text"), str)
+                    or not follow_up["task_text"].strip() or len(follow_up["task_text"]) > 500
+                    or not isinstance(follow_up.get("rationale"), str)
+                    or not follow_up["rationale"].strip() or len(follow_up["rationale"]) > 1000):
+                raise JournalSmartProcessingError("smart_model_invalid_output")
+            typed_follow_up = TaskProposalFollowUp(
+                task_text=follow_up["task_text"].strip(), rationale=follow_up["rationale"].strip(),
+            )
         return {
             "target": target,
             "summary": summary.strip(),
             "effects": tuple(item.strip() for item in effects),
+            "follow_up": typed_follow_up,
         }
 
 
@@ -268,11 +300,27 @@ def configured_journal_smart_processor(
 ) -> JournalSourceBoundSmartProcessor | None:
     """Compose the production processor only after an explicit config opt-in."""
 
+    return configured_journal_smart_processing(sources_store, journal_store)[0]
+
+
+def configured_journal_smart_processing(
+    sources_store: SourceStore,
+    journal_store: JournalCaptureStore,
+    *,
+    enabled: bool | None = None,
+) -> tuple[JournalSourceBoundSmartProcessor | None, JournalSmartAvailability]:
+    """Preserve policy-disabled vs broken-provider status without any model call."""
+
     from work_buddy.config import load_config
 
     value = load_config().get("journal", {}).get("smart_processing", {}) or {}
-    if not isinstance(value, Mapping) or value.get("enabled") is not True:
-        return None
+    if not isinstance(value, Mapping):
+        value = {}
+    if enabled is None:
+        enabled = value.get("enabled") is True
+    if not enabled:
+        return None, JournalSmartAvailability()
+    spec = None
     try:
         tier = ModelTier(str(value.get("tier") or ModelTier.FRONTIER_FAST.value))
         spec = JournalSmartProcessorSpec.from_tier(tier)
@@ -294,16 +342,24 @@ def configured_journal_smart_processor(
             DisclosureManifestStore(resolve("db/agent-execution")),
             disclosure_sources,
         )
-        return JournalSourceBoundSmartProcessor(
+        processor = JournalSourceBoundSmartProcessor(
             sources_store=sources_store,
             journal_store=journal_store,
             disclosure_sources=disclosure_sources,
             disclosure_gateway=gateway,
             spec=spec,
         )
+        return processor, JournalSmartAvailability(
+            state="ready", code="ready", reason="Smart is ready. Your exact capture is saved before processing.",
+            provider=spec.provider_id, model=spec.model_id,
+        )
     except Exception as exc:
         logger.warning(
             "Journal Smart processing is disabled because its provider is invalid (%s)",
             getattr(exc, "code", type(exc).__name__),
         )
-        return None
+        return None, JournalSmartAvailability(
+            state="provider_unavailable", code="provider_not_preflightable",
+            reason="Smart is enabled, but its provider could not be prepared. Check the configured model, then retry setup. Direct capture still works.",
+            provider=spec.provider_id if spec else None, model=spec.model_id if spec else None,
+        )

@@ -35,9 +35,11 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from work_buddy.threads.events import (
     ALL_KINDS,
@@ -182,6 +184,20 @@ CREATE INDEX IF NOT EXISTS idx_thread_events_thread_id_pk
     ON thread_events(thread_id, id);
 CREATE INDEX IF NOT EXISTS idx_thread_events_migration
     ON thread_events(migration_id) WHERE migration_id IS NOT NULL;
+
+-- Command receipts are part of the Thread boundary, not a proposal store.
+-- Proposal content, approval, execution intent, and realization live only in
+-- thread_events. This table binds ingress/decision retry keys to their hash.
+CREATE TABLE IF NOT EXISTS thread_proposal_mutations (
+    client_mutation_id TEXT PRIMARY KEY,
+    request_sha256    TEXT NOT NULL,
+    operation         TEXT NOT NULL,
+    thread_id         TEXT NOT NULL REFERENCES threads(thread_id),
+    event_id          INTEGER NOT NULL REFERENCES thread_events(id),
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_thread_proposal_mutations_thread
+    ON thread_proposal_mutations(thread_id);
 """
 
 
@@ -273,7 +289,7 @@ def _migrate_stage_5(conn: sqlite3.Connection) -> None:
 _schema_ready: set[str] = set()
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection(*, path: str | Path | None = None) -> sqlite3.Connection:
     """Open the threads DB with WAL + FK enforcement; ensure schema.
 
     Order matters: pre-existing tables get Stage-4 / Stage-5 columns
@@ -283,7 +299,7 @@ def get_connection() -> sqlite3.Connection:
     The schema-ensure pass runs once per DB path per process (see
     ``_schema_ready``); the per-connection WAL/FK pragmas always run.
     """
-    path = _db_path()
+    path = Path(path) if path is not None else _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
@@ -297,6 +313,44 @@ def get_connection() -> sqlite3.Connection:
         conn.commit()
         _schema_ready.add(key)
     return conn
+
+
+# Existing callers historically rely on supplied connections auto-committing.
+# Preserve that API, but suppress every helper's commit inside an explicit
+# transaction. Context-local membership prevents a concurrent writer from
+# accidentally borrowing another writer's commit policy.
+_atomic_connections: ContextVar[frozenset[int]] = ContextVar(
+    "thread_store_atomic_connections", default=frozenset(),
+)
+
+
+def _commit_unless_atomic(conn: sqlite3.Connection) -> None:
+    if id(conn) not in _atomic_connections.get():
+        conn.commit()
+
+
+@contextmanager
+def transaction(
+    *, connection_factory: Callable[[], sqlite3.Connection] | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """One serialized, rollback-safe Thread write transaction.
+
+    Unlike wrapping legacy helpers in ``with conn``, this is an actual atomic
+    boundary: insert_thread, append_event, cache/search updates, and receipt
+    writes cannot commit independently. No external execution belongs inside.
+    """
+    conn = (connection_factory or get_connection)()
+    token = _atomic_connections.set(_atomic_connections.get() | {id(conn)})
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        _atomic_connections.reset(token)
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +420,7 @@ def insert_thread(
                 getattr(thread, "search_blob", ""),
             ),
         )
-        conn.commit()
+        _commit_unless_atomic(conn)
         # best-effort initial search-blob population.
         # Lazy-import to avoid cycles. Inciting summary alone is
         # enough yield for the first index entry.
@@ -591,7 +645,7 @@ def update_thread_state(
             f"UPDATE threads SET {', '.join(sets)} WHERE thread_id = ?",
             params,
         )
-        conn.commit()
+        _commit_unless_atomic(conn)
         return cur.rowcount > 0
     finally:
         if own_conn:
@@ -658,7 +712,7 @@ def append_event(
             ),
         )
         event.id = cur.lastrowid
-        conn.commit()
+        _commit_unless_atomic(conn)
         return event
     finally:
         if own_conn:

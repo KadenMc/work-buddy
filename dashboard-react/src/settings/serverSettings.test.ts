@@ -61,6 +61,10 @@ const serverRegistryPayload = {
 };
 
 describe("server settings normalization", () => {
+  it("normalizes the shared execution-profile control without turning it into tier options", () => {
+    const payload = { ...serverRegistryPayload, definitions: [{ ...serverRegistryPayload.definitions[0], default_value: { provider_id: "claude-code", model_id: "sonnet" }, presentation: { control: "execution-profile", apply_behavior: "immediate" } }] };
+    expect(normalizeServerRegistry(payload).contribution.definitions[0].control).toEqual({ kind: "execution-profile" });
+  });
   it("normalizes the Python registry contract into a validated frontend contribution", () => {
     const result = normalizeServerRegistry(serverRegistryPayload);
     const registry = new SettingsRegistry([result.contribution]);

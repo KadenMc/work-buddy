@@ -230,8 +230,8 @@ def ensure_document_conversation(
         active = get_connection() if own_conn else conn
         try:
             # Serialize the find-or-create decision across dashboard processes.
-            # ``create_conversation`` commits the insert on this connection; a
-            # competing BEGIN IMMEDIATE then observes the durable metadata row.
+            # The connection owner commits the complete binding transaction;
+            # composable store helpers never commit a supplied connection.
             if own_conn:
                 active.execute("BEGIN IMMEDIATE")
             existing = _find_bound_conversation(
@@ -259,6 +259,8 @@ def ensure_document_conversation(
                 },
                 conn=active,
             )
+            if own_conn:
+                active.commit()
             return ConversationBinding(
                 conversation_id=conversation.conversation_id,
                 document_id=doc_id,
@@ -295,11 +297,14 @@ def post_feedback_message(
     own_conn = conn is None
     active = get_connection() if own_conn else conn
     try:
-        return post_user_message(
+        message = post_user_message(
             conversation,
             text,
             conn=active,
         )
+        if own_conn:
+            active.commit()
+        return message
     finally:
         if own_conn:
             active.close()
@@ -415,6 +420,8 @@ def deliver_decision(
     own_conn = conn is None
     active = get_connection() if own_conn else conn
     try:
+        if own_conn:
+            active.execute("BEGIN IMMEDIATE")
         binding = ensure_document_conversation(
             document_id=document_id,
             store_id=store_id,
@@ -433,6 +440,8 @@ def deliver_decision(
             message_id=delivery_id,
         )
         if message is None:
+            if own_conn:
+                active.rollback()
             return DeliveryStatus(
                 delivered=False,
                 conversation_id=binding.conversation_id,
@@ -441,6 +450,8 @@ def deliver_decision(
                 message_id=None,
                 reason="conversation_unavailable",
             )
+        if own_conn:
+            active.commit()
         from work_buddy.cowork.conversation_source_dependencies import (
             record_conversation_source_dependency,
         )
@@ -462,6 +473,10 @@ def deliver_decision(
             message_id=message.message_id,
             reason=None,
         )
+    except Exception:
+        if own_conn and active.in_transaction:
+            active.rollback()
+        raise
     finally:
         if own_conn:
             active.close()

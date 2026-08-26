@@ -63,6 +63,12 @@ const json = (value: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
+function deferred<Value>() {
+  let resolve!: (value: Value) => void;
+  const promise = new Promise<Value>((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
+
 const intent = (
   type: string,
   payload: Record<string, unknown>,
@@ -92,6 +98,400 @@ function locationAdapter(initial = "?lens=inbox&q=launch") {
 
 describe("HttpTasksProvider", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  const proposal = { thread_id: "th-1234abcd", proposal_event_id: 7, status: "ready", parameters: { task_text: "Review draft" }, origin: { kind: "journal", id: "capture-1" }, realization: null, href: "/app/tasks?proposal=th-1234abcd" };
+  const realizedProposal = {
+    ...proposal,
+    status: "realized",
+    realization: { task_id: "t-1234abcd", receipt_id: "receipt-1", task_revision: 1, href: "/app/tasks?task=t-1234abcd" },
+  };
+  const canonicalTask = { ...task, task_id: "t-1234abcd", description: "Review draft", revision: 1 };
+  const canonicalTaskView = {
+    ...viewPayload,
+    query: { ...viewPayload.query, task: canonicalTask.task_id },
+    tasks: [canonicalTask],
+    selected_task: canonicalTask,
+  };
+  const invalidProposalEnvelopes = [
+    { name: "a different Thread", envelope: { ok: true, proposal: { ...realizedProposal, thread_id: "th-other" } } },
+    { name: "an unsuccessful envelope", envelope: { ok: false, proposal: realizedProposal } },
+    { name: "a realization without a receipt", envelope: { ok: true, proposal: { ...proposal, status: "realized" } } },
+    { name: "an invalid proposal event", envelope: { ok: true, proposal: { ...realizedProposal, proposal_event_id: 0 } } },
+    { name: "a wrong-kind Thread", envelope: { ok: true, proposal: { ...proposal, status: "unavailable", proposal_event_id: null, error: { code: "proposal_wrong_kind", message: "This Thread no longer proposes a task." } } } },
+  ];
+
+  it("loads a proposal from Threads without making it a TaskStore selection", async () => {
+    const route = locationAdapter("?lens=inbox&proposal=th-1234abcd");
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => String(url).includes("/proposal") ? json({ ok: true, proposal }) : json({ ...viewPayload, selected_task: null }));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const snapshot = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual(["/api/tasks/view?lens=inbox", "/api/threads/th-1234abcd/proposal"]);
+    expect(snapshot.model.selectedTask).toBeNull();
+    expect(snapshot.model.selectedProposal).toMatchObject({ kind: "loaded", proposal });
+    expect(snapshot.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({
+      selectedProposal: proposal,
+      observedProposal: proposal,
+    });
+    expect(snapshot.revision).toBe("17:th-1234abcd:7:ready");
+  });
+
+  it.each(["?task=t-1234abcd&proposal=th-1234abcd", "?proposal=../../bad"])("rejects ambiguous or malformed proposal selection %s without a proposal request", async (search) => {
+    const fetchImpl = vi.fn(async () => json({ ...viewPayload, selected_task: null }));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: locationAdapter(search).location });
+    const snapshot = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    expect(snapshot.model.selectedProposal).toMatchObject({ kind: "unavailable" });
+    expect(snapshot.model.selectedTask).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the validated realized proposal for Quick Add after its GET redirects to the canonical task", async () => {
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => String(url).includes("/proposal")
+      ? json({ ok: true, proposal: { ...realizedProposal, href: "https://untrusted.example/proposal", realization: { ...realizedProposal.realization, href: "https://untrusted.example/task" } } })
+      : json(canonicalTaskView));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const snapshot = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    expect(route.replaces).toEqual(["?task=t-1234abcd"]);
+    expect(snapshot.model.selectedTask).toMatchObject({ task_id: canonicalTask.task_id });
+    expect(snapshot.model.selectedProposal ?? null).toBeNull();
+    expect(snapshot.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({
+      selectedProposal: null,
+      observedProposal: realizedProposal,
+    });
+    expect(String(snapshot.revision)).toContain("th-1234abcd:7:realized");
+    expect(String(snapshot.revision)).toContain("receipt-1");
+    const widget = await provider.loadWidget(TASKS_WIDGET_TYPE_IDS.quickAdd, {
+      viewId: TASKS_VIEW_ID,
+      instanceId: TASKS_INSTANCE_IDS.quickAdd,
+    });
+    expect(widget.input).toMatchObject({ observedProposal: realizedProposal });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "/api/tasks/view", "/api/threads/th-1234abcd/proposal", "/api/tasks/view?task=t-1234abcd",
+    ]);
+  });
+
+  it("fences proposal acceptance with the reviewed event and never calls direct create", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => json({ ok: true, proposal: { ...proposal, status: "realized", realization: { task_id: "t-1234abcd", receipt_id: "receipt-1", task_revision: 1 } } }));
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const result = await provider.dispatch(intent(TASK_INTENTS.proposalAccept, { thread_id: "th-1234abcd", expected_proposal_event_id: 7 }, "accept-once"));
+    expect(result.status).toBe("accepted");
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/threads/th-1234abcd/proposal/accept");
+    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(JSON.parse(String(init.body))).toEqual({ expected_proposal_event_id: 7, client_mutation_id: "accept-once" });
+    expect(route.replaces).toEqual(["?task=t-1234abcd"]);
+  });
+
+  it("carries an accepted proposal receipt through task reconciliation into Quick Add without another proposal fetch", async () => {
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      switch (String(url)) {
+        case "/api/tasks/view": return json({ ...viewPayload, selected_task: null });
+        case "/api/threads/th-1234abcd/proposal": return json({ ok: true, proposal });
+        case "/api/threads/th-1234abcd/proposal/accept": return json({ ok: true, proposal: realizedProposal });
+        case "/api/tasks/view?task=t-1234abcd": return json(canonicalTaskView);
+        default: throw new Error(`Unexpected request: ${String(url)}`);
+      }
+    });
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const before = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    const accepted = await provider.dispatch(intent(TASK_INTENTS.proposalAccept, {
+      thread_id: proposal.thread_id,
+      expected_proposal_event_id: proposal.proposal_event_id,
+    }, "accept-observed"));
+    expect(accepted).toMatchObject({ status: "accepted", value: { proposal: realizedProposal } });
+    expect(route.replaces).toEqual(["?task=t-1234abcd"]);
+
+    const reconciled = await provider.reconcile({
+      id: "proposal-accepted", appId: TASKS_APP_ID, viewIds: [TASKS_VIEW_ID],
+      reason: "mutation", observedAt: "2026-08-23T13:01:00Z",
+    });
+    expect(reconciled.changed).toBe(true);
+    expect(reconciled.revision).not.toBe(before.revision);
+    expect(reconciled.snapshot?.model).toMatchObject({ revision: 17, selectedTask: { task_id: canonicalTask.task_id } });
+    expect(reconciled.snapshot?.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({
+      selectedProposal: null, observedProposal: realizedProposal,
+    });
+    const widget = await provider.loadWidget(TASKS_WIDGET_TYPE_IDS.quickAdd, {
+      viewId: TASKS_VIEW_ID, instanceId: TASKS_INSTANCE_IDS.quickAdd,
+    });
+    expect(widget.input).toMatchObject({ observedProposal: realizedProposal });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "/api/tasks/view", "/api/threads/th-1234abcd/proposal",
+      "/api/threads/th-1234abcd/proposal/accept", "/api/tasks/view?task=t-1234abcd",
+    ]);
+  });
+
+  it("retains a validated dismissal for Quick Add after leaving the proposal selection at the same task revision", async () => {
+    const rejected = { ...proposal, status: "rejected" };
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).endsWith("/proposal/reject")) return json({ ok: true, proposal: rejected });
+      if (String(url).endsWith("/proposal")) return json({ ok: true, proposal });
+      return json(viewPayload);
+    });
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const before = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    const result = await provider.dispatch(intent(TASK_INTENTS.proposalReject, {
+      thread_id: proposal.thread_id, expected_proposal_event_id: proposal.proposal_event_id,
+    }, "reject-observed"));
+    expect(result).toMatchObject({ status: "accepted", value: { proposal: rejected } });
+    await provider.dispatch(intent(TASK_INTENTS.locationChange, { patch: { task: task.task_id } }));
+    const after = await provider.loadView(TASKS_VIEW_ID, { reason: "refresh" });
+
+    expect(route.getSearch()).toBe("?task=task-1");
+    expect(after.model.revision).toBe(before.model.revision);
+    expect(after.revision).not.toBe(before.revision);
+    expect(after.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({
+      selectedProposal: null, observedProposal: rejected,
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "/api/tasks/view", "/api/threads/th-1234abcd/proposal",
+      "/api/threads/th-1234abcd/proposal/reject", "/api/tasks/view?task=task-1",
+    ]);
+  });
+
+  it.each([
+    { name: "a rejection at the same proposal event", next: { ...proposal, status: "rejected" } },
+    { name: "a newer proposal event", next: { ...proposal, proposal_event_id: 8 } },
+  ])("publishes $name even when the task collection revision is unchanged", async ({ next }) => {
+    let serverProposal = proposal;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith("/proposal")
+      ? json({ ok: true, proposal: serverProposal }) : json(viewPayload));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: locationAdapter("?proposal=th-1234abcd").location });
+    const before = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    serverProposal = next;
+
+    const result = await provider.reconcile({
+      id: "proposal-updated", appId: TASKS_APP_ID, viewIds: [TASKS_VIEW_ID],
+      reason: "external-change", observedAt: "2026-08-23T13:01:00Z",
+    });
+    expect(result.changed).toBe(true);
+    expect(result.revision).not.toBe(before.revision);
+    expect(result.snapshot?.model).toMatchObject({ revision: before.model.revision });
+    expect(result.snapshot?.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({ observedProposal: next });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it("includes the validated realization receipt in the snapshot revision after canonical redirects", async () => {
+    let receiptId = "receipt-1";
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith("/proposal")
+      ? json({ ok: true, proposal: { ...realizedProposal, realization: { ...realizedProposal.realization, receipt_id: receiptId } } })
+      : json(canonicalTaskView));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const before = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    receiptId = "receipt-2";
+    route.location.replaceSearch("?proposal=th-1234abcd");
+
+    const result = await provider.reconcile({
+      id: "proposal-receipt", appId: TASKS_APP_ID, viewIds: [TASKS_VIEW_ID],
+      reason: "external-change", observedAt: "2026-08-23T13:01:00Z",
+    });
+    expect(result.changed).toBe(true);
+    expect(result.revision).not.toBe(before.revision);
+    expect(result.snapshot?.model).toMatchObject({ revision: before.model.revision });
+    expect(result.snapshot?.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({
+      observedProposal: { ...realizedProposal, realization: { ...realizedProposal.realization, receipt_id: "receipt-2" } },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+  });
+
+  it.each([
+    { operation: "accept", intentType: TASK_INTENTS.proposalAccept, status: "realized" },
+    { operation: "reject", intentType: TASK_INTENTS.proposalReject, status: "rejected" },
+  ])("does not let a delayed ready GET undo or publish over a validated $operation outcome", async ({ operation, intentType, status }) => {
+    const terminal = status === "realized" ? realizedProposal : { ...proposal, status: "rejected" };
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const oldResponse = deferred<Response>();
+    const oldReadStarted = deferred<void>();
+    let proposalReads = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      const path = String(url);
+      if (path.endsWith(`/proposal/${operation}`)) return json({ ok: true, proposal: terminal });
+      if (path.endsWith("/proposal")) {
+        proposalReads += 1;
+        if (proposalReads === 2) {
+          oldReadStarted.resolve(undefined);
+          return oldResponse.promise;
+        }
+        return json({ ok: true, proposal: proposalReads === 1 ? proposal : terminal });
+      }
+      return json(path.includes("?task=") ? canonicalTaskView : { ...viewPayload, selected_task: null });
+    });
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    const oldRead = provider.loadView(TASKS_VIEW_ID, { reason: "reconcile" });
+    await oldReadStarted.promise;
+
+    const result = await provider.dispatch(intent(intentType, {
+      thread_id: proposal.thread_id, expected_proposal_event_id: proposal.proposal_event_id,
+    }, `terminal-before-old-${operation}`));
+    expect(result).toMatchObject({ status: "accepted", value: { proposal: terminal } });
+    const requestsBeforeOldResponse = fetchImpl.mock.calls.length;
+    oldResponse.resolve(json({ ok: true, proposal }));
+    const stale = await oldRead;
+
+    // A discarded read may return an inert snapshot, but neither its selection
+    // nor the provider-owned widget cache may claim the closed proposal is ready.
+    expect(stale.model.selectedProposal).toMatchObject({ kind: "loaded", proposal: terminal });
+    expect(stale.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({ observedProposal: terminal });
+    expect(fetchImpl).toHaveBeenCalledTimes(requestsBeforeOldResponse);
+    // Mutation invalidated the cache. The obsolete GET must not fill it again;
+    // loading the widget therefore still performs the current authoritative read.
+    const quickAdd = await provider.loadWidget(TASKS_WIDGET_TYPE_IDS.quickAdd, {
+      viewId: TASKS_VIEW_ID, instanceId: TASKS_INSTANCE_IDS.quickAdd,
+    });
+    const workspace = await provider.loadWidget(TASKS_WIDGET_TYPE_IDS.workspace, {
+      viewId: TASKS_VIEW_ID, instanceId: TASKS_INSTANCE_IDS.workspace,
+    });
+    expect(workspace.revision).toBe(quickAdd.revision);
+    expect(quickAdd.input).toMatchObject({ observedProposal: terminal });
+    if (status === "realized") {
+      expect(quickAdd.input).toMatchObject({ selectedProposal: null });
+      expect(workspace.input).toMatchObject({ selectedTask: { task_id: canonicalTask.task_id }, selectedProposal: null });
+      expect(route.getSearch()).toBe("?task=t-1234abcd");
+      expect(route.replaces).toEqual(["?task=t-1234abcd"]);
+    } else {
+      expect(quickAdd.input).toMatchObject({ selectedProposal: terminal });
+      expect(workspace.input).toMatchObject({ selectedProposal: { kind: "loaded", proposal: terminal } });
+      expect(route.getSearch()).toBe("?proposal=th-1234abcd");
+      expect(route.replaces).toEqual([]);
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(requestsBeforeOldResponse + (status === "realized" ? 1 : 2));
+  });
+
+  it("uses the newer event for both selection and observation when an older GET finishes last", async () => {
+    const newer = { ...proposal, proposal_event_id: 9, parameters: { task_text: "Newer reviewed fields" } };
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const oldResponse = deferred<Response>();
+    const oldReadStarted = deferred<void>();
+    let proposalReads = 0;
+    let viewReads = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      if (!String(url).endsWith("/proposal")) {
+        viewReads += 1;
+        return json({ ...viewPayload, observed_at: `2026-08-23T13:01:0${viewReads}Z` });
+      }
+      proposalReads += 1;
+      if (proposalReads === 2) {
+        oldReadStarted.resolve(undefined);
+        return oldResponse.promise;
+      }
+      return json({ ok: true, proposal: proposalReads === 1 ? proposal : newer });
+    });
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    const oldRead = provider.loadView(TASKS_VIEW_ID, { reason: "reconcile" });
+    await oldReadStarted.promise;
+    const current = await provider.loadView(TASKS_VIEW_ID, { reason: "refresh" });
+    oldResponse.resolve(json({ ok: true, proposal }));
+    const stale = await oldRead;
+
+    expect(current.model.selectedProposal).toMatchObject({ kind: "loaded", proposal: newer });
+    expect(stale.model.selectedProposal).toMatchObject({ kind: "loaded", proposal: newer });
+    expect(stale.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({ observedProposal: newer });
+    const widget = await provider.loadWidget(TASKS_WIDGET_TYPE_IDS.quickAdd, {
+      viewId: TASKS_VIEW_ID, instanceId: TASKS_INSTANCE_IDS.quickAdd,
+    });
+    expect(widget.revision).toBe(current.revision);
+    expect(widget.observedAt).toBe(current.observedAt);
+    expect(widget.input).toMatchObject({ selectedProposal: newer, observedProposal: newer });
+    expect(route.replaces).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+  });
+
+  it.each(["realized", "rejected"])("keeps an observed %s outcome effective for a fresh same-event ready GET", async (status) => {
+    const terminal = status === "realized" ? realizedProposal : { ...proposal, status: "rejected" };
+    const route = locationAdapter("?proposal=th-1234abcd");
+    let proposalReads = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      if (!String(url).endsWith("/proposal")) return json(canonicalTaskView);
+      proposalReads += 1;
+      return json({ ok: true, proposal: proposalReads === 1 ? terminal : proposal });
+    });
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const before = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    if (status === "realized") route.location.replaceSearch("?proposal=th-1234abcd");
+    const after = await provider.loadView(TASKS_VIEW_ID, { reason: "refresh" });
+
+    expect(after.revision).toBe(before.revision);
+    expect(after.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({ observedProposal: terminal });
+    if (status === "realized") {
+      expect(after.model.selectedTask).toMatchObject({ task_id: canonicalTask.task_id });
+      expect(after.model.selectedProposal ?? null).toBeNull();
+      expect(route.getSearch()).toBe("?task=t-1234abcd");
+      expect(route.replaces).toEqual(["?task=t-1234abcd", "?proposal=th-1234abcd", "?task=t-1234abcd"]);
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+    } else {
+      expect(after.model.selectedProposal).toMatchObject({ kind: "loaded", proposal: terminal });
+      expect(route.getSearch()).toBe("?proposal=th-1234abcd");
+      expect(route.replaces).toEqual([]);
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+    }
+  });
+
+  it.each(invalidProposalEnvelopes)("does not observe $name from a proposal GET or navigate to its claimed task", async ({ envelope }) => {
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith("/proposal")
+      ? json(envelope) : json(viewPayload));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const snapshot = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+
+    expect(snapshot.model.selectedProposal).toMatchObject({ kind: "unavailable" });
+    expect(snapshot.model.selectedTask).toBeNull();
+    expect(snapshot.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({
+      selectedProposal: null, observedProposal: null,
+    });
+    expect(route.replaces).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(invalidProposalEnvelopes)("does not publish $name from an accept response over the last validated observation", async ({ envelope }) => {
+    const route = locationAdapter("?proposal=th-1234abcd");
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).endsWith("/proposal/accept")) return json(envelope);
+      return String(url).endsWith("/proposal") ? json({ ok: true, proposal }) : json(viewPayload);
+    });
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    const result = await provider.dispatch(intent(TASK_INTENTS.proposalAccept, {
+      thread_id: proposal.thread_id, expected_proposal_event_id: proposal.proposal_event_id,
+    }, "invalid-observation"));
+    const widget = await provider.loadWidget(TASKS_WIDGET_TYPE_IDS.quickAdd, {
+      viewId: TASKS_VIEW_ID, instanceId: TASKS_INSTANCE_IDS.quickAdd,
+    });
+
+    expect(result.status).toBe("rejected");
+    expect(widget.input).toMatchObject({ selectedProposal: proposal, observedProposal: proposal });
+    expect(route.replaces).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not trust proposal evidence embedded in a TaskStore view payload", async () => {
+    const route = locationAdapter("?task=task-1");
+    const fetchImpl = vi.fn(async () => json({
+      ...viewPayload,
+      selectedProposal: { kind: "loaded", proposal: realizedProposal },
+      observedProposal: realizedProposal,
+    }));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    const snapshot = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+
+    expect(snapshot.widgetInputs[TASKS_INSTANCE_IDS.quickAdd]).toMatchObject({
+      selectedProposal: null, observedProposal: null,
+    });
+    expect(snapshot.revision).toBe(viewPayload.collection_revision);
+    expect(route.replaces).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains filters while switching exclusively between task and proposal", async () => {
+    const route = locationAdapter("?lens=focused&project=research&task=t-1234abcd");
+    const provider = new HttpTasksProvider({ fetchImpl: vi.fn() as typeof fetch, location: route.location });
+    await provider.dispatch(intent(TASK_INTENTS.locationChange, { patch: { proposal: "th-1234abcd" } }));
+    expect(route.getSearch()).toBe("?lens=focused&project=research&proposal=th-1234abcd");
+  });
 
   it("parses one coherent view snapshot for Quick Add and Workspace", async () => {
     const fetchImpl = vi.fn(async () => json(viewPayload));

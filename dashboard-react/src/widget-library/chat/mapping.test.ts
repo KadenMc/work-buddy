@@ -237,6 +237,14 @@ const base = (
 });
 
 describe("deriveAgentActivity", () => {
+  it("keeps an ordinary empty conversation idle regardless of driver liveness", () => {
+    expect(deriveAgentActivity(base({ agentLiveness: "alive" }))).toBe(
+      "idle",
+    );
+    expect(deriveAgentActivity(base({ agentLiveness: "unknown" }))).toBe("idle");
+    expect(deriveAgentActivity(base({ agentLiveness: "stopped" }))).toBe("idle");
+  });
+
   it("does not report a failure when an idle driver exits before any turn", () => {
     expect(
       deriveAgentActivity(base({ agentLiveness: "stopped" })),

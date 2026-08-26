@@ -55,6 +55,11 @@ _BUILD_ENV_FILES = (
     ".env.production",
     ".env.production.local",
 )
+# Explicit shared build inputs imported by the React source tree. Keep this
+# narrow: backend source changes and generated document workers are not inputs.
+_SHARED_REACT_INPUTS = (
+    "work_buddy/dashboard/assistance/form_schemas.json",
+)
 
 
 class DashboardBuildStatus(str, Enum):
@@ -242,17 +247,27 @@ def _input_files(dashboard_root: Path) -> Iterable[Path]:
         root_candidates.update(dashboard_root.glob(pattern))
     root_candidates.update(dashboard_root / name for name in _BUILD_ENV_FILES)
     discovered.update(path for path in root_candidates if path.is_file())
+    shared_candidates = (
+        dashboard_root.parent / name for name in _SHARED_REACT_INPUTS
+    )
+    discovered.update(path for path in shared_candidates if path.is_file())
 
     yield from sorted(
         discovered,
-        key=lambda path: path.relative_to(dashboard_root).as_posix(),
+        key=lambda path: _input_relative_path(path, dashboard_root),
     )
+
+
+def _input_relative_path(path: Path, dashboard_root: Path) -> str:
+    # Shared manifests are explicit siblings of dashboard-react, so
+    # Path.relative_to() cannot represent their ../work_buddy/... identity.
+    return Path(os.path.relpath(path, dashboard_root)).as_posix()
 
 
 def _snapshot_inputs(dashboard_root: Path) -> _InputSnapshot:
     digest = hashlib.sha256()
     for path in _input_files(dashboard_root):
-        relative = path.relative_to(dashboard_root).as_posix()
+        relative = _input_relative_path(path, dashboard_root)
         stat_before = path.stat()
         file_digest = hashlib.sha256()
         with path.open("rb") as handle:

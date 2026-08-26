@@ -65,6 +65,16 @@ def execution_state_entry_handler(transition_result) -> None:
         )
         return
 
+    # A managed task proposal can execute only its persisted human-approved
+    # intent. Even a stray legacy state-entry callback must not invoke an
+    # unfenced task_create or invent a new client mutation ID.
+    from work_buddy.threads.action_proposals import (
+        get_action_proposal_service, is_managed_proposal,
+    )
+    if is_managed_proposal(thread):
+        get_action_proposal_service().reconcile(thread_id)
+        return
+
     proposal = _latest_action_proposal(thread_id)
     if proposal is None:
         _record_failure(

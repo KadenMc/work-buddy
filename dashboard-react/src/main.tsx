@@ -6,6 +6,7 @@ import "@fontsource-variable/geist/index.css";
 import "@fontsource-variable/geist-mono/index.css";
 import App from "./App";
 import { DashboardAnnouncer } from "./dashboard/accessibility/DashboardAnnouncer";
+import { AssistedDraftRuntimeProvider } from "./dashboard/assistance";
 import {
   createBrowserWidgetDraftRepository,
   WidgetDraftRuntimeProvider,
@@ -54,7 +55,9 @@ createRoot(document.getElementById("root")!).render(
               <DashboardAnnouncer>
                 <InteractionSurfaceProvider>
                   <WidgetDraftRuntimeProvider repository={widgetDraftRepository}>
-                    <App />
+                    <AssistedDraftRuntimeProvider>
+                      <App />
+                    </AssistedDraftRuntimeProvider>
                   </WidgetDraftRuntimeProvider>
                 </InteractionSurfaceProvider>
               </DashboardAnnouncer>

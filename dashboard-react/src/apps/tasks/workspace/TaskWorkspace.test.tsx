@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { DashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
+import { DashboardHelpProvider } from "../../../dashboard/help";
 import type {
   IntentResult,
   WidgetIntent,
@@ -15,6 +16,7 @@ import { TASKS_APP_CONTRIBUTION } from "../contribution";
 import {
   TASK_INTENTS,
   type TaskDetail,
+  type TaskProposal,
   type TaskWorkspaceInput,
 } from "../contracts";
 import TaskWorkspace, { tomorrow } from "./TaskWorkspace";
@@ -90,10 +92,11 @@ const input = (selectedTask: TaskDetail | null = null): TaskWorkspaceInput => ({
 const workspaceElement = (
   workspaceInput: TaskWorkspaceInput,
   emit: (intent: WidgetIntent) => Promise<IntentResult>,
+  workspacePresentation: WidgetPresentationContext = presentation,
 ) => (
   <DashboardAnnouncer>
-    <WidgetDraftTestScope definition={TASKS_APP_CONTRIBUTION.widgetDefinitions[1]} presentation={presentation} input={workspaceInput}>
-      <TaskWorkspace input={workspaceInput} emit={emit} presentation={presentation} />
+    <WidgetDraftTestScope definition={TASKS_APP_CONTRIBUTION.widgetDefinitions[1]} presentation={workspacePresentation} input={workspaceInput}>
+      <TaskWorkspace input={workspaceInput} emit={emit} presentation={workspacePresentation} />
     </WidgetDraftTestScope>
   </DashboardAnnouncer>
 );
@@ -101,9 +104,142 @@ const workspaceElement = (
 const renderWorkspace = (
   workspaceInput: TaskWorkspaceInput,
   emit: (intent: WidgetIntent) => Promise<IntentResult>,
-) => render(workspaceElement(workspaceInput, emit));
+  workspacePresentation: WidgetPresentationContext = presentation,
+) => render(workspaceElement(workspaceInput, emit, workspacePresentation));
+
+const proposal: TaskProposal = { thread_id: "th-1234abcd", proposal_event_id: 7, status: "ready", parameters: { task_text: "Review captured idea", state: "inbox" }, origin: { kind: "journal", id: "capture-1", label: "Journal" }, realization: null, href: "/app/tasks?proposal=th-1234abcd" };
+const proposalInput = (value = proposal): TaskWorkspaceInput => ({ ...input(), selectedProposal: { kind: "loaded", proposal: value }, query: { ...input().query, proposal: value.thread_id } });
+
+describe("Task proposal review", () => {
+  it("reveals proposal mechanics on existing headings while retaining the proposed values", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    const value = proposalInput({ ...proposal, parameters: { ...proposal.parameters, contract: "Reviewed commitment" } });
+    render(<DashboardHelpProvider enabled>{workspaceElement(value, emit)}</DashboardHelpProvider>);
+    const heading = await screen.findByRole("heading", { name: "Review before creating" });
+    expect(screen.queryByText(/This is a proposal, not a task/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saving the fields above keeps/)).not.toBeInTheDocument();
+    expect(screen.getByText("Reviewed commitment")).toBeVisible();
+    await user.hover(document.body);
+    await user.hover(heading);
+    expect(await screen.findByRole("tooltip", {}, { timeout: 3000 })).toHaveTextContent("A saved proposal is not a task");
+    await user.keyboard("{Escape}");
+    await user.hover(document.body);
+    await user.hover(screen.getByRole("heading", { name: "Additional proposed settings" }));
+    expect(await screen.findByRole("tooltip", {}, { timeout: 3000 })).toHaveTextContent("Create task accepts all the proposed settings");
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("keeps actual proposal outcomes and unavailable reasons visible without help mode", async () => {
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    const rendered = renderWorkspace(proposalInput({ ...proposal, status: "rejected" }), emit);
+    expect(await screen.findByText(/This proposal was dismissed. No task was created/)).toBeVisible();
+    rendered.rerender(workspaceElement({ ...proposalInput(), selectedProposal: { kind: "unavailable", threadId: proposal.thread_id, code: "not_found", message: "This proposal could not be found." } }, emit));
+    expect(await screen.findByText("This proposal could not be found.")).toBeVisible();
+    expect(screen.queryByText("No task was created by opening this link.")).not.toBeInTheDocument();
+  });
+
+  it("shows additional task settings and preserves them when common fields are revised", async () => {
+    const user = userEvent.setup();
+    const additional = { contract: "Additional commitment", automation_tier_achievable: 3, agent_required_contexts: ["repository", "browser"] };
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    renderWorkspace(proposalInput({ ...proposal, parameters: { ...proposal.parameters, ...additional } }), emit);
+
+    const settings = await screen.findByRole("region", { name: "Additional proposed task settings" });
+    expect(within(settings).getByText("Contract")).toBeInTheDocument();
+    expect(within(settings).getByText("Additional commitment")).toBeInTheDocument();
+    expect(within(settings).getByText("Automation tier achievable")).toBeInTheDocument();
+    expect(within(settings).getByText("3")).toBeInTheDocument();
+    expect(within(settings).getByText("repository, browser")).toBeInTheDocument();
+    expect(emit).not.toHaveBeenCalled();
+
+    await user.type(screen.getByRole("textbox", { name: "Proposed task title" }), " tomorrow");
+    await user.click(screen.getByRole("button", { name: "Save proposal changes" }));
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      intent_type: TASK_INTENTS.proposalRevise,
+      payload: expect.objectContaining({ parameters: expect.objectContaining({ ...additional, task_text: "Review captured idea tomorrow" }) }),
+    }));
+  });
+
+  it("offers an explicit idempotent retry for interrupted creation while refresh stays read-only", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    renderWorkspace(proposalInput({ ...proposal, status: "executing" }), emit);
+    await user.click(await screen.findByRole("button", { name: "Refresh proposal" }));
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({ intent_type: TASK_INTENTS.locationChange, payload: { patch: { proposal: proposal.thread_id, task: null }, replace: true } });
+    expect(emit.mock.calls.some(([intent]) => intent.intent_type === TASK_INTENTS.proposalAccept)).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Retry creating task" }));
+    expect(emit.mock.calls[1]?.[0]).toMatchObject({ intent_type: TASK_INTENTS.proposalAccept, payload: { thread_id: proposal.thread_id, expected_proposal_event_id: proposal.proposal_event_id } });
+  });
+  it("does not create from a deep link; the explicit button carries the reviewed event", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    renderWorkspace(proposalInput(), emit);
+    expect(await screen.findByRole("textbox", { name: "Proposed task title" })).toHaveValue("Review captured idea");
+    expect(emit).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /^Create task$/ }));
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ intent_type: TASK_INTENTS.proposalAccept, payload: { thread_id: "th-1234abcd", expected_proposal_event_id: 7 } }));
+  });
+  it("makes local edits explicit and never accepts an unsaved draft", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    renderWorkspace(proposalInput(), emit);
+    await user.type(await screen.findByRole("textbox", { name: "Proposed task title" }), " tomorrow");
+    expect(screen.getByRole("button", { name: /^Create task$/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Save proposal changes" }));
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ intent_type: TASK_INTENTS.proposalRevise, payload: expect.objectContaining({ expected_proposal_event_id: 7, parameters: expect.objectContaining({ task_text: "Review captured idea tomorrow" }) }) }));
+  });
+  it("preserves local edits and blocks stale decisions when the proposal changes elsewhere", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    const view = renderWorkspace(proposalInput(), emit);
+    await user.type(await screen.findByRole("textbox", { name: "Proposed task title" }), " locally");
+    view.rerender(workspaceElement(proposalInput({ ...proposal, proposal_event_id: 9, parameters: { task_text: "Updated elsewhere" } }), emit));
+    expect(screen.getByRole("textbox", { name: "Proposed task title" })).toHaveValue("Review captured idea locally");
+    expect(screen.getByRole("button", { name: "Save proposal changes" })).toBeDisabled();
+    expect(screen.getByText(/This proposal changed elsewhere/)).toBeInTheDocument();
+  });
+  it("requires a second explicit dismissal gesture and preserves the capture", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    renderWorkspace(proposalInput(), emit);
+    await user.click(await screen.findByRole("button", { name: "Dismiss proposal" }));
+    expect(emit).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm dismissal" }));
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ intent_type: TASK_INTENTS.proposalReject, payload: { thread_id: "th-1234abcd", expected_proposal_event_id: 7 } }));
+  });
+});
 
 describe("TaskWorkspace", () => {
+  it("shows readable task actors without changing their canonical identities", async () => {
+    const actorRef = JSON.stringify({
+      schema: "wb.actor-ref/v1",
+      issuer_authority_id: "private-authority",
+      subject: "private-human",
+      kind: "human",
+      tenant_scope_id: "private-scope",
+    });
+    const task = {
+      ...detail,
+      document: { ...detail.document, updated_by: actorRef },
+      provenance: { ...detail.provenance, created_by: actorRef },
+      history: detail.history.map((entry) => ({ ...entry, actor: actorRef })),
+    };
+    const emit = vi.fn();
+    const view = renderWorkspace(input(task), emit);
+
+    expect(await screen.findByText("Edited 2026-08-23T12:00:00Z by Human")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("History and provenance"));
+    expect(screen.getByText("Created 2026-08-20T12:00:00Z by Human via dashboard.")).toBeVisible();
+    expect(view.container.querySelector(".wb-task-history ol")).toHaveTextContent("created · Task created · Human");
+    expect(view.container.textContent).not.toContain("wb.actor-ref/v1");
+    expect(view.container.textContent).not.toContain("private-human");
+    expect(task.document.updated_by).toBe(actorRef);
+    expect(task.provenance.created_by).toBe(actorRef);
+    expect(task.history[0]?.actor).toBe(actorRef);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it("formats tomorrow from local calendar components", () => {
     expect(tomorrow(new Date(2026, 7, 23, 23, 30))).toBe("2026-08-24");
   });
@@ -127,6 +263,60 @@ describe("TaskWorkspace", () => {
     await screen.findByRole("textbox", { name: "Title" });
     await expectNoAccessibilityViolations(view.container);
   });
+
+  it("uses the narrow host on a wide viewport and restores both panes when the host widens", async () => {
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    })));
+    try {
+      const emit = vi.fn(async (intent) => ({ intent_id: intent.intent_id, status: "accepted" as const }));
+      const view = renderWorkspace(input(detail), emit, { ...presentation, width: 767 });
+      const workspace = screen.getByRole("region", { name: "Task workspace" });
+      const listPanel = document.getElementById("wb-task-list-panel")!;
+      const detailPanel = document.getElementById("wb-task-detail-panel")!;
+
+      await screen.findByRole("textbox", { name: "Title" });
+      expect(workspace).toHaveAttribute("data-layout", "stacked");
+      expect(listPanel).toHaveAttribute("hidden");
+      expect(listPanel).toHaveAttribute("inert");
+      expect(detailPanel).not.toHaveAttribute("hidden");
+      await userEvent.click(screen.getByRole("tab", { name: "List" }));
+      expect(listPanel).not.toHaveAttribute("hidden");
+      expect(detailPanel).toHaveAttribute("hidden");
+      expect(detailPanel).toHaveAttribute("inert");
+
+      view.rerender(workspaceElement(input(detail), emit, { ...presentation, width: 1200 }));
+      expect(workspace).toHaveAttribute("data-layout", "wide");
+      for (const panel of [listPanel, detailPanel]) {
+        expect(panel).not.toHaveAttribute("hidden");
+        expect(panel).not.toHaveAttribute("inert");
+      }
+      expect(screen.getByRole("textbox", { name: "Title" })).toBeVisible();
+      expect(emit).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([[768, "compact"], [785, "compact"], [1100, "compact"], [1101, "wide"]] as const)(
+    "uses the %s px host breakpoint for %s layout on a wide viewport",
+    async (width, layout) => {
+      vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+        matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      })));
+      try {
+        renderWorkspace(input(detail), vi.fn(), { ...presentation, width });
+        await screen.findByRole("textbox", { name: "Title" });
+        expect(screen.getByRole("region", { name: "Task workspace" })).toHaveAttribute("data-layout", layout);
+        for (const id of ["wb-task-list-panel", "wb-task-detail-panel"]) {
+          expect(document.getElementById(id)).not.toHaveAttribute("hidden");
+          expect(document.getElementById(id)).not.toHaveAttribute("inert");
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("removes the inactive mobile pane from interaction and the accessibility tree", async () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({
@@ -177,7 +367,7 @@ describe("TaskWorkspace", () => {
     await user.click(screen.getByText("Prepare launch notes").closest("button")!);
 
     expect(emit.mock.calls.map((call) => call[0])).toEqual([
-      expect.objectContaining({ intent_type: TASK_INTENTS.locationChange, payload: { patch: { lens: "focused", task: null }, replace: false } }),
+      expect.objectContaining({ intent_type: TASK_INTENTS.locationChange, payload: { patch: { lens: "focused", task: null, proposal: null }, replace: false } }),
       expect.objectContaining({ intent_type: TASK_INTENTS.locationChange, payload: { patch: { task: "task-1" }, replace: false } }),
     ]);
   });

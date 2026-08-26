@@ -1,0 +1,14 @@
+@layer wb-apps {
+  .wb-jobs-chrome { display: grid; gap: var(--wb-space-2); margin-bottom: var(--wb-space-4); }
+  .wb-jobs-chrome h1, .wb-jobs-chrome p { margin: 0; }
+  .wb-job-composer { display: grid; gap: var(--wb-space-4); color: var(--wb-color-text-primary); }
+  .wb-job-assist { display: flex; flex-wrap: wrap; gap: var(--wb-space-3); align-items: center; justify-content: flex-end; }
+  .wb-job-fields { display: grid; gap: var(--wb-space-4); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wb-job-fields label, .wb-job-invoke { display: grid; gap: var(--wb-space-2); font-size: var(--wb-font-size-sm); }
+  .wb-job-composer input, .wb-job-composer select { width: 100%; box-sizing: border-box; min-height: var(--wb-control-height-md); padding: var(--wb-space-2) var(--wb-space-3); border: var(--wb-border-width) solid var(--wb-color-border-default); border-radius: var(--wb-radius-control); background: var(--wb-color-surface-inset); color: var(--wb-color-text-primary); font: inherit; }
+  .wb-job-composer input:focus-visible, .wb-job-composer select:focus-visible { outline: var(--wb-focus-width) solid var(--wb-color-focus-ring); outline-offset: var(--wb-space-1); }
+  .wb-job-composer small, .wb-job-confirmation { color: var(--wb-color-text-secondary); font-size: var(--wb-font-size-xs); }
+  .wb-job-error { color: var(--wb-color-status-danger) !important; }
+  .wb-job-composer [aria-invalid="true"] { border-color: var(--wb-color-status-danger); }
+  @media (max-width: 767px) { .wb-job-fields { grid-template-columns: 1fr; } }
+}

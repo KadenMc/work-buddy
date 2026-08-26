@@ -2350,7 +2350,7 @@ def test_conversation_catalog_refresh_is_explicit(
 ):
     from work_buddy.agent_execution import registry as execution_registry
 
-    original = execution_registry.get_catalog
+    original = execution_registry.get_providers
     refreshes: list[bool] = []
 
     def _recording_catalog(*, refresh: bool = False):
@@ -2359,7 +2359,7 @@ def test_conversation_catalog_refresh_is_explicit(
 
     monkeypatch.setattr(
         execution_registry,
-        "get_catalog",
+        "get_providers",
         _recording_catalog,
     )
     base = _url(
@@ -2450,7 +2450,7 @@ def test_execution_picker_can_select_before_chat_starts(
             "expected_revision": "",
         },
     )
-    assert selected.status_code == 200
+    assert selected.status_code == 200, selected.get_json()
     payload = selected.get_json()
     assert payload["created"] is True
     assert payload["agent"]["status"] == "not_started"
@@ -2468,6 +2468,27 @@ def test_execution_picker_can_select_before_chat_starts(
     assert len(fake_document_agent) == 1
     assert fake_document_agent[0]["execution"].provider_id == "codex"
     assert fake_document_agent[0]["execution"].model_id == "gpt-5.6-sol"
+
+
+def test_pinned_chat_remains_readable_and_startable_when_global_default_breaks(client, seeded, fake_document_agent, monkeypatch):
+    from work_buddy.agent_execution import registry as execution_registry
+
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    selected = client.patch(_url(f"{base}/execution", seeded["store_id"]), json={
+        "provider_id": "codex", "model_id": "gpt-5.6-sol", "expected_revision": "",
+    })
+    assert selected.status_code == 200, selected.get_json()
+    selection = selected.get_json()["execution"]["selection"]
+
+    def broken_default():
+        raise RuntimeError("invalid global default")
+
+    monkeypatch.setattr(execution_registry, "default_selection", broken_default)
+    read = client.get(_url(base, seeded["store_id"]))
+    assert read.status_code == 200
+    assert read.get_json()["execution"]["selection"] == selection
+    assert client.post(_url(base, seeded["store_id"])).status_code == 200
+    assert fake_document_agent[-1]["execution"].provider_id == "codex"
 
 
 def test_execution_picker_same_pair_retry_is_idempotent_after_response_loss(

@@ -421,7 +421,7 @@ async function onEditJobClick(name) {
         return;
     }
 
-    if (typeof showAddJobForm === 'function') await showAddJobForm();
+    if (typeof showAddJobForm === 'function') await showAddJobForm(true);
 
     document.getElementById('job-form-name').value = data.name || '';
     document.getElementById('job-form-schedule').value = data.schedule || '';
@@ -534,7 +534,11 @@ function _loadJobRegistry() {
     return _jobRegistryPromise;
 }
 
-async function showAddJobForm() {
+async function showAddJobForm(legacyEdit = false) {
+    if (!legacyEdit) {
+        window.location.assign('/app/jobs');
+        return;
+    }
     document.getElementById('jobs-add-form').hidden = false;
     document.getElementById('jobs-add-btn').hidden = true;
     document.getElementById('job-form-name').focus();
@@ -1103,33 +1107,7 @@ function _jobsHelpToast(msg, kind) {
     setTimeout(() => el.remove(), 4000);
 }
 async function onJobsHelpClick() {
-    const btn = document.getElementById('jobs-help-btn');
-    if (!btn) return;
-    if (window.wbChatSidebar && window.wbChatSidebar.isOpen()) {
-        _jobsHelpToast('A chat is already open. Close it before starting another.', 'info');
-        return;
-    }
-    btn.disabled = true;
-    const orig = btn.textContent;
-    btn.textContent = 'Starting…';
-    try {
-        const resp = await fetch('/api/user_jobs/help', { method: 'POST' });
-        const data = await resp.json();
-        if (data && data.ok) {
-            window.wbChatSidebar.open({
-                conversation_id: data.conversation_id,
-                title: data.title || 'Help me create a job',
-                bound_tab: 'jobs',
-            });
-        } else {
-            _jobsHelpToast((data && data.error) || 'Could not start the chat.', 'error');
-        }
-    } catch (exc) {
-        _jobsHelpToast('Help request failed: ' + exc, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = orig;
-    }
+    window.location.assign('/app/jobs?assist=1');
 }
 
 // ---- Event-delegation adapters ----

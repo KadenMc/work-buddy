@@ -717,7 +717,7 @@ def _execution_selection_for_conversation(
 
     projected = conversation_execution.projected_execution(
         conversation_id,
-        default_selection().to_dict(),
+        lambda: default_selection().to_dict(),
     )
     if not projected.persisted:
         try:
@@ -731,7 +731,7 @@ def _execution_selection_for_conversation(
             # persisted target rather than replacing it with our projection.
             projected = conversation_execution.projected_execution(
                 conversation_id,
-                default_selection().to_dict(),
+                lambda: default_selection().to_dict(),
             )
             if not projected.persisted:
                 raise

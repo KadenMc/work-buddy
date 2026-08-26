@@ -9,6 +9,7 @@ import {
 
 import { Button, InlineAlert } from "../../ui";
 import { formatTime } from "../shared";
+import { chatMessageAuthorLabel } from "./ChatTranscriptCopy";
 import type { ChatAgentActivity, ChatMessage } from "./contracts";
 import "./styles.css";
 
@@ -29,6 +30,12 @@ export interface ChatMessageListProps {
   readonly renderMessageAccessory?: (message: ChatMessage) => ReactNode;
   /** Additive feature-owned content rendered after all canonical messages. */
   readonly transcriptAppendix?: ReactNode;
+  /**
+   * Opaque host revision for message accessories or the transcript appendix.
+   * Increment it when an extension changes rendered height without changing the
+   * canonical message list, so a reader already at latest remains at latest.
+   */
+  readonly transcriptExtensionRevision?: string | number;
   /** Inline answer handler for pending boolean and choice questions. */
   readonly onRespond?: (value: string, inReplyTo?: string) => void;
   /** Disable every built-in boolean and choice response control. */
@@ -46,12 +53,6 @@ export interface ChatMessageListProps {
   readonly revealLatestMessageToken?: number;
   /** Shown when the conversation has no messages yet. */
   readonly emptyLabel?: string;
-}
-
-function authorName(message: ChatMessage): string {
-  if (message.author === "user") return "You";
-  if (message.author === "system") return message.authorLabel ?? "System";
-  return message.authorLabel ?? "Assistant";
 }
 
 function seedReadCount(
@@ -73,6 +74,7 @@ export function ChatMessageList({
   agentActivity = "idle",
   renderMessageAccessory,
   transcriptAppendix,
+  transcriptExtensionRevision,
   onRespond,
   responsesDisabled = false,
   showStoppedNotice = true,
@@ -113,6 +115,21 @@ export function ChatMessageList({
     if (element !== null) element.scrollTop = element.scrollHeight;
     setReadCount(messageCount);
   }, [messageCount]);
+
+  // Feature-owned transcript content can grow or move while the canonical
+  // message count stays fixed. An explicit host revision keeps an already
+  // pinned reader at latest without breaking scroll lock for a reader above it.
+  const previousExtensionRevision = useRef(transcriptExtensionRevision);
+  useLayoutEffect(() => {
+    if (Object.is(previousExtensionRevision.current, transcriptExtensionRevision)) {
+      return;
+    }
+    previousExtensionRevision.current = transcriptExtensionRevision;
+    if (!pinnedRef.current) return;
+    const element = scrollRef.current;
+    if (element !== null) element.scrollTop = element.scrollHeight;
+    setReadCount(messageCount);
+  }, [messageCount, transcriptExtensionRevision]);
 
   // A locally-authored send is never hidden behind scroll lock. Other incoming
   // messages still respect the reader's position and accumulate as unread.
@@ -252,7 +269,7 @@ export function ChatMessageList({
               >
                 <div className="wb-chat-msg__bubble">
                   <span className="wb-visually-hidden">
-                    {authorName(message)}:
+                    {chatMessageAuthorLabel(message)}:{" "}
                   </span>
                   <span className="wb-chat-msg__content">{message.content}</span>
                   {renderMessageAccessory?.(message)}
@@ -286,7 +303,7 @@ export function ChatMessageList({
         {transcriptAppendix}
       </div>
 
-      {agentActivity === "thinking" ? (
+      {agentActivity === "starting" || agentActivity === "thinking" ? (
         <div className="wb-chat-typing" role="status">
           <span className="wb-chat-typing__dots" aria-hidden="true">
             <span className="wb-chat-typing__dot" />

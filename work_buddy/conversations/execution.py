@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -141,18 +141,21 @@ def _persisted_from_metadata(
 
 def projected_execution(
     conversation_id: str | None,
-    default_selection: Mapping[str, Any],
+    default_selection: Mapping[str, Any] | Callable[[], Mapping[str, Any]],
     *,
     conn: sqlite3.Connection | None = None,
 ) -> ConversationExecution:
-    """Read a persisted selection or project the server default without writing."""
-    default_fields = _selection_fields(default_selection)
-    if conversation_id is None:
+    """Read a pinned selection first; resolve a lazy default only when unbound."""
+    def unbound() -> ConversationExecution:
+        selected = default_selection() if callable(default_selection) else default_selection
         return ConversationExecution(
-            **default_fields,
+            **_selection_fields(selected),
             revision=None,
             persisted=False,
         )
+
+    if conversation_id is None:
+        return unbound()
     own_conn = conn is None
     active = get_connection() if own_conn else conn
     try:
@@ -166,11 +169,7 @@ def projected_execution(
         persisted = _persisted_from_metadata(metadata)
         if persisted is not None:
             return persisted
-        return ConversationExecution(
-            **default_fields,
-            revision=None,
-            persisted=False,
-        )
+        return unbound()
     finally:
         if own_conn:
             active.close()

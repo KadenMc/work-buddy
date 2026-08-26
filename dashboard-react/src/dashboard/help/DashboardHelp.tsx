@@ -111,11 +111,16 @@ export function HelpTarget({
   const existingClassName =
     typeof children.props.className === "string" ? children.props.className : "";
   const existingRef = children.props.ref as Ref<HTMLElement> | undefined;
+  // Help augments field errors and other descriptions; it must not replace them.
+  const describedBy = [children.props["aria-describedby"], triggerProps["aria-describedby"]]
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .join(" ") || undefined;
   const trigger = cloneElement(
     children,
     mergeProps(children.props, triggerProps, {
       className: `${existingClassName} wb-help-target`.trim(),
       "data-help-target": "true",
+      "aria-describedby": describedBy,
       ...(focusable ? { tabIndex: 0 } : {}),
       ...(ariaLabel ? { "aria-label": ariaLabel } : {}),
       ...(reactAriaComposite

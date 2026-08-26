@@ -67,13 +67,13 @@ The Settings → Activity sub-view is **registry-driven**: its widgets (Obsidian
 
 ## Right-rail surface (chat sidebar)
 
-The dashboard has a persistent right-side surface — ``wb-chat-sidebar`` — that slides in beside the main content, which squishes left via ``html { padding-right }``. Hosts a ``conversation_chat`` renderer in pane mode. See ``services/dashboard/chat-sidebar`` for the full reusable API; first consumer is the Jobs tab's ``💬 Help me create a job`` button (endpoint ``POST /api/user_jobs/help``).
+The root dashboard retains the right-side ``wb-chat-sidebar`` surface, which hosts the legacy ``conversation_chat`` renderer in pane mode. See ``services/dashboard/chat-sidebar`` for its compatibility API. React authoring uses the shared Co-work chat primitives and widget-native assisted drafts documented at `services/dashboard/react/assisted-drafts`; Jobs assistance is available at `/app/jobs`.
 
 Distinct from the ``conversation_chat`` workflow-view tab — same renderer, different mount point: a workflow-view tab is a full-tab pane reached via the CHAT toast, while the chat sidebar opens directly without a toast and squishes the active tab rather than replacing it.
 
 ## Agent ↔ form bridge
 
-The **chat sidebar** (above) is the *conversation* surface; the **form bridge** is the *interaction* surface — schema-driven, typed, and reusable across forms. See ``services/dashboard/form-bridge`` for the full design. Agents call the single MCP capability ``dashboard_interact`` to fill fields, open the form, click submit, and read state; the dashboard validates against the form's registered ``FormSchema`` and routes events through ``window.wbFormBridge`` to per-form handlers.
+The root-dashboard **form bridge** is frozen compatibility infrastructure, not an extension point. See ``services/dashboard/form-bridge`` for the retained protocol. `dashboard_interact` rejects every `jobs-add-job` action with `form_migrated` and a link to `/app/jobs`. New React forms declare host-owned drafts and accept advisory typed patches through `services/dashboard/react/assisted-drafts`; the user retains final submission authority.
 
 ## Real-time updates
 
@@ -105,14 +105,20 @@ Settings responses are no-store. Writes and resets honor dashboard read-only mod
 * ``POST /api/dashboard/interact`` — typed entry point for agents driving forms (called by the ``dashboard_interact`` MCP capability and any other process). Body ``{action, form_id, field?, value?, timeout_seconds?}``.
 * ``POST /api/dashboard/interact/result/<request_id>`` — frontend's postback for rendezvous-backed actions (``form_submit``, ``form_get_state``). Body ``{ok, error?, errors_by_field?, fields?}``.
 
-Both gated by ``_reject_read_only()``. See ``services/dashboard/form-bridge`` for the protocol.
+Both gated by ``_reject_read_only()``. These are retained compatibility routes and cannot drive the React Jobs authoring form. See ``services/dashboard/form-bridge`` for the protocol.
 
 ## User-job endpoints
 
-* ``POST /api/user_jobs`` — create a user-job file from the Add-job form. Same path the chat-walkthrough agent goes through (via the form bridge's ``submitHandler``), so any future change to validation or payload shape benefits both flows.
-* ``POST /api/user_jobs/help`` — open a chat-driven walkthrough. Silently creates a conversation, fire-and-forgets a headless Claude session bound to it, returns ``{ok, conversation_id, title}`` for the frontend to feed into ``wbChatSidebar.open``. Auto-grants ``sidecar:agent_spawn`` once-consent inside the spawn helper.
+* `GET /api/jobs/authoring` — report authoring access and the configured time zone without creating a job.
+* `POST /api/jobs/authoring` — human submission from `/app/jobs`, gated by dashboard read-only mode and enrolled identity. It validates the draft and delegates to the normal user-job capability and exclusive-create writer.
+* ``POST /api/user_jobs`` — retained legacy user-job creation route, not an assisted-draft submission path.
+* ``POST /api/user_jobs/help`` — retained migration response: HTTP 410 with `job_authoring_moved` and `/app/jobs`, subject to read-only rejection. It does not spawn an agent or create a conversation.
 
-Both gated by ``_reject_read_only()``.
+Existing job management and editing remain in the root Jobs tab. See `features/user-jobs` and `services/dashboard/react/assisted-drafts`.
+
+## Assisted capture and task proposals
+
+Tasks Quick Add, Journal Quick Capture, and Jobs authoring reuse widget-native draft assistance rather than a separate form-driving chat stack. Model assistance is opt-in and advisory; explicit user actions own submission. Task proposals are durable Threads records reviewed through `/app/tasks?proposal=<threadId>` and realized through the native TaskStore boundary. Journal retains exact capture input in Sources before routing or proposing a follow-up. See `services/dashboard/react/assisted-drafts`, `services/dashboard/react/tasks-view`, and `journal/source-backed-capture`.
 
 ## Triage flow (no separate dashboard endpoints)
 
@@ -124,5 +130,5 @@ Triage runs through the unified source pipeline (``run_source_pipeline`` capabil
 * **Gate new POST routes with ``_reject_read_only()``** so read-only deployments stay read-only.
 * **Same-origin only** for any fetch from the frontend.
 * **Silent conversation create for sidebar-bound chats** — call ``conversations.store.create_conversation`` directly, NOT the ``conversation_create`` capability, so ``_notify_conversation_created`` does not double-mount the conversation as both a CHAT toast/workflow-view tab and a sidebar.
-* **Do not subscribe to ``dashboard.form.*`` events directly** from per-tab JS. The ``wbFormBridge`` (``core/form_bridge.py``) owns that event family; tab modules register handlers via ``window.wbFormBridge.register(form_id, ...)``.
+* **Keep the legacy form bridge frozen.** Existing handlers route ``dashboard.form.*`` events through ``wbFormBridge``; new consumers use widget-native assisted drafts and human-only submission, not DOM-driving events.
 * **Keep request handlers off the hot-path anti-patterns** — no per-request config parse, per-open schema work, N+1 store opens, or unbounded synchronous bridge/subprocess calls. Serve expensive reads from a background-refreshed cache and pre-warm at startup. See ``architecture/hot-path-discipline``.

@@ -13,6 +13,7 @@ import {
 } from "./bindings";
 import { TASK_INTENTS } from "./contracts";
 import { TASKS_VIEW_DEFINITION, TASKS_WIDGET_THEME } from "./viewDefinition";
+import { assistedDraftDeclaration } from "../../dashboard/assistance/schema";
 
 const QUICK_ADD_INPUT: JsonSchemaReference = {
   schemaId: "wb.tasks.quick-add.input",
@@ -30,6 +31,10 @@ const intentSchemas = Object.values(TASK_INTENTS).map((schemaId) => ({
 
 const mutationTypes = new Set<string>([
   TASK_INTENTS.create,
+  TASK_INTENTS.proposalCreate,
+  TASK_INTENTS.proposalRevise,
+  TASK_INTENTS.proposalAccept,
+  TASK_INTENTS.proposalReject,
   TASK_INTENTS.batchCreate,
   TASK_INTENTS.update,
   TASK_INTENTS.complete,
@@ -73,6 +78,10 @@ const roles: readonly WidgetRoleContract[] = [
     inputSchema: QUICK_ADD_INPUT,
     outputIntentSchemas: intentSchemas.filter(({ schemaId }) =>
       schemaId === TASK_INTENTS.create ||
+      schemaId === TASK_INTENTS.proposalCreate ||
+      schemaId === TASK_INTENTS.proposalRevise ||
+      schemaId === TASK_INTENTS.proposalAccept ||
+      schemaId === TASK_INTENTS.locationChange ||
       schemaId === TASK_INTENTS.batchPreview ||
       schemaId === TASK_INTENTS.batchCreate,
     ),
@@ -85,6 +94,7 @@ const roles: readonly WidgetRoleContract[] = [
     inputSchema: WORKSPACE_INPUT,
     outputIntentSchemas: intentSchemas.filter(({ schemaId }) =>
       schemaId !== TASK_INTENTS.create &&
+      schemaId !== TASK_INTENTS.proposalCreate &&
       schemaId !== TASK_INTENTS.batchPreview &&
       schemaId !== TASK_INTENTS.batchCreate,
     ),
@@ -107,6 +117,7 @@ const widgets: readonly WidgetDefinition[] = [
     inputSchema: QUICK_ADD_INPUT,
     outputIntentSchemas: quickAddSchemas,
     outputIntentEffects: effects(quickAddSchemas),
+    assistableDrafts: [assistedDraftDeclaration("task-create")],
     drafts: [
       {
         draftName: "task-create",
@@ -151,6 +162,13 @@ const widgets: readonly WidgetDefinition[] = [
         maxBytes: 131_072,
         clearPolicy: "confirm",
         scope: { kind: "input-field", path: ["selectedTask", "task_id"] },
+      },
+      {
+        draftName: "task-proposal-edit",
+        schema: { schemaId: "wb.tasks.proposal.edit.draft", version: 1 },
+        persistence: "device", sensitivity: "ordinary", retentionDays: 30,
+        maxBytes: 131_072, clearPolicy: "confirm",
+        scope: { kind: "input-field", path: ["selectedProposal", "proposal", "thread_id"] },
       },
     ],
     sizeContract: {

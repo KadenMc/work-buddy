@@ -105,6 +105,33 @@ def test_execution_compare_and_swap_rejects_stale_picker(
         )
 
 
+def test_pinned_execution_never_resolves_an_invalid_global_default(isolated_conversations):
+    conversation = store.create_conversation("Pinned chat")
+    pinned = set_execution(conversation.conversation_id, _selection(), expected_revision=None)
+
+    def unavailable_default():
+        raise RuntimeError("invalid global default")
+
+    assert projected_execution(conversation.conversation_id, unavailable_default) == pinned
+    assert projected_execution(conversation.conversation_id, {}) == pinned
+    unbound = store.create_conversation("New chat")
+    with pytest.raises(RuntimeError, match="invalid global default"):
+        projected_execution(unbound.conversation_id, unavailable_default)
+    with pytest.raises(RuntimeError, match="invalid global default"):
+        projected_execution(None, unavailable_default)
+
+
+def test_unbound_execution_resolves_latest_default_without_repinning_chats(isolated_conversations):
+    first = store.create_conversation("First chat")
+    second = store.create_conversation("Second chat")
+    selected = _selection()
+    projected = projected_execution(first.conversation_id, lambda: selected)
+    pinned = set_execution(first.conversation_id, projected.to_dict(), expected_revision=None)
+    selected = _selection("codex", "gpt-5.6-sol")
+    assert projected_execution(first.conversation_id, lambda: selected) == pinned
+    assert projected_execution(second.conversation_id, lambda: selected).provider_id == "codex"
+
+
 def test_execution_same_pair_retry_is_idempotent_after_response_loss(
     isolated_conversations,
 ) -> None:

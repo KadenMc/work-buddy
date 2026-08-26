@@ -5,6 +5,7 @@ import { useWidgetDraft } from "../../dashboard/drafts";
 import { useInteractionSurfaces } from "../../dashboard/interactions";
 import { Button, InlineAlert, TextAreaField } from "../../ui";
 import { formatTime, ProvenanceBadge, StatusBadge } from "../shared";
+import { FollowUpLinks } from "../capture/FollowUpLinks";
 import type {
   MarkdownNoteItem,
   NotesDisplayMode,
@@ -320,6 +321,7 @@ export function MarkdownItemCollection({
                       {deleteError?.itemId === item.itemId && (
                         <InlineAlert tone="danger">{deleteError.message}</InlineAlert>
                       )}
+                      {item.followUps ? <FollowUpLinks items={item.followUps} /> : null}
                       {documentError?.itemId === item.itemId && (
                         <InlineAlert tone="danger">{documentError.message}</InlineAlert>
                       )}

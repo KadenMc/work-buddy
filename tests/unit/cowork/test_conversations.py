@@ -128,6 +128,25 @@ def test_post_feedback_message_lands_as_user_text(conv_conn):
     assert stored[-1]["content"] == text
 
 
+def test_owned_document_binding_and_feedback_connections_commit(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        conversation_store, "_DB_PATH", tmp_path / "throwaway-owned-connections.db",
+    )
+    with conversation_store.get_connection() as conn:
+        conversation_store._ensure_schema(conn)
+    binding = cw.ensure_document_conversation(
+        document_id="throwaway-owned-doc", store_id=new_id(),
+    )
+    assert conversation_store.get_conversation(binding.conversation_id) is not None
+    message = cw.post_feedback_message(
+        conversation_id=binding.conversation_id, text="Throwaway durable feedback.",
+    )
+    assert message is not None
+    assert conversation_store.get_message(
+        binding.conversation_id, message.message_id,
+    ).content == "Throwaway durable feedback."
+
+
 def test_feedback_is_an_ordinary_turn_and_does_not_answer_pending(conv_conn):
     binding = cw.ensure_document_conversation(
         document_id="throwaway-doc-pending",
@@ -211,6 +230,27 @@ def test_deliver_redirect_delivers_note_and_reference(conv_conn):
     assert reference.kind == "proposal"
     assert reference.record_id == proposal_id
     assert reference.store_id == store_id
+
+
+@pytest.mark.parametrize("verb", ["redirect", "endorse"])
+def test_owned_decision_delivery_is_durable_in_a_reopened_connection(
+    tmp_path, monkeypatch, verb,
+):
+    monkeypatch.setattr(
+        conversation_store, "_DB_PATH", tmp_path / "throwaway-owned-delivery.db",
+    )
+    with conversation_store.get_connection() as conn:
+        conversation_store._ensure_schema(conn)
+    status = cw.deliver_decision(
+        document_id="throwaway-owned-delivery", store_id=new_id(),
+        verb=verb, proposal_id=new_id(),
+        note="Throwaway redirection." if verb == "redirect" else None,
+    )
+    assert status.delivered is True
+    with conversation_store.get_connection() as reopened:
+        messages = _messages(reopened, status.conversation_id)
+    assert [message["message_id"] for message in messages] == [status.message_id]
+    assert messages[0]["role"] == "user"
 
 
 def test_deliver_endorse_delivers_reference_without_note(conv_conn):

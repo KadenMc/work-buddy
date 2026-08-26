@@ -60,6 +60,11 @@ DAEMON_SESSION_PREFIX = "daemon:"
 # ownership because operating systems can reuse PIDs after a process exits.
 _OWNED_DETACHED_PROCESSES: dict[tuple[int, str], subprocess.Popen] = {}
 _OWNED_DETACHED_PROCESSES_LOCK = threading.RLock()
+# Only exact-owned process exit codes survive reaping. No worker output or
+# prompt data belongs here; callers map known codes to their own safe messages.
+_DETACHED_PROCESS_COMPLETIONS: dict[tuple[int, str], tuple[float, int]] = {}
+_DETACHED_COMPLETION_TTL_SECONDS = 15 * 60
+_DETACHED_COMPLETION_LIMIT = 256
 _DETACHED_STDIN_TIMEOUT_SECONDS = 10.0
 _DETACHED_TERMINATION_VERIFY_TIMEOUT_SECONDS = 1.0
 _DETACHED_TERMINATION_RETRY_SECONDS = 1.0
@@ -473,7 +478,10 @@ def _spawn_detached_process_unchecked(
 
     owner_token = session_name.strip() or uuid.uuid4().hex
     with _OWNED_DETACHED_PROCESSES_LOCK:
-        _OWNED_DETACHED_PROCESSES[(proc.pid, owner_token)] = proc
+        key = (proc.pid, owner_token)
+        _prune_detached_process_completions(time.monotonic())
+        _DETACHED_PROCESS_COMPLETIONS.pop(key, None)
+        _OWNED_DETACHED_PROCESSES[key] = proc
     # Start the natural-exit reaper before prompt delivery. Delivery can time
     # out while its writer thread is still blocked; that failure path must
     # retain a way to observe and clean up the exact owned process.
@@ -552,6 +560,49 @@ def _owned_detached_process(
         return _OWNED_DETACHED_PROCESSES.get((pid, owner_token))
 
 
+def _prune_detached_process_completions(now: float) -> None:
+    """Bound completion metadata while the owned-process lock is held."""
+    expired = [
+        key
+        for key, (completed_at, _) in _DETACHED_PROCESS_COMPLETIONS.items()
+        if now - completed_at >= _DETACHED_COMPLETION_TTL_SECONDS
+    ]
+    for key in expired:
+        _DETACHED_PROCESS_COMPLETIONS.pop(key, None)
+    while len(_DETACHED_PROCESS_COMPLETIONS) > _DETACHED_COMPLETION_LIMIT:
+        _DETACHED_PROCESS_COMPLETIONS.pop(next(iter(_DETACHED_PROCESS_COMPLETIONS)))
+
+
+def owned_detached_process_exit_code(
+    pid: int,
+    *,
+    owner_token: str,
+) -> int | None:
+    """Read an exact-owned completion without consuming it or probing a PID.
+
+    Polling the retained handle covers exit before the reaper runs. Once reaped,
+    only bounded in-process metadata is available; a missing/expired entry or a
+    restarted parent cannot establish any process outcome.
+    """
+    if type(pid) is not int or pid <= 0 or not isinstance(owner_token, str):
+        return None
+    normalized_owner = owner_token.strip()
+    if not normalized_owner:
+        return None
+    key = (pid, normalized_owner)
+    with _OWNED_DETACHED_PROCESSES_LOCK:
+        _prune_detached_process_completions(time.monotonic())
+        proc = _OWNED_DETACHED_PROCESSES.get(key)
+        if proc is not None:
+            try:
+                return_code = proc.poll()
+            except (OSError, ValueError):
+                return None
+            return return_code if type(return_code) is int else None
+        completed = _DETACHED_PROCESS_COMPLETIONS.get(key)
+        return completed[1] if completed is not None else None
+
+
 def _forget_owned_detached_process(
     pid: int,
     owner_token: str,
@@ -561,6 +612,13 @@ def _forget_owned_detached_process(
         key = (pid, owner_token)
         current = _OWNED_DETACHED_PROCESSES.get(key)
         if proc is None or current is proc:
+            if current is not None and current is proc:
+                return_code = getattr(current, "returncode", None)
+                if type(return_code) is int:
+                    now = time.monotonic()
+                    _DETACHED_PROCESS_COMPLETIONS.pop(key, None)
+                    _DETACHED_PROCESS_COMPLETIONS[key] = (now, return_code)
+                    _prune_detached_process_completions(now)
             _OWNED_DETACHED_PROCESSES.pop(key, None)
 
 

@@ -24,7 +24,9 @@ from .codex import (
 )
 from .models import is_safe_session_id
 
-logger = get_logger(__name__)
+# ``python -m`` executes this module as __main__, outside the work_buddy logger
+# hierarchy. Keep detached-worker diagnostics in the configured session log.
+logger = get_logger("work_buddy.agent_execution.codex_worker")
 
 _MAX_PROMPT_CHARS = 1_000_000
 _COWORK_BASE_INSTRUCTIONS = (
@@ -99,11 +101,16 @@ def run_worker(
     """Run one ephemeral read-only Codex thread until the brief completes."""
 
     if not model or not is_safe_session_id(session_id) or not prompt:
+        logger.error(
+            "Codex hosted worker rejected request: stage=validate_request exit_code=2"
+        )
         return 2
     os.environ["WORK_BUDDY_SESSION_ID"] = session_id
+    stage = "import_sdk"
     try:
         from openai_codex import ApprovalMode, Codex, Sandbox
 
+        stage = "create_workspace"
         with TemporaryDirectory(
             prefix="work-buddy-codex-host-",
             ignore_cleanup_errors=True,
@@ -123,17 +130,22 @@ def run_worker(
             else:
                 discovery_factory = codex_factory
 
+            stage = "discover_config"
+            logger.info("Codex hosted worker starting: stage=%s", stage)
             with discovery_factory() as discovery:
                 discovered_config = read_effective_codex_config(
                     discovery,
                     cwd=host_cwd,
                 )
+                stage = "validate_discovered_config"
                 validate_subscription_codex_config(discovered_config)
                 inherited_mcp_server_names = effective_mcp_server_names(
                     discovered_config
                 )
                 inherited_plugin_ids = effective_plugin_ids(discovered_config)
+                stage = "close_discovery"
 
+            stage = "configure_isolation"
             launch_isolation = codex_entry_isolation_overrides(
                 effective_config=discovered_config,
                 plugin_ids=inherited_plugin_ids,
@@ -149,22 +161,27 @@ def run_worker(
             else:
                 execution_factory = codex_factory
 
+            stage = "open_execution_runtime"
             with execution_factory() as codex:
+                stage = "read_effective_config"
                 effective_config = read_effective_codex_config(
                     codex,
                     cwd=host_cwd,
                 )
+                stage = "validate_effective_config"
                 validate_subscription_codex_config(effective_config)
                 validate_entry_isolation(
                     effective_config,
                     mcp_server_names=inherited_mcp_server_names,
                     plugin_ids=inherited_plugin_ids,
                 )
+                stage = "configure_thread"
                 config = build_thread_config(
                     mcp_url=mcp_url,
                     session_id=session_id,
                     inherited_mcp_server_names=inherited_mcp_server_names,
                 )
+                stage = "start_thread"
                 thread = codex.thread_start(
                     approval_mode=ApprovalMode.deny_all,
                     base_instructions=_COWORK_BASE_INSTRUCTIONS,
@@ -177,23 +194,24 @@ def run_worker(
                     sandbox=Sandbox.read_only,
                     service_name="work-buddy-cowork",
                 )
-                result = thread.run(
+                stage = "run_turn"
+                logger.info("Codex hosted worker running: stage=%s", stage)
+                thread.run(
                     prompt,
                     approval_mode=ApprovalMode.deny_all,
                     model=model,
                     sandbox=Sandbox.read_only,
                 )
-        logger.info(
-            "Codex document worker completed: model=%s, response_len=%d",
-            model,
-            len(str(getattr(result, "final_response", "") or "")),
-        )
+                stage = "close_execution_runtime"
+            stage = "cleanup_workspace"
+        logger.info("Codex hosted worker completed: stage=completed exit_code=0")
         return 0
     except Exception as exc:
         # Do not log exception text: RPC/auth failures can contain account or
         # filesystem details.  Conversation responses never receive this log.
         logger.error(
-            "Codex document worker failed: error_type=%s",
+            "Codex hosted worker failed: stage=%s error_type=%s",
+            stage,
             type(exc).__name__,
         )
         return 1
@@ -208,9 +226,27 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    prompt = sys.stdin.read(_MAX_PROMPT_CHARS + 1)
+    stage = "parse_arguments"
+    try:
+        args = _parser().parse_args(argv)
+        stage = "read_brief"
+        prompt = sys.stdin.read(_MAX_PROMPT_CHARS + 1)
+    except SystemExit as exc:
+        logger.error(
+            "Codex hosted worker entry failed: stage=%s exit_code=%d",
+            stage,
+            exc.code if isinstance(exc.code, int) else 1,
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "Codex hosted worker entry failed: stage=%s error_type=%s",
+            stage,
+            type(exc).__name__,
+        )
+        raise
     if len(prompt) > _MAX_PROMPT_CHARS:
+        logger.error("Codex hosted worker rejected request: stage=read_brief exit_code=2")
         return 2
     return run_worker(
         model=args.model,

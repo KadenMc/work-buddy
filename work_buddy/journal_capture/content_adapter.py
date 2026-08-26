@@ -114,6 +114,7 @@ class JournalContentAdapter:
         vault_root: str | Path | None = None,
         *,
         journal_dir: str | Path | None = None,
+        journal_store_path: Path | None = None,
     ) -> None:
         if vault_root is None:
             configured = (load_config() or {})["vault_root"]
@@ -125,6 +126,7 @@ class JournalContentAdapter:
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             raise ValueError("Journal directory must be vault-relative")
         self.journal_dir = relative
+        self.journal_store_path = journal_store_path
 
     def journal_path(self, day_id: str) -> Path:
         return self.vault_root / self.journal_dir / f"{day_id}.md"
@@ -151,7 +153,7 @@ class JournalContentAdapter:
         try:
             from work_buddy.paths import resolve
 
-            journal_store_path = resolve("db/journal-capture")
+            journal_store_path = self.journal_store_path or resolve("db/journal-capture")
             if not journal_store_path.is_file():
                 return content
             from work_buddy.document_kernel.causality import DocumentCausalityStore

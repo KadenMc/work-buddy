@@ -26,11 +26,15 @@ dev_notes: |-
 
   A Co-work execution process owns the exact entropy-first `<generation>-cowork` MCP session. The gateway replaces caller-asserted session identity with its transport identity and applies the non-overridable Co-work ACL. Every read, write, inbox operation, and assistant message is fenced to the lease's exact store, document, conversation, consumer, generation, and execution snapshot.
 
-  Process ownership is `(pid, generation-owner-token)`, not PID alone. Natural-exit cleanup removes only the exact registered handle, failed termination retains ownership for a later retry, and cleanup must never kill an unowned or recycled PID.
+  Process ownership is `(pid, generation-owner-token)`, not PID alone. Natural-exit cleanup removes only the exact registered handle, failed termination retains ownership for a later retry, and cleanup must never kill an unowned or recycled PID. The executor retains only a bounded integer completion code for that exact identity; callers must check it before numeric-PID liveness so a recycled PID cannot inherit an old outcome.
+
+  Detached entry modules use qualified `work_buddy.*` logger names because `python -m` executes their source as `__main__`. Worker stdout is drained through a bounded anonymous pipe and classified only from strict, allowlisted result envelopes. Raw output, prompts, credentials, provider diagnostics, and SDK stderr never cross into the broker, completion cache, logs, or UI.
 
   Content egress uses `work_buddy.agent_execution.disclosure`: create a run manifest, grant and reserve the exact Source representation/boundary, write `possibly_sent` before provider invocation, then mark `sent` and bind output to the ordered manifest digest. Raw source bytes never belong in manifest arguments or rows. A `possibly_sent` handoff is not automatically replayable.
 
   Claude runs against a per-run clean `CLAUDE_CONFIG_DIR`; user/project/local settings are absent rather than merely overlaid. On Windows and Linux it receives a private `0600` `.credentials.json` projection containing only `claudeAiOauth`; unrelated `mcpOAuth` credentials are never exposed. On macOS it starts empty because Claude Code reads the account credential from Keychain. Operating-system or organization-managed policy remains part of the host administrator trust boundary and cannot be bypassed by a child process. Do not describe the worker as suppressing that managed layer.
+
+  WorkerDisclosureBoundary owns source-bound tool input accounting and output-manifest binding independently of hosts. Co-work retains only its document-specific source-origin adapter. Form agents reuse the neutral boundary; no second manifest or provider authority is introduced.
 ---
 
 # Account-backed agent execution
@@ -66,6 +70,20 @@ re-probes and validates the pair before both persistence and launch. A provider
 or model that disappeared after the catalog was shown therefore fails closed
 instead of falling back to a different runtime or model.
 
+## Dashboard defaults
+
+System → Dashboard AI owns one profile-level default for new/unbound dashboard
+chats. Reads resolve it lazily without probing providers; prepared conversations
+keep their pinned selection independently of later default changes or failures.
+The provider-only catalog can be read without resolving a global default.
+Internal API/local inference tiers are never converted into account-backed
+model selections.
+
+Current picker labels are a pure projection over its already-fetched catalog,
+shared by Co-work and form assistance. That display operation does not resolve
+defaults, probe runtimes, persist selections or rewrite historical producer
+labels; retired entries retain their saved-label fallback.
+
 ## Conversation authority
 
 For Co-work, the conversations database durably owns the selected execution
@@ -88,7 +106,26 @@ mutations fail with a typed error, while already-committed document feedback or
 review gestures return their durable receipt with a read-only degraded
 execution projection rather than pretending the human action failed.
 
+Form assistance uses the same execution registry and canonical conversation
+selection, but its launch policy is explicit **Launch** after displayed
+disclosure. Preparation starts no agent. A form-model switch fences the
+previous driver and requires a fresh Launch, preserving the form and
+conversation. See
+`services/dashboard/react/assisted-drafts` for its bounded tools and lifecycle.
+
+A worker startup or authentication failure stops only that admitted attempt
+and preserves the form and conversation. It never substitutes a provider,
+launches a replacement automatically, or exposes provider output. Known
+failure categories may provide an allowlisted recovery action; a Claude Code
+authentication failure directs the user to sign in again before choosing a
+fresh Launch. Unknown failures retain fixed safe copy.
+
 ## Isolation and fencing
+
+Hosted form agents use an exact `<generation>-assisted-draft` transport identity
+and only bound form-context/patch plus conversation tools. The same gateway
+identity and top-level ACL protections apply; this does not grant Co-work,
+task/job creation, arbitrary file or general workflow authority.
 
 Each Co-work driver receives a fresh, exact session identity and only the
 document-scoped Work Buddy MCP surface. The gateway pins the transport's real

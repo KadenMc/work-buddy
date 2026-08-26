@@ -53,6 +53,20 @@ function LegacyJournalViewSettingsRedirect() {
   );
 }
 
+export function LegacyDashboardSettingsRedirect() {
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  let changed = false;
+  for (const key of ["setting", "focus"]) {
+    if (query.get(key) === "wb.dashboard.assistance-tier") {
+      query.set(key, "wb.dashboard.chat-execution-default");
+      changed = true;
+    }
+  }
+  const search = changed ? `?${query}` : location.search;
+  return <Navigate replace to={`/settings/system/dashboard-ai${search}${location.hash}`} state={location.state} />;
+}
+
 function DashboardShell({ routes }: DashboardAppProps) {
   const location = useLocation();
   const defaultRoute = routes.find((route) => route.isDefault);
@@ -135,6 +149,10 @@ function DashboardShell({ routes }: DashboardAppProps) {
         <Route
           path="settings/views/journal"
           element={<LegacyJournalViewSettingsRedirect />}
+        />
+        <Route
+          path="settings/apps/dashboard"
+          element={<LegacyDashboardSettingsRedirect />}
         />
         <Route
           path="settings"

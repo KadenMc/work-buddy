@@ -222,6 +222,20 @@ def test_native_authority_rejects_unstamped_legacy_retry(native_runtime):
     runtime.assert_task_replay_authority("native:1")
 
 
+def test_proposal_maintenance_obeys_the_existing_native_replay_authority_guard(
+    native_runtime,
+):
+    from work_buddy.sidecar.retry_sweep import _assert_task_replay_boundary
+    from work_buddy.tasks.errors import TaskReplayAuthorityMismatch
+
+    assert runtime.is_task_mutation_capability("task_proposals_reconcile")
+    with pytest.raises(TaskReplayAuthorityMismatch):
+        _assert_task_replay_boundary({"name": "task_proposals_reconcile"})
+    _assert_task_replay_boundary(
+        {"name": "task_proposals_reconcile", "task_authority_epoch": "native:1"}
+    )
+
+
 def test_maintenance_fence_never_falls_back_to_legacy_writer(
     native_runtime,
     monkeypatch,

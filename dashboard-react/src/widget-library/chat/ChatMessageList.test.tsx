@@ -50,6 +50,10 @@ describe("ChatMessageList", () => {
     expect(screen.getByText("Hello")).toBeInTheDocument();
     expect(screen.getByText("You:")).toBeInTheDocument();
     expect(screen.getByText("Assistant:")).toBeInTheDocument();
+    expect(screen.getByText("You:").textContent).toBe("You: ");
+    expect(screen.getByText("Assistant:").textContent).toBe("Assistant: ");
+    expect(screen.getByText("Hi").closest(".wb-chat-msg__bubble")).toHaveTextContent("You: Hi");
+    expect(screen.getByText("Hello").closest(".wb-chat-msg__bubble")).toHaveTextContent("Assistant: Hello");
   });
 
   it("shows the empty label when there are no messages", () => {
@@ -313,6 +317,70 @@ describe("ChatMessageList", () => {
       />,
     );
     expect(screen.getByText("No response received.")).toBeInTheDocument();
+  });
+
+  it("keeps a pinned reader at latest when a message accessory revision grows", () => {
+    const messages = [msg("m1", "one", "assistant")];
+    const geometry = { scrollHeight: 500, clientHeight: 100, scrollTop: 0 };
+    const { rerender } = render(
+      <ChatMessageList
+        messages={messages}
+        transcriptExtensionRevision={0}
+        renderMessageAccessory={() => <span>First field receipt</span>}
+      />,
+    );
+    const log = screen.getByRole("log");
+    installScroll(log, geometry);
+    geometry.scrollHeight = 650;
+
+    rerender(
+      <ChatMessageList
+        messages={messages}
+        transcriptExtensionRevision={1}
+        renderMessageAccessory={() => <span>First and second field receipts</span>}
+      />,
+    );
+
+    expect(log.scrollTop).toBe(650);
+  });
+
+  it("preserves scroll lock when an appendix revision changes above latest", () => {
+    const messages = [msg("m1", "one", "assistant")];
+    const geometry = { scrollHeight: 500, clientHeight: 100, scrollTop: 100 };
+    const { rerender } = render(
+      <ChatMessageList
+        messages={messages}
+        transcriptExtensionRevision="receipt-1"
+        transcriptAppendix={<span>One unanchored receipt</span>}
+      />,
+    );
+    const log = screen.getByRole("log");
+    installScroll(log, geometry);
+    fireEvent.scroll(log);
+    geometry.scrollHeight = 650;
+
+    rerender(
+      <ChatMessageList
+        messages={messages}
+        transcriptExtensionRevision="receipt-2"
+        transcriptAppendix={<span>Two unanchored receipts</span>}
+      />,
+    );
+
+    expect(log.scrollTop).toBe(100);
+  });
+
+  it("exposes the animated waiting dots through one polite status", () => {
+    const { container } = render(
+      <ChatMessageList messages={[]} agentActivity="starting" />,
+    );
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Assistant is typing");
+    expect(status.querySelectorAll(".wb-chat-typing__dot")).toHaveLength(3);
+    expect(container.querySelector(".wb-chat-typing__dots")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
   });
 
   it("allows a host to suppress the passive no-response notice", () => {

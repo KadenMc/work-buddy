@@ -223,6 +223,18 @@ def test_bound_wake_ignores_general_purpose_conversation(
     )
 
 
+def test_existing_document_execution_does_not_read_a_broken_global_default(document_agent_store, monkeypatch):
+    conversation = _conversation()
+    selected = AgentExecutionSelection("codex", "fixture-model", "Codex", "Fixture model")
+    conversation_execution.set_execution(conversation.conversation_id, selected.to_dict(), expected_revision=None)
+
+    def broken_default():
+        raise RuntimeError("global default unavailable")
+
+    monkeypatch.setattr(execution_registry, "default_selection", broken_default)
+    assert document_agent._execution_selection_for_conversation(conversation.conversation_id) == selected
+
+
 def test_ensure_spawns_once_and_reuses_live_persisted_generation(
     document_agent_store,
 ) -> None:

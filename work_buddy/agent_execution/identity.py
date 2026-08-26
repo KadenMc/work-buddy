@@ -16,7 +16,7 @@ def prompt_with_execution_identity(
 
     Providers isolate ``WORK_BUDDY_SESSION_ID`` to the same caller-supplied
     value.  The explicit prompt contract avoids relying on lifecycle hooks or
-    a native harness thread ID, neither of which is the durable Co-work lease
+    a native harness thread ID, neither of which is the durable hosted lease
     identity.
     """
 
@@ -28,7 +28,7 @@ def prompt_with_execution_identity(
             "Only Claude Code's ToolSearch is initially available. Use it to "
             "load the exact `mcp__work-buddy__wb_init` tool before calling "
             "that tool. After initialization, use ToolSearch only to load "
-            "`mcp__work-buddy__*` tools required by the document-agent brief; "
+            "`mcp__work-buddy__*` tools required by the scoped-agent brief; "
             "load `mcp__work-buddy__wb_search` before capability discovery. "
             "Do not load or use any non-Work-Buddy tool.\n"
         )
@@ -41,6 +41,6 @@ def prompt_with_execution_identity(
         f"- `harness_id={harness_json}`\n"
         "Do not substitute an inherited bootstrap ID or a native harness "
         "thread ID for this execution identity.\n\n"
-        "## Document-agent brief\n\n"
+        "## Scoped-agent brief\n\n"
         f"{request.prompt}"
     )

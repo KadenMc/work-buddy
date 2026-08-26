@@ -6,8 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectNoAccessibilityViolations } from "../../test/setup";
 import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { ThemeProvider } from "../../theme/ThemeProvider";
+import { JOURNAL_WIDGET_TYPE_IDS } from "../../apps/journal/bindings";
+import { TASKS_WIDGET_TYPE_IDS } from "../../apps/tasks/bindings";
+import { JOBS_WIDGET_ID } from "../../apps/jobs/contribution";
 import WidgetLab from "./WidgetLab";
 import {
+  buildStateCases,
   listReusableLabWidgets,
   WIDGET_LAB_HOST_STATES,
   WIDGET_LAB_SIZE_MODES,
@@ -47,7 +51,14 @@ describe("WidgetLab", () => {
     const widgets = listReusableLabWidgets();
     const cases = await screen.findAllByTestId("widget-lab-host");
 
-    expect(widgets).toHaveLength(5);
+    expect(widgets.map((widget) => widget.definition.typeId).sort()).toEqual([
+      JOURNAL_WIDGET_TYPE_IDS.capture,
+      JOURNAL_WIDGET_TYPE_IDS.timeline,
+      JOURNAL_WIDGET_TYPE_IDS.runningNotes,
+      TASKS_WIDGET_TYPE_IDS.quickAdd,
+      TASKS_WIDGET_TYPE_IDS.workspace,
+      JOBS_WIDGET_ID,
+    ].sort());
     expect(cases).toHaveLength(
       widgets.length * (WIDGET_LAB_SIZE_MODES.length + WIDGET_LAB_HOST_STATES.length),
     );
@@ -71,6 +82,20 @@ describe("WidgetLab", () => {
           ),
         ).toBe(true);
       }
+    }
+  });
+
+  it("supplies deterministic Jobs registry and read-only inputs without opening assistance", () => {
+    const jobs = buildStateCases().filter((item) => item.widget.definition.typeId === JOBS_WIDGET_ID);
+    expect(jobs).toHaveLength(WIDGET_LAB_HOST_STATES.length);
+    for (const item of jobs) {
+      expect(item.input).toMatchObject({
+        access: { mode: item.status === "read-only" ? "read_only" : "read_write" },
+        timeZone: "America/New_York",
+        capabilities: [{ name: "journal_state" }],
+        workflows: [{ name: "morning-routine" }],
+        openAssistance: false,
+      });
     }
   });
 
@@ -103,13 +128,13 @@ describe("WidgetLab", () => {
 
   it("keeps a representative real-widget trace accessible", async () => {
     const { container } = renderLab("/app/__widget-lab?count=3");
-    await screen.findByLabelText("Capture text");
-    await waitFor(() =>
-      expect(container.querySelector(".wb-day-timeline")).not.toBeNull(),
-    );
-    await waitFor(() =>
-      expect(container.querySelector(".wb-running-notes")).not.toBeNull(),
-    );
+    // Real hosts resolve lazy renderers and restore drafts asynchronously. Use
+    // the conformance readiness budget before running the unchanged axe checks.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Capture text")).toBeInTheDocument();
+      expect(container.querySelector(".wb-day-timeline")).not.toBeNull();
+      expect(container.querySelector(".wb-running-notes")).not.toBeNull();
+    }, { timeout: 10_000 });
 
     await expectNoAccessibilityViolations(container);
   });

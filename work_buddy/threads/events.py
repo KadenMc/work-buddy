@@ -65,6 +65,13 @@ KIND_ACTION_REJECTED = "action_rejected_with_feedback"
 KIND_EXECUTION_STARTED = "execution_started"
 KIND_EXECUTION_FINISHED = "execution_finished"
 
+# Version-fenced task proposals. The intent freezes the reviewed action before
+# dispatch; the bounded realization is a reference to TaskStore, never a task.
+KIND_ACTION_EXECUTION_INTENT = "action_execution_intent"
+KIND_ACTION_REALIZED = "action_realized"
+# Recovery scheduling metadata only; never an approval or execution authority.
+KIND_ACTION_RECOVERY_CHECKED = "action_recovery_checked"
+
 # Migration (cross-Thread atomic ops; share a migration_id)
 KIND_CONTEXT_ADDED = "context_added"
 KIND_CONTEXT_REMOVED = "context_removed"
@@ -160,6 +167,9 @@ ALL_KINDS: frozenset[str] = frozenset({
     KIND_ACTION_REJECTED,
     KIND_EXECUTION_STARTED,
     KIND_EXECUTION_FINISHED,
+    KIND_ACTION_EXECUTION_INTENT,
+    KIND_ACTION_REALIZED,
+    KIND_ACTION_RECOVERY_CHECKED,
     KIND_CONTEXT_ADDED,
     KIND_CONTEXT_REMOVED,
     KIND_SUBTHREADS_SPAWNED,

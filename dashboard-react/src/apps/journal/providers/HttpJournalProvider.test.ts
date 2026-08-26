@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
+import type { DashboardIntent } from "../../../dashboard/contributions/contracts";
+import { assertDashboardIntent } from "../../../dashboard/providers/validateProviderBoundary";
 import { resetLocalIdentityForTests } from "../../../security/localIdentity";
 import {
   JOURNAL_INSTANCE_IDS,
@@ -18,6 +21,7 @@ import {
   JOURNAL_CAPTURE_ENDPOINT,
   JOURNAL_RUNNING_NOTE_COWORK_ENDPOINT,
   JOURNAL_VIEW_ENDPOINT,
+  journalCaptureGestureContext,
 } from "./HttpJournalProvider";
 import { LEGACY_TODAY_ENDPOINT } from "./LegacyFlaskViewAdapter";
 
@@ -159,6 +163,155 @@ function principal() {
 afterEach(() => resetLocalIdentityForTests());
 
 describe("HttpJournalProvider", () => {
+  const proposalFollowUp = { kind: "app_link", referenceId: "th-0123abcd", label: "Review in Tasks",
+    description: "Task proposal ready — no task has been created.", href: "/app/tasks?proposal=th-0123abcd" };
+  const disclosed = { state: "ready", code: "ready", reason: "Smart is ready.",
+    disclosure: { provider: "fixture", model: "deterministic-test", maxInputBytes: 32768, tools: false, web: false } };
+  function proposalFixture(href = proposalFollowUp.href) {
+    return { ...native, view: { ...native.view, capture: { ...native.view.capture,
+      smartAvailability: disclosed,
+      recentSubmissions: [{ ...native.view.capture.recentSubmissions[0], followUps: [{ ...proposalFollowUp, href }] }],
+    } } };
+  }
+  function fixtureFetch(value: unknown) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/local-identity/session/csrf") return json({ ok: true, authenticated: true, principal: principal(), csrf_token: "csrf" });
+      if (String(input) === LEGACY_TODAY_ENDPOINT) return json(legacy);
+      if (String(input) === JOURNAL_VIEW_ENDPOINT) return json(value);
+      throw new Error(`Unexpected ${String(input)}`);
+    });
+  }
+
+  const smartCaptureId = "a".repeat(32);
+  function smartFixture(model = "reviewed-model", provider = "reviewed-provider") {
+    const fixture = proposalFixture();
+    return { ...fixture, view: { ...fixture.view, capture: { ...fixture.view.capture,
+      smartAvailability: { ...disclosed, disclosure: { ...disclosed.disclosure, model, provider } },
+      recentSubmissions: [{ ...fixture.view.capture.recentSubmissions[0],
+        captureId: smartCaptureId, revision: 4, mode: "smart" }],
+    } } };
+  }
+  function smartIntent(operation: "submit" | "retry", disclosureSha256?: string): DashboardIntent {
+    const disclosure = disclosureSha256 === undefined ? {} : { smart_disclosure_sha256: disclosureSha256 };
+    const submit = toDashboardJournalIntent({
+      intent_type: "wb.capture.submit", schema_version: 1, intent_id: "reviewed-capture",
+      client_mutation_id: "reviewed-capture", view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.capture,
+      payload: { day_id: day.dayId, target_id: "running_notes", mode: "smart",
+        exact_text: "  reviewed exact source  ", ...disclosure },
+    });
+    return operation === "submit" ? submit : { ...submit, intent_type: "wb.capture.retry-requested",
+      payload: { capture_id: smartCaptureId, expected_revision: 4, ...disclosure } };
+  }
+
+  it.each(["submit", "retry"] as const)("forwards the clicked disclosure for %s even after the provider snapshot changes", async (operation) => {
+    const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+    const disclosureHash = (fixture: ReturnType<typeof smartFixture>) => {
+      const disclosure = fixture.view.capture.smartAvailability.disclosure;
+      return digest(JSON.stringify({ maxInputBytes: disclosure.maxInputBytes, model: disclosure.model,
+        provider: disclosure.provider, tools: disclosure.tools, web: disclosure.web }));
+    };
+    let fixture = smartFixture();
+    const clickedHash = disclosureHash(fixture);
+    let gestureBody: Record<string, unknown> | undefined;
+    let postBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/local-identity/session/csrf") {
+        return json({ ok: true, authenticated: true, principal: principal(), csrf_token: "csrf" });
+      }
+      if (url === LEGACY_TODAY_ENDPOINT) return json(legacy);
+      if (url === JOURNAL_VIEW_ENDPOINT) return json(fixture);
+      if (url === "/api/local-identity/gestures") {
+        gestureBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({ ok: true, gesture: { token: "reviewed-gesture", action: gestureBody.action,
+          subject_sha256: "s".repeat(64), context_sha256: gestureBody.context_sha256,
+          expires_at: Date.now() / 1000 + 30 } });
+      }
+      if (url === JOURNAL_CAPTURE_ENDPOINT || url === `${JOURNAL_CAPTURE_ENDPOINT}/${smartCaptureId}/retry`) {
+        postBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({ ok: true, persisted: true, capture: fixture.view.capture.recentSubmissions[0] });
+      }
+      throw new Error(`Unexpected ${url}`);
+    });
+    const provider = new HttpJournalProvider({ fetchImpl });
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const intent = smartIntent(operation, clickedHash);
+    // Contribution schemas identify the versioned intent; the host boundary
+    // admits JSON payloads, while the owning provider validates these fields.
+    expect(() => assertDashboardIntent(intent, JOURNAL_VIEW_DEFINITION_ID)).not.toThrow();
+    fixture = smartFixture("swapped-model", "swapped-provider");
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "refresh" });
+
+    expect((await provider.dispatch(intent)).status).toBe("accepted");
+    expect(postBody?.smart_disclosure_sha256).toBe(clickedHash);
+    expect(postBody?.smart_disclosure_sha256).not.toBe(disclosureHash(fixture));
+    const expectedContext = operation === "submit"
+      ? await journalCaptureGestureContext({ client_mutation_id: "reviewed-capture", day_id: day.dayId,
+        target_id: "running_notes", mode: "smart", exact_text: "  reviewed exact source  ",
+        input_mode: "unknown", smart_disclosure_sha256: clickedHash })
+      : digest(`wb.journal-capture-retry/v1:${smartCaptureId}:4:${clickedHash}`);
+    expect(gestureBody?.context_sha256).toBe(expectedContext);
+  });
+
+  it.each([
+    ["submit", undefined], ["submit", "invalid"], ["submit", "A".repeat(64)],
+    ["retry", undefined], ["retry", "invalid"], ["retry", "A".repeat(64)],
+  ] as const)("rejects %s with a missing or noncanonical disclosure %s before authorizing or writing", async (operation, hash) => {
+    const fetchImpl = fixtureFetch(smartFixture());
+    const provider = new HttpJournalProvider({ fetchImpl });
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    fetchImpl.mockClear();
+
+    const result = await provider.dispatch(smartIntent(operation, hash));
+
+    expect(result.status).toBe("rejected");
+    expect(result.message).toMatch(/Review the current Smart disclosure/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("projects typed Smart disclosure and a provider-validated proposal link", async () => {
+    const provider = new HttpJournalProvider({ fetchImpl: fixtureFetch(proposalFixture()) });
+    const result = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const capture = result.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture];
+    expect(capture?.smartAvailability).toEqual(disclosed);
+    expect(capture?.recentSubmissions[0].followUps).toEqual([proposalFollowUp]);
+  });
+
+  it("normalizes the native newest-first window so the latest proposal remains visible", async () => {
+    const fixture = proposalFixture();
+    const newest = fixture.view.capture.recentSubmissions[0];
+    fixture.view.capture.recentSubmissions = [newest,
+      { ...newest, clientMutationId: "older", submittedAt: "2026-08-09T19:00:00-04:00", followUps: [] },
+      { ...newest, clientMutationId: "oldest", submittedAt: "2026-08-09T18:00:00-04:00", followUps: [] }];
+    const provider = new HttpJournalProvider({ fetchImpl: fixtureFetch(fixture) });
+    const result = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    expect(result.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture].recentSubmissions.map((item) => item.clientMutationId))
+      .toEqual(["oldest", "older", newest.clientMutationId]);
+  });
+
+  it.each(["https://example.com/app/tasks?proposal=th-0123abcd", "/app/tasks?proposal=th-99999999",
+    "/app/tasks?proposal=th-0123abcd&next=https://example.com", "/app/jobs?proposal=th-0123abcd",
+    "/app/tasks?task=not-a-task", "/app/tasks/../../outside"])("rejects unsafe/mismatched domain follow-up %s", async (href) => {
+    const provider = new HttpJournalProvider({ fetchImpl: fixtureFetch(proposalFixture(href)) });
+    await expect(provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" })).rejects.toThrow(/unsafe follow-up/);
+  });
+
+  it("binds the displayed disclosure and explicit proposal action into the exact human gesture", async () => {
+    const payload = { client_mutation_id: "capture-contract", day_id: day.dayId, exact_text: "  exact\nsource  ",
+      input_mode: "paste", mode: "smart", target_id: "auto", smart_disclosure_sha256: "a".repeat(64) };
+    const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+    const canonical = JSON.stringify({ client_mutation_id: payload.client_mutation_id, day_id: payload.day_id,
+      exact_text_sha256: digest(payload.exact_text), input_mode: "paste", mode: "smart",
+      schema: "wb.journal-capture-gesture/v1", smart_disclosure_sha256: payload.smart_disclosure_sha256,
+      stated_at: null, target_id: "auto" });
+    expect(await journalCaptureGestureContext(payload)).toBe(digest(canonical));
+    expect(await journalCaptureGestureContext({ ...payload, smart_disclosure_sha256: "b".repeat(64) })).not.toBe(digest(canonical));
+    const direct = { ...payload, mode: "dumb", target_id: "running_notes", smart_disclosure_sha256: undefined };
+    expect(await journalCaptureGestureContext({ ...direct, follow_up_action: "task_proposal" }))
+      .not.toBe(await journalCaptureGestureContext(direct));
+  });
+
   it("binds the browser fetch receiver when no client is injected", async () => {
     const browserFetch = vi.fn(async function (
       this: typeof globalThis,

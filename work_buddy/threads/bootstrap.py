@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 _BOOTSTRAPPED = False
+_PROPOSAL_RECOVERY_ATTEMPTED = False
 
 
 def is_bootstrapped() -> bool:
@@ -558,6 +559,8 @@ def bootstrap_for_subprocess(*, subprocess_name: str) -> bool:
     """
     try:
         bootstrap_threads()
+        if subprocess_name == "sidecar":
+            _recover_action_proposals_once()
         logger.info("threads bootstrap (%s) complete", subprocess_name)
         return True
     except Exception as e:
@@ -569,10 +572,33 @@ def bootstrap_for_subprocess(*, subprocess_name: str) -> bool:
         return False
 
 
+def _recover_action_proposals_once() -> None:
+    """Bounded boot recovery, only for already-human-approved durable intents.
+
+    Dashboard GETs and gateway registry reloads never trigger task creation.
+    A failed recovery leaves the proposal's visible safe-retry state intact.
+    """
+    global _PROPOSAL_RECOVERY_ATTEMPTED
+    if _PROPOSAL_RECOVERY_ATTEMPTED:
+        return
+    _PROPOSAL_RECOVERY_ATTEMPTED = True
+    try:
+        from work_buddy.config import load_config
+        from work_buddy.threads.action_proposals import get_action_proposal_service
+
+        if load_config().get("dashboard", {}).get("read_only", False):
+            return
+        results = get_action_proposal_service().reconcile_pending(limit=50)
+        if results:
+            logger.info("Reconciled %d approved task proposal intents", len(results))
+    except Exception as exc:
+        logger.warning("Task proposal boot recovery deferred (%s)", type(exc).__name__)
+
+
 def teardown_threads() -> None:
     """Test-only: clear all state-entry handlers + admission hooks
     + cleanup adapters so the next test starts from a clean slate."""
-    global _BOOTSTRAPPED
+    global _BOOTSTRAPPED, _PROPOSAL_RECOVERY_ATTEMPTED
     engine.clear_state_entry_handlers()
     queue.clear_admission_hooks()
     from work_buddy.threads.cleanup import clear_cleanup_adapters
@@ -585,3 +611,4 @@ def teardown_threads() -> None:
     budget.reset_cost_sources()
     budget.clear_caller_budgets()
     _BOOTSTRAPPED = False
+    _PROPOSAL_RECOVERY_ATTEMPTED = False
