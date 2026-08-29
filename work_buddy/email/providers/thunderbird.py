@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from work_buddy.email.errors import (
     EmailBridgeUnauthorized,
@@ -44,6 +44,10 @@ CONNECTION_DIR_NAME = "thunderbird-work-buddy"
 CONNECTION_FILE = "connection.json"
 DEFAULT_TIMEOUT_SECONDS = 10
 PROTOCOL_VERSION_MIN = "0.1.0"
+
+# The Thunderbird bridge is authenticated local IPC.  The process or system
+# proxy configuration must never receive its requests (or bearer token).
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
 
 
 def connection_file_path() -> Path:
@@ -117,7 +121,7 @@ class ThunderbirdEmailProvider:
         req = Request(url, data=data, method=method, headers=headers)
 
         try:
-            with urlopen(req, timeout=self._timeout) as resp:
+            with _DIRECT_OPENER.open(req, timeout=self._timeout) as resp:
                 raw = resp.read()
         except HTTPError as exc:
             # Read body for diagnostics.
@@ -400,7 +404,7 @@ def probe_thunderbird_bridge() -> tuple[bool, str]:
             f"http://127.0.0.1:{port}/health",
             headers={"Authorization": f"Bearer {token}"},
         )
-        with urlopen(req, timeout=2) as resp:
+        with _DIRECT_OPENER.open(req, timeout=2) as resp:
             body = resp.read()
             ok = resp.status == 200
     except HTTPError as exc:

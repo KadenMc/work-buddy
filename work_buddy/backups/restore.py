@@ -80,6 +80,34 @@ class RestoreFailed(Exception):
     """
 
 
+# ─── Safe archive extraction ───────────────────────────────────────
+
+
+def _safe_extract_tar(tf: tarfile.TarFile, destination: Path) -> None:
+    """Extract a backup tarball without allowing it to escape ``destination``.
+
+    Backup snapshots contain only regular files and directories.  Reject links
+    and special files as well as absolute/parent-traversal paths before writing
+    any member, so an untrusted local or downloaded snapshot cannot overwrite
+    files elsewhere on the host.
+    """
+    root = destination.resolve()
+    members = tf.getmembers()
+
+    for member in members:
+        target = (root / member.name).resolve()
+        if not target.is_relative_to(root):
+            raise RestoreFailed(
+                f"Unsafe backup member path: {member.name!r}"
+            )
+        if not (member.isfile() or member.isdir()):
+            raise RestoreFailed(
+                f"Unsupported backup member type: {member.name!r}"
+            )
+
+    tf.extractall(root, members=members, filter="data")
+
+
 # ─── Source resolution ─────────────────────────────────────────────
 
 
@@ -325,7 +353,7 @@ def restore(
         shutil.rmtree(staging_dir)
     staging_dir.mkdir(parents=True)
     with tarfile.open(tarball, "r:gz") as tf:
-        tf.extractall(staging_dir)
+        _safe_extract_tar(tf, staging_dir)
     # Scoped truth payloads require an explicit Truth import/recovery flow.
     # Keep them in the snapshot tarball and out of the host database swap.
     truth_payloads = staging_dir / "truth_stores"
