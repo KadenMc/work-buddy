@@ -210,6 +210,42 @@ describe("RunningNotesWidget", () => {
     expect(screen.queryByText("Open a running note in Co-work to edit it.")).not.toBeInTheDocument();
   });
 
+  it("renders module-owned generated artifacts beside the collection", () => {
+    render(
+      renderNotes(
+        {
+          ...input,
+          items: [],
+          supplementalItems: [{
+            itemId: "briefing-1",
+            itemKind: "generated_artifact",
+            text: "A generated daily briefing.",
+            authorityKind: "native_plain",
+          }],
+        },
+        vi.fn(),
+      ),
+    );
+
+    expect(screen.getByRole("region", { name: "Other entries" })).toHaveTextContent(
+      "A generated daily briefing.",
+    );
+    expect(screen.queryByText("No running notes for this collection.")).toBeNull();
+  });
+
+  it("restores a versioned tombstone through an explicit mutation", async () => {
+    const emit = vi.fn().mockResolvedValue({ intent_id: "restore-note", status: "accepted" });
+    render(renderNotes({ ...input, items: [], tombstones: [{ ...item, markdown: "Archived context" }] }, emit));
+
+    await userEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      intent_type: "wb.notes.restore-requested",
+      client_mutation_id: expect.stringMatching(/^notes-restore:/u),
+      payload: { item_id: "note-1", expected_version: 3 },
+    }));
+  });
+
   it("offers the source-bound Co-work document action even while note editing is read-only", async () => {
     const emit = vi.fn().mockResolvedValue({
       intent_id: "open-note",

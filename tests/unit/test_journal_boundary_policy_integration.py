@@ -35,6 +35,22 @@ def test_today_and_yesterday_follow_logical_day_before_and_at_boundary(monkeypat
     assert journal.resolve_target_date("today").date == "2026-07-15"
 
 
+def test_legacy_path_helper_honors_configured_nested_journal_dir(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        journal,
+        "load_config",
+        lambda: {
+            "vault_root": str(tmp_path),
+            "obsidian": {"journal_dir": "private/days"},
+        },
+    )
+    assert journal.journal_path_for_date("2026-07-15") == (
+        tmp_path / "private" / "days" / "2026-07-15.md"
+    )
+
+
 def test_past_journal_collection_window_is_offset_aware_and_dst_correct(
     monkeypatch, tmp_path
 ) -> None:

@@ -1648,7 +1648,7 @@ def test_provenance_round_trips_and_integrity_detects_canonical_tampering(
 
     exported = export_store(store)
     header = json.loads(exported.path.read_text(encoding="utf-8").splitlines()[0])
-    assert header["format_version"] == FORMAT_VERSION == 10
+    assert header["format_version"] == FORMAT_VERSION == 11
     v9_target = tmp_path / "v9-reader"
     v9_target.mkdir()
     with monkeypatch.context() as v9_reader:
@@ -1669,7 +1669,7 @@ def test_provenance_round_trips_and_integrity_detects_canonical_tampering(
         target,
         registry=_EmptyRegistry(),
     )
-    assert imported.source_format_version == 10
+    assert imported.source_format_version == 11
     restored = imported.store
     restored_rows = restored.list_document_provenance_attestations(document.id)
     assert restored_rows == store.list_document_provenance_attestations(document.id)

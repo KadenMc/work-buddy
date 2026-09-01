@@ -57,6 +57,193 @@ class JournalMigrationState(StrEnum):
     RETIRED = "retired"
 
 
+class JournalValueKind(StrEnum):
+    SHORT_TEXT = "short_text"
+    LONG_TEXT = "long_text"
+    NUMBER = "number"
+    SCALE = "scale"
+    BOOLEAN = "boolean"
+    SINGLE_SELECT = "single_select"
+    MULTI_SELECT = "multi_select"
+    LOCAL_TIME = "local_time"
+    INSTANT = "instant"
+    DATE = "date"
+    DURATION = "duration"
+    ENTITY_REFERENCE = "entity_reference"
+    REFERENCE = "reference"
+
+
+class JournalValueDisposition(StrEnum):
+    MISSING = "missing"
+    SKIPPED = "skipped"
+    DECLINED = "declined"
+
+
+@dataclass(frozen=True)
+class JournalProfileRevision:
+    profile_id: str
+    profile_revision: int
+    format_version: int
+    name: str
+    description: str
+    canonical_order: tuple[str, ...]
+    profile_digest: str
+    created_by: str
+    created_at: str
+    supersedes_revision: int | None
+
+
+@dataclass(frozen=True)
+class JournalModuleInstanceVersion:
+    module_instance_id: str
+    instance_version: int
+    module_type_id: str
+    module_type_version: int
+    label: str
+    settings_schema_version: int
+    settings: Mapping[str, Any]
+    settings_sha256: str
+    behavior_id: str | None
+    behavior_version: int | None
+    schedule_kind: str
+    schedule: Mapping[str, Any]
+    reveal_policy: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class JournalDayModule:
+    slot_id: str
+    ordinal: int
+    module: JournalModuleInstanceVersion
+    semantic_membership: str
+    schedule_evidence: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class JournalDayField:
+    composition_slot_id: str
+    module_slot_id: str
+    ordinal: int
+    field_id: str
+    field_definition_version: int
+    label: str
+    description: str
+    value_kind: str
+    unit: str | None
+    constraints: Mapping[str, Any]
+    value_codec_version: int
+    function_id: str | None
+    function_version: int | None
+    behavior_id: str
+    behavior_version: int
+    privacy_class: str
+    search_mode: str
+    disclosure_policy_id: str
+    prompt_id: str | None
+    prompt_version: int | None
+    prompt_wording: str | None
+    prompt_help: str | None
+    prompt_requiredness: str | None
+
+
+@dataclass(frozen=True)
+class JournalDayComposition:
+    local_date: str
+    day_id: str
+    timezone: str
+    boundary: str
+    window_start: str
+    window_end: str
+    profile: JournalProfileRevision
+    activation_revision: int
+    modules: tuple[JournalDayModule, ...]
+    fields: tuple[JournalDayField, ...]
+    composition_digest: str
+    persisted: bool
+    snapshot_id: str | None = None
+    snapshot_version: int | None = None
+    override_id: str | None = None
+    search_recipe_version: int = 1
+
+
+@dataclass(frozen=True)
+class JournalNativeItem:
+    item_id: str
+    local_date: str
+    day_id: str | None
+    module_instance_id: str | None
+    module_instance_version: int | None
+    item_kind: str
+    authority_kind: str
+    legacy_entry_id: str | None
+    plain_value: str | None
+    content_sha256: str | None
+    interaction_behavior_id: str
+    interaction_behavior_version: int
+    privacy_class: str
+    search_mode: str
+    source_ref: str | None
+    lifecycle: str
+    current_revision: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class JournalRelation:
+    relation_id: str
+    source_item_id: str
+    relation_kind: str
+    target_domain: str
+    target_id: str
+    target_revision: str | None
+    lifecycle: str
+    revision: int
+    source_ref: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class JournalFieldValue:
+    value_id: str
+    local_date: str
+    day_id: str | None
+    composition_snapshot_id: str | None
+    composition_slot_id: str | None
+    module_instance_id: str
+    module_instance_version: int
+    field_id: str
+    field_definition_version: int
+    value_kind: JournalValueKind
+    disposition: JournalValueDisposition | None
+    value: Any
+    current_revision: int
+    authorship: str
+    review_state: str
+    source_ref: str | None
+    observed_at: str | None
+    stated_at: str | None
+    ingested_at: str
+    lifecycle: str
+
+
+@dataclass(frozen=True)
+class JournalSearchEvent:
+    event_id: str
+    aggregate_type: str
+    aggregate_id: str
+    aggregate_revision: str
+    event_kind: str
+    content_sha256: str
+    composition_digest: str | None
+    search_recipe_version: int
+    privacy_class: str
+    state: str
+    attempts: int
+    committed_at: str
+
+
 @dataclass(frozen=True)
 class JournalCapture:
     capture_id: str
@@ -134,6 +321,24 @@ class JournalDocumentBinding:
     entry_version: int
     inspection: Mapping[str, Any]
     state: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class JournalModuleDocumentBinding:
+    """Content-free mirror for a day-scoped document module binding."""
+
+    local_date: str
+    module_instance_id: str
+    module_instance_version: int
+    domain_entity_id: str
+    binding_id: str
+    store_id: str
+    document_id: str
+    role: str
+    cowork_href: str
+    content_authority_epoch: int
     created_at: str
     updated_at: str
 
@@ -255,6 +460,17 @@ class JournalCaptureConflict(JournalCaptureError):
 
 class JournalCaptureValidationError(JournalCaptureError):
     code = "journal_capture_invalid"
+
+
+class JournalCutoverPaused(JournalCaptureError):
+    code = "journal_cutover_ingress_paused"
+    status = 423
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Journal capture is paused for an authority cutover.",
+            retryable=True,
+        )
 
 
 class JournalProjectionError(JournalCaptureError):

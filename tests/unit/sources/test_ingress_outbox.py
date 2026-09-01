@@ -5,6 +5,7 @@ import json
 import pytest
 
 from work_buddy.sources import (
+    AgentOutputRequest,
     ActorRef,
     DomainCommand,
     HumanInputRequest,
@@ -116,6 +117,78 @@ def test_ingress_atomically_persists_source_submission_command_and_effect(
         assert exact not in effect_json
     finally:
         conn.close()
+
+
+def test_agent_output_ingress_records_agent_authorship_and_is_idempotent(
+    source_store,
+    tenant_id: str,
+    service: ActorRef,
+    issuer: ActorRef,
+    auth_sha: str,
+) -> None:
+    agent = ActorRef(
+        issuer_authority_id=issuer.issuer_authority_id,
+        subject="agent-run-00000001",
+        kind="agent_run",
+        tenant_scope_id=tenant_id,
+    )
+    context = _context(
+        issuer=issuer,
+        human=agent,
+        service=service,
+        tenant_id=tenant_id,
+        auth_sha=auth_sha,
+    )
+    request = AgentOutputRequest(
+        exact_content="generated Journal text",
+        client_mutation_id="agent-output-mutation-0001",
+        command=_command(auth_sha),
+    )
+    ingress = TrustedIngressService(source_store)
+    first = ingress.commit_agent_output(context, request)
+    retry = ingress.commit_agent_output(context, request)
+
+    assert retry.source_ref == first.source_ref
+    assert retry.effect_id == first.effect_id
+    assert retry.deduplicated
+    with source_store.connect() as conn:
+        source = conn.execute(
+            "SELECT source_role FROM source_items WHERE source_item_id=?",
+            (first.source_ref.item_id,),
+        ).fetchone()
+        author = conn.execute(
+            "SELECT attribution_state,actor_ref_json FROM source_attributions "
+            "WHERE source_item_id=? AND role='author'",
+            (first.source_ref.item_id,),
+        ).fetchone()
+    assert source["source_role"] == "agent_output"
+    assert author["attribution_state"] == "identified"
+    assert json.loads(author["actor_ref_json"])["kind"] == "agent_run"
+
+
+def test_agent_output_ingress_rejects_a_human_inputter(
+    source_store,
+    tenant_id: str,
+    human: ActorRef,
+    service: ActorRef,
+    issuer: ActorRef,
+    auth_sha: str,
+) -> None:
+    context = _context(
+        issuer=issuer,
+        human=human,
+        service=service,
+        tenant_id=tenant_id,
+        auth_sha=auth_sha,
+    )
+    with pytest.raises(InvalidSourceRequest):
+        TrustedIngressService(source_store).commit_agent_output(
+            context,
+            AgentOutputRequest(
+                exact_content="must not be misattributed",
+                client_mutation_id="agent-output-mutation-0002",
+            ),
+        )
 
 
 def test_ingress_same_key_different_payload_conflicts_without_mutation(

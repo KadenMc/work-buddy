@@ -22,20 +22,22 @@ parents:
 - notifications
 - notifications
 dev_notes: |
-  ## Capture retry wiring
+  ## Capture durability
 
-  `_do_capture` (work_buddy/telegram/handlers.py) calls `write_at_location` directly — the bot is a separate sidecar process, not the `wb_run` dispatch path, so it gets no automatic gateway enqueue and `@bridge_retry` is a no-op under the PTB event loop. On a failure where `work_buddy.errors.classify_error(exc) == "transient"` (e.g. `ObsidianEditorConflict`, `ObsidianStartupRace`), it enqueues the capture for the sidecar sweep via `work_buddy.mcp_server.tools.gateway.enqueue_capability_for_retry("vault_write_at_location", {...})`, defaulting `originating_session_id` to the op record's session so the `replay_of` consent principal authorizes the replay without re-prompting. Non-transient errors fall through to the generic handler. See `architecture/retry-queue` for the seam.
+  `_do_capture` uses trusted Telegram ingress. It retains the exact message as a Source, freezes the logical Journal day, and commits a native Running Note idempotently from Telegram transport identity. It does not inspect capture.note/section/position, call `vault_write_at_location`, enqueue an Obsidian retry, or write message prose to logs.
 ---
 
-Commands: /start (verify identity, register chat), /help, /capture <text> (append to journal Running Notes), /reply <short_id> <answer> (respond to pending request by 4-digit ID), /remote <prompt> (launch Claude Code remote session), /resume (resume existing session), /status (system health), /obs <query> (search and execute Obsidian command), /slash (list slash commands), /dashboard (return dashboard URL).
+Commands: /start (verify identity, register chat), /help, /capture <text> (create a Source-backed native Journal Running Note), /reply <short_id> <answer> (respond to a pending request by 4-digit ID), /remote <prompt> (launch Claude Code remote session), /resume (resume existing session), /status (system health), /obs <query> (search and execute an explicitly enabled legacy Obsidian command; unavailable when the Obsidian feature is opted out), /slash (list slash commands), /dashboard (return dashboard URL).
 
-Plain text messages (no command) are treated as captures and appended to the journal.
+Plain text messages (no command) follow the same native Source-first capture path.
 
-Capture resilience: if a capture's write hits a transient failure (most commonly `editor_dirty` — the target journal is open in Obsidian with unsaved edits), the text is NOT dropped. It is queued on the retry queue and the bot replies `Attempted capture to <note> — queued …`; the sidecar sweep lands it automatically once the note is free. (See `architecture/retry-queue`.)
+Capture resilience comes from deterministic transport identity, Sources
+reservation, Journal idempotency, and the capture coordinator. There is no
+daily-file placement step or editor-conflict failure mode.
 
 Setup: (1) Create bot via @BotFather, (2) Set TELEGRAM_BOT_TOKEN env var, (3) Enable in config.yaml (telegram.enabled: true + sidecar.services.telegram.enabled: true), (4) Restart sidecar, (5) Send /start — first chat is auto-accepted. Chat ID is auto-persisted to .telegram_chat_id and merged with config.yaml allowed_chat_ids on startup.
 
-Config (config.yaml telegram section): bot_token_env, allowed_chat_ids (empty = auto-accept first), enabled, capture.note (resolver or path), capture.section, capture.position.
+Config (`telegram` section): `bot_token_env`, `allowed_chat_ids` (empty means auto-accept the first chat), and `enabled`. Journal placement is resolved from the active native profile on the server.
 
 Architecture: The bot is a surface adapter plugging into the notification infrastructure via TelegramSurface (extends NotificationSurface). Two concurrent subsystems: PTB polling loop (main thread, receives user messages) and Flask HTTP API (background thread, accepts internal notification delivery on port 5125).
 

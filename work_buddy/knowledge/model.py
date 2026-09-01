@@ -10,7 +10,7 @@ Two parallel hierarchies share a common base:
     * IntegrationUnit — connection to an external system
     * ReferenceUnit — Python module API surface documentation
     * ConceptUnit — architectural narrative or design prose
-  * **VaultUnit** — personal knowledge (markdown-backed, Obsidian vault)
+  * **VaultUnit** — personal knowledge (SQLite-backed compatibility model)
 
 The DAG structure (parents/children) enables hierarchical navigation. Multi-parent
 is supported and intended: a subsystem may live at one path for navigation and
@@ -818,15 +818,16 @@ class WorkflowUnit(PromptUnit):
 
 
 # ---------------------------------------------------------------------------
-# Personal knowledge — vault-backed (VaultUnit)
+# Personal knowledge — database-backed (VaultUnit compatibility model)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class VaultUnit(KnowledgeUnit):
-    """Personal knowledge unit (markdown-backed, lives in Obsidian vault).
+    """Personal knowledge unit returned by the unified knowledge API.
 
-    Created by the minting workflow or manually by the user. Loaded from
-    markdown files with YAML frontmatter by the vault adapter.
+    ``VaultUnit`` is retained as the public compatibility type even though the
+    live authority is SQLite.  ``source_file`` describes legacy import origin;
+    it is never consulted during ordinary reads or writes.
     """
 
     kind: str = field(default="personal", init=False)
@@ -836,7 +837,19 @@ class VaultUnit(KnowledgeUnit):
     severity: str = ""                 # HIGH | MODERATE | LOW (optional, category-dependent)
     last_observed: str = ""            # ISO date of most recent evidence
     observation_count: int = 0         # how many times this has been observed
-    source_file: str = ""              # vault-relative path to the .md file
+    source_file: str = ""              # frozen legacy import locator, if any
+    unit_id: str = ""                  # stable identity independent of path
+    revision: int = 0                  # current optimistic-concurrency revision
+    path_aliases: list[str] = field(default_factory=list)
+    categories: list[str] = field(default_factory=list)
+    references: list[str] = field(default_factory=list)
+    lifecycle: str = "active"
+    privacy_class: str = "private"
+    disclosure_class: str = "local_only"
+    body_mode: str = "plain"
+    document_binding_id: str = ""
+    document_store_id: str = ""
+    document_id: str = ""
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -850,6 +863,24 @@ class VaultUnit(KnowledgeUnit):
             d["observation_count"] = self.observation_count
         if self.source_file:
             d["source_file"] = self.source_file
+        if self.unit_id:
+            d["unit_id"] = self.unit_id
+        if self.revision:
+            d["revision"] = self.revision
+        if self.path_aliases:
+            d["path_aliases"] = self.path_aliases
+        if self.categories:
+            d["categories"] = self.categories
+        if self.references:
+            d["references"] = self.references
+        d["lifecycle"] = self.lifecycle
+        d["privacy_class"] = self.privacy_class
+        d["disclosure_class"] = self.disclosure_class
+        d["body_mode"] = self.body_mode
+        if self.document_binding_id:
+            d["document_binding_id"] = self.document_binding_id
+            d["document_store_id"] = self.document_store_id
+            d["document_id"] = self.document_id
         return d
 
     _kind_dict = _kind_fields
@@ -956,6 +987,18 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["last_observed"] = data.get("last_observed", "")
         base_kwargs["observation_count"] = data.get("observation_count", 0)
         base_kwargs["source_file"] = data.get("source_file", "")
+        base_kwargs["unit_id"] = data.get("unit_id", "")
+        base_kwargs["revision"] = data.get("revision", 0)
+        base_kwargs["path_aliases"] = data.get("path_aliases", [])
+        base_kwargs["categories"] = data.get("categories", [])
+        base_kwargs["references"] = data.get("references", [])
+        base_kwargs["lifecycle"] = data.get("lifecycle", "active")
+        base_kwargs["privacy_class"] = data.get("privacy_class", "private")
+        base_kwargs["disclosure_class"] = data.get("disclosure_class", "local_only")
+        base_kwargs["body_mode"] = data.get("body_mode", "plain")
+        base_kwargs["document_binding_id"] = data.get("document_binding_id", "")
+        base_kwargs["document_store_id"] = data.get("document_store_id", "")
+        base_kwargs["document_id"] = data.get("document_id", "")
     elif cls is PromptUnit:
         # Last-resort fallback: the JSON's ``kind`` didn't match any typed
         # subclass. Surface this loudly so the next ad-hoc kind doesn't

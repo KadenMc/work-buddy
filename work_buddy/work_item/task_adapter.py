@@ -26,12 +26,18 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Iterator
-import uuid
 
 
 _creation_attribution: ContextVar[tuple[str, str | None] | None] = ContextVar(
     "task_creation_attribution", default=None,
 )
+
+
+def _creation_authorship(actor: str) -> str:
+    """Map the established task actor vocabulary to field authorship."""
+
+    actor_kind = str(actor).strip().partition(":")[0].casefold()
+    return "human" if actor_kind in {"human", "user", "dashboard"} else "ai"
 
 
 @contextmanager
@@ -120,14 +126,19 @@ def create(
     The long GTD/risk/context keyword tail of ``create_task`` (``task_kind``,
     ``density``, ``creation_provenance``, ``user_involvement``,
     ``risk_profile_json``, …) is forwarded verbatim through ``**kwargs``.
+    A scalar summary never selects a document role. Callers must request the
+    task note, initial content, and optional Truth activation explicitly.
     Returns the stable task id plus native revision/receipt metadata after
     cutover; the compatibility result shape is preserved before cutover.
     """
     if _native_active():
-        from work_buddy.tasks.models import Tag, TaskDocumentLink
+        import hashlib
+
+        from work_buddy.tasks.aggregate_creation import TaskAggregateCreationService
+        from work_buddy.tasks.creation import FieldDerivation
+        from work_buddy.tasks.models import Tag
         from work_buddy.tasks.service import TaskApplicationService
         from work_buddy.tasks.store import TaskStore
-        from work_buddy.tasks.documents import TaskDocumentService
 
         store = TaskStore()
         service = TaskApplicationService(store)
@@ -164,56 +175,84 @@ def create(
         }
         if "dependencies" in accepted and "has_dependency" not in accepted:
             accepted["has_dependency"] = bool(accepted["dependencies"])
-        result = service.create(
+        task_values = dict(
             description=task_text,
             urgency=urgency,
             due_date=due_date,
             contract=contract,
             summary_text=summary,
             tags=native_tags,
-            session_id=session_id,
-            **authority,
             **accepted,
         )
-        note_uuid = None
-        if summary:
-            document = TaskDocumentService().create(
-                task_id=result.task.task_id,
-                title=result.task.description,
-                domain_revision=str(result.task.revision),
-                created_by=str(authority["actor"]),
-                initial_markdown=f"# {result.task.description}\n\n{summary.strip()}\n",
-            )
-            # The attachment belongs to the same create command. A replay must
-            # hash the identical link payload, including timestamps, instead of
-            # conflicting after the task/document have already committed.
-            now = result.task.created_at
-            note_uuid = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"work-buddy:task-note:{result.task.task_id}",
-                )
-            )
-            result = service.attach_document(
-                result.task.task_id,
-                link=TaskDocumentLink(
-                    task_id=result.task.task_id,
-                    note_uuid=note_uuid,
-                    store_id=document.store_id,
-                    document_id=document.document_id,
-                    binding_id=document.binding_id,
-                    lifecycle="active",
-                    created_at=now,
-                    updated_at=now,
-                ),
-                expected_revision=result.task.revision,
-                client_mutation_id=f"{authority['client_mutation_id']}:document",
+        requested_role = kwargs.get("requested_note_role")
+        explicit_note = kwargs.get("initial_note", kwargs.get("note_markdown"))
+        requested_truth_resolution = kwargs.get("requested_truth_policy_resolution")
+        if requested_role is None and explicit_note is not None:
+            raise ValueError("Choose a task note role before supplying note text")
+        if requested_role is None and requested_truth_resolution is not None:
+            raise ValueError("Truth requires a task note")
+        rich_requested = requested_role is not None
+        if rich_requested:
+            if requested_role != "working_document/v1":
+                raise ValueError("Unsupported task note role")
+            truth_resolution = requested_truth_resolution or "disabled"
+            if truth_resolution not in {"disabled", "enabled"}:
+                raise ValueError("Task note Truth policy must be disabled or enabled")
+            initial_markdown = str(explicit_note or "")
+            authorship = _creation_authorship(str(authority["actor"]))
+            result = TaskAggregateCreationService(store, task_service=service).create(
+                client_mutation_id=str(authority["client_mutation_id"]),
                 actor=str(authority["actor"]),
                 session_id=session_id,
+                task_values=task_values,
+                initial_note=initial_markdown,
+                requested_truth_policy_resolution=str(truth_resolution),
+                field_derivations=(
+                    FieldDerivation(
+                        field_name="description",
+                        value_sha256=hashlib.sha256(task_text.encode("utf-8")).hexdigest(),
+                        authorship=authorship,
+                    ),
+                    FieldDerivation(
+                        field_name="task_note.initial_body",
+                        value_sha256=hashlib.sha256(
+                            initial_markdown.encode("utf-8")
+                        ).hexdigest(),
+                        authorship=authorship,
+                    ),
+                ),
             )
-        return _native_result(result, note_uuid=note_uuid)
+        else:
+            result = service.create(
+                **task_values,
+                session_id=session_id,
+                **authority,
+            )
+        return _native_result(result, note_uuid=result.task.note_uuid)
 
     from work_buddy.obsidian.tasks import mutations
+
+    # These controls belong to the native document coordinator. Keep the
+    # pre-cutover compatibility writer callable while mapping an explicitly
+    # requested note body onto the one legacy field that can represent it.
+    legacy_kwargs = dict(kwargs)
+    requested_role = legacy_kwargs.pop("requested_note_role", None)
+    explicit_note = legacy_kwargs.pop(
+        "initial_note", legacy_kwargs.pop("note_markdown", None)
+    )
+    requested_truth_resolution = legacy_kwargs.pop(
+        "requested_truth_policy_resolution", None
+    )
+    if requested_role is None and explicit_note is not None:
+        raise ValueError("Choose a task note role before supplying note text")
+    if requested_role is None and requested_truth_resolution is not None:
+        raise ValueError("Truth requires a task note")
+    if requested_role is not None:
+        if requested_role != "working_document/v1":
+            raise ValueError("Unsupported task note role")
+        if requested_truth_resolution not in {None, "disabled", "enabled"}:
+            raise ValueError("Task note Truth policy must be disabled or enabled")
+        summary = str(explicit_note or "")
 
     return mutations.create_task(
         task_text=task_text,
@@ -223,7 +262,7 @@ def create(
         contract=contract,
         summary=summary,
         tags=tags,
-        **kwargs,
+        **legacy_kwargs,
     )
 
 

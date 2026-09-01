@@ -2,7 +2,7 @@
 name: Architecture & Repo Structure
 kind: concept
 description: Repository layout, subsystem organization, and development conventions
-summary: work_buddy/ is the Python package. knowledge/store/ has workflow definitions and agent docs. Contracts live in the Obsidian vault (contracts.vault_path in config).
+summary: work_buddy/ is the Python package; tracked knowledge/store/ contains workflows and agent docs, while private domain content lives in registered SQLite and Co-work stores.
 tags:
 - architecture
 - repo
@@ -10,4 +10,9 @@ tags:
 - conventions
 ---
 
-The work-buddy repo is organized around a Python package (work_buddy/), a unified knowledge store (knowledge/store/ — workflow definitions, capability metadata, agent documentation), metacognition patterns (metacognition/), agent session data (data/agents/, gitignored), and slash commands (.claude/commands/). Contracts live in the Obsidian vault at the path configured by contracts.vault_path in config.yaml (default: work-buddy/contracts, resolved relative to vault_root). The knowledge store is the canonical documentation source for all subsystems.
+The Work Buddy repo is organized around the `work_buddy/` Python package,
+tracked `knowledge/store/` workflow and agent documentation, private registered
+data stores beneath the configured data root, and `.claude/commands/` launchers.
+Journal, Contracts, Projects, Tasks, and Personal Knowledge own distinct SQLite
+authorities; rich mutable bodies may bind to Co-work. The tracked knowledge
+store remains the canonical documentation source for all subsystems.

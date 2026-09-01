@@ -28,6 +28,11 @@ import type {
   TruthViewScope,
   TruthConflict,
 } from "./contracts";
+import type {
+  CoworkDocumentCapabilityEnvelope,
+  CoworkTruthActivation,
+  CoworkTruthEligibility,
+} from "../contracts";
 import {
   initializeLocalIdentity,
   issueHumanGesture,
@@ -55,6 +60,7 @@ const TRUTH_MUTATION_GESTURE_SCHEMA = "wb.cowork.truth-mutation-gesture/v1";
 const TRUTH_PROPOSE_ACTION = "cowork.truth.propose_and_connect";
 const TRUTH_CONNECT_ACTION = "cowork.truth.connect";
 const TRUTH_LIFECYCLE_ACTION = "cowork.truth.claim_decision";
+const TRUTH_ACTIVATION_ACTION = "cowork.truth.activation.change";
 
 const objectValue = (value: unknown): JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -624,6 +630,121 @@ const mutationReceipt = (raw: unknown): TruthMutationReceipt => {
   };
 };
 
+const truthActivationEnvelope = (
+  raw: unknown,
+): CoworkDocumentCapabilityEnvelope => {
+  const envelope = objectValue(raw);
+  const interaction = objectValue(
+    first(envelope, "interaction_contract", "interactionContract"),
+  );
+  const modules = objectValue(first(envelope, "modules"));
+  const truth = objectValue(first(envelope, "truth"));
+  const rawEligibility = first(truth, "eligibility");
+  const eligibility: CoworkTruthEligibility =
+    rawEligibility === "allowed" || rawEligibility === "required"
+      ? rawEligibility
+      : "unsupported";
+  const rawActivation = first(truth, "activation");
+  const activation: CoworkTruthActivation | null =
+    rawActivation === "disabled" ||
+    rawActivation === "enabled" ||
+    rawActivation === "paused"
+      ? rawActivation
+      : null;
+  const rawRevision = first(truth, "activation_revision", "activationRevision");
+  const activationRevision =
+    activation !== null &&
+    typeof rawRevision === "number" &&
+    Number.isSafeInteger(rawRevision) &&
+    rawRevision > 0
+      ? rawRevision
+      : null;
+  const contractId = stringValue(
+    first(interaction, "contract_id", "contractId", "id"),
+  );
+  const contractVersion = numberValue(first(interaction, "version"));
+  const contractDigest = nullableString(
+    first(interaction, "digest", "definition_sha256", "definitionSha256"),
+  );
+  if (
+    first(envelope, "schema") !== "wb.cowork-document-capabilities/v1" ||
+    contractId.length === 0 ||
+    !Number.isSafeInteger(contractVersion) ||
+    contractVersion < 1 ||
+    contractDigest === null ||
+    contractDigest.length !== 64 ||
+    (eligibility !== "unsupported" &&
+      (activation === null || activationRevision === null))
+  ) {
+    throw new Error("Truth returned an invalid activation policy.");
+  }
+  return {
+    schema: "wb.cowork-document-capabilities/v1",
+    interactionContract: {
+      contractId,
+      version: contractVersion,
+      digest: contractDigest,
+    },
+    modules: {
+      review: booleanValue(first(modules, "review")),
+      provenance: booleanValue(first(modules, "provenance")),
+      chat: booleanValue(first(modules, "chat")),
+      truth: booleanValue(first(modules, "truth")),
+    },
+    truth: {
+      eligibility,
+      activation,
+      activationRevision,
+      policyFingerprint: nullableString(
+        first(truth, "policy_fingerprint", "policyFingerprint"),
+      ),
+      ledgerPresent: booleanValue(
+        first(truth, "ledger_present", "ledgerPresent"),
+      ),
+      unavailableReason: nullableString(
+        first(truth, "unavailable_reason", "unavailableReason"),
+      ),
+    },
+  };
+};
+
+const digestValue = (value: unknown, label: string): string => {
+  const digest = stringValue(value).toLowerCase();
+  if (digest.length !== 64 || !/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error(`Truth returned an invalid ${label}.`);
+  }
+  return digest;
+};
+
+export interface TruthActivationPolicySnapshot {
+  readonly capabilityEnvelope: CoworkDocumentCapabilityEnvelope;
+  readonly documentHeadSha256: string;
+}
+
+export interface TruthActivationTransitionRequest {
+  readonly nextState: CoworkTruthActivation;
+  readonly expectedActivationRevision: number;
+  readonly expectedInteractionContractSha256: string;
+  readonly expectedDocumentHeadSha256: string;
+  readonly intentId: string;
+  readonly reason?: string;
+}
+
+const activationPolicySnapshot = (
+  raw: unknown,
+): TruthActivationPolicySnapshot => {
+  const value = objectValue(raw);
+  return {
+    capabilityEnvelope: truthActivationEnvelope(
+      first(value, "capability_envelope", "capabilityEnvelope"),
+    ),
+    documentHeadSha256: digestValue(
+      first(value, "document_head_sha256", "documentHeadSha256"),
+      "document head",
+    ),
+  };
+};
+
 const captureBody = (
   request: TruthProposeClaimRequest | TruthConnectClaimRequest,
 ): JsonObject => ({
@@ -668,6 +789,36 @@ export class HttpCoworkTruthClient implements TruthRailProvider {
   /** Surface/SSE adapters may fan an authoritative Truth nudge through here. */
   invalidate(): void {
     for (const listener of this.#listeners) listener();
+  }
+
+  async loadActivationPolicy(): Promise<TruthActivationPolicySnapshot> {
+    return activationPolicySnapshot(
+      await this.#json(`${this.#base()}/policy?${this.#query()}`),
+    );
+  }
+
+  async transitionTruthActivation(
+    request: TruthActivationTransitionRequest,
+  ): Promise<TruthActivationPolicySnapshot> {
+    const reason = request.reason?.trim() || null;
+    const body = {
+      next_state: request.nextState,
+      expected_activation_revision: request.expectedActivationRevision,
+      expected_interaction_contract_sha256:
+        request.expectedInteractionContractSha256,
+      expected_document_head_sha256: request.expectedDocumentHeadSha256,
+      intent_id: request.intentId,
+      reason,
+    };
+    const payload = await this.#authorizedJson({
+      action: TRUTH_ACTIVATION_ACTION,
+      operation: "activation",
+      payload: body,
+      url: `${this.#base()}/activation?${this.#query()}`,
+      body,
+    });
+    this.invalidate();
+    return activationPolicySnapshot(payload);
   }
 
   async #json(

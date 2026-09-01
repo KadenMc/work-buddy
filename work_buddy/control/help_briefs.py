@@ -151,6 +151,17 @@ def _requirement_brief(node) -> str:
     component = req.component if req else None
     fix_kind = req.fix_kind if req else "none"
 
+    if node.effective_state == "disabled":
+        return "\n".join([
+            "This work-buddy requirement is disabled by feature preference.",
+            "",
+            f"## Requirement: `{raw_id}`",
+            f"**Description:** {node.label}",
+            "",
+            "Do not run checks, apply fixes, or recommend setup for this "
+            "requirement while its component is opted out.",
+        ])
+
     parts = [
         "You are helping the user investigate and fix a work-buddy requirement.",
         "",
@@ -247,6 +258,18 @@ def _component_context_lines(node) -> list[str]:
 
 def _component_brief(node) -> str:
     """Brief for a component — bundles DiagnosticRunner output."""
+    if node.effective_state == "disabled" or node.preference == "unwanted":
+        return "\n".join([
+            "This work-buddy component is intentionally disabled.",
+            "",
+            f"## Component: `{node.id}`",
+            f"**Display name:** {node.label}",
+            "",
+            "Diagnostic checks are suppressed. Do not probe it, retry its "
+            "operations, inspect its requirements, or recommend setup while "
+            "the preference remains opted out.",
+        ])
+
     parts = [
         "You are helping the user diagnose and fix a work-buddy component.",
         "",
@@ -275,6 +298,16 @@ def _component_brief(node) -> str:
 
 def _grouping_brief(node, nodes) -> str:
     """Brief for a domain or subsystem — list problematic descendants."""
+    if node.effective_state == "disabled":
+        return "\n".join([
+            f"This work-buddy {node.kind} is intentionally disabled.",
+            "",
+            f"## {node.kind.title()}: `{node.id}`",
+            f"**Label:** {node.label}",
+            "",
+            "Do not probe descendants or recommend setup for this disabled group.",
+        ])
+
     bad_states = {"blocked", "unconfigured", "degraded", "unknown"}
     descendants = []
     visited = set()
@@ -326,6 +359,17 @@ def _grouping_brief(node, nodes) -> str:
 
 def _capability_brief(node) -> str:
     """Brief for a capability — explain its dep chain."""
+    if node.effective_state == "disabled":
+        return "\n".join([
+            "This work-buddy capability is disabled by feature preference.",
+            "",
+            f"## Capability: `{node.id}`",
+            f"**Description:** {node.description}",
+            "",
+            "Do not probe its dependencies, retry it, or recommend setup while "
+            "the owning integration is opted out.",
+        ])
+
     parts = [
         "You are helping the user investigate a work-buddy capability that "
         "isn't fully usable.",

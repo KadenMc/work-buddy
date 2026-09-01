@@ -2607,22 +2607,13 @@ def api_project_detail(slug: str):
 
 @app.post("/api/projects/<slug>")
 def api_project_update(slug: str):
-    """Update project identity fields via the markdown-canonical path.
-
-    Routes the edit through :class:`ProjectMarkdownDB.apply_mutation`,
-    which writes BOTH surfaces — the project's markdown note (the
-    canonical store) and the projects SQLite registry — atomically. A
-    dashboard edit therefore survives the next drift reconciliation;
-    writing the registry alone would be overwritten by the note on the
-    next reconcile pass.
-    """
+    """Update project identity fields through the sealed authority seam."""
     blocked = _reject_read_only()
     if blocked:
         return blocked
     data = request.get_json(silent=True) or {}
     try:
-        from work_buddy.markdown_db import WriteProvenance
-        from work_buddy.projects.markdown_db import ProjectMarkdownDB
+        from work_buddy.projects.authority import update_project_authoritatively
         from work_buddy.projects.store import VALID_STATUSES, get_project
 
         fields: dict[str, Any] = {}
@@ -2632,10 +2623,8 @@ def api_project_update(slug: str):
         if not fields:
             return jsonify({"error": "No fields to update"}), 400
 
-        # Pre-validate status. apply_mutation writes the markdown note
-        # BEFORE the store, so an enum failure surfacing mid-write would
-        # leave the note ahead of a rejecting registry. Catch it before
-        # any surface is touched.
+        # Validate before either the pre-cutover compatibility path or the
+        # post-cutover SQLite transaction receives the request.
         if "status" in fields and fields["status"] not in VALID_STATUSES:
             return jsonify({
                 "error": f"Invalid status: {fields['status']!r}. "
@@ -2645,13 +2634,22 @@ def api_project_update(slug: str):
         if get_project(slug) is None:
             return jsonify({"error": f"Project '{slug}' not found"}), 404
 
-        ProjectMarkdownDB().apply_mutation(
-            slug, fields,
-            provenance=WriteProvenance.mutation(
-                frozenset({"user"}), "dashboard",
-            ),
+        expected_revision = data.get("expected_revision_id")
+        if expected_revision is not None and (
+            isinstance(expected_revision, bool) or not isinstance(expected_revision, int)
+        ):
+            return jsonify({"error": "expected_revision_id must be an integer"}), 400
+        intent_id = data.get("client_mutation_id")
+        if intent_id is not None and not isinstance(intent_id, str):
+            return jsonify({"error": "client_mutation_id must be a string"}), 400
+        return jsonify(
+            update_project_authoritatively(
+                slug,
+                fields,
+                expected_revision_id=expected_revision,
+                intent_id=intent_id or None,
+            )
         )
-        return jsonify(get_project(slug))
     except ValueError as e:
         # CHECK-constraint or enum-validation failure from the store.
         return jsonify({"error": str(e)}), 400
@@ -5315,6 +5313,26 @@ def api_palette_execute():
 def _execute_obsidian(raw_id: str):
     """Execute an Obsidian command via the Local REST API."""
     try:
+        from work_buddy.health.preferences import is_wanted
+
+        if is_wanted("obsidian") is False:
+            return jsonify({
+                "success": False,
+                "error": "Obsidian commands are disabled by user preference.",
+                "error_code": "feature_opted_out",
+                "provider": "obsidian",
+            }), 403
+    except Exception:
+        logger.exception(
+            "Refusing Obsidian command because its preference could not be read"
+        )
+        return jsonify({
+            "success": False,
+            "error": "Obsidian command availability could not be verified.",
+            "error_code": "feature_preference_unavailable",
+            "provider": "obsidian",
+        }), 503
+    try:
         from work_buddy.obsidian.commands import ObsidianCommands
 
         vault_root = Path(_cfg.get("vault_root", ""))
@@ -5335,11 +5353,31 @@ def _execute_workbuddy(name: str, params: dict):
             WorkflowDefinition,
             get_registry,
         )
+        from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
 
         registry = get_registry()
         entry = registry.get(name)
         if entry is None:
             return jsonify({"success": False, "error": f"Unknown capability: {name}"}), 404
+
+        admission = evaluate_runtime_admission(entry)
+        if not admission.preference_available:
+            return jsonify({
+                "success": False,
+                "error": "Feature preferences could not be verified.",
+                "error_code": "feature_preference_unavailable",
+                "provider": "work-buddy",
+            }), 503
+        if admission.opted_out:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "This command is disabled by your feature preferences."
+                ),
+                "error_code": "feature_opted_out",
+                "opted_out": list(admission.opted_out),
+                "provider": "work-buddy",
+            }), 403
 
         if isinstance(entry, WorkflowDefinition):
             return _request_workflow_consent(name, entry)
@@ -5466,7 +5504,23 @@ def _launch_workflow_session(name: str, entry, user_prompt: str = "") -> dict:
     """
     try:
         from work_buddy.consent import grant_consent
+        from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
         from work_buddy.session_launcher import begin_session
+
+        admission = evaluate_runtime_admission(entry)
+        if not admission.preference_available:
+            return {
+                "success": False,
+                "error": "Feature preferences could not be verified.",
+                "error_code": "feature_preference_unavailable",
+            }
+        if admission.opted_out:
+            return {
+                "success": False,
+                "error": "This workflow is disabled by your feature preferences.",
+                "error_code": "feature_opted_out",
+                "opted_out": list(admission.opted_out),
+            }
 
         # Grant consent for remote launch (same pattern as Telegram /remote)
         grant_consent("sidecar:remote_session_launch", mode="always")

@@ -182,6 +182,118 @@ class JournalSourceDispatcher:
                 pass
             raise
 
+    def drain_postseal_held(
+        self,
+        *,
+        cohort_id: str,
+        client_mutation_id: str,
+        actor: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Drain only the Source IDs frozen into one postseal batch.
+
+        Binding briefly holds Sources then Journal writer locks, but those
+        locks are released before any dispatcher connection leases work.  The
+        finalizer reacquires the same lock order for a read-only cross-store
+        proof, avoiding SQLite self-deadlock while keeping both snapshots
+        stable at each protocol boundary.
+        """
+
+        authority = self.journal.authority
+        bound = authority.bind_postseal_source_drain(
+            sources=self.sources,
+            cohort_id=cohort_id,
+            client_mutation_id=client_mutation_id,
+            actor=actor,
+        )
+        effect_ids = authority.source_drain_effect_ids(
+            cohort_id=cohort_id,
+            client_mutation_id=client_mutation_id,
+        )
+        delivered = failed = deferred = 0
+        for effect_id in effect_ids:
+            current = self.outbox.get(effect_id)
+            if current is not None and current.status == "succeeded":
+                delivered += 1
+                continue
+            try:
+                effect = self.outbox.lease_exact(
+                    effect_id,
+                    self.worker_id,
+                    lease_seconds=60,
+                )
+                if effect is None:
+                    deferred += 1
+                    continue
+                capture_id = self._deliver_capture(
+                    effect,
+                    postseal_drain_batch_id=client_mutation_id,
+                )
+                if self._acknowledge_result(
+                    effect.effect_id, f"journal-capture:{capture_id}"
+                ):
+                    delivered += 1
+                else:
+                    deferred += 1
+            except SourceLeaseConflict:
+                deferred += 1
+            except (
+                JournalCaptureError,
+                SourceError,
+                ValueError,
+                UnicodeDecodeError,
+                KeyError,
+            ) as exc:
+                retryable = isinstance(exc, JournalCaptureError) and exc.retryable
+                try:
+                    self.outbox.fail(
+                        effect_id,
+                        self.worker_id,
+                        error_code=getattr(
+                            exc, "code", "journal_source_command_invalid"
+                        ),
+                        retryable=retryable,
+                    )
+                except SourceLeaseConflict:
+                    deferred += 1
+                    continue
+                if retryable:
+                    deferred += 1
+                else:
+                    failed += 1
+            except Exception:
+                logger.exception("Controlled Journal Source drain failed")
+                try:
+                    self.outbox.fail(
+                        effect_id,
+                        self.worker_id,
+                        error_code="journal_dispatch_failed",
+                        retryable=True,
+                    )
+                except SourceLeaseConflict:
+                    pass
+                deferred += 1
+        if failed or deferred:
+            return {
+                **bound,
+                "status": "pending",
+                "delivered": delivered,
+                "failed": failed,
+                "deferred": deferred,
+            }
+        result = authority.finalize_postseal_source_drain(
+            sources=self.sources,
+            cohort_id=cohort_id,
+            client_mutation_id=client_mutation_id,
+            actor=actor,
+        )
+        return {
+            **result,
+            "status": "drained",
+            "delivered": delivered,
+            "failed": failed,
+            "deferred": deferred,
+        }
+
     def _acknowledge_result(self, effect_id: str, result_ref: str) -> bool:
         """Re-lease only to acknowledge a completed result, never rerun work.
 
@@ -212,7 +324,12 @@ class JournalSourceDispatcher:
             except SourceLeaseConflict:
                 return False
 
-    def _deliver_capture(self, effect: OutboxEffect) -> str:
+    def _deliver_capture(
+        self,
+        effect: OutboxEffect,
+        *,
+        postseal_drain_batch_id: str | None = None,
+    ) -> str:
         payload = _mapping(effect.payload)
         if (
             effect.target_domain != "journal"
@@ -272,6 +389,7 @@ class JournalSourceDispatcher:
             run_smart=mode is CaptureMode.SMART,
             follow_up_action=_optional_text(parameters, "follow_up_action"),
             smart_disclosure_sha256=_optional_text(parameters, "smart_disclosure_sha256"),
+            postseal_drain_batch_id=postseal_drain_batch_id,
         )
         # The reservation was committed before the readable domain copy.
         # A source redaction racing after this point therefore has a durable
@@ -296,6 +414,152 @@ class JournalSourceDispatcher:
         epoch = payload.get("redaction_epoch")
         if not isinstance(epoch, int) or epoch < 1:
             raise ValueError("journal_redaction_command_invalid")
+
+        imported = self.journal.store.get_import_source_dependency(
+            source_usage_id=usage_id,
+            source_usage_consumer_id=source_effect_id,
+            source_ref=source_ref.uri,
+        )
+        if imported is not None:
+            result_sha = hashlib.sha256(
+                (
+                    "journal-import-source-redaction:"
+                    f"{redaction_event_id}:native-copies-removed"
+                ).encode("utf-8")
+            ).hexdigest()
+            self.journal.store.mark_import_source_redacted(
+                cohort_id=str(imported["cohort_id"]),
+                file_id=str(imported["file_id"]),
+                source_usage_id=usage_id,
+                source_usage_consumer_id=source_effect_id,
+                source_ref=source_ref.uri,
+                redaction_event_id=redaction_event_id,
+                redaction_epoch=epoch,
+                result_sha256=result_sha,
+            )
+            self.sources.release_usage(usage_id)
+            self.journal.store.mark_import_source_usage_released(
+                cohort_id=str(imported["cohort_id"]),
+                file_id=str(imported["file_id"]),
+                source_usage_id=usage_id,
+            )
+            return f"journal-import-source-redaction:{redaction_event_id}"
+
+        revision_dependency = (
+            self.journal.store.get_item_revision_source_dependency(
+                source_usage_id=usage_id,
+                source_usage_consumer_id=source_effect_id,
+                source_ref=source_ref.uri,
+            )
+        )
+        if revision_dependency is not None:
+            result_sha = hashlib.sha256(
+                (
+                    "journal-item-revision-source-redaction:"
+                    f"{redaction_event_id}:revision-copy-removed"
+                ).encode("utf-8")
+            ).hexdigest()
+            self.journal.store.mark_item_revision_source_redacted(
+                dependency_id=str(revision_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+                source_usage_consumer_id=source_effect_id,
+                source_ref=source_ref.uri,
+                redaction_event_id=redaction_event_id,
+                redaction_epoch=epoch,
+                result_sha256=result_sha,
+            )
+            self.sources.release_usage(usage_id)
+            self.journal.store.mark_item_revision_source_usage_released(
+                dependency_id=str(revision_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+            )
+            return f"journal-item-revision-source-redaction:{redaction_event_id}"
+
+        native_dependency = self.journal.store.get_native_item_source_dependency(
+            source_usage_id=usage_id,
+            source_usage_consumer_id=source_effect_id,
+            source_ref=source_ref.uri,
+        )
+        if native_dependency is not None:
+            result_sha = hashlib.sha256(
+                (
+                    "journal-native-item-source-redaction:"
+                    f"{redaction_event_id}:native-copy-removed"
+                ).encode("utf-8")
+            ).hexdigest()
+            self.journal.store.mark_native_item_source_redacted(
+                dependency_id=str(native_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+                source_usage_consumer_id=source_effect_id,
+                source_ref=source_ref.uri,
+                redaction_event_id=redaction_event_id,
+                redaction_epoch=epoch,
+                result_sha256=result_sha,
+            )
+            self.sources.release_usage(usage_id)
+            self.journal.store.mark_native_item_source_usage_released(
+                dependency_id=str(native_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+            )
+            return f"journal-native-item-source-redaction:{redaction_event_id}"
+
+        field_dependency = self.journal.store.get_field_value_source_dependency(
+            source_usage_id=usage_id,
+            source_usage_consumer_id=source_effect_id,
+            source_ref=source_ref.uri,
+        )
+        if field_dependency is not None:
+            result_sha = hashlib.sha256(
+                (
+                    "journal-field-value-source-redaction:"
+                    f"{redaction_event_id}:typed-copy-removed"
+                ).encode("utf-8")
+            ).hexdigest()
+            self.journal.store.mark_field_value_source_redacted(
+                dependency_id=str(field_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+                source_usage_consumer_id=source_effect_id,
+                source_ref=source_ref.uri,
+                redaction_event_id=redaction_event_id,
+                redaction_epoch=epoch,
+                result_sha256=result_sha,
+            )
+            self.sources.release_usage(usage_id)
+            self.journal.store.mark_field_value_source_usage_released(
+                dependency_id=str(field_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+            )
+            return f"journal-field-value-source-redaction:{redaction_event_id}"
+
+        prompt_dependency = self.journal.store.get_prompt_source_dependency(
+            source_usage_id=usage_id,
+            source_usage_consumer_id=source_effect_id,
+            source_ref=source_ref.uri,
+        )
+        if prompt_dependency is not None:
+            result_sha = hashlib.sha256(
+                (
+                    "journal-prompt-source-redaction:"
+                    f"{redaction_event_id}:{prompt_dependency['dependency_kind']}"
+                ).encode("utf-8")
+            ).hexdigest()
+            self.journal.store.mark_prompt_source_redacted(
+                dependency_kind=str(prompt_dependency["dependency_kind"]),
+                dependency_id=str(prompt_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+                source_usage_consumer_id=source_effect_id,
+                source_ref=source_ref.uri,
+                redaction_event_id=redaction_event_id,
+                redaction_epoch=epoch,
+                result_sha256=result_sha,
+            )
+            self.sources.release_usage(usage_id)
+            self.journal.store.mark_prompt_source_usage_released(
+                dependency_kind=str(prompt_dependency["dependency_kind"]),
+                dependency_id=str(prompt_dependency["dependency_id"]),
+                source_usage_id=usage_id,
+            )
+            return f"journal-prompt-source-redaction:{redaction_event_id}"
 
         original = self.outbox.get(source_effect_id)
         if original is not None and original.status in {"pending", "retryable", "leased"}:

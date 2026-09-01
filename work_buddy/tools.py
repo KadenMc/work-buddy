@@ -249,6 +249,33 @@ def probe_all(force: bool = False) -> dict[str, dict[str, Any]]:
 
     # Phase 2: Run dependent probes serially (they need parent results)
     for probe in dependent:
+        # Preference is an execution boundary, not presentation metadata.
+        # Check the dependent component itself before inspecting its parents so
+        # an explicit opt-out never turns into a misleading dependency error.
+        if is_wanted(probe.id) is False:
+            pid, entry = _run_probe(probe)
+            results[pid] = entry
+            continue
+
+        # A hard dependency which the user opted out of disables this child as
+        # well.  In particular, Datacore and the legacy Obsidian calendar
+        # plugin must not probe (or produce setup advice) after Obsidian is
+        # intentionally disabled.
+        opted_out_deps = [
+            dep for dep in probe.depends_on
+            if results.get(dep, {}).get("user_opted_out") is True
+        ]
+        if opted_out_deps:
+            results[probe.id] = {
+                "available": False,
+                "probe_ms": 0,
+                "reason": f"Dependency opted out: {', '.join(opted_out_deps)}",
+                "config_enabled": False,
+                "user_opted_out": True,
+                "blocked_by_opt_out": opted_out_deps,
+            }
+            continue
+
         missing_deps = [
             dep for dep in probe.depends_on
             if not results.get(dep, {}).get("available", False)
@@ -306,6 +333,7 @@ def reprobe_one(tool_id: str) -> dict[str, Any] | None:
         return None
 
     from work_buddy.config import load_config
+    from work_buddy.health.preferences import is_wanted
     cfg = load_config()
 
     entry: dict[str, Any] = {
@@ -315,33 +343,39 @@ def reprobe_one(tool_id: str) -> dict[str, Any] | None:
         "config_enabled": True,
     }
 
-    config_val = _get_config_enabled(cfg, probe.config_key)
-    if config_val is False:
+    pref = is_wanted(probe.id)
+    if pref is False:
         entry["config_enabled"] = False
-        entry["reason"] = f"Disabled in config ({probe.config_key})"
+        entry["reason"] = "User opted out (features.{}.wanted: false)".format(tool_id)
+        entry["user_opted_out"] = True
     else:
-        t0 = time.time()
-        try:
-            probe_result = probe.probe_fn()
-            # Probes may return ``bool`` OR ``(bool, str)``. The string form
-            # is an authoritative reason override — useful for probes that
-            # want to include latency history, specific failure modes, or
-            # confirm healthy-state narrative on success.
-            if isinstance(probe_result, tuple) and len(probe_result) == 2:
-                available, custom_reason = probe_result
-            else:
-                available, custom_reason = probe_result, None
-            elapsed_ms = (time.time() - t0) * 1000
-            entry["available"] = bool(available)
-            entry["probe_ms"] = round(elapsed_ms, 1)
-            if custom_reason:
-                entry["reason"] = custom_reason
-            elif not available:
-                entry["reason"] = probe.reason_when_missing or f"{probe.display_name} not reachable"
-        except Exception as exc:
-            elapsed_ms = (time.time() - t0) * 1000
-            entry["probe_ms"] = round(elapsed_ms, 1)
-            entry["reason"] = f"Probe error: {exc}"
+        config_val = _get_config_enabled(cfg, probe.config_key)
+        if config_val is False:
+            entry["config_enabled"] = False
+            entry["reason"] = f"Disabled in config ({probe.config_key})"
+        else:
+            t0 = time.time()
+            try:
+                probe_result = probe.probe_fn()
+                # Probes may return ``bool`` OR ``(bool, str)``. The string form
+                # is an authoritative reason override — useful for probes that
+                # want to include latency history, specific failure modes, or
+                # confirm healthy-state narrative on success.
+                if isinstance(probe_result, tuple) and len(probe_result) == 2:
+                    available, custom_reason = probe_result
+                else:
+                    available, custom_reason = probe_result, None
+                elapsed_ms = (time.time() - t0) * 1000
+                entry["available"] = bool(available)
+                entry["probe_ms"] = round(elapsed_ms, 1)
+                if custom_reason:
+                    entry["reason"] = custom_reason
+                elif not available:
+                    entry["reason"] = probe.reason_when_missing or f"{probe.display_name} not reachable"
+            except Exception as exc:
+                elapsed_ms = (time.time() - t0) * 1000
+                entry["probe_ms"] = round(elapsed_ms, 1)
+                entry["reason"] = f"Probe error: {exc}"
 
     # Merge into cached status and persist
     global _TOOL_STATUS
@@ -804,7 +838,7 @@ def _probe_calendar() -> tuple[bool, str]:
     from work_buddy.config import load_config
 
     cfg = (load_config() or {}).get("calendar", {}) or {}
-    provider = (cfg.get("provider") or "obsidian_bridge").lower()
+    provider = (cfg.get("provider") or "google_native").lower()
 
     if provider in ("obsidian_bridge", "obsidian", "bridge"):
         # Bridge path needs Obsidian's plugin batch. Read the cache; populate it

@@ -52,12 +52,19 @@ class ImportAuthorization:
     allow_foreign_authorities: bool = True
     collision_policy: str = "quarantine"
     restore_operational_state: bool = False
+    merge_operational_state: bool = False
 
     def __post_init__(self) -> None:
         validate_sha256(self.authorization_fingerprint)
         if self.collision_policy not in {"quarantine", "remap", "reject"}:
             raise InvalidSourceRequest()
-        if not isinstance(self.restore_operational_state, bool):
+        if not isinstance(self.restore_operational_state, bool) or not isinstance(
+            self.merge_operational_state, bool
+        ):
+            raise InvalidSourceRequest()
+        if self.restore_operational_state and self.merge_operational_state:
+            raise InvalidSourceRequest()
+        if self.merge_operational_state and self.collision_policy != "reject":
             raise InvalidSourceRequest()
 
 
@@ -666,6 +673,19 @@ def _export_item(
             "AND source_item_id = ? ORDER BY submission_id",
             (ref.authority_id, ref.item_id),
         ).fetchall()
+        idempotency = []
+        for row in conn.execute(
+            "SELECT * FROM source_idempotency WHERE authority_id=? "
+            "ORDER BY tenant_scope_id,issuer_ref_json,principal_ref_json,client_mutation_id",
+            (ref.authority_id,),
+        ).fetchall():
+            try:
+                result = json.loads(str(row["result_json"]))
+                result_ref = SourceRef.from_dict(result["source_ref"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise SourceImportInvalid() from exc
+            if result_ref == ref:
+                idempotency.append(row)
         commands: list[Any] = []
         effects: list[Any] = []
         for submission in submissions:
@@ -731,6 +751,9 @@ def _export_item(
         "usages": [{key: row[key] for key in row.keys()} for row in usages],
         "redactions": [{key: row[key] for key in row.keys()} for row in redactions],
         "submissions": [{key: row[key] for key in row.keys()} for row in submissions],
+        "idempotency": [
+            {key: row[key] for key in row.keys()} for row in idempotency
+        ],
         "commands": [{key: row[key] for key in row.keys()} for row in commands],
         "effects": [{key: row[key] for key in row.keys()} for row in effects],
     }
@@ -920,7 +943,18 @@ def import_sources(
                     import_id=import_id,
                     staged=staged[(target.authority_id, target.item_id)],
                     imported_at=now,
-                    restore_operational_state=authorization.restore_operational_state,
+                    restore_operational_state=(
+                        authorization.restore_operational_state
+                        or authorization.merge_operational_state
+                    ),
+                )
+            elif authorization.merge_operational_state:
+                _merge_operational_bundle(
+                    conn,
+                    bundle,
+                    target=target,
+                    import_id=import_id,
+                    imported_at=now,
                 )
             conn.execute(
                 "INSERT INTO source_import_mappings "
@@ -1007,6 +1041,15 @@ def _validate_bundle(bundle: Mapping[str, Any], *, include_content: bool) -> Non
                 raise SourceImportInvalid()
         if primary != 1:
             raise SourceImportInvalid()
+        idempotency = bundle.get("idempotency", [])
+        if not isinstance(idempotency, list):
+            raise SourceImportInvalid()
+        for record in idempotency:
+            if record["authority_id"] != ref.authority_id:
+                raise SourceImportInvalid()
+            result = json.loads(str(record["result_json"]))
+            if SourceRef.from_dict(result["source_ref"]) != ref:
+                raise SourceImportInvalid()
     except (KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, SourceImportInvalid):
             raise
@@ -1054,6 +1097,201 @@ def _existing_matches(store: SourceStore, ref: SourceRef, bundle: Mapping[str, A
         )
         for row in remote
     ]
+
+
+def _verify_existing_values(
+    existing: sqlite3.Row,
+    expected: Mapping[str, Any],
+    columns: Sequence[str],
+) -> None:
+    if any(existing[column] != expected[column] for column in columns):
+        raise SourceImportCollision()
+
+
+def _merge_operational_bundle(
+    conn: sqlite3.Connection,
+    bundle: Mapping[str, Any],
+    *,
+    target: SourceRef,
+    import_id: str,
+    imported_at: str,
+) -> None:
+    """Exact-merge replay records for an already restored Source identity."""
+
+    original = SourceRef.from_dict(bundle["source_ref"])
+    if target != original:
+        raise SourceImportInvalid()
+
+    access_columns = (
+        "binding_id",
+        "authority_id",
+        "source_item_id",
+        "principal_ref_json",
+        "trusted_service_id",
+        "purpose",
+        "access_mode",
+        "scope_json",
+        "external_recipient",
+        "model_id",
+        "egress_class",
+        "content_boundary_json",
+        "authorization_fingerprint",
+        "gesture_receipt_id",
+        "expires_at",
+        "created_at",
+    )
+    for source in bundle["access_audit"]:
+        access = dict(source)
+        access["authority_id"] = target.authority_id
+        access["source_item_id"] = target.item_id
+        existing = conn.execute(
+            "SELECT * FROM source_access_bindings WHERE binding_id=?",
+            (access["binding_id"],),
+        ).fetchone()
+        if existing is not None:
+            _verify_existing_values(existing, access, access_columns)
+            continue
+        conn.execute(
+            "INSERT INTO source_access_bindings "
+            "(binding_id,authority_id,source_item_id,principal_ref_json,trusted_service_id,"
+            "purpose,access_mode,scope_json,external_recipient,model_id,egress_class,"
+            "content_boundary_json,authorization_fingerprint,gesture_receipt_id,"
+            "expires_at,revoked_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(access[column] for column in access_columns[:-1])
+            + (imported_at, access["created_at"]),
+        )
+
+    usage_columns = (
+        "usage_id",
+        "authority_id",
+        "source_item_id",
+        "representation_id",
+        "selector_json",
+        "principal_ref_json",
+        "purpose",
+        "consumer_domain",
+        "consumer_id",
+        "use_kind",
+        "disclosure_kind",
+        "redaction_policy",
+        "access_binding_id",
+        "bound_redaction_epoch",
+        "request_sha256",
+        "status",
+        "maintenance_state",
+        "created_at",
+        "acknowledged_at",
+        "released_at",
+    )
+    for source in bundle["usages"]:
+        usage = dict(source)
+        usage["authority_id"] = target.authority_id
+        usage["source_item_id"] = target.item_id
+        by_id = conn.execute(
+            "SELECT * FROM source_usage_intents WHERE usage_id=?",
+            (usage["usage_id"],),
+        ).fetchone()
+        by_consumer = conn.execute(
+            "SELECT * FROM source_usage_intents WHERE consumer_domain=? "
+            "AND consumer_id=? AND use_kind=?",
+            (usage["consumer_domain"], usage["consumer_id"], usage["use_kind"]),
+        ).fetchone()
+        existing = by_id or by_consumer
+        if existing is not None:
+            if by_id is not None and by_consumer is not None:
+                if by_id["usage_id"] != by_consumer["usage_id"]:
+                    raise SourceImportCollision()
+            _verify_existing_values(existing, usage, usage_columns)
+        else:
+            conn.execute(
+                "INSERT INTO source_usage_intents ("
+                + ",".join(usage_columns)
+                + ") VALUES ("
+                + ",".join("?" for _ in usage_columns)
+                + ")",
+                tuple(usage[column] for column in usage_columns),
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO source_imported_usage_audit "
+            "(import_id,original_usage_id,authority_id,source_item_id,record_json,imported_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                import_id,
+                usage["usage_id"],
+                target.authority_id,
+                target.item_id,
+                canonical_json(usage),
+                imported_at,
+            ),
+        )
+
+    submission_columns = (
+        "submission_id",
+        "authority_id",
+        "source_item_id",
+        "representation_id",
+        "issuer_ref_json",
+        "inputter_ref_json",
+        "input_mode",
+        "gesture_receipt_id",
+        "authorization_fingerprint",
+        "occurred_at",
+        "received_at",
+        "committed_at",
+    )
+    for source in bundle["submissions"]:
+        submission = dict(source)
+        submission["authority_id"] = target.authority_id
+        submission["source_item_id"] = target.item_id
+        existing = conn.execute(
+            "SELECT * FROM ingress_submissions WHERE submission_id=?",
+            (submission["submission_id"],),
+        ).fetchone()
+        if existing is not None:
+            _verify_existing_values(existing, submission, submission_columns)
+        else:
+            conn.execute(
+                "INSERT INTO ingress_submissions ("
+                + ",".join(submission_columns)
+                + ") VALUES ("
+                + ",".join("?" for _ in submission_columns)
+                + ")",
+                tuple(submission[column] for column in submission_columns),
+            )
+
+    idempotency_columns = (
+        "authority_id",
+        "tenant_scope_id",
+        "issuer_ref_json",
+        "principal_ref_json",
+        "client_mutation_id",
+        "request_sha256",
+        "result_json",
+        "created_at",
+    )
+    for source in bundle.get("idempotency", []):
+        record = dict(source)
+        record["authority_id"] = target.authority_id
+        result = json.loads(str(record["result_json"]))
+        if SourceRef.from_dict(result["source_ref"]) != target:
+            raise SourceImportInvalid()
+        existing = conn.execute(
+            "SELECT * FROM source_idempotency WHERE authority_id=? "
+            "AND tenant_scope_id=? AND issuer_ref_json=? AND principal_ref_json=? "
+            "AND client_mutation_id=?",
+            tuple(record[column] for column in idempotency_columns[:5]),
+        ).fetchone()
+        if existing is not None:
+            _verify_existing_values(existing, record, idempotency_columns)
+        else:
+            conn.execute(
+                "INSERT INTO source_idempotency ("
+                + ",".join(idempotency_columns)
+                + ") VALUES ("
+                + ",".join("?" for _ in idempotency_columns)
+                + ")",
+                tuple(record[column] for column in idempotency_columns),
+            )
 
 
 def _insert_bundle(
@@ -1340,6 +1578,26 @@ def _insert_bundle(
                     usage["created_at"],
                     usage["acknowledged_at"],
                     usage["released_at"],
+                ),
+            )
+        for idempotency in bundle.get("idempotency", []):
+            result = json.loads(str(idempotency["result_json"]))
+            if SourceRef.from_dict(result["source_ref"]) != target:
+                raise SourceImportInvalid()
+            conn.execute(
+                "INSERT INTO source_idempotency "
+                "(authority_id,tenant_scope_id,issuer_ref_json,principal_ref_json,"
+                "client_mutation_id,request_sha256,result_json,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    target.authority_id,
+                    idempotency["tenant_scope_id"],
+                    idempotency["issuer_ref_json"],
+                    idempotency["principal_ref_json"],
+                    idempotency["client_mutation_id"],
+                    idempotency["request_sha256"],
+                    idempotency["result_json"],
+                    idempotency["created_at"],
                 ),
             )
     # Operational work never activates on import. Commands and effects retain

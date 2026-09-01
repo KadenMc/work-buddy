@@ -2,13 +2,15 @@
 name: Source-backed Journal capture
 kind: system
 description: Durable Quick Capture path that commits exact input to Sources before Journal routing or optional processing.
-summary: Journal Quick Capture is now a real source-first write. Exact input and a reference-only command/outbox commit atomically; Journal materialization, routing, and processing reconcile independently, so a failed effect cannot lose or masquerade as a failed save.
+summary: Journal Quick Capture is a source-first write. Exact input and a reference-only command/outbox commit atomically; native Journal creation, routing, and optional processing reconcile independently, so a failed effect cannot lose or masquerade as a failed save.
 entry_points:
 - work_buddy.journal_capture.api
 - work_buddy.journal_capture.service
 - work_buddy.journal_capture.smart
 - work_buddy.journal_capture.dispatch
 - work_buddy.journal_capture.store
+- work_buddy.journal_capture.domain
+- work_buddy.journal_capture.native_source
 - dashboard-react/src/apps/journal/providers/HttpJournalProvider.ts
 tags:
 - journal
@@ -33,7 +35,7 @@ dev_notes: |-
 
   A persistence acknowledgement means Sources and the reference-only command/outbox committed. It does not mean optional smart processing succeeded. The UI clears its draft only after persistence and presents delayed/failed processing separately.
 
-  Stable hidden entry markers make Markdown compatibility writes occurrence-safe: two identical entries remain distinct, and a crash after file write but before SQLite acknowledgement reconciles without appending again.
+  Before the database authority seal, stable hidden entry markers keep the frozen Markdown compatibility writer occurrence-safe. Database-only capture bypasses that adapter and creates independently addressable native items.
 ---
 
 # Source-backed Journal capture
@@ -45,9 +47,10 @@ semantic request. It accepts no trusted actor fields from the caller.
 
 Sources atomically records the exact representation, ingress submission,
 versioned Journal command, and source outbox entry. Journal then creates its
-capture/effect records and materializes the selected destination through
-`JournalContentAdapter`. A recovery sweep drains missed outbox work on startup
-and authoritative Journal reads.
+capture/effect records and, under database authority, an independently
+addressable native item in the frozen logical-day composition. The legacy
+`JournalContentAdapter` is reachable only in the pre-seal compatibility epoch.
+A recovery sweep drains missed outbox work on startup.
 If a long-running operation outlives its Sources lease, Journal re-leases only
 to acknowledge the already durable result, without repeating inference or
 materialization. A live competing lease or expired authorization is not bypassed;
@@ -109,18 +112,16 @@ goes away. Submit and follow-up retry intents carry the disclosure hash frozen
 at click time, before draft flushing or identity awaits. The HTTP provider
 validates and forwards that hash, never recomputing it from a newer view snapshot.
 
-New Running Notes have stable entry IDs, versions, and tombstones. A user can
-open one in Co-work, which creates a domain-bound structured document from the
-same exact source, records the initial change and actors/assurances, cuts that
-note's content-authority epoch to Co-work, and projects later accepted heads
-back into the managed Journal section without clobbering external divergence.
+New Running Notes have stable entry IDs, revisions, Source dependencies, and
+tombstones. A role whose immutable interaction contract declares a document
+can bind to Co-work from creation. Contextual and full-workspace editors open
+the same session; navigation does not create a document or change Truth state.
+Database-only Journal items have no Markdown projection.
 
-Legacy Journal Log and Running Notes content now use the same compatibility
-adapter during migration. Authority advances independently for one logical-day
-Log or one stable Running Note. The document-kernel binding carries the
-canonical epoch; Markdown remains authoritative before cutover and becomes a
-section-CAS compatibility projection afterward. Unmarked legacy prose remains
-read-only until an operator assigns an opaque identity to an explicitly
-reviewed occurrence. The Journal migration operator, closed deployment gates,
-and derived exit-evidence contract are documented in
-`journal/journal-content-migration-operator`.
+Legacy Journal Markdown is accepted only through the private staged history
+import. Every input byte receives a deterministic disposition and exact Source
+retention before the inactive cohort can be verified and sealed. The Journal
+authority seal publishes the cohort and permanently fences normal Markdown
+reads and writes; the original tree remains a detached read-only archive. The
+older per-passage Co-work migration operator remains recovery-only and is not
+the steady-state Journal model.

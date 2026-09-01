@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from types import SimpleNamespace
 
@@ -18,8 +19,12 @@ from work_buddy.document_kernel.redaction_dispatch import (
 )
 from work_buddy.journal_capture import api as journal_api
 from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+from work_buddy.journal_capture.configuration import JournalProfileConfigurationService
 from work_buddy.journal_capture.dispatch import JournalSourceDispatcher
+from work_buddy.journal_capture.domain import JournalDomainService
+from work_buddy.journal_capture.ingress import JournalIngressQueued
 from work_buddy.journal_capture.service import JournalCaptureService
+from work_buddy.journal_capture.projection import view_snapshot
 from work_buddy.journal_capture.store import JournalCaptureStore
 from work_buddy.security.local_identity import (
     DEFAULT_AUDIENCE,
@@ -34,6 +39,10 @@ from work_buddy.sources.resolve import resolve_source
 from work_buddy.sources.store import SourceStore
 from work_buddy.truth import documents as truth_documents
 from work_buddy.truth.registry import TruthStoreRegistry
+from work_buddy.cowork.truth_activation import (
+    WORKING_DOCUMENT_CONTRACT,
+    resolve_document_truth_policy,
+)
 
 
 ORIGIN = "http://127.0.0.1:5127"
@@ -116,6 +125,57 @@ def test_restart_reconciles_mixed_dependency_before_redaction_consumers(
 
     assert journal_api._services() == (sources, store, service)
     assert events == ["dependency", "journal-redaction", "document-redaction"]
+
+
+@pytest.mark.parametrize("mode", ["database_only", "recovery_fenced"])
+def test_restart_skips_legacy_document_reconciliation_after_authority_retirement(
+    tmp_path, monkeypatch, mode
+):
+    authority = LocalIdentityAuthority(tmp_path / "identity.db")
+    authority.enrolled_actor()
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: authority)
+    sources = SourceStore.create(tmp_path / "sources")
+    store = JournalCaptureStore(tmp_path / "journal.db")
+    service = JournalCaptureService(store, JournalContentAdapter(tmp_path / "vault"))
+    with store.transaction() as conn:
+        if mode == "database_only":
+            conn.execute(
+                "UPDATE journal_authority_control SET mode='database_only' "
+                "WHERE singleton=1"
+            )
+        else:
+            conn.execute(
+                "UPDATE journal_authority_control SET mode='recovery_fenced',"
+                "prior_mode='legacy_compatibility',fence_code='test',"
+                "fenced_at='2026-08-27T00:00:00+00:00' WHERE singleton=1"
+            )
+        conn.execute(
+            "UPDATE journal_domain_state SET value=? WHERE key='content_authority'",
+            (mode,),
+        )
+
+    class Dispatcher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def drain(self):
+            return SimpleNamespace(
+                delivered=0, failed=0, deferred=0, completed=0
+            )
+
+    monkeypatch.setattr(journal_api, "_runtime", (sources, store, service))
+    monkeypatch.setattr(journal_api, "_recovery_complete", False)
+    monkeypatch.setattr(
+        journal_api,
+        "reconcile_journal_documents",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy Journal reconciliation ran")
+        ),
+    )
+    monkeypatch.setattr(journal_api, "JournalSourceDispatcher", Dispatcher)
+    monkeypatch.setattr(journal_api, "CoworkDocumentSourceDispatcher", Dispatcher)
+
+    assert journal_api._services() == (sources, store, service)
 
 
 def test_authenticated_capture_commits_exact_source_before_journal_effect(
@@ -223,6 +283,255 @@ def test_authenticated_capture_commits_exact_source_before_journal_effect(
         assert conn.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 1
 
 
+def test_authenticated_capture_reports_durable_cutover_queue(
+    tmp_path, monkeypatch
+):
+    authority = LocalIdentityAuthority(tmp_path / "identity.db")
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: authority)
+    sources = SourceStore.create(tmp_path / "sources")
+    store = JournalCaptureStore(tmp_path / "journal.db")
+    service = JournalCaptureService(store, JournalContentAdapter(tmp_path / "vault"))
+    monkeypatch.setattr(journal_api, "_runtime", (sources, store, service))
+
+    def queued(_self, **_kwargs):
+        raise JournalIngressQueued(SimpleNamespace(deduplicated=False))
+
+    monkeypatch.setattr(
+        "work_buddy.journal_capture.ingress.JournalCaptureIngress.submit",
+        queued,
+    )
+    app = Flask("journal-capture-queued-api")
+    journal_api.register_routes(app)
+    client = app.test_client()
+    session = _session(authority)
+    client.set_cookie(SESSION_COOKIE_NAME, session.cookie_token, domain="127.0.0.1")
+    body = {
+        "client_mutation_id": "capture-queued-mutation-1",
+        "day_id": _day_id(),
+        "target_id": "running_notes",
+        "mode": "dumb",
+        "exact_text": "queued exact text",
+        "input_mode": "direct_entry",
+    }
+    context_sha = journal_api._canonical_gesture_context(body)
+    _, gesture = authority.issue_gesture(
+        cookie_token=session.cookie_token,
+        csrf_token=session.csrf_token,
+        boundary=_boundary(),
+        action="journal.capture.submit",
+        subject="journal-capture:capture-queued-mutation-1",
+        context_sha256=context_sha,
+    )
+    response = client.post(
+        "/api/journal/captures",
+        json=body,
+        headers={
+            "Origin": ORIGIN,
+            "Host": "127.0.0.1:5127",
+            "X-WB-CSRF": session.csrf_token,
+            "X-WB-Gesture": gesture.token,
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 202
+    assert response.json == {
+        "ok": True,
+        "persisted": True,
+        "queued": True,
+        "deduplicated": False,
+        "capture": None,
+        "message": (
+            "The capture is saved and queued while Journal cutover "
+            "maintenance finishes."
+        ),
+    }
+
+
+def test_smart_retry_is_locked_before_source_or_model_work_during_postseal(
+    tmp_path, monkeypatch
+):
+    authority = LocalIdentityAuthority(tmp_path / "identity.db")
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: authority)
+    sources = SourceStore.create(tmp_path / "sources")
+    store = JournalCaptureStore(tmp_path / "journal.db")
+    calls: list[str] = []
+
+    class Processor:
+        def process(self, **_kwargs):
+            calls.append("model")
+            raise RuntimeError("synthetic provider failure")
+
+    service = JournalCaptureService(
+        store,
+        JournalContentAdapter(tmp_path / "vault"),
+        smart_processor=Processor(),
+    )
+    monkeypatch.setattr(journal_api, "_runtime", (sources, store, service))
+    app = Flask("journal-smart-retry-fence-api")
+    journal_api.register_routes(app)
+    client = app.test_client()
+    session = _session(authority)
+    client.set_cookie(SESSION_COOKIE_NAME, session.cookie_token, domain="127.0.0.1")
+    capture_body = {
+        "client_mutation_id": "capture-smart-retry-1",
+        "day_id": _day_id(),
+        "target_id": "running_notes",
+        "mode": "smart",
+        "exact_text": "contextualize this entry",
+        "input_mode": "direct_entry",
+        "smart_disclosure_sha256": service.smart_disclosure_sha256,
+    }
+    capture_context = journal_api._canonical_gesture_context(capture_body)
+    _, capture_gesture = authority.issue_gesture(
+        cookie_token=session.cookie_token,
+        csrf_token=session.csrf_token,
+        boundary=_boundary(),
+        action="journal.capture.submit",
+        subject="journal-capture:capture-smart-retry-1",
+        context_sha256=capture_context,
+    )
+    captured = client.post(
+        "/api/journal/captures",
+        json=capture_body,
+        headers={
+            "Origin": ORIGIN,
+            "Host": "127.0.0.1:5127",
+            "X-WB-CSRF": session.csrf_token,
+            "X-WB-Gesture": capture_gesture.token,
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert captured.status_code == 201
+    assert calls == ["model"]
+    capture_id = captured.json["capture"]["captureId"]
+    capture = store.get_capture(capture_id)
+    assert capture is not None
+
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO journal_import_cohorts("
+            "cohort_id,client_mutation_id,request_sha256,inventory_sha256,"
+            "parser_version,mapping_version,mapping_sha256,parse_report_sha256,"
+            "state,state_revision,expected_file_count,expected_byte_count,"
+            "expected_span_count,expected_item_count,actor_json,created_at,"
+            "updated_at,verified_at,sealed_at,seal_sha256) "
+            "VALUES('cohort-api-retry','cohort-api-retry-prepare',?,?,?,?,?,?,"
+            "'sealed',1,0,0,0,0,'{}',?,?,?,?,?)",
+            (
+                "1" * 64,
+                "e" * 64,
+                "test-parser/v1",
+                "test-mapping/v1",
+                "2" * 64,
+                "3" * 64,
+                "2026-08-27T00:00:00+00:00",
+                "2026-08-27T00:00:00+00:00",
+                "2026-08-27T00:00:00+00:00",
+                "2026-08-27T00:00:00+00:00",
+                "4" * 64,
+            ),
+        )
+        count, high_water = conn.execute(
+            "SELECT COUNT(*),MAX(rowid) FROM journal_captures"
+        ).fetchone()
+        conn.execute(
+            "UPDATE journal_cutover_gate SET state='paused',gate_revision=2,"
+            "cohort_id='cohort-api-retry',request_sha256=?,capture_row_count=?,"
+            "capture_row_high_water=?,entry_row_count=(SELECT COUNT(*) FROM journal_entries),"
+            "entry_row_high_water=COALESCE((SELECT MAX(rowid) FROM journal_entries),0),"
+            "paused_at=?,updated_at=? WHERE singleton=1",
+            (
+                "d" * 64,
+                count,
+                high_water,
+                "2026-08-27T00:00:00+00:00",
+                "2026-08-27T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            "UPDATE cutover_maintenance SET state='postseal_pending',"
+            "cohort_id='cohort-api-retry',inventory_sha256=?,fence_id='fence-api-retry',"
+            "pause_request_sha256=?,paused_at=?,updated_at=? WHERE singleton=1",
+            (
+                "e" * 64,
+                "d" * 64,
+                "2026-08-27T00:00:00+00:00",
+                "2026-08-27T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            "UPDATE journal_authority_control SET mode='database_only',"
+            "activated_cohort_id='cohort-api-retry' WHERE singleton=1"
+        )
+        conn.execute(
+            "UPDATE journal_domain_state SET value='database_only' "
+            "WHERE key='content_authority'"
+        )
+
+    retry_body = {"smart_disclosure_sha256": service.smart_disclosure_sha256}
+
+    def retry_gesture():
+        context = (
+            f"wb.journal-capture-retry/v1:{capture_id}:{capture.revision}:"
+            f"{service.smart_disclosure_sha256}"
+        )
+        context_sha = hashlib.sha256(context.encode()).hexdigest()
+        return authority.issue_gesture(
+            cookie_token=session.cookie_token,
+            csrf_token=session.csrf_token,
+            boundary=_boundary(),
+            action="journal.capture.retry",
+            subject=f"journal-capture:{capture_id}",
+            context_sha256=context_sha,
+        )[1]
+
+    blocked = client.post(
+        f"/api/journal/captures/{capture_id}/retry",
+        json=retry_body,
+        headers={
+            "Origin": ORIGIN,
+            "Host": "127.0.0.1:5127",
+            "X-WB-CSRF": session.csrf_token,
+            "X-WB-Gesture": retry_gesture().token,
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert blocked.status_code == 423
+    assert blocked.json["error"]["code"] == "journal_cutover_ingress_paused"
+    assert calls == ["model"]
+
+    with store.transaction() as conn:
+        conn.execute(
+            "UPDATE journal_cutover_gate SET state='open',gate_revision=3,"
+            "cohort_id=NULL,request_sha256=NULL,capture_row_count=NULL,"
+            "capture_row_high_water=NULL,entry_row_count=NULL,"
+            "entry_row_high_water=NULL,paused_at=NULL,updated_at=? WHERE singleton=1",
+            ("2026-08-27T00:01:00+00:00",),
+        )
+        conn.execute(
+            "UPDATE cutover_maintenance SET state='open',released_at=?,updated_at=? "
+            "WHERE singleton=1",
+            (
+                "2026-08-27T00:01:00+00:00",
+                "2026-08-27T00:01:00+00:00",
+            ),
+        )
+    retried = client.post(
+        f"/api/journal/captures/{capture_id}/retry",
+        json=retry_body,
+        headers={
+            "Origin": ORIGIN,
+            "Host": "127.0.0.1:5127",
+            "X-WB-CSRF": session.csrf_token,
+            "X-WB-Gesture": retry_gesture().token,
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert retried.status_code == 200
+    assert calls == ["model", "model"]
+
+
 def test_direct_http_without_bound_gesture_cannot_mint_source(tmp_path, monkeypatch):
     authority = LocalIdentityAuthority(tmp_path / "identity.db")
     monkeypatch.setattr(local_identity_api, "_authority", lambda: authority)
@@ -256,6 +565,212 @@ def test_direct_http_without_bound_gesture_cannot_mint_source(tmp_path, monkeypa
     assert response.status_code in {401, 403}
     with sources.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 0
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_document_module_opens_shared_cowork_target_with_truth_disabled(
+    tmp_path, monkeypatch
+):
+    authority = LocalIdentityAuthority(tmp_path / "identity.db")
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: authority)
+    sources = SourceStore.create(tmp_path / "sources")
+    store = JournalCaptureStore(tmp_path / "journal.db")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    service = JournalCaptureService(store, JournalContentAdapter(vault))
+    monkeypatch.setattr(journal_api, "_runtime", (sources, store, service))
+    monkeypatch.setattr(journal_api, "_recovery_complete", True)
+    kernel = DocumentKernelClient()
+    manager = DomainContentStoreManager(
+        root=tmp_path / "domain-content",
+        registry=TruthStoreRegistry(tmp_path / "truth-registry.db"),
+    )
+    document_service = RunningNoteDocumentService(kernel=kernel, stores=manager)
+    monkeypatch.setattr(journal_api, "_kernel", lambda: kernel)
+    monkeypatch.setattr(
+        journal_api,
+        "RunningNoteDocumentService",
+        lambda **_kwargs: document_service,
+    )
+    draft = {
+        "profileId": "user.documents",
+        "expectedRevision": 0,
+        "name": "Document Journal",
+        "description": "",
+        "modules": [{
+            "slotId": "reflection",
+            "moduleInstanceId": "user.documents.reflection",
+            "expectedVersion": 0,
+            "moduleTypeId": "document",
+            "moduleTypeVersion": 1,
+            "label": "Daily reflection",
+            "settings": {"documentRole": "daily_reflection"},
+            "behaviorId": "provenance_only",
+            "behaviorVersion": 1,
+            "scheduleKind": "always",
+            "schedule": {},
+            "fields": [],
+        }],
+    }
+    JournalProfileConfigurationService(store).save(
+        draft,
+        client_mutation_id="save-document-module-profile",
+        actor={"subject": "person:test"},
+    )
+    domain = JournalDomainService(store)
+    activation_revision = domain.activate_profile(
+        profile_id="user.documents",
+        profile_revision=1,
+        effective_local_date="2026-08-27",
+        expected_activation_revision=1,
+        client_mutation_id="activate-document-module-profile",
+        actor={"subject": "person:test"},
+    )
+    with store.transaction() as conn:
+        conn.execute(
+            "UPDATE journal_authority_control SET mode='database_only' WHERE singleton=1"
+        )
+        conn.execute(
+            "UPDATE journal_domain_state SET value='database_only' "
+            "WHERE key='content_authority'"
+        )
+
+    app = Flask("journal-document-module")
+    journal_api.register_routes(app)
+    client = app.test_client()
+    session = _session(authority)
+    client.set_cookie(SESSION_COOKIE_NAME, session.cookie_token, domain="127.0.0.1")
+    unknown_body = {
+        "clientMutationId": "open-unknown-journal-document-module",
+        "moduleInstanceVersion": 1,
+    }
+    _, unknown_gesture = authority.issue_gesture(
+        cookie_token=session.cookie_token,
+        csrf_token=session.csrf_token,
+        boundary=_boundary(),
+        action="journal.document.open",
+        subject="journal-document:2026-08-28:user.documents.unknown",
+        context_sha256=journal_api._profile_gesture_context(unknown_body),
+    )
+    unknown = client.post(
+        "/api/journal/document-modules/2026-08-28/user.documents.unknown/open",
+        json=unknown_body,
+        headers={
+            "Origin": ORIGIN,
+            "Host": "127.0.0.1:5127",
+            "X-WB-CSRF": session.csrf_token,
+            "X-WB-Gesture": unknown_gesture.token,
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert unknown.status_code == 409, unknown.json
+    with store._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM journal_days WHERE local_date=?",
+            ("2026-08-28",),
+        ).fetchone()[0] == 0
+
+    body = {
+        "clientMutationId": "open-journal-document-module-0001",
+        "moduleInstanceVersion": 1,
+    }
+    context_sha = journal_api._profile_gesture_context(body)
+    _, gesture = authority.issue_gesture(
+        cookie_token=session.cookie_token,
+        csrf_token=session.csrf_token,
+        boundary=_boundary(),
+        action="journal.document.open",
+        subject="journal-document:2026-08-27:user.documents.reflection",
+        context_sha256=context_sha,
+    )
+    headers = {
+        "Origin": ORIGIN,
+        "Host": "127.0.0.1:5127",
+        "X-WB-CSRF": session.csrf_token,
+        "X-WB-Gesture": gesture.token,
+    }
+    opened = client.post(
+        "/api/journal/document-modules/2026-08-27/user.documents.reflection/open",
+        json=body,
+        headers=headers,
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert opened.status_code == 201, opened.json
+    reference = opened.json["document"]
+    cowork_store = manager.open_existing(vault)
+    policy = resolve_document_truth_policy(cowork_store, reference["documentId"])
+    assert policy.interaction_contract_id == WORKING_DOCUMENT_CONTRACT
+    assert policy.provenance_enabled is True
+    assert policy.activation_state == "disabled"
+    assert policy.truth_observable is False
+    assert policy.truth_mutable is False
+    with store._connect() as conn:
+        day_row = conn.execute(
+            "SELECT day_id FROM journal_days WHERE local_date=?",
+            ("2026-08-27",),
+        ).fetchone()
+        assert day_row is not None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM journal_day_composition_snapshots WHERE day_id=?",
+            (day_row["day_id"],),
+        ).fetchone()[0] == 1
+
+    replacement = {
+        "profileId": "user.documents.replacement",
+        "expectedRevision": 0,
+        "name": "Replacement Journal",
+        "description": "",
+        "modules": [],
+    }
+    JournalProfileConfigurationService(store).save(
+        replacement,
+        client_mutation_id="save-replacement-document-profile",
+        actor={"subject": "person:test"},
+    )
+    domain.activate_profile(
+        profile_id="user.documents.replacement",
+        profile_revision=1,
+        effective_local_date="2026-08-27",
+        expected_activation_revision=activation_revision,
+        client_mutation_id="activate-replacement-document-profile",
+        actor={"subject": "person:test"},
+    )
+    projected = view_snapshot(store, local_date="2026-08-27")
+    assert projected["effectiveComposition"]["persisted"] is True
+    assert projected["effectiveComposition"]["profile"]["profileId"] == "user.documents"
+    module = projected["effectiveComposition"]["modules"][0]
+    assert module["document"] == {
+        "state": "current",
+        "role": "daily_reflection",
+        "truthEligibility": "allowed",
+        "truthStartsDisabled": True,
+        "href": reference["href"],
+        "storeId": reference["storeId"],
+        "documentId": reference["documentId"],
+        "bindingId": reference["bindingId"],
+        "domainEntityId": reference["domainEntityId"],
+        "contentAuthorityEpoch": 1,
+        "canOpenFull": True,
+    }
+
+    _, replay_gesture = authority.issue_gesture(
+        cookie_token=session.cookie_token,
+        csrf_token=session.csrf_token,
+        boundary=_boundary(),
+        action="journal.document.open",
+        subject="journal-document:2026-08-27:user.documents.reflection",
+        context_sha256=context_sha,
+    )
+    replay = client.post(
+        "/api/journal/document-modules/2026-08-27/user.documents.reflection/open",
+        json=body,
+        headers={**headers, "X-WB-Gesture": replay_gesture.token},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert replay.status_code == 200, replay.json
+    assert replay.json["deduplicated"] is True
+    assert replay.json["document"] == reference
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")

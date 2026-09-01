@@ -1,7 +1,7 @@
 ---
 name: Journal Route To Tasks
 kind: capability
-description: 'Walk a journal-group thread''s context items and create one task per item in the master task list. Each item''s label becomes the task text. Continue-on-error: a single failed item doesn''t block the rest.'
+description: 'Explicit legacy compatibility action that routes an archived journal-group thread into native tasks. Disabled when Obsidian is opted out; new Journal actions use native item routing.'
 capability_name: journal_route_to_tasks
 category: journal
 op: op.wb.journal_route_to_tasks

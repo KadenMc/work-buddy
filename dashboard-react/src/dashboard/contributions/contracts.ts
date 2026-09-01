@@ -191,6 +191,8 @@ export interface DefaultWidgetSlot {
   readonly defaultLayout: WidgetLayoutPlacement;
   readonly allowedSubstitution?: RoleCompatibilityRule;
   readonly lockedReason?: string;
+  /** Domain/provider membership is semantic; Dashboard customization may only hide it locally. */
+  readonly semanticComposition?: "provider_owned";
 }
 
 /**
@@ -307,6 +309,19 @@ export interface SnapshotQuality {
   readonly message?: string;
 }
 
+/**
+ * A provider-resolved, immutable semantic composition for one view snapshot.
+ * The provider maps server/domain module definitions onto registered widget types;
+ * the host applies only device-local presentation personalization on top.
+ */
+export interface EffectiveViewComposition {
+  readonly compositionId: string;
+  readonly revision: string | number;
+  readonly defaultSlots: readonly DefaultWidgetSlot[];
+  readonly readingOrder: readonly WidgetSlotId[];
+  readonly mobileOrder: readonly WidgetSlotId[];
+}
+
 export interface ViewSnapshot<
   Model = unknown,
   Binding = unknown,
@@ -317,6 +332,7 @@ export interface ViewSnapshot<
   readonly observedAt: string;
   readonly status: SnapshotStatus;
   readonly quality: SnapshotQuality;
+  readonly effectiveComposition?: EffectiveViewComposition;
   readonly model: Model;
   readonly bindings: Readonly<Record<string, Binding>>;
   /** Keyed by opaque instance ID, never by type ID. */

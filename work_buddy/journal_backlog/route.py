@@ -7,6 +7,8 @@ consent grant without triggering per-item consent prompts.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from functools import wraps
 import re
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,40 @@ VALID_CONSIDERATION_STATUSES = {
 # ---------------------------------------------------------------------------
 # Internal implementations (no consent — called by execute_routing_plan)
 # ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _legacy_obsidian_action_guard():
+    """Fence one complete legacy action before it can inspect the archive."""
+
+    from work_buddy.health.preferences import is_wanted
+    from work_buddy.journal_capture.authority import (
+        JournalAuthorityStateError,
+        legacy_markdown_write_guard,
+    )
+
+    if is_wanted("obsidian") is False:
+        raise JournalAuthorityStateError(
+            "Obsidian-backed Journal actions are disabled by user preference."
+        )
+    try:
+        with legacy_markdown_write_guard():
+            yield
+    except JournalAuthorityStateError as exc:
+        raise JournalAuthorityStateError(
+            "Obsidian-backed Journal actions are retired under native authority."
+        ) from exc
+
+
+def _guard_legacy_obsidian_action(func):
+    """Hold the durable Journal writer barrier around a legacy action."""
+
+    @wraps(func)
+    def guarded(*args, **kwargs):
+        with _legacy_obsidian_action_guard():
+            return func(*args, **kwargs)
+
+    return guarded
 
 def _create_task_impl(
     task_text: str,
@@ -87,6 +123,7 @@ def _create_task_impl(
     }
 
 
+@_guard_legacy_obsidian_action
 def _create_consideration_impl(
     title: str,
     vault_root: Path,
@@ -105,6 +142,35 @@ def _create_consideration_impl(
         raise ValueError(
             f"Invalid status {status!r}; must be one of {VALID_CONSIDERATION_STATUSES}"
         )
+
+    from work_buddy.vault_index.authority_exclusions import (
+        legacy_root_write_guard,
+    )
+
+    considerations_dir = vault_root / "work" / "considerations"
+    with legacy_root_write_guard(considerations_dir):
+        return _create_consideration_locked(
+            title=title,
+            vault_root=vault_root,
+            project=project,
+            type=type,
+            status=status,
+            body=body,
+            review_date=review_date,
+        )
+
+
+def _create_consideration_locked(
+    *,
+    title: str,
+    vault_root: Path,
+    project: str,
+    type: str,
+    status: str,
+    body: str,
+    review_date: str | None,
+) -> dict[str, Any]:
+    """Create a consideration while all matching archive locks are held."""
 
     considerations_dir = vault_root / "work" / "considerations"
 
@@ -182,6 +248,7 @@ def _create_consideration_impl(
     }
 
 
+@_guard_legacy_obsidian_action
 def _append_to_note_impl(
     content: str,
     vault_root: Path,
@@ -195,6 +262,26 @@ def _append_to_note_impl(
         raise ValueError(
             f"Path traversal detected: {note_path} resolves outside vault"
         )
+
+    from work_buddy.vault_index.authority_exclusions import (
+        legacy_root_write_guard,
+    )
+
+    with legacy_root_write_guard(resolved):
+        return _append_to_note_locked(
+            content=content,
+            resolved=resolved,
+            note_path=note_path,
+        )
+
+
+def _append_to_note_locked(
+    *,
+    content: str,
+    resolved: Path,
+    note_path: str,
+) -> dict[str, Any]:
+    """Append to one note while its configured archive lock is held."""
 
     if not resolved.suffix == ".md":
         return {

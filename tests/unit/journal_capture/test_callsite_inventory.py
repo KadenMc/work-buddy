@@ -42,15 +42,17 @@ def test_production_journal_content_calls_route_through_one_adapter() -> None:
         ("work_buddy/journal_capture/service.py", "_materialize"): "self.adapter.append",
         ("work_buddy/journal_backlog/extract.py", "extract_running_notes"): "JournalContentAdapter",
         ("work_buddy/journal_backlog/rewrite.py", "rewrite_running_notes"): "adapter.write_day_cas",
-        ("work_buddy/journal_backlog/route.py", "_append_to_note_impl"): "JournalContentAdapter",
+        ("work_buddy/journal_backlog/route.py", "_append_to_note_locked"): "JournalContentAdapter",
         ("work_buddy/obsidian/day_planner/env.py", "get_todays_plan"): "adapter.read_day",
         ("work_buddy/obsidian/day_planner/env.py", "write_plan"): "adapter.write_day_cas",
         ("work_buddy/health/fixers.py", "_append_section"): "JournalContentAdapter",
-        ("work_buddy/threads/cleanup_adapters.py", "_journal_note_cleanup"): "adapter.write_day_cas",
+        ("work_buddy/threads/cleanup_adapters.py", "_journal_note_cleanup_locked"): "adapter.write_day_cas",
         ("work_buddy/collectors/obsidian_collector.py", "_get_journal_entries"): "JournalContentAdapter",
         ("work_buddy/collectors/obsidian_collector.py", "_get_journal_stats"): "JournalContentAdapter",
         ("work_buddy/collectors/obsidian_collector.py", "_parse_wellness"): "JournalContentAdapter",
-        ("work_buddy/activity.py", "infer_activity"): "JournalContentAdapter",
+        ("work_buddy/activity.py", "_legacy_journal_entries"): (
+            "JournalContentAdapter"
+        ),
     }
     for (path, function), token in routed.items():
         body = _function_source(path, function)

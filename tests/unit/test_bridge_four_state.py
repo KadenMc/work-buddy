@@ -67,6 +67,14 @@ _UNREACHABLE_LEAVES = [
 ]
 
 
+def test_process_probe_failure_fails_safe(monkeypatch) -> None:
+    def fail_probe() -> str:
+        raise OSError("probe")
+
+    monkeypatch.setattr(bridge_mod.platform, "system", fail_probe)
+    assert bridge_mod.is_obsidian_running() is False
+
+
 def _setup_unreachable_leaf(scenario: str, monkeypatch, tmp_path) -> None:
     """Configure mocks so the unreachable classifier produces ``scenario``."""
     monkeypatch.setattr(bridge_mod, "_last_failure_kind", "unreachable", raising=False)

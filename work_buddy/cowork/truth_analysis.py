@@ -27,6 +27,10 @@ from work_buddy.cowork.chat_targets import action_snapshot_view
 from work_buddy.cowork.execution_identity import cowork_truth_analysis_session_id
 from work_buddy.cowork.truth_analysis_jobs import DEFAULT_TRUTH_ANALYSIS_BUDGET_USD
 from work_buddy.cowork.truth_analysis_runtime import TruthAnalysisRuntimeRun
+from work_buddy.cowork.truth_activation import (
+    TruthActivationError,
+    require_truth_access,
+)
 from work_buddy.agent_execution.disclosure import DisclosureError, ManifestDigest
 from work_buddy.cowork.verify import (
     ActionSnapshot,
@@ -548,6 +552,22 @@ def prepare_analysis_run(
         raise TruthAnalysisError(
             "human_actor_required", "A dashboard human must start Truth analysis."
         )
+    try:
+        activation = require_truth_access(
+            store,
+            document_id,
+            mutation=True,
+        )
+    except TruthActivationError as exc:
+        raise TruthAnalysisError(
+            exc.code,
+            str(exc),
+            status=exc.status,
+            retryable=exc.retryable,
+            details=exc.details,
+        ) from exc
+    assert activation.activation_revision is not None
+    activation_revision = int(activation.activation_revision)
     validator = selection_validator or _default_selection_validator
     try:
         validated_selection = validator(selection)
@@ -569,6 +589,7 @@ def prepare_analysis_run(
             selection=validated_selection,
             purpose="truth_analysis",
             authority_context={"authorized_by_ref": actor.ref},
+            truth_activation_revision=activation_revision,
         )
     except TruthAnalysisError:
         raise
@@ -614,6 +635,7 @@ def prepare_analysis_run(
         "target_choice": target_choice,
         "existing_truth": existing_truth,
         "source_coverage": coverage,
+        "truth_activation_revision": activation_revision,
     }
     context_identity = {
         "schema": ANALYSIS_CONTEXT_SCHEMA,
@@ -633,6 +655,7 @@ def prepare_analysis_run(
                 "context_sha256": context_sha256,
                 "provider_id": validated_selection.provider_id,
                 "model_id": validated_selection.model_id,
+                "truth_activation_revision": activation_revision,
             }
         )
     )
@@ -701,6 +724,7 @@ def prepare_analysis_run(
         content_boundary={
             "role": "truth_analysis",
             "run_id": run_id,
+            "truth_activation_revision": activation_revision,
             "document": "captured_target_and_bounded_truth_context",
             "action_snapshot_id": action.id,
             "web_research": {
@@ -731,6 +755,7 @@ def prepare_analysis_run(
             context_sha256=context_sha256,
             request=request_payload,
             session_id=session_id,
+            activation_revision=activation_revision,
             at=created_at,
         )
     except truth_analysis_runtime.TruthAnalysisRunConflict as exc:
@@ -770,6 +795,20 @@ def analysis_run_view(
     if current is not None:
         run = current
     resolved_store = store or TruthStoreRegistry().open_store(run.store_id)
+    if run.status in {"prepared", "launching", "running"}:
+        try:
+            _require_run_truth(resolved_store, run)
+        except TruthAnalysisError as exc:
+            if exc.code != "truth_activation_changed":
+                raise
+            truth_analysis_runtime.invalidate_active_runs_for_document(
+                run.store_id,
+                run.document_id,
+                valid_activation_revision=None,
+            )
+            refreshed = truth_analysis_runtime.get_run(run.run_id)
+            if refreshed is not None:
+                run = refreshed
     action = _action(resolved_store, run)
     context = _action_context(action)
     target_choice = context.get("target_source")
@@ -846,6 +885,7 @@ def analysis_run_view(
         "document_id": run.document_id,
         "action_snapshot_id": run.action_snapshot_id,
         "context_sha256": run.context_sha256,
+        "truth_activation_revision": run.activation_revision,
         "target_choice": target_choice,
         "target_label": str(context.get("target_label") or "Selected passage"),
         "captured_at": action.created_at,
@@ -898,6 +938,36 @@ def _bound_run(
             retryable=True,
         )
     return run
+
+
+def _require_run_truth(
+    store: TruthStore,
+    run: TruthAnalysisRuntimeRun,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    if run.activation_revision <= 0:
+        raise TruthAnalysisError(
+            "truth_activation_changed",
+            "This analysis run is not bound to a document Truth activation.",
+            status=409,
+        )
+    try:
+        require_truth_access(
+            store,
+            run.document_id,
+            mutation=True,
+            expected_activation_revision=run.activation_revision,
+            conn=conn,
+        )
+    except TruthActivationError as exc:
+        raise TruthAnalysisError(
+            "truth_activation_changed",
+            "Document Truth settings changed after this analysis was prepared.",
+            status=409,
+            retryable=False,
+            details={"reason": exc.code},
+        ) from exc
 
 
 def _output_schema(allowed_claim_kinds: Sequence[str]) -> dict[str, Any]:
@@ -1214,6 +1284,16 @@ def get_worker_context(
 
     run = _bound_run(run_id, agent_session_id)
     store = TruthStoreRegistry().open_store(run.store_id)
+    try:
+        _require_run_truth(store, run)
+    except TruthAnalysisError as exc:
+        if exc.code == "truth_activation_changed":
+            truth_analysis_runtime.invalidate_active_runs_for_document(
+                run.store_id,
+                run.document_id,
+                valid_activation_revision=None,
+            )
+        raise
     action = _action(store, run)
     snapshot = action_snapshot_view(
         store,
@@ -1282,6 +1362,7 @@ def search_web(
     """Run one replay-safe query through the guarded research broker."""
 
     run = _bound_run(run_id, agent_session_id)
+    _require_run_truth(TruthStoreRegistry().open_store(run.store_id), run)
     normalized_query = truth_analysis_research.normalize_query(query)
 
     def search() -> truth_analysis_research.ResearchSearchResult:
@@ -1357,6 +1438,7 @@ def fetch_search_hit(
     """Fetch one admitted hit through the guarded public-network broker."""
 
     run = _bound_run(run_id, agent_session_id)
+    _require_run_truth(TruthStoreRegistry().open_store(run.store_id), run)
     admitted_hit = truth_analysis_runtime.search_hit_for_run(run.run_id, hit_id)
     if admitted_hit is None:
         # Preserve the research broker's typed rejection and avoid capturing a
@@ -2145,6 +2227,16 @@ def submit_worker_output(
             status=409,
         )
     store = TruthStoreRegistry().open_store(run.store_id)
+    try:
+        _require_run_truth(store, run)
+    except TruthAnalysisError as exc:
+        if exc.code == "truth_activation_changed":
+            truth_analysis_runtime.invalidate_active_runs_for_document(
+                run.store_id,
+                run.document_id,
+                valid_activation_revision=None,
+            )
+        raise
     boundary = (
         disclosure_boundary
         or truth_analysis_disclosure.configured_truth_analysis_disclosure()
@@ -3169,6 +3261,8 @@ def commit_candidate_decision(
     decision_edits = {} if submitted_edits is None else dict(submitted_edits)
     if decision == "connect_existing":
         decision_edits["existing_claim_id"] = str(existing_claim_id or "")
+    store = TruthStoreRegistry().open_store(run.store_id)
+    _require_run_truth(store, run)
     prior = _existing_decision(run_id, candidate_id)
     if prior is not None:
         if (
@@ -3192,7 +3286,6 @@ def commit_candidate_decision(
             "result": dict(prior.result),
             "replayed": True,
         }
-    store = TruthStoreRegistry().open_store(run.store_id)
     decision_payload_sha256 = sha256_text(
         canonical_json({"decision": decision, "edits": decision_edits})
     )
@@ -3250,6 +3343,7 @@ def commit_candidate_decision(
             }
             try:
                 with store.write_transaction() as conn:
+                    _require_run_truth(store, run, conn=conn)
                     candidate_decision = record_truth_candidate_decision(
                         store,
                         candidate_id=candidate_id,
@@ -3551,6 +3645,7 @@ def commit_candidate_decision(
     ai_actor = _analysis_actor(run)
     try:
         with store.write_transaction() as conn:
+            _require_run_truth(store, run, conn=conn)
             if decision == "connect_existing":
                 matched_claim = store.get_claim(matched_claim_id, conn=conn)
                 if matched_claim is None:

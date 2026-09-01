@@ -87,10 +87,13 @@ export function useDocumentConversationBinding({
   documentId,
   storeId,
   client,
+  enabled = true,
 }: {
   readonly documentId: string;
   readonly storeId: string;
   readonly client?: CoworkDocumentConversationBindingClient;
+  /** Server-resolved document capability; false performs no binding request. */
+  readonly enabled?: boolean;
 }): UseDocumentConversationBindingResult {
   const resolvedClient = useMemo(
     () => client ?? new HttpCoworkDocumentConversationBindingClient(),
@@ -111,7 +114,8 @@ export function useDocumentConversationBinding({
     const sequence = ++requestSequence.current;
     ensureInFlight.current = null;
     stateIdentityRef.current = expectedIdentity;
-    setState(initialState());
+    setState(enabled ? initialState() : { ...initialState(), phase: "idle" });
+    if (!enabled) return undefined;
     void resolvedClient
       .load(documentId, storeId)
       .then((binding) => {
@@ -139,10 +143,11 @@ export function useDocumentConversationBinding({
           error: errorText(error),
         });
       });
-  }, [documentId, identity, resolvedClient, storeId]);
+  }, [documentId, enabled, identity, resolvedClient, storeId]);
 
   const ensure = useCallback(
     (): Promise<void> => {
+      if (!enabled) return Promise.resolve();
       if (ensureInFlight.current !== null) return ensureInFlight.current;
       const expectedIdentity = identity;
       const sequence = ++requestSequence.current;
@@ -204,7 +209,7 @@ export function useDocumentConversationBinding({
       ensureInFlight.current = pending;
       return pending;
     },
-    [documentId, identity, resolvedClient, storeId],
+    [documentId, enabled, identity, resolvedClient, storeId],
   );
 
   const adoptFeedback = useCallback(
@@ -304,6 +309,10 @@ export function useDocumentConversationBinding({
   );
 
   const visibleState =
-    stateIdentityRef.current === identity ? state : initialState();
+    stateIdentityRef.current === identity
+      ? state
+      : enabled
+        ? initialState()
+        : { ...initialState(), phase: "idle" as const };
   return { ...visibleState, ensure, adoptFeedback, adoptExecution };
 }

@@ -1,7 +1,7 @@
 ---
 name: Journal Append To Note
 kind: capability
-description: Append all items in a journal-group thread as bullets to a single existing vault note. Useful for project-observation clusters.
+description: Explicit legacy compatibility action for appending an archived journal-group thread to an existing vault note. Disabled when Obsidian is opted out; not part of native Journal.
 capability_name: journal_append_to_note
 category: journal
 op: op.wb.journal_append_to_note

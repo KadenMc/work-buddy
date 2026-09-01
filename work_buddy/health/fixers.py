@@ -142,6 +142,16 @@ def fix_data_writable() -> dict[str, Any]:
 
 def fix_journal_dir() -> dict[str, Any]:
     """Create the configured journal directory inside the vault."""
+    from work_buddy.health.requirement_checks import (
+        journal_markdown_compatibility_required,
+    )
+
+    if not journal_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "No action: Journal SQLite is authoritative.",
+            "side_effects": [],
+        }
     side_effects: list[str] = []
     target = _journal_dir()
     if target is None:
@@ -156,6 +166,16 @@ def fix_journal_dir() -> dict[str, Any]:
 
 def fix_contracts_dir() -> dict[str, Any]:
     """Create the configured contracts directory inside the vault."""
+    from work_buddy.health.requirement_checks import (
+        contracts_markdown_compatibility_required,
+    )
+
+    if not contracts_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "No action: Contracts SQLite is authoritative.",
+            "side_effects": [],
+        }
     from work_buddy.config import load_config
     vault = _vault_root()
     if vault is None:
@@ -173,6 +193,16 @@ def fix_contracts_dir() -> dict[str, Any]:
 
 def fix_personal_knowledge_dir() -> dict[str, Any]:
     """Create the configured personal knowledge directory inside the vault."""
+    from work_buddy.health.requirement_checks import (
+        personal_knowledge_markdown_compatibility_required,
+    )
+
+    if not personal_knowledge_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "No action: personal-knowledge SQLite is authoritative.",
+            "side_effects": [],
+        }
     from work_buddy.config import load_config
     vault = _vault_root()
     if vault is None:
@@ -282,6 +312,17 @@ def _append_section(header: str) -> dict[str, Any]:
     present". Creates today's note if no recent note exists.
     """
     import re
+
+    from work_buddy.health.requirement_checks import (
+        journal_markdown_compatibility_required,
+    )
+
+    if not journal_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "No action: Journal SQLite is authoritative.",
+            "side_effects": [],
+        }
 
     note, which = _latest_or_today_note()
     if note is None:
@@ -722,7 +763,11 @@ def fix_backup_repo_configured(repo_name: str) -> dict[str, Any]:
     if proc.returncode == 0:
         return {
             "ok": True,
-            "detail": f"Config set; repo {repo_name} already exists on GitHub.",
+            "detail": (
+                f"Config set; repo {repo_name} already exists on GitHub. "
+                "Remote uploads remain disabled until the separate "
+                "private-content opt-in is enabled."
+            ),
             "side_effects": side_effects,
         }
 
@@ -768,7 +813,9 @@ def fix_backup_repo_configured(repo_name: str) -> dict[str, Any]:
         "ok": True,
         "detail": (
             f"Created private repo {repo_name} (seeded with a README so "
-            "GitHub Releases can attach) and wrote config."
+            "GitHub Releases can attach) and wrote config. Remote uploads "
+            "remain disabled until the separate private-content opt-in is "
+            "enabled."
         ),
         "side_effects": side_effects,
     }
@@ -781,6 +828,16 @@ def fix_projects_markdown_dir(*, path: str) -> dict[str, Any]:
     requires a pre-existing directory), this directory is work-buddy's
     own to create — so the fixer makes it if absent, then writes config.
     """
+    from work_buddy.health.requirement_checks import (
+        projects_markdown_compatibility_required,
+    )
+
+    if not projects_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "No action: Projects SQLite is authoritative.",
+            "side_effects": [],
+        }
     from work_buddy.config import load_config
 
     rel = path.strip().strip("/\\")

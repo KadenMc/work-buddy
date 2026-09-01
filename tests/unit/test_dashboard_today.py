@@ -7,28 +7,52 @@ Smoke-test that the endpoint composes the engage view + the now-plan
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from work_buddy.dashboard import service as dash_service
-from work_buddy.obsidian.tasks import store
+from work_buddy.tasks.service import TaskApplicationService
+from work_buddy.tasks.store import TaskStore
 
 
 @pytest.fixture
 def _isolated_store(monkeypatch, tmp_path):
+    from work_buddy.tasks import runtime
+    from work_buddy.tasks import store as native_store
+
     db_file = tmp_path / "tasks.sqlite"
-    monkeypatch.setattr(store, "_db_path", lambda: db_file)
-    return db_file
+    latch_file = tmp_path / "task_authority_latch.json"
+    monkeypatch.setattr(native_store, "default_task_db_path", lambda: db_file)
+    monkeypatch.setattr(runtime, "default_task_db_path", lambda: db_file)
+    monkeypatch.setattr(runtime, "_canonical_default_latch_path", lambda: latch_file)
+
+    task_store = TaskStore(db_file)
+    task_store.initialize()
+    state = task_store.system_state()
+    runtime.arm_native_authority_latch(
+        db_file,
+        cohort_id="dashboard-today-test",
+        target_authority_epoch="native:dashboard-today-test",
+        cutover_receipt_id="dashboard-today-test-cutover",
+        armed_at="2026-08-27T12:00:00+00:00",
+    )
+    task_store.set_system_state(
+        expected_authority_epoch=state.authority_epoch,
+        authority_epoch="native:dashboard-today-test",
+        updated_at="2026-08-27T12:00:00+00:00",
+        cutover_receipt_id="dashboard-today-test-cutover",
+        process_generation=1,
+    )
+    return TaskApplicationService(task_store)
 
 
 @pytest.fixture
 def client(_isolated_store, monkeypatch):
-    # Stub out the day-planner so the test doesn't depend on Obsidian.
+    # Stub out the pure day-planner to keep the endpoint test deterministic.
     monkeypatch.setattr(
-        "work_buddy.obsidian.day_planner.planner.generate_plan",
+        "work_buddy.journal_capture.planner.generate_plan",
         lambda calendar_events, focused_tasks, cfg: [
             {"time_start": "10:00", "time_end": "11:00",
              "text": (focused_tasks[0]["description"]
@@ -36,9 +60,9 @@ def client(_isolated_store, monkeypatch):
              "checked": False}
         ],
     )
-    # Stub task_briefing so the load-context step doesn't need Obsidian.
+    # Stub the native task briefing; authority routing itself remains real.
     monkeypatch.setattr(
-        "work_buddy.obsidian.tasks.manager.daily_briefing",
+        "work_buddy.tasks.capabilities.daily_briefing",
         lambda: {"focused": [], "mit": [], "overdue": [], "stale": [],
                  "inbox_count": 0},
     )
@@ -90,14 +114,17 @@ def test_today_forwards_current_contexts(client):
     assert body["current_contexts"] == ["@filesystem", "@vault"]
 
 
-def test_today_recommendations_pick_focused_task(client):
+def test_today_recommendations_pick_focused_task(client, _isolated_store):
     """A focused task with both sides satisfied lands as a recommendation."""
-    store.create(
+    _isolated_store.create(
+        description="Edit code",
+        client_mutation_id="today-create-001",
+        actor="test:user",
         task_id="t-today-001",
         state="focused",
-        description="Edit code",
-        agent_required_contexts=json.dumps(["@filesystem"]),
-        user_required_contexts=json.dumps(["@user_workstation"]),
+        summary_text="Edit the selected code now.",
+        agent_required_contexts=["@filesystem"],
+        user_required_contexts=["@user_workstation"],
         required_contexts_source="agent_inferred",
     )
     body = client.get(
@@ -108,7 +135,9 @@ def test_today_recommendations_pick_focused_task(client):
     assert "t-today-001" in rec_ids
 
 
-def test_today_blocked_task_drops_from_recommendations(client, monkeypatch):
+def test_today_blocked_task_drops_from_recommendations(
+    client, _isolated_store, monkeypatch,
+):
     """Tasks the agent can't satisfy and the user isn't currently in
     don't surface as a top recommendation."""
     # Force tool unavailable so the agent fails on @vault.
@@ -116,12 +145,15 @@ def test_today_blocked_task_drops_from_recommendations(client, monkeypatch):
         "work_buddy.automation.contexts.is_tool_available",
         lambda tid: False,
     )
-    store.create(
+    _isolated_store.create(
+        description="Vault edit",
+        client_mutation_id="today-create-002",
+        actor="test:user",
         task_id="t-today-002",
         state="focused",
-        description="Vault edit",
-        agent_required_contexts=json.dumps(["@vault"]),
-        user_required_contexts=json.dumps(["@vault"]),
+        summary_text="Edit the selected vault content now.",
+        agent_required_contexts=["@vault"],
+        user_required_contexts=["@vault"],
         required_contexts_source="agent_inferred",
     )
     # User declares phone-only contexts → can't satisfy @vault either.

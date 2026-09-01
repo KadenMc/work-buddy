@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 from pathspec import PathSpec
 
@@ -170,9 +171,103 @@ class VaultStatus:
 class FilesystemSource:
     """Discovers and parses indexable Markdown files across configured vaults."""
 
-    def __init__(self, cfg: dict | None = None) -> None:
+    def __init__(
+        self,
+        cfg: dict | None = None,
+        *,
+        authority_exclusions: Iterable[str | Path] | None = None,
+    ) -> None:
+        configured_implicitly = cfg is None
+        self._configured_implicitly = configured_implicitly
         self._cfg = cfg if cfg is not None else load_config()
         self._vaults = load_vault_configs(self._cfg)
+        if authority_exclusions is None:
+            from work_buddy.vault_index.authority_exclusions import sealed_legacy_roots
+
+            authority_exclusions = sealed_legacy_roots(
+                self._cfg,
+                allow_default_data_root=configured_implicitly,
+            )
+        self._authority_exclusions = tuple(Path(path) for path in authority_exclusions)
+
+    def _excluded(self, path: str | Path, *, real: bool = False) -> bool:
+        from work_buddy.vault_index.authority_exclusions import is_within
+
+        return any(
+            is_within(path, root, real=real)
+            for root in self._authority_exclusions
+        )
+
+    def excludes_path(self, path: str | Path) -> bool:
+        """Public read-only probe used by cutover certification."""
+
+        return self._excluded(path, real=True)
+
+    def resolve_item_path(self, item_id: str) -> Path | None:
+        """Resolve one namespaced item ID without admitting traversal or escape."""
+
+        if "/" not in item_id:
+            return None
+        vault_id, relative = item_id.split("/", 1)
+        vault = next(
+            (candidate for candidate in self._vaults if candidate.id == vault_id),
+            None,
+        )
+        if vault is None:
+            return None
+        path = vault.root / relative
+        from work_buddy.vault_index.authority_exclusions import is_within
+
+        if not is_within(path, vault.root, real=False):
+            return None
+        if not is_within(path, vault.root, real=True):
+            return None
+        return Path(os.path.realpath(path))
+
+    def authority_excluded_item_ids(
+        self,
+        item_ids: Iterable[str],
+    ) -> tuple[str, ...]:
+        """Return represented items whose resolved paths cross the authority fence."""
+
+        excluded: list[str] = []
+        for item_id in item_ids:
+            path = self.resolve_item_path(item_id)
+            if path is not None and self._excluded(path, real=True):
+                excluded.append(item_id)
+        return tuple(excluded)
+
+    def authority_detachment_evidence(
+        self,
+        indexed_item_ids: Iterable[str],
+    ) -> dict[str, object]:
+        """Report whether a completed build removed every sealed-root ledger item.
+
+        The report intentionally contains counts rather than filesystem paths so it
+        is safe to persist in an operator receipt.  It is evaluated *after* the
+        consolidated partition build has reconciled deletions.  A cutover gate can
+        therefore distinguish "future discovery is fenced" from the stronger
+        property that no document from an already-indexed archive remains searchable.
+        """
+
+        from work_buddy.vault_index.authority_exclusions import normalized_path
+
+        detached_roots = {
+            normalized_path(path, real=True)
+            for path in self._authority_exclusions
+        }
+        indexed_excluded_items = len(
+            self.authority_excluded_item_ids(indexed_item_ids)
+        )
+
+        active = bool(detached_roots)
+        return {
+            "schema": "wb.legacy-root-detachment-evidence/v1",
+            "detached_roots": len(detached_roots),
+            "detachment_active": active,
+            "indexed_excluded_items": indexed_excluded_items,
+            "archive_discovery_fenced": active and indexed_excluded_items == 0,
+        }
 
     @property
     def name(self) -> str:
@@ -193,6 +288,13 @@ class FilesystemSource:
         roots_by_id = {v.id: os.path.normcase(str(v.root)) for v in self._vaults}
 
         for vault in self._vaults:
+            # A separately configured vault may itself point at a sealed archive.
+            # Fence it before even probing the directory.
+            if self._excluded(vault.root, real=True):
+                statuses.append(VaultStatus(
+                    vault.id, str(vault.root), True, "authority_excluded", 0
+                ))
+                continue
             try:
                 reachable = vault.root.is_dir()
             except OSError as exc:
@@ -219,9 +321,12 @@ class FilesystemSource:
                     if not d.startswith(".")
                     and d.lower() not in vault.dir_excludes
                     and os.path.normcase(str(Path(dirpath) / d)) not in other_roots
+                    and not self._excluded(Path(dirpath) / d, real=True)
                 ]
                 for fname in filenames:
                     p = Path(dirpath) / fname
+                    if self._excluded(p, real=True):
+                        continue
                     if get_handler(p.suffix) is None:
                         continue
                     rel = p.relative_to(vault.root).as_posix()
@@ -254,11 +359,39 @@ class FilesystemSource:
         if vc is None:
             return []
         p = vc.root / rel
+        from work_buddy.vault_index.authority_exclusions import (
+            LegacyRootAuthorityError,
+            is_within,
+            legacy_root_read_guard,
+            sealed_legacy_roots,
+        )
+
+        # Reject traversal lexically before any filesystem or authority probe.
+        if not is_within(p, vc.root, real=False):
+            return []
         handler = get_handler(p.suffix)
         if handler is None:
             return []
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            with legacy_root_read_guard(
+                p,
+                cfg=self._cfg,
+                allow_default_data_root=self._configured_implicitly,
+            ):
+                # Revalidate containment and authority after taking the same
+                # SQLite writer lock used by the seal. Cached discovery state
+                # is never sufficient to admit the physical read.
+                if not is_within(p, vc.root, real=True):
+                    return []
+                if self._excluded(p, real=True):
+                    return []
+                current_exclusions = sealed_legacy_roots(
+                    self._cfg,
+                    allow_default_data_root=self._configured_implicitly,
+                )
+                if any(is_within(p, root, real=True) for root in current_exclusions):
+                    return []
+                text = p.read_text(encoding="utf-8", errors="replace")
+        except (LegacyRootAuthorityError, OSError):
             return []
         return handler.chunk(text, source_path=item_id)

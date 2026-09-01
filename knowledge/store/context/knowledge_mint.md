@@ -1,7 +1,7 @@
 ---
 name: Knowledge Mint
 kind: capability
-description: Create or update a personal knowledge unit in the Obsidian vault. Generates a markdown file with YAML frontmatter. If the file already exists, appends new evidence.
+description: Create or update a versioned personal-knowledge record in SQLite, with stable aliases, provenance, and idempotent mutation receipts.
 capability_name: knowledge_mint
 category: context
 op: op.wb.knowledge_mint
@@ -17,7 +17,7 @@ parameters:
     required: true
   content_body:
     type: str
-    description: Full markdown body. If empty, builds from structured fields.
+    description: Full text body. If empty, builds a body from the structured fields.
     required: false
   severity:
     type: str
@@ -47,6 +47,10 @@ parameters:
     type: str
     description: Agent's default response.
     required: false
+  idempotency_key:
+    type: str
+    description: Stable retry key for this logical mutation.
+    required: false
 mutates_state: true
 retry_policy: manual
 tags:
@@ -64,3 +68,8 @@ aliases:
 parents:
 - context
 ---
+
+After the personal-knowledge authority seal, this capability never creates or
+edits a Markdown file. It writes one immutable revision plus the current SQLite
+projection. Legacy logical paths remain aliases, so callers can keep using
+familiar names without treating a filesystem path as identity.

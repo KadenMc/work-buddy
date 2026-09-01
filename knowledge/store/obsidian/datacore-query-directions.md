@@ -1,10 +1,9 @@
 ---
-name: Datacore Query Directions
+name: Datacore Query Directions (Legacy)
 kind: directions
-description: How to translate user intent into Datacore vault queries — schema-first, decomposition, plan vs raw query, validate-and-repair
-summary: 'Always run datacore_schema first. Decompose the request: identify object type, map phrases to schema primitives, identify containment, surface ambiguities. Prefer datacore_run_plan over raw queries. Validate results, attempt at most one repair.'
-trigger: user wants to search the vault structurally using Datacore (pages, tasks, sections, blocks, containment, tags, frontmatter)
-command: wb-datacore-query
+description: Legacy-only guidance for an explicit Datacore query against an opted-in Obsidian vault; the slash command and automatic use are retired.
+summary: 'Use only when the user explicitly chooses the legacy Obsidian/Datacore compatibility surface. Never suggest enabling Obsidian for native content search.'
+trigger: user explicitly requests the legacy Obsidian Datacore compatibility surface and Obsidian is opted in
 capabilities:
 - context/datacore_schema
 - context/datacore_run_plan
@@ -32,7 +31,13 @@ parents:
 - obsidian
 ---
 
-Query the Obsidian vault structurally using Datacore.
+The `/wb-datacore-query` command is retired. These instructions remain for an
+explicit, opted-in legacy compatibility request only. Native Tasks, Journal,
+Contracts, Projects, Personal Knowledge, and search do not require Datacore or
+Obsidian. If Obsidian is opted out, do not probe it, retry the request, or offer
+setup instructions.
+
+Query the legacy Obsidian vault structurally using Datacore.
 
 ## Step 1: Discover the schema (mandatory)
 

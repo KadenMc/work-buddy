@@ -15,6 +15,23 @@
     text-align: center;
   }
 
+  .wb-running-notes__supplemental {
+    display: grid;
+    gap: var(--wb-space-4);
+  }
+
+  .wb-running-notes__supplemental > article {
+    display: grid;
+    gap: var(--wb-space-2);
+    padding: var(--wb-space-5);
+    border: var(--wb-border-width) solid var(--wb-color-border-subtle);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-inset);
+  }
+
+  .wb-running-notes__supplemental p { white-space: pre-wrap; }
+  .wb-running-notes__supplemental small { color: var(--wb-color-text-muted); }
+
   .wb-markdown-collection {
     display: grid;
     min-height: 0;

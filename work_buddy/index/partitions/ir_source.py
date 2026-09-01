@@ -1,7 +1,7 @@
 """IRSourcePartition — adapt an existing IR ``Source`` into an index ``Partition``.
 
-ONE generic wrapper covers every IR source (conversation, projects, chrome, summary,
-task_note) by delegating to its ``discover``/``parse``/``default_field_weights``/
+ONE generic wrapper covers the remaining IR sources (conversation, chrome, summary,
+task_note) by delegating to their ``discover``/``parse``/``default_field_weights``/
 ``projection_schema`` and converting IR ``Document``s into index ``Document``s:
 ``source`` → ``partition``, a bare ``dense_text`` → a single ``content`` PASSAGE
 projection, and ISO ``start_time``/``end_time`` metadata → an epoch ``timestamp`` (so
@@ -47,8 +47,10 @@ from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# IR sources to expose as partitions (everything except the redundant "docs").
-_IR_PARTITIONS = ("conversation", "projects", "chrome", "summary", "task_note")
+# IR sources to expose as partitions.  Knowledge and Projects now have
+# domain-owned stable-ID adapters, so wrapping their legacy IR sources would
+# overwrite those registrations.
+_IR_PARTITIONS = ("conversation", "chrome", "summary", "task_note")
 
 
 def _accepts(fn: Any, param: str) -> bool:

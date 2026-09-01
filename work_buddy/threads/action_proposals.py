@@ -56,6 +56,9 @@ _TEXT_FIELDS = frozenset(
         "deadline_date",
         "contract",
         "summary",
+        "requested_note_role",
+        "initial_note",
+        "requested_truth_policy_resolution",
         "outcome_text",
         "next_action_text",
         "definition_of_done",
@@ -164,13 +167,21 @@ def validate_task_parameters(value: Any) -> dict[str, Any]:
     parameters["task_text"] = _text(
         parameters.get("task_text"), "task text", maximum=16_384
     )
-    for key in _TEXT_FIELDS - {"task_text"}:
+    # The note body is document content, not a scalar form field. Preserve it
+    # byte-for-byte so the reviewed proposal, aggregate request hash, and
+    # provenance receipt all refer to the same authored text.
+    for key in _TEXT_FIELDS - {"task_text", "initial_note"}:
         if key in parameters and parameters[key] is not None:
             if not isinstance(parameters[key], str):
                 raise ProposalError(
                     "proposal_invalid_parameters", f"{key} must be text or null."
                 )
             parameters[key] = parameters[key].strip() or None
+    if "initial_note" in parameters and parameters["initial_note"] is not None:
+        if not isinstance(parameters["initial_note"], str):
+            raise ProposalError(
+                "proposal_invalid_parameters", "initial_note must be text or null."
+            )
     for key in _LIST_FIELDS:
         if key not in parameters:
             continue
@@ -205,6 +216,25 @@ def validate_task_parameters(value: Any) -> dict[str, Any]:
                 raise ProposalError(
                     "proposal_invalid_parameters", f"{key} must be a calendar date."
                 ) from exc
+    note_role = parameters.get("requested_note_role")
+    truth_resolution = parameters.get("requested_truth_policy_resolution")
+    if note_role not in {None, "working_document/v1"}:
+        raise ProposalError(
+            "proposal_invalid_parameters", "Unsupported task note role."
+        )
+    if note_role is None and parameters.get("initial_note") is not None:
+        raise ProposalError(
+            "proposal_invalid_parameters",
+            "Choose a task note role before supplying note text.",
+        )
+    if note_role is None and truth_resolution is not None:
+        raise ProposalError(
+            "proposal_invalid_parameters", "Truth requires a task note."
+        )
+    if note_role is not None and truth_resolution not in {None, "disabled", "enabled"}:
+        raise ProposalError(
+            "proposal_invalid_parameters", "Unsupported task note Truth policy."
+        )
     if (
         "has_dependency" in parameters
         and type(parameters["has_dependency"]) is not bool

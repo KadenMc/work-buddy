@@ -21,6 +21,10 @@ from work_buddy.cowork.api import (
 )
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.truth_analysis_dispatch import enqueue_truth_analysis_launch
+from work_buddy.cowork.truth_activation import (
+    TruthActivationError,
+    require_truth_access,
+)
 from work_buddy.dashboard.local_identity_api import require_human_authority_request
 from work_buddy.security.local_identity import LocalIdentityError
 from work_buddy.truth import documents
@@ -87,6 +91,14 @@ def _context(document_id: str, *, mutation: bool):
         return None, None, _fail(
             "This action cannot run on a retired document.", 409
         )
+    try:
+        require_truth_access(
+            store,
+            document.id,
+            mutation=mutation,
+        )
+    except TruthActivationError as exc:
+        return None, None, _safe_error(exc)
     return store, document, None
 
 
@@ -98,6 +110,19 @@ def _safe_error(exc: Exception):
                     "ok": False,
                     "code": exc.code,
                     "error": {"code": exc.code, "message": str(exc)},
+                }
+            ),
+            exc.status,
+        )
+    if isinstance(exc, TruthActivationError):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "code": exc.code,
+                    "error": {"code": exc.code, "message": str(exc)},
+                    "retryable": exc.retryable,
+                    "details": exc.details,
                 }
             ),
             exc.status,

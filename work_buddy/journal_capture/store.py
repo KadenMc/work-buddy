@@ -22,20 +22,33 @@ from work_buddy.journal_capture.models import (
     JournalCapture,
     JournalCaptureError,
     JournalCaptureConflict,
+    JournalCutoverPaused,
+    JournalDayComposition,
+    JournalDayModule,
     JournalDocumentBinding,
+    JournalModuleDocumentBinding,
     JournalDocumentUsageTransition,
     JournalEffect,
     JournalEntry,
+    JournalFieldValue,
     JournalMigrationComparison,
     JournalMigrationRecord,
     JournalMigrationState,
+    JournalModuleInstanceVersion,
+    JournalNativeItem,
+    JournalProfileRevision,
+    JournalSearchEvent,
+    JournalValueDisposition,
+    JournalValueKind,
     ProcessingState,
     ProjectionState,
 )
+from work_buddy.journal_capture.migrations import JOURNAL_MIGRATIONS
+from work_buddy.installed_authority import require_domain_store_open
 from work_buddy.paths import resolve
 
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = JOURNAL_MIGRATIONS.target_version
 
 
 def _utc_now() -> str:
@@ -53,6 +66,14 @@ def _decode_json(value: str | None) -> Mapping[str, Any] | None:
         return None
     decoded = json.loads(value)
     return decoded if isinstance(decoded, dict) else None
+
+
+def _local_date_from_day_id(day_id: str) -> str:
+    """Recover the stable date component from legacy and canonical day IDs."""
+
+    prefix = "journal-day:"
+    candidate = day_id[len(prefix) :] if day_id.startswith(prefix) else day_id
+    return candidate[:10]
 
 
 class JournalCaptureStore:
@@ -75,6 +96,12 @@ class JournalCaptureStore:
             else resolve("db/journal-capture").expanduser().resolve()
         )
         self.read_only = bool(read_only)
+        # This check happens before schema preflight or initialization.  Once
+        # the independent installation latch is sealed, a missing/replaced
+        # Journal database must never be recreated as compatibility state.
+        require_domain_store_open("journal", self.path)
+        if self.path.is_file():
+            self._preflight_existing_schema()
         if self.read_only or source_foundation_read_only():
             if not self.path.is_file():
                 raise JournalCaptureError(
@@ -84,6 +111,42 @@ class JournalCaptureStore:
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._initialize()
+
+    def _preflight_existing_schema(self) -> None:
+        """Reject future schemas before WAL, DDL, or migration history writes."""
+
+        try:
+            with sqlite3.connect(f"file:{self.path}?mode=ro", uri=True) as conn:
+                user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                tables = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                legacy_version: int | None = None
+                if "journal_meta" in tables:
+                    row = conn.execute(
+                        "SELECT value FROM journal_meta WHERE key='schema_version'"
+                    ).fetchone()
+                    if row is not None:
+                        try:
+                            legacy_version = int(row[0])
+                        except (TypeError, ValueError) as exc:
+                            raise JournalCaptureError(
+                                "unsupported_journal_capture_schema"
+                            ) from exc
+        except JournalCaptureError:
+            raise
+        except sqlite3.Error as exc:
+            raise JournalCaptureError("unsupported_journal_capture_schema") from exc
+        if user_version > _SCHEMA_VERSION:
+            raise JournalCaptureError("unsupported_journal_capture_schema")
+        # Only versions 1..7 ever used the informal journal_meta marker with
+        # user_version=0.  A larger marker is future state this process must
+        # not baseline-stamp or modify.
+        if user_version == 0 and legacy_version is not None and legacy_version > 7:
+            raise JournalCaptureError("unsupported_journal_capture_schema")
 
     def _connect(self) -> sqlite3.Connection:
         read_only = self.read_only or source_foundation_read_only()
@@ -119,352 +182,28 @@ class JournalCaptureStore:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS journal_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_captures (
-                    capture_id TEXT PRIMARY KEY,
-                    client_mutation_id TEXT NOT NULL UNIQUE,
-                    request_sha256 TEXT NOT NULL,
-                    source_ref TEXT NOT NULL,
-                    representation_id TEXT NOT NULL,
-                    submission_id TEXT NOT NULL UNIQUE,
-                    command_id TEXT NOT NULL UNIQUE,
-                    source_effect_id TEXT NOT NULL UNIQUE,
-                    source_usage_id TEXT,
-                    day_id TEXT NOT NULL,
-                    requested_target TEXT NOT NULL,
-                    resolved_target TEXT,
-                    mode TEXT NOT NULL,
-                    input_mode TEXT NOT NULL,
-                    stated_at TEXT,
-                    submitted_at TEXT NOT NULL,
-                    persistence_status TEXT NOT NULL DEFAULT 'persisted',
-                    processing_status TEXT NOT NULL,
-                    processing_error_code TEXT,
-                    annotation_json TEXT,
-                    entry_id TEXT,
-                    revision INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    CHECK (requested_target IN ('auto','log','running_notes')),
-                    CHECK (resolved_target IS NULL OR resolved_target IN ('log','running_notes')),
-                    CHECK (mode IN ('dumb','smart')),
-                    CHECK (persistence_status = 'persisted'),
-                    CHECK (processing_status IN ('not_requested','pending','running','succeeded','failed'))
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_entries (
-                    entry_id TEXT PRIMARY KEY,
-                    capture_id TEXT NOT NULL UNIQUE REFERENCES journal_captures(capture_id),
-                    day_id TEXT NOT NULL,
-                    entry_kind TEXT NOT NULL,
-                    source_ref TEXT NOT NULL,
-                    content_sha256 TEXT NOT NULL,
-                    markdown TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    version INTEGER NOT NULL DEFAULT 1,
-                    resolution_state TEXT NOT NULL DEFAULT 'open',
-                    processing_status TEXT NOT NULL,
-                    annotation_json TEXT,
-                    processing_error_code TEXT,
-                    projection_state TEXT NOT NULL DEFAULT 'pending',
-                    projection_marker TEXT NOT NULL UNIQUE,
-                    projection_base_sha256 TEXT,
-                    projection_result_sha256 TEXT,
-                    CHECK (entry_kind IN ('log','running_notes')),
-                    CHECK (processing_status IN ('not_requested','pending','running','succeeded','failed')),
-                    CHECK (projection_state IN ('pending','prepared','committed','failed','paused_diverged'))
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_effects (
-                    effect_id TEXT PRIMARY KEY,
-                    capture_id TEXT NOT NULL REFERENCES journal_captures(capture_id),
-                    effect_type TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    authorization_fingerprint TEXT NOT NULL,
-                    authorization_expires_at TEXT,
-                    lease_owner TEXT,
-                    lease_expires_at TEXT,
-                    error_code TEXT,
-                    payload_json TEXT,
-                    result_json TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(capture_id, effect_type),
-                    CHECK (state IN ('pending','running','succeeded','failed','paused'))
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_note_tombstones (
-                    entry_id TEXT PRIMARY KEY,
-                    capture_id TEXT NOT NULL,
-                    item_json TEXT NOT NULL,
-                    deleted_at TEXT NOT NULL,
-                    deleted_version INTEGER NOT NULL,
-                    deleted_by_json TEXT NOT NULL,
-                    reason TEXT NOT NULL CHECK(reason = 'user_deleted')
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_source_redactions (
-                    redaction_event_id TEXT PRIMARY KEY,
-                    source_effect_id TEXT NOT NULL UNIQUE,
-                    source_usage_id TEXT NOT NULL UNIQUE,
-                    source_ref TEXT NOT NULL,
-                    capture_id TEXT,
-                    entry_id TEXT,
-                    redaction_epoch INTEGER NOT NULL,
-                    result_sha256 TEXT NOT NULL,
-                    completed_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_document_bindings (
-                    entry_id TEXT PRIMARY KEY REFERENCES journal_entries(entry_id),
-                    binding_id TEXT NOT NULL UNIQUE,
-                    store_id TEXT NOT NULL,
-                    document_id TEXT NOT NULL,
-                    change_id TEXT NOT NULL,
-                    source_consumer_id TEXT NOT NULL UNIQUE,
-                    source_usage_id TEXT NOT NULL UNIQUE,
-                    source_use_kind TEXT NOT NULL DEFAULT 'exact_insertion',
-                    source_disclosure_kind TEXT NOT NULL DEFAULT 'exact_readable_copy',
-                    source_redaction_policy TEXT NOT NULL DEFAULT 'scrub',
-                    source_maintenance_state TEXT NOT NULL DEFAULT 'clean',
-                    source_maintenance_json TEXT NOT NULL DEFAULT '{}',
-                    cowork_href TEXT NOT NULL,
-                    content_authority_epoch INTEGER NOT NULL,
-                    entry_version INTEGER NOT NULL,
-                    inspection_json TEXT NOT NULL,
-                    state TEXT NOT NULL DEFAULT 'current',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    CHECK (content_authority_epoch >= 1),
-                    CHECK (state IN ('current','paused_diverged','retired')),
-                    CHECK (source_maintenance_state IN ('clean','review_required'))
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_document_usage_transitions (
-                    transition_id TEXT PRIMARY KEY,
-                    entry_id TEXT NOT NULL UNIQUE REFERENCES journal_document_bindings(entry_id),
-                    binding_id TEXT NOT NULL UNIQUE,
-                    change_id TEXT NOT NULL,
-                    prior_usage_id TEXT NOT NULL UNIQUE,
-                    next_usage_id TEXT NOT NULL UNIQUE,
-                    next_use_kind TEXT NOT NULL,
-                    next_disclosure_kind TEXT NOT NULL,
-                    next_redaction_policy TEXT NOT NULL,
-                    state TEXT NOT NULL DEFAULT 'mirror_updated',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    CHECK (state IN ('mirror_updated','complete'))
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_mutations (
-                    client_mutation_id TEXT PRIMARY KEY,
-                    request_sha256 TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_content_migrations (
-                    entity_kind TEXT NOT NULL CHECK(entity_kind IN (
-                        'running_note','logical_day_log'
-                    )),
-                    entity_id TEXT NOT NULL,
-                    day_id TEXT NOT NULL,
-                    marker_id TEXT NOT NULL UNIQUE,
-                    selection_start INTEGER,
-                    selection_end INTEGER,
-                    selected_file_sha256 TEXT,
-                    selected_section_sha256 TEXT,
-                    source_ref TEXT,
-                    representation_id TEXT,
-                    source_content_sha256 TEXT,
-                    binding_id TEXT UNIQUE,
-                    store_id TEXT,
-                    document_id TEXT,
-                    comparison_state TEXT NOT NULL DEFAULT 'pending' CHECK(
-                        comparison_state IN ('pending','parity','mismatch')
-                    ),
-                    byte_parity INTEGER,
-                    normalized_parity INTEGER,
-                    structural_parity INTEGER,
-                    rollback_deadline TEXT,
-                    mirrored_state TEXT NOT NULL DEFAULT 'selected' CHECK(
-                        mirrored_state IN (
-                            'selected','shadow_imported','cowork_authoritative',
-                            'legacy_authoritative','paused_diverged','retired'
-                        )
-                    ),
-                    mirrored_authority_epoch INTEGER NOT NULL DEFAULT 0 CHECK(
-                        mirrored_authority_epoch >= 0
-                    ),
-                    projection_state TEXT NOT NULL DEFAULT 'none' CHECK(
-                        projection_state IN (
-                            'none','pending','committed','paused_diverged','failed'
-                        )
-                    ),
-                    divergence_source_ref TEXT,
-                    operation_id TEXT,
-                    error_code TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY(entity_kind,entity_id),
-                    CHECK (
-                        (selection_start IS NULL AND selection_end IS NULL)
-                        OR (selection_start >= 0 AND selection_end > selection_start)
-                    )
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_migration_operations (
-                    operation_id TEXT PRIMARY KEY,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    action TEXT NOT NULL CHECK(action IN (
-                        'select','shadow_import','cutover','rollback','reconcile'
-                    )),
-                    entity_kind TEXT NOT NULL,
-                    entity_id TEXT NOT NULL,
-                    request_sha256 TEXT NOT NULL,
-                    state TEXT NOT NULL CHECK(state IN (
-                        'prepared','document_committed','epoch_committed',
-                        'projection_committed','completed','recoverable','paused_diverged'
-                    )),
-                    error_code TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS journal_exit_evidence (
-                    receipt_id TEXT PRIMARY KEY,
-                    inventory_sha256 TEXT NOT NULL,
-                    callsite_inventory_sha256 TEXT NOT NULL,
-                    authority_summary_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS journal_captures_day_idx
-                    ON journal_captures(day_id, submitted_at DESC);
-                CREATE INDEX IF NOT EXISTS journal_entries_day_idx
-                    ON journal_entries(day_id, created_at DESC);
-                CREATE INDEX IF NOT EXISTS journal_effects_state_idx
-                    ON journal_effects(state, updated_at);
-                CREATE INDEX IF NOT EXISTS journal_migration_day_idx
-                    ON journal_content_migrations(day_id,entity_kind,entity_id);
-                CREATE UNIQUE INDEX IF NOT EXISTS journal_running_selection_idx
-                    ON journal_content_migrations(
-                        day_id,selection_start,selection_end,selected_section_sha256
-                    ) WHERE entity_kind='running_note';
-                CREATE INDEX IF NOT EXISTS journal_migration_recovery_idx
-                    ON journal_migration_operations(state,updated_at);
-                """
-            )
-            row = conn.execute(
-                "SELECT value FROM journal_meta WHERE key='schema_version'"
-            ).fetchone()
-            if row is None:
-                conn.execute(
-                    "INSERT INTO journal_meta(key,value) VALUES('schema_version',?)",
-                    (str(_SCHEMA_VERSION),),
-                )
-            else:
-                version = int(row["value"])
-                if version < 1 or version > _SCHEMA_VERSION:
-                    raise RuntimeError("unsupported_journal_capture_schema")
-            if row is not None and version == 1:
-                columns = {
-                    str(item[1])
-                    for item in conn.execute("PRAGMA table_info(journal_captures)").fetchall()
-                }
-                if "source_usage_id" not in columns:
-                    conn.execute(
-                        "ALTER TABLE journal_captures ADD COLUMN source_usage_id TEXT"
-                    )
-                version = 2
-            if row is not None and version < 4:
-                columns = {
-                    str(item[1])
-                    for item in conn.execute(
-                        "PRAGMA table_info(journal_document_bindings)"
-                    ).fetchall()
-                }
-                additions = (
-                    (
-                        "source_use_kind",
-                        "TEXT NOT NULL DEFAULT 'exact_insertion'",
-                    ),
-                    (
-                        "source_disclosure_kind",
-                        "TEXT NOT NULL DEFAULT 'exact_readable_copy'",
-                    ),
-                    (
-                        "source_redaction_policy",
-                        "TEXT NOT NULL DEFAULT 'scrub'",
-                    ),
-                    (
-                        "source_maintenance_state",
-                        "TEXT NOT NULL DEFAULT 'clean'",
-                    ),
-                    (
-                        "source_maintenance_json",
-                        "TEXT NOT NULL DEFAULT '{}'",
-                    ),
-                )
-                for name, declaration in additions:
-                    if name not in columns:
-                        conn.execute(
-                            f"ALTER TABLE journal_document_bindings "
-                            f"ADD COLUMN {name} {declaration}"
-                        )
-                version = 4
-            if row is not None and version < 5:
-                # v5 consists only of the idempotent migration/evidence tables
-                # created above; no legacy row rewrite is required.
-                version = 5
-            if row is not None and version < 6:
-                columns = {
-                    str(item[1])
-                    for item in conn.execute(
-                        "PRAGMA table_info(journal_content_migrations)"
-                    ).fetchall()
-                }
-                if "structural_parity" not in columns:
-                    conn.execute(
-                        "ALTER TABLE journal_content_migrations "
-                        "ADD COLUMN structural_parity INTEGER"
-                    )
-                version = 6
-            if row is not None and version < 7:
-                columns = {
-                    str(item[1])
-                    for item in conn.execute("PRAGMA table_info(journal_effects)").fetchall()
-                }
-                for name in ("payload_json", "result_json"):
-                    if name not in columns:
-                        conn.execute(f"ALTER TABLE journal_effects ADD COLUMN {name} TEXT")
-                version = 7
-            if row is not None and version < _SCHEMA_VERSION:
-                raise RuntimeError("unsupported_journal_capture_schema")
-            if row is not None:
-                # New tables are created idempotently above. Advancing only
-                # after all additive migrations complete keeps restart
-                # recovery deterministic across every supported legacy store.
-                conn.execute(
-                    "UPDATE journal_meta SET value=? WHERE key='schema_version'",
-                    (str(_SCHEMA_VERSION),),
-                )
+            JOURNAL_MIGRATIONS.run(conn)
 
     def _validate_existing(self) -> None:
         try:
             with sqlite3.connect(f"file:{self.path}?mode=ro", uri=True) as conn:
                 integrity = conn.execute("PRAGMA integrity_check").fetchall()
-                version = conn.execute(
-                    "SELECT value FROM journal_meta WHERE key='schema_version'"
-                ).fetchone()
+                user_version = int(
+                    conn.execute("PRAGMA user_version").fetchone()[0]
+                )
+                tables = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                version = (
+                    conn.execute(
+                        "SELECT value FROM journal_meta WHERE key='schema_version'"
+                    ).fetchone()
+                    if "journal_meta" in tables
+                    else None
+                )
         except sqlite3.Error as exc:
             raise JournalCaptureError(
                 "journal_capture_state_invalid_during_restore_reconciliation"
@@ -473,7 +212,21 @@ class JournalCaptureStore:
             schema_version = None if version is None else int(version[0])
         except (TypeError, ValueError):
             schema_version = None
-        if integrity != [("ok",)] or schema_version != _SCHEMA_VERSION:
+        # Historical Journal schemas used only the informal meta marker and
+        # therefore have ``user_version=0``. Native migrations keep both
+        # markers equal. Read-only operators must be able to inspect any
+        # coherent supported version without silently upgrading it; malformed,
+        # future, or integrity-failing state remains fenced.
+        legacy_supported = (
+            user_version == 0
+            and schema_version is not None
+            and 1 <= schema_version <= 7
+        )
+        native_supported = (
+            1 <= user_version <= _SCHEMA_VERSION
+            and schema_version == user_version
+        )
+        if integrity != [("ok",)] or not (legacy_supported or native_supported):
             raise JournalCaptureError(
                 "journal_capture_state_invalid_during_restore_reconciliation"
             )
@@ -497,6 +250,7 @@ class JournalCaptureStore:
         submitted_at: str,
         authorization_fingerprint: str,
         authorization_expires_at: str | None = None,
+        postseal_drain_batch_id: str | None = None,
     ) -> JournalCapture:
         now = _utc_now()
         capture_id = uuid.uuid4().hex
@@ -511,6 +265,12 @@ class JournalCaptureStore:
         elif mode is CaptureMode.SMART:
             effect_types.append("smart_annotate")
         with self.transaction() as conn:
+            if postseal_drain_batch_id is not None:
+                self._require_postseal_drain_effect(
+                    conn,
+                    batch_mutation_id=postseal_drain_batch_id,
+                    effect_id=source_effect_id,
+                )
             prior = conn.execute(
                 "SELECT * FROM journal_captures WHERE client_mutation_id=?",
                 (client_mutation_id,),
@@ -519,6 +279,15 @@ class JournalCaptureStore:
                 if prior["request_sha256"] != request_sha256:
                     raise JournalCaptureConflict(
                         "That capture key was already used for different input."
+                    )
+                if postseal_drain_batch_id is not None:
+                    self._record_postseal_drain_capture(
+                        conn,
+                        batch_mutation_id=postseal_drain_batch_id,
+                        effect_id=source_effect_id,
+                        capture_id=str(prior["capture_id"]),
+                        request_sha256=request_sha256,
+                        created_at=now,
                     )
                 return self._capture(prior)
             by_submission = conn.execute(
@@ -530,7 +299,24 @@ class JournalCaptureStore:
                     raise JournalCaptureConflict(
                         "The source command is already bound to a different capture."
                     )
+                if postseal_drain_batch_id is not None:
+                    self._record_postseal_drain_capture(
+                        conn,
+                        batch_mutation_id=postseal_drain_batch_id,
+                        effect_id=source_effect_id,
+                        capture_id=str(by_submission["capture_id"]),
+                        request_sha256=request_sha256,
+                        created_at=now,
+                    )
                 return self._capture(by_submission)
+            gate = conn.execute(
+                "SELECT state FROM journal_cutover_gate WHERE singleton=1"
+            ).fetchone()
+            if gate is None or (
+                str(gate["state"]) != "open"
+                and postseal_drain_batch_id is None
+            ):
+                raise JournalCutoverPaused()
             conn.execute(
                 """
                 INSERT INTO journal_captures(
@@ -588,11 +374,112 @@ class JournalCaptureStore:
                         now,
                     ),
                 )
+            if postseal_drain_batch_id is not None:
+                self._record_postseal_drain_capture(
+                    conn,
+                    batch_mutation_id=postseal_drain_batch_id,
+                    effect_id=source_effect_id,
+                    capture_id=capture_id,
+                    request_sha256=request_sha256,
+                    created_at=now,
+                )
             row = conn.execute(
                 "SELECT * FROM journal_captures WHERE capture_id=?", (capture_id,)
             ).fetchone()
             assert row is not None
             return self._capture(row)
+
+    @staticmethod
+    def _require_postseal_drain_effect(
+        conn: sqlite3.Connection,
+        *,
+        batch_mutation_id: str,
+        effect_id: str,
+    ) -> None:
+        row = conn.execute(
+            "SELECT batch.cohort_id,authority.mode,authority.activated_cohort_id,"
+            "gate.state AS gate_state,gate.cohort_id AS gate_cohort_id,"
+            "maintenance.state AS maintenance_state,"
+            "maintenance.cohort_id AS maintenance_cohort_id,"
+            "receipt.batch_mutation_id AS completed_batch "
+            "FROM journal_cutover_source_drain_effects AS effect "
+            "JOIN journal_cutover_source_drain_batches AS batch "
+            "ON batch.mutation_id=effect.batch_mutation_id "
+            "CROSS JOIN journal_authority_control AS authority "
+            "CROSS JOIN journal_cutover_gate AS gate "
+            "CROSS JOIN cutover_maintenance AS maintenance "
+            "LEFT JOIN journal_cutover_source_drain_receipts AS receipt "
+            "ON receipt.batch_mutation_id=batch.mutation_id "
+            "WHERE effect.batch_mutation_id=? AND effect.effect_id=? "
+            "AND authority.singleton=1 AND gate.singleton=1 "
+            "AND maintenance.singleton=1",
+            (batch_mutation_id, effect_id),
+        ).fetchone()
+        if (
+            row is None
+            or row["completed_batch"] is not None
+            or str(row["mode"]) != "database_only"
+            or str(row["activated_cohort_id"] or "") != str(row["cohort_id"])
+            or str(row["gate_state"]) != "paused"
+            or str(row["gate_cohort_id"] or "") != str(row["cohort_id"])
+            or str(row["maintenance_state"]) != "postseal_pending"
+            or str(row["maintenance_cohort_id"] or "") != str(row["cohort_id"])
+        ):
+            raise JournalCutoverPaused()
+
+    @staticmethod
+    def _record_postseal_drain_capture(
+        conn: sqlite3.Connection,
+        *,
+        batch_mutation_id: str,
+        effect_id: str,
+        capture_id: str,
+        request_sha256: str,
+        created_at: str,
+    ) -> None:
+        row = conn.execute(
+            "SELECT rowid,source_effect_id,request_sha256 FROM journal_captures "
+            "WHERE capture_id=?",
+            (capture_id,),
+        ).fetchone()
+        if (
+            row is None
+            or str(row["source_effect_id"]) != effect_id
+            or str(row["request_sha256"]) != request_sha256
+        ):
+            raise JournalCaptureConflict(
+                "The controlled Journal capture does not match its Source command."
+            )
+        prior = conn.execute(
+            "SELECT * FROM journal_cutover_source_drain_captures "
+            "WHERE batch_mutation_id=? AND effect_id=?",
+            (batch_mutation_id, effect_id),
+        ).fetchone()
+        expected = (capture_id, int(row["rowid"]), request_sha256)
+        if prior is not None:
+            observed = (
+                str(prior["capture_id"]),
+                int(prior["capture_rowid"]),
+                str(prior["capture_request_sha256"]),
+            )
+            if observed != expected:
+                raise JournalCaptureConflict(
+                    "The controlled Journal capture receipt conflicts."
+                )
+            return
+        conn.execute(
+            "INSERT INTO journal_cutover_source_drain_captures("
+            "batch_mutation_id,effect_id,capture_id,capture_rowid,"
+            "capture_request_sha256,created_at) VALUES(?,?,?,?,?,?)",
+            (
+                batch_mutation_id,
+                effect_id,
+                capture_id,
+                int(row["rowid"]),
+                request_sha256,
+                created_at,
+            ),
+        )
 
     def get_capture(self, capture_id: str) -> JournalCapture | None:
         with self._connect() as conn:
@@ -626,6 +513,65 @@ class JournalCaptureStore:
             ).fetchall()
         return [self._capture(row) for row in rows]
 
+    @staticmethod
+    def _ensure_native_entry_bridge(
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> None:
+        """Bridge legacy entry identity without copying its authoritative prose."""
+
+        lifecycle = "current" if row["resolution_state"] == "open" else "resolved"
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO journal_items(
+                item_id,local_date,item_kind,authority_kind,legacy_entry_id,
+                interaction_behavior_id,interaction_behavior_version,privacy_class,
+                search_mode,source_ref,lifecycle,current_revision,created_at,updated_at
+            ) VALUES(?,?,?,?,?,'human_value',1,'private','lexical_dense',?,?,?,?,?)
+            """,
+            (
+                row["entry_id"],
+                _local_date_from_day_id(str(row["day_id"])),
+                "record" if row["entry_kind"] == "log" else "running_note",
+                "legacy_entry",
+                row["entry_id"],
+                row["source_ref"],
+                lifecycle,
+                int(row["version"]),
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+        event_id = "jso_" + hashlib.sha256(
+            f"item\x00{row['entry_id']}\x00{row['version']}\x00upsert".encode("utf-8")
+        ).hexdigest()[:32]
+        composition = conn.execute(
+            """
+            SELECT s.composition_digest
+            FROM journal_day_composition_snapshots AS s
+            JOIN journal_days AS d ON d.day_id=s.day_id
+            WHERE d.local_date=?
+            """,
+            (_local_date_from_day_id(str(row["day_id"])),),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO journal_search_outbox(
+                event_id,aggregate_type,aggregate_id,aggregate_revision,event_kind,
+                content_sha256,composition_digest,search_recipe_version,privacy_class,
+                committed_at
+            ) VALUES(?,'item',?,?,'upsert',?,?,1,'private',?)
+            """,
+            (
+                event_id,
+                row["entry_id"],
+                str(row["version"]),
+                row["content_sha256"],
+                composition[0] if composition is not None else None,
+                row["updated_at"],
+            ),
+        )
+
     def ensure_entry(
         self,
         *,
@@ -650,6 +596,7 @@ class JournalCaptureStore:
                     raise JournalCaptureConflict(
                         "The capture is already materialized differently."
                     )
+                self._ensure_native_entry_bridge(conn, existing)
                 return self._entry(existing)
             capture = conn.execute(
                 "SELECT * FROM journal_captures WHERE capture_id=?", (capture_id,)
@@ -690,6 +637,7 @@ class JournalCaptureStore:
                 "SELECT * FROM journal_entries WHERE entry_id=?", (entry_id,)
             ).fetchone()
             assert row is not None
+            self._ensure_native_entry_bridge(conn, row)
             return self._entry(row)
 
     def get_entry(self, entry_id: str) -> JournalEntry | None:
@@ -706,6 +654,105 @@ class JournalCaptureStore:
                 (entry_id,),
             ).fetchone()
         return None if row is None else self._document_binding(row)
+
+    def get_module_document_binding(
+        self,
+        *,
+        local_date: str,
+        module_instance_id: str,
+        module_instance_version: int,
+    ) -> JournalModuleDocumentBinding | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_module_document_bindings "
+                "WHERE local_date=? AND module_instance_id=? "
+                "AND module_instance_version=?",
+                (local_date, module_instance_id, module_instance_version),
+            ).fetchone()
+        return None if row is None else self._module_document_binding(row)
+
+    def record_module_document_binding(
+        self,
+        *,
+        local_date: str,
+        module_instance_id: str,
+        module_instance_version: int,
+        domain_entity_id: str,
+        binding_id: str,
+        store_id: str,
+        document_id: str,
+        role: str,
+        cowork_href: str,
+        content_authority_epoch: int,
+    ) -> JournalModuleDocumentBinding:
+        """Record a deterministic Co-work target without duplicating its body."""
+
+        now = _utc_now()
+        with self.transaction() as conn:
+            prior = conn.execute(
+                "SELECT * FROM journal_module_document_bindings "
+                "WHERE local_date=? AND module_instance_id=? "
+                "AND module_instance_version=?",
+                (local_date, module_instance_id, module_instance_version),
+            ).fetchone()
+            immutable = (
+                domain_entity_id,
+                binding_id,
+                store_id,
+                document_id,
+                role,
+            )
+            if prior is not None and tuple(
+                prior[key] for key in (
+                    "domain_entity_id", "binding_id", "store_id", "document_id", "role"
+                )
+            ) != immutable:
+                raise JournalCaptureConflict(
+                    "That Journal document section is already bound elsewhere."
+                )
+            if prior is None:
+                conn.execute(
+                    "INSERT INTO journal_module_document_bindings "
+                    "(local_date,module_instance_id,module_instance_version,domain_entity_id,binding_id,"
+                    "store_id,document_id,role,cowork_href,content_authority_epoch,"
+                    "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        local_date,
+                        module_instance_id,
+                        module_instance_version,
+                        domain_entity_id,
+                        binding_id,
+                        store_id,
+                        document_id,
+                        role,
+                        cowork_href,
+                        content_authority_epoch,
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                conn.execute(
+                    "UPDATE journal_module_document_bindings SET cowork_href=?,"
+                    "content_authority_epoch=?,updated_at=? WHERE local_date=? "
+                    "AND module_instance_id=? AND module_instance_version=?",
+                    (
+                        cowork_href,
+                        content_authority_epoch,
+                        now,
+                        local_date,
+                        module_instance_id,
+                        module_instance_version,
+                    ),
+                )
+            row = conn.execute(
+                "SELECT * FROM journal_module_document_bindings "
+                "WHERE local_date=? AND module_instance_id=? "
+                "AND module_instance_version=?",
+                (local_date, module_instance_id, module_instance_version),
+            ).fetchone()
+            assert row is not None
+            return self._module_document_binding(row)
 
     def list_document_bindings(self) -> tuple[JournalDocumentBinding, ...]:
         with self._connect() as conn:
@@ -1938,6 +1985,7 @@ class JournalCaptureStore:
                         "The source redaction does not match the managed copy."
                     )
             entry = None
+            native = None
             if capture is not None and capture["entry_id"] is not None:
                 entry = conn.execute(
                     "SELECT * FROM journal_entries WHERE entry_id=?",
@@ -1957,12 +2005,139 @@ class JournalCaptureStore:
                     "WHERE capture_id=?",
                     (now, capture["capture_id"]),
                 )
+            elif capture is not None:
+                native = conn.execute(
+                    """
+                    SELECT binding.item_id,item.current_revision,item.source_ref,
+                           item.local_date,item.privacy_class
+                    FROM journal_native_capture_bindings AS binding
+                    JOIN journal_items AS item ON item.item_id=binding.item_id
+                    WHERE binding.capture_id=?
+                    """,
+                    (capture["capture_id"],),
+                ).fetchone()
+                if native is not None:
+                    if str(native["source_ref"]) != source_ref:
+                        raise JournalCaptureConflict(
+                            "The native Journal item does not match the removed source."
+                        )
+                    original_revision = int(native["current_revision"])
+                    scrubbed_revision = original_revision + 1
+                    redacted_text = "[redacted]"
+                    redacted_sha = hashlib.sha256(
+                        redacted_text.encode("utf-8")
+                    ).hexdigest()
+                    conn.execute(
+                        """
+                        INSERT INTO journal_native_redactions(
+                            redaction_event_id,capture_id,item_id,source_ref,
+                            redaction_epoch,original_revision,state,created_at
+                        ) VALUES(?,?,?,?,?,?,'scrubbing',?)
+                        """,
+                        (
+                            redaction_event_id,
+                            capture["capture_id"],
+                            native["item_id"],
+                            source_ref,
+                            redaction_epoch,
+                            original_revision,
+                            now,
+                        ),
+                    )
+                    # Privacy redaction is the sole exception to immutable
+                    # revision prose: every readable historical copy is
+                    # overwritten while a fail-closed scrubbing receipt exists.
+                    conn.execute(
+                        "UPDATE journal_item_revisions SET plain_value=?,"
+                        "content_sha256=?,lifecycle='tombstoned' WHERE item_id=?",
+                        (redacted_text, redacted_sha, native["item_id"]),
+                    )
+                    actor_json = json.dumps(
+                        {
+                            "kind": "source_redaction",
+                            "redactionEventId": redaction_event_id,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO journal_item_revisions(
+                            item_id,revision,authority_kind,plain_value,
+                            content_sha256,lifecycle,actor_json,source_ref,
+                            authorship,review_state,intent_id,created_at
+                        ) VALUES(?,?,'native_plain',?,?,'tombstoned',?,?,'unknown',
+                            'unknown',?,?)
+                        """,
+                        (
+                            native["item_id"],
+                            scrubbed_revision,
+                            redacted_text,
+                            redacted_sha,
+                            actor_json,
+                            source_ref,
+                            f"source-redaction:{redaction_event_id}",
+                            now,
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE journal_items SET current_plain_value=?,"
+                        "current_content_sha256=?,lifecycle='tombstoned',"
+                        "current_revision=?,updated_at=? WHERE item_id=?",
+                        (
+                            redacted_text,
+                            redacted_sha,
+                            scrubbed_revision,
+                            now,
+                            native["item_id"],
+                        ),
+                    )
+                    event_id = hashlib.sha256(
+                        (
+                            "journal-search-delete:"
+                            f"{native['item_id']}:{scrubbed_revision}"
+                        ).encode("utf-8")
+                    ).hexdigest()[:32]
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO journal_search_outbox(
+                            event_id,aggregate_type,aggregate_id,aggregate_revision,
+                            event_kind,content_sha256,search_recipe_version,
+                            privacy_class,committed_at
+                        ) VALUES(?,'item',?,?,'delete',?,1,?,?)
+                        """,
+                        (
+                            f"jso_{event_id}",
+                            native["item_id"],
+                            str(scrubbed_revision),
+                            redacted_sha,
+                            native["privacy_class"],
+                            now,
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE journal_native_redactions SET state='committed',"
+                        "scrubbed_revision=?,result_sha256=?,completed_at=? "
+                        "WHERE redaction_event_id=? AND state='scrubbing'",
+                        (
+                            scrubbed_revision,
+                            result_sha256,
+                            now,
+                            redaction_event_id,
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE journal_captures SET revision=revision+1,updated_at=? "
+                        "WHERE capture_id=?",
+                        (now, capture["capture_id"]),
+                    )
 
             conn.execute(
                 "INSERT INTO journal_source_redactions "
                 "(redaction_event_id,source_effect_id,source_usage_id,source_ref,"
-                "capture_id,entry_id,redaction_epoch,result_sha256,completed_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "capture_id,entry_id,redaction_epoch,result_sha256,completed_at,"
+                "native_item_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     redaction_event_id,
                     source_effect_id,
@@ -1973,6 +2148,7 @@ class JournalCaptureStore:
                     redaction_epoch,
                     result_sha256,
                     now,
+                    native["item_id"] if native is not None else None,
                 ),
             )
             if entry is None:
@@ -1983,6 +2159,1229 @@ class JournalCaptureStore:
             ).fetchone()
             assert updated is not None
             return self._entry(updated)
+
+    def get_import_source_dependency(
+        self,
+        *,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+    ) -> Mapping[str, Any] | None:
+        """Resolve a staged-history file from its deterministic Source usage."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT cohort_id,file_id,source_ref,source_usage_id,"
+                "source_usage_consumer_id,source_usage_state,state "
+                "FROM journal_import_files WHERE source_usage_consumer_id=?",
+                (source_usage_consumer_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["source_usage_id"] is not None and str(row["source_usage_id"]) != source_usage_id:
+            raise JournalCaptureConflict(
+                "The import Source redaction does not match its managed copy."
+            )
+        if row["source_ref"] is not None and str(row["source_ref"]) != source_ref:
+            raise JournalCaptureConflict(
+                "The import Source redaction does not match its retained Source."
+            )
+        return {
+            "cohort_id": str(row["cohort_id"]),
+            "file_id": str(row["file_id"]),
+            "source_ref": None if row["source_ref"] is None else str(row["source_ref"]),
+            "source_usage_id": (
+                None if row["source_usage_id"] is None else str(row["source_usage_id"])
+            ),
+            "source_usage_consumer_id": str(row["source_usage_consumer_id"]),
+            "source_usage_state": str(row["source_usage_state"]),
+            "state": str(row["state"]),
+        }
+
+    def mark_import_source_redacted(
+        self,
+        *,
+        cohort_id: str,
+        file_id: str,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+        redaction_event_id: str,
+        redaction_epoch: int,
+        result_sha256: str,
+    ) -> int:
+        """Scrub every native current/history copy derived from one import file.
+
+        This transaction is the Journal-side durable boundary.  A Source
+        usage is released only after it commits; replay is keyed by the Source
+        redaction event and contains no original prose.
+        """
+
+        redacted_text = "[redacted]"
+        redacted_sha = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
+        redacted_value_json = '{"redacted":true}'
+        redacted_value_sha = hashlib.sha256(
+            redacted_value_json.encode("utf-8")
+        ).hexdigest()
+        now = _utc_now()
+        with self.transaction() as conn:
+            file_row = conn.execute(
+                "SELECT * FROM journal_import_files WHERE cohort_id=? AND file_id=?",
+                (cohort_id, file_id),
+            ).fetchone()
+            if file_row is None:
+                raise KeyError("journal_import_file_not_found")
+            if str(file_row["source_usage_consumer_id"]) != source_usage_consumer_id:
+                raise JournalCaptureConflict(
+                    "The import Source redaction consumer does not match."
+                )
+            if file_row["source_usage_id"] is not None and str(
+                file_row["source_usage_id"]
+            ) != source_usage_id:
+                raise JournalCaptureConflict(
+                    "The import Source redaction usage does not match."
+                )
+            if file_row["source_ref"] is not None and str(file_row["source_ref"]) != source_ref:
+                raise JournalCaptureConflict(
+                    "The import Source redaction Source does not match."
+                )
+            prior = conn.execute(
+                "SELECT * FROM journal_import_source_redactions "
+                "WHERE redaction_event_id=?",
+                (redaction_event_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    str(prior["cohort_id"]) != cohort_id
+                    or str(prior["file_id"]) != file_id
+                    or str(prior["source_usage_id"]) != source_usage_id
+                    or str(prior["source_usage_consumer_id"])
+                    != source_usage_consumer_id
+                    or str(prior["source_ref"]) != source_ref
+                    or int(prior["redaction_epoch"]) != redaction_epoch
+                    or str(prior["result_sha256"]) != result_sha256
+                ):
+                    raise JournalCaptureConflict(
+                        "That import Source redaction is already bound differently."
+                    )
+                return int(prior["scrubbed_item_count"])
+
+            conn.execute(
+                "INSERT INTO journal_import_source_redactions("
+                "redaction_event_id,cohort_id,file_id,source_usage_id,"
+                "source_usage_consumer_id,source_ref,redaction_epoch,state,created_at) "
+                "VALUES(?,?,?,?,?,?,?,'scrubbing',?)",
+                (
+                    redaction_event_id,
+                    cohort_id,
+                    file_id,
+                    source_usage_id,
+                    source_usage_consumer_id,
+                    source_ref,
+                    redaction_epoch,
+                    now,
+                ),
+            )
+            items = conn.execute(
+                "SELECT item.item_id,item.current_revision,item.privacy_class "
+                "FROM journal_import_spans AS span "
+                "JOIN journal_items AS item ON item.item_id=span.item_id "
+                "WHERE span.cohort_id=? AND span.file_id=? AND span.materialize=1 "
+                "ORDER BY item.item_id",
+                (cohort_id, file_id),
+            ).fetchall()
+            actor_json = json.dumps(
+                {
+                    "kind": "source_redaction",
+                    "redactionEventId": redaction_event_id,
+                    "importCohortId": cohort_id,
+                    "importFileId": file_id,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for item in items:
+                item_id = str(item["item_id"])
+                original_revision = int(item["current_revision"])
+                scrubbed_revision = original_revision + 1
+                conn.execute(
+                    "UPDATE journal_item_revisions SET plain_value=?,"
+                    "content_sha256=?,lifecycle='tombstoned' WHERE item_id=?",
+                    (redacted_text, redacted_sha, item_id),
+                )
+                conn.execute(
+                    "INSERT INTO journal_item_revisions("
+                    "item_id,revision,authority_kind,plain_value,content_sha256,"
+                    "lifecycle,actor_json,source_ref,authorship,review_state,"
+                    "intent_id,created_at) "
+                    "VALUES(?,?,'native_plain',?,?,'tombstoned',?,?,'unknown',"
+                    "'unknown',?,?)",
+                    (
+                        item_id,
+                        scrubbed_revision,
+                        redacted_text,
+                        redacted_sha,
+                        actor_json,
+                        source_ref,
+                        f"source-redaction:{redaction_event_id}:{item_id}",
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE journal_items SET current_plain_value=?,"
+                    "current_content_sha256=?,lifecycle='tombstoned',"
+                    "current_revision=?,updated_at=? WHERE item_id=?",
+                    (redacted_text, redacted_sha, scrubbed_revision, now, item_id),
+                )
+                event_id = "jso_" + hashlib.sha256(
+                    (
+                        "journal-import-search-delete:"
+                        f"{redaction_event_id}:{item_id}:{scrubbed_revision}"
+                    ).encode("utf-8")
+                ).hexdigest()[:32]
+                conn.execute(
+                    "INSERT OR IGNORE INTO journal_search_outbox("
+                    "event_id,aggregate_type,aggregate_id,aggregate_revision,"
+                    "event_kind,content_sha256,search_recipe_version,privacy_class,"
+                    "committed_at) VALUES(?,'item',?,?,'delete',?,1,?,?)",
+                    (
+                        event_id,
+                        item_id,
+                        str(scrubbed_revision),
+                        redacted_sha,
+                        item["privacy_class"],
+                        now,
+                    ),
+                )
+            field_values = conn.execute(
+                "SELECT value.value_id,value.current_revision,definition.privacy_class "
+                "FROM journal_import_typed_observations AS observation "
+                "JOIN journal_field_values AS value ON value.value_id=observation.value_id "
+                "JOIN journal_field_definition_versions AS definition "
+                "ON definition.field_id=value.field_id "
+                "AND definition.definition_version=value.field_definition_version "
+                "WHERE observation.cohort_id=? AND observation.file_id=? "
+                "AND observation.state='materialized' ORDER BY value.value_id",
+                (cohort_id, file_id),
+            ).fetchall()
+            for field_value in field_values:
+                value_id = str(field_value["value_id"])
+                imported_revision = conn.execute(
+                    "SELECT 1 FROM journal_field_value_revisions "
+                    "WHERE value_id=? AND revision=1",
+                    (value_id,),
+                ).fetchone()
+                if imported_revision is None:
+                    raise JournalCaptureConflict(
+                        "The imported typed observation revision is unavailable."
+                    )
+                conn.execute(
+                    "UPDATE journal_field_value_revisions SET value_json=?,"
+                    "value_sha256=? WHERE value_id=? AND revision=1",
+                    (redacted_value_json, redacted_value_sha, value_id),
+                )
+                if int(field_value["current_revision"]) != 1:
+                    continue
+                scrubbed_revision = 2
+                conn.execute(
+                    "UPDATE journal_field_values SET disposition='missing',"
+                    "text_value=NULL,number_value=NULL,boolean_value=NULL,"
+                    "temporal_value=NULL,duration_seconds=NULL,option_value=NULL,"
+                    "collection_present=0,lifecycle='tombstoned',current_revision=?,"
+                    "updated_at=? WHERE value_id=? AND current_revision=1",
+                    (scrubbed_revision, now, value_id),
+                )
+                conn.execute(
+                    "DELETE FROM journal_field_value_options WHERE value_id=?",
+                    (value_id,),
+                )
+                conn.execute(
+                    "DELETE FROM journal_field_value_references WHERE value_id=?",
+                    (value_id,),
+                )
+                conn.execute(
+                    "INSERT INTO journal_field_value_revisions("
+                    "value_id,revision,value_json,value_sha256,actor_json,source_ref,"
+                    "intent_id,created_at,authorship,review_state) "
+                    "VALUES(?,2,?,?,?,?,?,?,'unknown','unknown')",
+                    (
+                        value_id,
+                        redacted_value_json,
+                        redacted_value_sha,
+                        actor_json,
+                        source_ref,
+                        f"source-redaction:{redaction_event_id}:{value_id}",
+                        now,
+                    ),
+                )
+                event_id = "jso_" + hashlib.sha256(
+                    (
+                        "journal-import-field-search-delete:"
+                        f"{redaction_event_id}:{value_id}:{scrubbed_revision}"
+                    ).encode("utf-8")
+                ).hexdigest()[:32]
+                conn.execute(
+                    "INSERT OR IGNORE INTO journal_search_outbox("
+                    "event_id,aggregate_type,aggregate_id,aggregate_revision,"
+                    "event_kind,content_sha256,search_recipe_version,privacy_class,"
+                    "committed_at) VALUES(?,'field_value',?,?,'delete',?,1,?,?)",
+                    (
+                        event_id,
+                        value_id,
+                        str(scrubbed_revision),
+                        redacted_value_sha,
+                        field_value["privacy_class"],
+                        now,
+                    ),
+                )
+            conn.execute(
+                "UPDATE journal_import_source_redactions SET state='committed',"
+                "scrubbed_item_count=?,scrubbed_field_value_count=?,"
+                "result_sha256=?,completed_at=? "
+                "WHERE redaction_event_id=? AND state='scrubbing'",
+                (
+                    len(items),
+                    len(field_values),
+                    result_sha256,
+                    now,
+                    redaction_event_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE journal_import_files SET source_ref=COALESCE(source_ref,?),"
+                "source_usage_id=COALESCE(source_usage_id,?),"
+                "source_usage_state='redaction_committed' "
+                "WHERE cohort_id=? AND file_id=?",
+                (source_ref, source_usage_id, cohort_id, file_id),
+            )
+            return len(items)
+
+    def mark_import_source_usage_released(
+        self,
+        *,
+        cohort_id: str,
+        file_id: str,
+        source_usage_id: str,
+    ) -> None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT source_usage_id,source_usage_state FROM journal_import_files "
+                "WHERE cohort_id=? AND file_id=?",
+                (cohort_id, file_id),
+            ).fetchone()
+            if row is None or str(row["source_usage_id"]) != source_usage_id:
+                raise JournalCaptureConflict(
+                    "The released import Source usage does not match."
+                )
+            if str(row["source_usage_state"]) == "released":
+                return
+            if str(row["source_usage_state"]) != "redaction_committed":
+                raise JournalCaptureConflict(
+                    "The import Source usage cannot be released before scrubbing."
+                )
+            conn.execute(
+                "UPDATE journal_import_files SET source_usage_state='released' "
+                "WHERE cohort_id=? AND file_id=? AND source_usage_id=?",
+                (cohort_id, file_id, source_usage_id),
+            )
+
+    def get_item_revision_source_dependency(
+        self,
+        *,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+    ) -> Mapping[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_item_revision_source_dependencies "
+                "WHERE source_usage_consumer_id=?",
+                (source_usage_consumer_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["source_ref"]) != source_ref or (
+            row["source_usage_id"] is not None
+            and str(row["source_usage_id"]) != source_usage_id
+        ):
+            raise JournalCaptureConflict(
+                "The Journal item revision Source dependency does not match."
+            )
+        return {
+            "dependency_id": str(row["dependency_id"]),
+            "item_id": str(row["item_id"]),
+            "item_revision": (
+                None if row["item_revision"] is None else int(row["item_revision"])
+            ),
+            "state": str(row["state"]),
+        }
+
+    def mark_item_revision_source_redacted(
+        self,
+        *,
+        dependency_id: str,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+        redaction_event_id: str,
+        redaction_epoch: int,
+        result_sha256: str,
+    ) -> str:
+        redacted_text = "[redacted]"
+        redacted_sha = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
+        now = _utc_now()
+        with self.transaction() as conn:
+            dependency = conn.execute(
+                "SELECT * FROM journal_item_revision_source_dependencies "
+                "WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if dependency is None or (
+                str(dependency["source_usage_consumer_id"])
+                != source_usage_consumer_id
+                or str(dependency["source_ref"]) != source_ref
+                or str(dependency["source_usage_id"]) != source_usage_id
+                or dependency["item_revision"] is None
+            ):
+                raise JournalCaptureConflict(
+                    "The Journal item revision redaction dependency does not match."
+                )
+            prior = conn.execute(
+                "SELECT * FROM journal_item_revision_source_redactions "
+                "WHERE redaction_event_id=?",
+                (redaction_event_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    str(prior["dependency_id"]) != dependency_id
+                    or str(prior["result_sha256"]) != result_sha256
+                ):
+                    raise JournalCaptureConflict(
+                        "That Journal item revision redaction is already bound differently."
+                    )
+                return str(prior["item_id"])
+            item_id = str(dependency["item_id"])
+            item_revision = int(dependency["item_revision"])
+            item = conn.execute(
+                "SELECT * FROM journal_items WHERE item_id=?",
+                (item_id,),
+            ).fetchone()
+            revision = conn.execute(
+                "SELECT * FROM journal_item_revisions WHERE item_id=? AND revision=?",
+                (item_id, item_revision),
+            ).fetchone()
+            if item is None or revision is None or str(revision["source_ref"]) != source_ref:
+                raise JournalCaptureConflict(
+                    "The Journal item revision no longer matches its Source."
+                )
+            conn.execute(
+                "INSERT INTO journal_item_revision_source_redactions("
+                "redaction_event_id,dependency_id,source_usage_id,"
+                "source_usage_consumer_id,source_ref,item_id,item_revision,"
+                "redaction_epoch,state,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?, 'scrubbing',?)",
+                (
+                    redaction_event_id,
+                    dependency_id,
+                    source_usage_id,
+                    source_usage_consumer_id,
+                    source_ref,
+                    item_id,
+                    item_revision,
+                    redaction_epoch,
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE journal_item_revisions SET plain_value=?,content_sha256=?,"
+                "lifecycle='tombstoned' WHERE item_id=? AND revision=?",
+                (redacted_text, redacted_sha, item_id, item_revision),
+            )
+            scrubbed_current_revision = None
+            if int(item["current_revision"]) == item_revision:
+                scrubbed_current_revision = item_revision + 1
+                actor_json = json.dumps(
+                    {
+                        "kind": "source_redaction",
+                        "redactionEventId": redaction_event_id,
+                        "sourceDependencyId": dependency_id,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                conn.execute(
+                    "INSERT INTO journal_item_revisions("
+                    "item_id,revision,authority_kind,plain_value,content_sha256,"
+                    "lifecycle,actor_json,source_ref,authorship,review_state,"
+                    "intent_id,created_at) VALUES(?,?,?,?,?,'tombstoned',?,?,"
+                    "'unknown','unknown',?,?)",
+                    (
+                        item_id,
+                        scrubbed_current_revision,
+                        item["authority_kind"],
+                        redacted_text,
+                        redacted_sha,
+                        actor_json,
+                        source_ref,
+                        f"source-redaction:{redaction_event_id}",
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE journal_items SET current_plain_value=?,"
+                    "current_content_sha256=?,lifecycle='tombstoned',"
+                    "current_revision=?,updated_at=? WHERE item_id=?",
+                    (
+                        redacted_text,
+                        redacted_sha,
+                        scrubbed_current_revision,
+                        now,
+                        item_id,
+                    ),
+                )
+                event_id = "jso_" + hashlib.sha256(
+                    f"journal-item-revision-redaction:{redaction_event_id}".encode()
+                ).hexdigest()[:32]
+                conn.execute(
+                    "INSERT OR IGNORE INTO journal_search_outbox("
+                    "event_id,aggregate_type,aggregate_id,aggregate_revision,"
+                    "event_kind,content_sha256,search_recipe_version,privacy_class,"
+                    "committed_at) VALUES(?,'item',?,?,'delete',?,1,?,?)",
+                    (
+                        event_id,
+                        item_id,
+                        str(scrubbed_current_revision),
+                        redacted_sha,
+                        item["privacy_class"],
+                        now,
+                    ),
+                )
+            conn.execute(
+                "UPDATE journal_item_revision_source_redactions SET "
+                "state='committed',scrubbed_current_revision=?,result_sha256=?,"
+                "completed_at=? WHERE redaction_event_id=?",
+                (
+                    scrubbed_current_revision,
+                    result_sha256,
+                    now,
+                    redaction_event_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE journal_item_revision_source_dependencies SET "
+                "state='redaction_committed',updated_at=? WHERE dependency_id=?",
+                (now, dependency_id),
+            )
+        return item_id
+
+    def mark_item_revision_source_usage_released(
+        self,
+        *,
+        dependency_id: str,
+        source_usage_id: str,
+    ) -> None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT source_usage_id,state FROM "
+                "journal_item_revision_source_dependencies WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if row is None or str(row["source_usage_id"]) != source_usage_id:
+                raise JournalCaptureConflict(
+                    "The released Journal item revision Source use does not match."
+                )
+            if str(row["state"]) == "released":
+                return
+            if str(row["state"]) != "redaction_committed":
+                raise JournalCaptureConflict(
+                    "The Journal item revision cannot release Source use before scrubbing."
+                )
+            conn.execute(
+                "UPDATE journal_item_revision_source_dependencies SET "
+                "state='released',updated_at=? WHERE dependency_id=?",
+                (_utc_now(), dependency_id),
+            )
+
+    def get_native_item_source_dependency(
+        self,
+        *,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+    ) -> Mapping[str, Any] | None:
+        """Resolve a generic native-item dependency for Source maintenance."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_native_source_dependencies "
+                "WHERE source_usage_consumer_id=?",
+                (source_usage_consumer_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["source_ref"]) != source_ref:
+            raise JournalCaptureConflict(
+                "The native item Source redaction does not match its Source."
+            )
+        if row["source_usage_id"] is not None and str(
+            row["source_usage_id"]
+        ) != source_usage_id:
+            raise JournalCaptureConflict(
+                "The native item Source redaction does not match its managed copy."
+            )
+        return {
+            "dependency_id": str(row["dependency_id"]),
+            "item_id": None if row["item_id"] is None else str(row["item_id"]),
+            "state": str(row["state"]),
+        }
+
+    def mark_native_item_source_redacted(
+        self,
+        *,
+        dependency_id: str,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+        redaction_event_id: str,
+        redaction_epoch: int,
+        result_sha256: str,
+    ) -> str | None:
+        """Scrub a generic Source-backed item, including every revision."""
+
+        redacted_text = "[redacted]"
+        redacted_sha = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
+        now = _utc_now()
+        with self.transaction() as conn:
+            dependency = conn.execute(
+                "SELECT * FROM journal_native_source_dependencies "
+                "WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if dependency is None:
+                raise KeyError("journal_native_source_dependency_not_found")
+            if (
+                str(dependency["source_usage_consumer_id"])
+                != source_usage_consumer_id
+                or str(dependency["source_ref"]) != source_ref
+                or (
+                    dependency["source_usage_id"] is not None
+                    and str(dependency["source_usage_id"]) != source_usage_id
+                )
+            ):
+                raise JournalCaptureConflict(
+                    "The native item Source redaction dependency does not match."
+                )
+            prior = conn.execute(
+                "SELECT * FROM journal_native_source_redactions "
+                "WHERE redaction_event_id=?",
+                (redaction_event_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    str(prior["dependency_id"]) != dependency_id
+                    or str(prior["source_usage_id"]) != source_usage_id
+                    or str(prior["source_usage_consumer_id"])
+                    != source_usage_consumer_id
+                    or str(prior["source_ref"]) != source_ref
+                    or int(prior["redaction_epoch"]) != redaction_epoch
+                    or str(prior["result_sha256"]) != result_sha256
+                ):
+                    raise JournalCaptureConflict(
+                        "That native item Source redaction is already bound differently."
+                    )
+                return None if prior["item_id"] is None else str(prior["item_id"])
+
+            item_id = None if dependency["item_id"] is None else str(dependency["item_id"])
+            conn.execute(
+                "INSERT INTO journal_native_source_redactions("
+                "redaction_event_id,dependency_id,source_usage_id,"
+                "source_usage_consumer_id,source_ref,item_id,redaction_epoch,state,"
+                "created_at) VALUES(?,?,?,?,?,?,?,'scrubbing',?)",
+                (
+                    redaction_event_id,
+                    dependency_id,
+                    source_usage_id,
+                    source_usage_consumer_id,
+                    source_ref,
+                    item_id,
+                    redaction_epoch,
+                    now,
+                ),
+            )
+            scrubbed_revision = None
+            if item_id is not None:
+                item = conn.execute(
+                    "SELECT current_revision,privacy_class,source_ref "
+                    "FROM journal_items WHERE item_id=?",
+                    (item_id,),
+                ).fetchone()
+                if item is None or str(item["source_ref"]) != source_ref:
+                    raise JournalCaptureConflict(
+                        "The native item does not match its Source dependency."
+                    )
+                scrubbed_revision = int(item["current_revision"]) + 1
+                conn.execute(
+                    "UPDATE journal_item_revisions SET plain_value=?,"
+                    "content_sha256=?,lifecycle='tombstoned' WHERE item_id=?",
+                    (redacted_text, redacted_sha, item_id),
+                )
+                actor_json = json.dumps(
+                    {
+                        "kind": "source_redaction",
+                        "redactionEventId": redaction_event_id,
+                        "sourceDependencyId": dependency_id,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                conn.execute(
+                    "INSERT INTO journal_item_revisions("
+                    "item_id,revision,authority_kind,plain_value,content_sha256,"
+                    "lifecycle,actor_json,source_ref,authorship,review_state,"
+                    "intent_id,created_at) "
+                    "VALUES(?,?,'native_plain',?,?,'tombstoned',?,?,'unknown',"
+                    "'unknown',?,?)",
+                    (
+                        item_id,
+                        scrubbed_revision,
+                        redacted_text,
+                        redacted_sha,
+                        actor_json,
+                        source_ref,
+                        f"source-redaction:{redaction_event_id}",
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE journal_items SET current_plain_value=?,"
+                    "current_content_sha256=?,lifecycle='tombstoned',"
+                    "current_revision=?,updated_at=? WHERE item_id=?",
+                    (redacted_text, redacted_sha, scrubbed_revision, now, item_id),
+                )
+                event_id = "jso_" + hashlib.sha256(
+                    (
+                        "journal-native-source-search-delete:"
+                        f"{redaction_event_id}:{item_id}:{scrubbed_revision}"
+                    ).encode("utf-8")
+                ).hexdigest()[:32]
+                conn.execute(
+                    "INSERT OR IGNORE INTO journal_search_outbox("
+                    "event_id,aggregate_type,aggregate_id,aggregate_revision,"
+                    "event_kind,content_sha256,search_recipe_version,privacy_class,"
+                    "committed_at) VALUES(?,'item',?,?,'delete',?,1,?,?)",
+                    (
+                        event_id,
+                        item_id,
+                        str(scrubbed_revision),
+                        redacted_sha,
+                        item["privacy_class"],
+                        now,
+                    ),
+                )
+            conn.execute(
+                "UPDATE journal_native_source_redactions SET state='committed',"
+                "scrubbed_revision=?,result_sha256=?,completed_at=? "
+                "WHERE redaction_event_id=? AND state='scrubbing'",
+                (scrubbed_revision, result_sha256, now, redaction_event_id),
+            )
+            conn.execute(
+                "UPDATE journal_native_source_dependencies SET "
+                "source_usage_id=COALESCE(source_usage_id,?),"
+                "state='redaction_committed',updated_at=? WHERE dependency_id=?",
+                (source_usage_id, now, dependency_id),
+            )
+            return item_id
+
+    def mark_native_item_source_usage_released(
+        self,
+        *,
+        dependency_id: str,
+        source_usage_id: str,
+    ) -> None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT source_usage_id,state FROM journal_native_source_dependencies "
+                "WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if row is None or str(row["source_usage_id"]) != source_usage_id:
+                raise JournalCaptureConflict(
+                    "The released native item Source usage does not match."
+                )
+            if str(row["state"]) == "released":
+                return
+            if str(row["state"]) != "redaction_committed":
+                raise JournalCaptureConflict(
+                    "The native item Source use cannot be released before scrubbing."
+                )
+            conn.execute(
+                "UPDATE journal_native_source_dependencies SET state='released',"
+                "updated_at=? WHERE dependency_id=? AND source_usage_id=?",
+                (_utc_now(), dependency_id, source_usage_id),
+            )
+
+    def get_prompt_source_dependency(
+        self,
+        *,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+    ) -> Mapping[str, Any] | None:
+        with self._connect() as conn:
+            input_row = conn.execute(
+                "SELECT * FROM journal_prompt_input_source_dependencies "
+                "WHERE source_usage_consumer_id=?",
+                (source_usage_consumer_id,),
+            ).fetchone()
+            result_row = conn.execute(
+                "SELECT * FROM journal_prompt_result_source_dependencies "
+                "WHERE source_usage_consumer_id=?",
+                (source_usage_consumer_id,),
+            ).fetchone()
+        row = input_row or result_row
+        if row is None:
+            return None
+        if str(row["source_ref"]) != source_ref or (
+            row["source_usage_id"] is not None
+            and str(row["source_usage_id"]) != source_usage_id
+        ):
+            raise JournalCaptureConflict(
+                "The Journal prompt Source dependency does not match."
+            )
+        return {
+            "dependency_kind": "input" if input_row is not None else "result",
+            "dependency_id": str(row["dependency_id"]),
+            "interaction_id": str(row["interaction_id"]),
+            "variant_id": (
+                None
+                if input_row is not None or row["variant_id"] is None
+                else str(row["variant_id"])
+            ),
+            "state": str(row["state"]),
+        }
+
+    def mark_prompt_source_redacted(
+        self,
+        *,
+        dependency_kind: str,
+        dependency_id: str,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+        redaction_event_id: str,
+        redaction_epoch: int,
+        result_sha256: str,
+    ) -> str:
+        if dependency_kind not in {"input", "result"}:
+            raise JournalCaptureConflict("The Journal prompt Source kind is invalid.")
+        table = (
+            "journal_prompt_input_source_dependencies"
+            if dependency_kind == "input"
+            else "journal_prompt_result_source_dependencies"
+        )
+        now = _utc_now()
+        redacted = "[redacted]"
+        redacted_sha = hashlib.sha256(redacted.encode()).hexdigest()
+        with self.transaction() as conn:
+            dependency = conn.execute(
+                f"SELECT * FROM {table} WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if dependency is None or (
+                str(dependency["source_usage_id"]) != source_usage_id
+                or str(dependency["source_usage_consumer_id"])
+                != source_usage_consumer_id
+                or str(dependency["source_ref"]) != source_ref
+            ):
+                raise JournalCaptureConflict(
+                    "The Journal prompt redaction dependency does not match."
+                )
+            prior = conn.execute(
+                "SELECT * FROM journal_prompt_source_redactions "
+                "WHERE redaction_event_id=?",
+                (redaction_event_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    str(prior["dependency_id"]) != dependency_id
+                    or str(prior["result_sha256"]) != result_sha256
+                ):
+                    raise JournalCaptureConflict(
+                        "That Journal prompt redaction is already bound differently."
+                    )
+                return str(prior["interaction_id"])
+            interaction_id = str(dependency["interaction_id"])
+            variant_id = (
+                None
+                if dependency_kind == "input"
+                else str(dependency["variant_id"])
+            )
+            conn.execute(
+                "INSERT INTO journal_prompt_source_redactions("
+                "redaction_event_id,dependency_kind,dependency_id,source_usage_id,"
+                "source_usage_consumer_id,source_ref,interaction_id,variant_id,"
+                "redaction_epoch,state,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,'scrubbing',?)",
+                (
+                    redaction_event_id,
+                    dependency_kind,
+                    dependency_id,
+                    source_usage_id,
+                    source_usage_consumer_id,
+                    source_ref,
+                    interaction_id,
+                    variant_id,
+                    redaction_epoch,
+                    now,
+                ),
+            )
+            if dependency_kind == "input":
+                interaction = conn.execute(
+                    "SELECT current_revision FROM journal_prompt_interactions "
+                    "WHERE interaction_id=?",
+                    (interaction_id,),
+                ).fetchone()
+                if interaction is None:
+                    raise JournalCaptureConflict(
+                        "The Journal prompt interaction is unavailable."
+                    )
+                conn.execute(
+                    "UPDATE journal_prompt_interactions SET input_text=?,"
+                    "input_sha256=?,lifecycle='tombstoned',current_revision=?,"
+                    "updated_at=? WHERE interaction_id=?",
+                    (
+                        redacted,
+                        redacted_sha,
+                        int(interaction["current_revision"]) + 1,
+                        now,
+                        interaction_id,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE journal_prompt_generation_requests SET "
+                    "status='canceled',error_code='prompt_input_redacted',"
+                    "completed_at=?,updated_at=? WHERE interaction_id=? "
+                    "AND status IN ('pending','leased')",
+                    (now, now, interaction_id),
+                )
+            else:
+                assert variant_id is not None
+                conn.execute(
+                    "UPDATE journal_prompt_result_variants SET result_text=?,"
+                    "result_content_sha256=?,lifecycle='archived',updated_at=? "
+                    "WHERE variant_id=?",
+                    (redacted, redacted_sha, now, variant_id),
+                )
+                event_id = "jso_" + hashlib.sha256(
+                    f"journal-prompt-result-redaction:{redaction_event_id}".encode()
+                ).hexdigest()[:32]
+                conn.execute(
+                    "INSERT OR IGNORE INTO journal_search_outbox("
+                    "event_id,aggregate_type,aggregate_id,aggregate_revision,"
+                    "event_kind,content_sha256,search_recipe_version,privacy_class,"
+                    "committed_at) VALUES(?,'prompt_result',?,'redacted','delete',"
+                    "?,1,'private',?)",
+                    (event_id, variant_id, redacted_sha, now),
+                )
+            conn.execute(
+                f"UPDATE {table} SET state='redaction_committed',updated_at=? "
+                "WHERE dependency_id=?",
+                (now, dependency_id),
+            )
+            conn.execute(
+                "UPDATE journal_prompt_source_redactions SET state='committed',"
+                "result_sha256=?,completed_at=? WHERE redaction_event_id=?",
+                (result_sha256, now, redaction_event_id),
+            )
+        return interaction_id
+
+    def mark_prompt_source_usage_released(
+        self,
+        *,
+        dependency_kind: str,
+        dependency_id: str,
+        source_usage_id: str,
+    ) -> None:
+        table = (
+            "journal_prompt_input_source_dependencies"
+            if dependency_kind == "input"
+            else "journal_prompt_result_source_dependencies"
+        )
+        with self.transaction() as conn:
+            row = conn.execute(
+                f"SELECT source_usage_id,state FROM {table} WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if row is None or str(row["source_usage_id"]) != source_usage_id:
+                raise JournalCaptureConflict(
+                    "The released Journal prompt Source use does not match."
+                )
+            if str(row["state"]) == "released":
+                return
+            if str(row["state"]) != "redaction_committed":
+                raise JournalCaptureConflict(
+                    "The Journal prompt Source use cannot release before scrubbing."
+                )
+            conn.execute(
+                f"UPDATE {table} SET state='released',updated_at=? "
+                "WHERE dependency_id=?",
+                (_utc_now(), dependency_id),
+            )
+
+    def get_field_value_source_dependency(
+        self,
+        *,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+    ) -> Mapping[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_field_source_dependencies "
+                "WHERE source_usage_consumer_id=?",
+                (source_usage_consumer_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["source_ref"]) != source_ref or (
+            row["source_usage_id"] is not None
+            and str(row["source_usage_id"]) != source_usage_id
+        ):
+            raise JournalCaptureConflict(
+                "The Journal field Source redaction dependency does not match."
+            )
+        return {
+            "dependency_id": str(row["dependency_id"]),
+            "value_id": str(row["value_id"]),
+            "value_revision": (
+                None if row["value_revision"] is None else int(row["value_revision"])
+            ),
+            "state": str(row["state"]),
+        }
+
+    def mark_field_value_source_redacted(
+        self,
+        *,
+        dependency_id: str,
+        source_usage_id: str,
+        source_usage_consumer_id: str,
+        source_ref: str,
+        redaction_event_id: str,
+        redaction_epoch: int,
+        result_sha256: str,
+    ) -> tuple[str, int | None]:
+        """Scrub the exact typed revision and tombstone it when current."""
+
+        redacted = {"redacted": True}
+        redacted_json = json.dumps(
+            redacted, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        redacted_sha = hashlib.sha256(redacted_json.encode("utf-8")).hexdigest()
+        now = _utc_now()
+        with self.transaction() as conn:
+            dependency = conn.execute(
+                "SELECT * FROM journal_field_source_dependencies "
+                "WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if dependency is None:
+                raise KeyError("journal_field_source_dependency_not_found")
+            if (
+                str(dependency["source_usage_consumer_id"])
+                != source_usage_consumer_id
+                or str(dependency["source_ref"]) != source_ref
+                or (
+                    dependency["source_usage_id"] is not None
+                    and str(dependency["source_usage_id"]) != source_usage_id
+                )
+            ):
+                raise JournalCaptureConflict(
+                    "The Journal field Source redaction dependency does not match."
+                )
+            prior = conn.execute(
+                "SELECT * FROM journal_field_source_redactions "
+                "WHERE redaction_event_id=?",
+                (redaction_event_id,),
+            ).fetchone()
+            if prior is not None:
+                if (
+                    str(prior["dependency_id"]) != dependency_id
+                    or str(prior["source_usage_id"]) != source_usage_id
+                    or str(prior["source_usage_consumer_id"])
+                    != source_usage_consumer_id
+                    or str(prior["source_ref"]) != source_ref
+                    or int(prior["redaction_epoch"]) != redaction_epoch
+                    or str(prior["result_sha256"]) != result_sha256
+                ):
+                    raise JournalCaptureConflict(
+                        "That Journal field Source redaction is bound differently."
+                    )
+                return (
+                    str(prior["value_id"]),
+                    None
+                    if prior["scrubbed_revision"] is None
+                    else int(prior["scrubbed_revision"]),
+                )
+
+            value_id = str(dependency["value_id"])
+            value_revision = (
+                None
+                if dependency["value_revision"] is None
+                else int(dependency["value_revision"])
+            )
+            conn.execute(
+                "INSERT INTO journal_field_source_redactions("
+                "redaction_event_id,dependency_id,source_usage_id,"
+                "source_usage_consumer_id,source_ref,value_id,value_revision,"
+                "redaction_epoch,state,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?, 'scrubbing',?)",
+                (
+                    redaction_event_id,
+                    dependency_id,
+                    source_usage_id,
+                    source_usage_consumer_id,
+                    source_ref,
+                    value_id,
+                    value_revision,
+                    redaction_epoch,
+                    now,
+                ),
+            )
+            scrubbed_revision = value_revision
+            if value_revision is not None:
+                revision = conn.execute(
+                    "SELECT 1 FROM journal_field_value_revisions "
+                    "WHERE value_id=? AND revision=?",
+                    (value_id, value_revision),
+                ).fetchone()
+                if revision is None:
+                    raise JournalCaptureConflict(
+                        "The Journal field revision dependency is unavailable."
+                    )
+                conn.execute(
+                    "UPDATE journal_field_value_revisions SET value_json=?,"
+                    "value_sha256=? WHERE value_id=? AND revision=?",
+                    (redacted_json, redacted_sha, value_id, value_revision),
+                )
+                current = conn.execute(
+                    "SELECT value.*,definition.privacy_class AS field_privacy_class "
+                    "FROM journal_field_values AS value "
+                    "JOIN journal_field_definition_versions AS definition "
+                    "ON definition.field_id=value.field_id "
+                    "AND definition.definition_version=value.field_definition_version "
+                    "WHERE value.value_id=?",
+                    (value_id,),
+                ).fetchone()
+                if current is not None and int(current["current_revision"]) == value_revision:
+                    scrubbed_revision = value_revision + 1
+                    conn.execute(
+                        "UPDATE journal_field_values SET disposition='missing',"
+                        "text_value=NULL,number_value=NULL,boolean_value=NULL,"
+                        "temporal_value=NULL,duration_seconds=NULL,option_value=NULL,"
+                        "collection_present=0,lifecycle='tombstoned',"
+                        "current_revision=?,updated_at=? WHERE value_id=?",
+                        (scrubbed_revision, now, value_id),
+                    )
+                    conn.execute(
+                        "DELETE FROM journal_field_value_options WHERE value_id=?",
+                        (value_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM journal_field_value_references WHERE value_id=?",
+                        (value_id,),
+                    )
+                    actor_json = json.dumps(
+                        {
+                            "kind": "source_redaction",
+                            "redactionEventId": redaction_event_id,
+                            "sourceDependencyId": dependency_id,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    conn.execute(
+                        "INSERT INTO journal_field_value_revisions("
+                        "value_id,revision,value_json,value_sha256,actor_json,"
+                        "source_ref,intent_id,created_at,authorship,review_state) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            value_id,
+                            scrubbed_revision,
+                            redacted_json,
+                            redacted_sha,
+                            actor_json,
+                            source_ref,
+                            f"source-redaction:{redaction_event_id}",
+                            now,
+                            "unknown",
+                            "unknown",
+                        ),
+                    )
+                    event_id = "jso_" + hashlib.sha256(
+                        (
+                            "journal-field-source-search-delete:"
+                            f"{redaction_event_id}:{value_id}:{scrubbed_revision}"
+                        ).encode("utf-8")
+                    ).hexdigest()[:32]
+                    conn.execute(
+                        "INSERT OR IGNORE INTO journal_search_outbox("
+                        "event_id,aggregate_type,aggregate_id,aggregate_revision,"
+                        "event_kind,content_sha256,search_recipe_version,privacy_class,"
+                        "committed_at) VALUES(?,'field_value',?,?,'delete',?,1,?,?)",
+                        (
+                            event_id,
+                            value_id,
+                            str(scrubbed_revision),
+                            redacted_sha,
+                            current["field_privacy_class"],
+                            now,
+                        ),
+                    )
+            conn.execute(
+                "UPDATE journal_field_source_redactions SET state='committed',"
+                "scrubbed_revision=?,result_sha256=?,completed_at=? "
+                "WHERE redaction_event_id=? AND state='scrubbing'",
+                (scrubbed_revision, result_sha256, now, redaction_event_id),
+            )
+            conn.execute(
+                "UPDATE journal_field_source_dependencies SET "
+                "source_usage_id=COALESCE(source_usage_id,?),"
+                "state='redaction_committed',updated_at=? WHERE dependency_id=?",
+                (source_usage_id, now, dependency_id),
+            )
+            return value_id, scrubbed_revision
+
+    def mark_field_value_source_usage_released(
+        self,
+        *,
+        dependency_id: str,
+        source_usage_id: str,
+    ) -> None:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT source_usage_id,state FROM journal_field_source_dependencies "
+                "WHERE dependency_id=?",
+                (dependency_id,),
+            ).fetchone()
+            if row is None or str(row["source_usage_id"]) != source_usage_id:
+                raise JournalCaptureConflict(
+                    "The released Journal field Source usage does not match."
+                )
+            if str(row["state"]) == "released":
+                return
+            if str(row["state"]) != "redaction_committed":
+                raise JournalCaptureConflict(
+                    "The Journal field Source use cannot release before scrubbing."
+                )
+            conn.execute(
+                "UPDATE journal_field_source_dependencies SET state='released',"
+                "updated_at=? WHERE dependency_id=? AND source_usage_id=?",
+                (_utc_now(), dependency_id, source_usage_id),
+            )
 
     def record_mutation(
         self,
@@ -2112,6 +3511,10 @@ class JournalCaptureStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    @staticmethod
+    def _module_document_binding(row: sqlite3.Row) -> JournalModuleDocumentBinding:
+        return JournalModuleDocumentBinding(**dict(row))
 
     @staticmethod
     def _usage_transition(row: sqlite3.Row) -> JournalDocumentUsageTransition:

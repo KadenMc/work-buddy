@@ -13,6 +13,7 @@ import { ControlStatusPage } from "../system-status";
 import { Button, IconButton, InlineAlert } from "../ui";
 import { HelpTarget } from "../dashboard/help";
 import { ChatExecutionPicker, useChatExecutionProfile } from "../widget-library/chat";
+import { JournalProfileConfigurator } from "../apps/journal/JournalProfileConfigurator";
 import { SettingsExecutionProfileProvider } from "./SettingsExecutionProfileProvider";
 import { DASHBOARD_ASSISTANCE_HELP, DASHBOARD_ASSISTANCE_SETTING_ID } from "./dashboardAiContributions";
 import type {
@@ -30,7 +31,10 @@ import {
   validateKeybindingMap,
   type KeybindingMap,
 } from "./keybindings";
-import { JOURNAL_DAY_BOUNDARY_SETTING_ID } from "./nativeContributions";
+import {
+  JOURNAL_APP_SETTINGS_PAGE_ID,
+  JOURNAL_DAY_BOUNDARY_SETTING_ID,
+} from "./nativeContributions";
 import type { SettingsRegistry } from "./registry";
 import {
   resolveSettingsReturnLabel,
@@ -994,6 +998,9 @@ function PageProjection({
           </div>
         </section>
       ))}
+      {page.pageId === JOURNAL_APP_SETTINGS_PAGE_ID && !pageSearchQuery.trim() ? (
+        <JournalProfileConfigurator />
+      ) : null}
       {pageSearchQuery.trim() && visibleSettingCount === 0 ? (
         <p className="wb-settings-page-search-empty">
           No settings on this page match “{pageSearchQuery.trim()}”.

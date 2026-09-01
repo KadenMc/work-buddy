@@ -253,6 +253,9 @@ describe("TaskComposer", () => {
       { ...EMPTY_TASK_CREATE_DRAFT, next_action: "Start" },
       { ...EMPTY_TASK_CREATE_DRAFT, definition_of_done: "Shipped" },
       { ...EMPTY_TASK_CREATE_DRAFT, dependencies: "Review" },
+      { ...EMPTY_TASK_CREATE_DRAFT, create_note: true },
+      { ...EMPTY_TASK_CREATE_DRAFT, initial_note: "Seed" },
+      { ...EMPTY_TASK_CREATE_DRAFT, enable_truth_tools: true },
       { ...EMPTY_TASK_CREATE_DRAFT, batch_lines: ["Task"] },
     ];
 
@@ -380,6 +383,38 @@ describe("TaskComposer", () => {
     expect(emit.mock.calls[0]?.[0]).toMatchObject({
       intent_type: TASK_INTENTS.create,
       payload: { project: "new-project" },
+    });
+  });
+
+  it("offers provenance by default and requires an unchecked Truth opt-in for a task note", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent) => ({
+      intent_id: intent.intent_id,
+      status: "accepted" as const,
+      revision: 8,
+    }));
+    renderComposer(emit);
+
+    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Investigate retention");
+    await user.click(screen.getByRole("button", { name: "Add details" }));
+    expect(screen.queryByRole("checkbox", { name: "Enable Truth tools for this note" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Create an editable Co-work note" }));
+    await user.type(screen.getByRole("textbox", { name: "Initial note" }), "  Keep this exact");
+
+    const truth = screen.getByRole("checkbox", { name: "Enable Truth tools for this note" });
+    expect(truth).not.toBeChecked();
+    expect(screen.getByText(/authorship and human-review provenance/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not analyze the note automatically/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add task" }));
+    await waitFor(() => expect(emit).toHaveBeenCalledOnce());
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      intent_type: TASK_INTENTS.create,
+      payload: {
+        requested_note_role: "working_document/v1",
+        initial_note: "  Keep this exact",
+        requested_truth_policy_resolution: "disabled",
+      },
     });
   });
 

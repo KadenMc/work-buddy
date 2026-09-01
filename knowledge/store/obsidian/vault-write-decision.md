@@ -24,11 +24,16 @@ parents:
 
 ## Two paths, on purpose
 
+This is a legacy compatibility decision. Native Journal, Tasks, Contracts,
+Projects, and Personal Knowledge do not use either path after their authority
+seals. Keep these helpers for explicit file integrations, import/export, and
+the archive grace period; do not route new domain mutations through them.
+
 Work-buddy has two ways to write a vault file from Python. They look similar; pick the wrong one and you either lose data on bridge outages or corrupt plugin-owned state.
 
 | Helper | Behavior on bridge down | Use for |
 |---|---|---|
-| `work_buddy.obsidian.vault_writer.vault_write(path, abs_path, content, *, write_mode='replace', content_hint=None)` | Direct filesystem fallback **only when the Obsidian process is down** (`ObsidianNotRunning` / `is_obsidian_running()` is False). Re-raises every other failure — other `ObsidianUnreachable` subclasses (`ObsidianStartupRace`, plugin missing / disabled), `ObsidianEditorConflict`, `ObsidianPostWriteUncertain`, `ObsidianRefused`, `ObsidianServerError`. | Journals, knowledge units, capture, generic content the user typed (no plugin owns state for these files) |
+| `work_buddy.obsidian.vault_writer.vault_write(path, abs_path, content, *, write_mode='replace', content_hint=None)` | Direct filesystem fallback **only when the Obsidian process is down** (`ObsidianNotRunning` / `is_obsidian_running()` is False). Re-raises every other failure — other `ObsidianUnreachable` subclasses (`ObsidianStartupRace`, plugin missing / disabled), `ObsidianEditorConflict`, `ObsidianPostWriteUncertain`, `ObsidianRefused`, `ObsidianServerError`. | Explicit legacy/archive or neutral file operations whose state is still file-owned |
 | `work_buddy.obsidian.bridge.write_file_raw(path, content, *, write_mode='replace', content_hint=None)` | Raises typed `ObsidianError` subclasses; no fallback | Master task list (`tasks/master-task-list.md`), task notes, archives, contract files — anything the Obsidian Tasks plugin has live cache state for |
 
 ## Why the split is principled
@@ -67,7 +72,7 @@ Callers that do section-aware inserts (e.g. `vault_write_at_location`) should pa
 
 Both helpers route through `bridge.write_file_raw` when the bridge is up. That function raises `ObsidianEditorConflict` **immediately** on the first `409` from the plugin's pre-flight dirty-editor check. There is no in-bridge retry: retrying the same payload bytes after the user's typing auto-saves to disk would silently clobber those saved keystrokes. Re-reading + re-computing the payload is the *caller's* job — in practice, the gateway's retry queue (`architecture/retry-queue`).
 
-Capabilities with `retry_policy="verify_first"` or `"replay"` auto-enqueue on transient errors; the sidecar sweep re-invokes the whole capability from scratch on adaptive backoff (10 / 20 / 45 / 90 / 120s), so each attempt reads the file fresh. `vault_write_at_location`, `journal_write`, and the task mutation family all carry `verify_first` for this reason. Out-of-band callers that don't dispatch through `wb_run` (e.g. the Telegram capture handler in the sidecar) enqueue the same way via `enqueue_capability_for_retry` (see `architecture/retry-queue`).
+Legacy file capabilities with `retry_policy="verify_first"` or `"replay"` auto-enqueue on transient errors; the sidecar sweep re-invokes the whole capability from scratch so each attempt reads the file fresh. Native `journal_write`, Telegram capture, and Task mutations use their domain stores and do not enter this bridge retry path.
 
 `vault_write` deliberately does NOT fall back to a direct disk write on `ObsidianEditorConflict` — such a write would still be clobbered the moment the user saves. The conflict signal exists precisely to prevent that.
 

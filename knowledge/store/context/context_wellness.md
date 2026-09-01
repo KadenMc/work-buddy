@@ -1,7 +1,7 @@
 ---
 name: Context Wellness
 kind: capability
-description: Wellness tracker summary from recent journal entries
+description: Explicit legacy-only wellness summary from Obsidian journal files. Unavailable without an explicit Obsidian opt-in; native Journal profiles own current markers.
 capability_name: context_wellness
 category: context
 op: op.wb.context_wellness
@@ -17,8 +17,9 @@ tags:
 aliases:
 - wellness
 - health tracking
-- sleep exercise mood
 - self-care data
 parents:
 - context
+requires:
+- obsidian
 ---

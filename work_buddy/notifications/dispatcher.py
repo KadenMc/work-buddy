@@ -40,10 +40,17 @@ class SurfaceDispatcher:
         """
         dispatcher = cls()
 
-        # Always register Obsidian (core surface)
+        # Obsidian is a legacy optional surface.  Do not even instantiate it
+        # after an opt-out: delivery selection calls ``is_available()``, which
+        # is itself a bridge probe.
         try:
-            from work_buddy.notifications.surfaces.obsidian import ObsidianSurface
-            dispatcher.register(ObsidianSurface())
+            from work_buddy.health.preferences import is_wanted
+
+            if is_wanted("obsidian") is not False:
+                from work_buddy.notifications.surfaces.obsidian import ObsidianSurface
+                dispatcher.register(ObsidianSurface())
+            else:
+                logger.debug("Obsidian surface skipped: feature is opted out")
         except Exception as exc:
             logger.warning("Failed to initialize ObsidianSurface: %s", exc)
 

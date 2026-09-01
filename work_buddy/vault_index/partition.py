@@ -39,10 +39,11 @@ class VaultChunkPartition:
         self._files: dict[str, Any] = {}  # item_id -> DiscoveredFile (populated by discover)
 
     def _get_source(self):
-        if self._source is not None:
-            return self._source
-        from work_buddy.vault_index.source import FilesystemSource
-        return FilesystemSource()
+        if self._source is None:
+            from work_buddy.vault_index.source import FilesystemSource
+
+            self._source = FilesystemSource()
+        return self._source
 
     def field_weights(self) -> dict[str, float]:
         return {"name": 2.0, "body": 1.0}
@@ -61,16 +62,13 @@ class VaultChunkPartition:
         if df is None:
             return []
         try:
-            with open(df.abs_path, "r", encoding="utf-8") as fh:
-                text = fh.read()
+            chunks = self._get_source().parse(item_id)
         except (OSError, UnicodeDecodeError) as exc:
-            logger.debug("vault parse: cannot read %s: %s", df.abs_path, exc)
+            logger.debug("vault parse: cannot parse %s: %s", df.abs_path, exc)
             return []
 
-        from work_buddy.vault_index.chunker import chunk_markdown
-
         docs: list[Document] = []
-        for chunk in chunk_markdown(text, source_path=df.source_path):
+        for chunk in chunks:
             crumb = " > ".join(chunk.heading_path) if chunk.heading_path else df.item_id
             docs.append(Document(
                 doc_id=make_doc_id(_PARTITION, chunk.key),
@@ -86,6 +84,27 @@ class VaultChunkPartition:
                 projections={"content": Projection(text=chunk.embed_input)},
             ))
         return docs
+
+    def search_build_evidence(self, index_store: Any) -> dict[str, object]:
+        """Return the post-reconciliation authority-detachment receipt.
+
+        ``IndexPartition`` invokes this only after the build commit.  Consequently
+        ``indexed_excluded_items == 0`` proves that the first refresh after a seal
+        removed old archive documents as well as fencing future discovery.
+        """
+
+        source = self._get_source()
+        reporter = getattr(source, "authority_detachment_evidence", None)
+        if reporter is None:
+            return {
+                "schema": "wb.legacy-root-detachment-evidence/v1",
+                "detached_roots": 0,
+                "detachment_active": False,
+                "indexed_excluded_items": 0,
+                "archive_discovery_fenced": False,
+            }
+        item_ids = index_store.partition_item_ids(self.name)
+        return reporter(item_ids)
 
 
 register_partition(_PARTITION, lambda: VaultChunkPartition())

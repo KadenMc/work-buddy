@@ -65,6 +65,10 @@ class Manifest:
     # ^ {"task_metadata": {"task_metadata": 144, "task_action_items": 7, ...}, ...}
     #   Outer key is DB name; inner dict is per-table row counts within that DB.
 
+    database_sha256: dict[str, str] = field(default_factory=dict)
+    # ^ SHA-256 of each hot-backup member, keyed by the same logical DB name.
+    #   This binds the manifest's schema and row-count claims to exact bytes.
+
     truth_stores: list[dict[str, Any]] = field(default_factory=list)
     # Each row reports one registered store and whether its portable recovery
     # payload was included under ``truth_stores/<store_id>/``.
@@ -91,6 +95,7 @@ class Manifest:
                 db: dict(tables)
                 for db, tables in data.get("row_counts", {}).items()
             },
+            database_sha256    = dict(data.get("database_sha256", {})),
             truth_stores       = [
                 dict(item) for item in data.get("truth_stores", [])
             ],
@@ -106,6 +111,7 @@ def build_manifest(
     db_paths: dict[str, Path],
     repo_root: Path | None = None,
     truth_stores: list[dict[str, Any]] | None = None,
+    database_sha256: dict[str, str] | None = None,
 ) -> Manifest:
     """Probe the given DBs + the git repo state to assemble a Manifest.
 
@@ -136,6 +142,7 @@ def build_manifest(
         host               = socket.gethostname(),
         schema_versions    = schema_versions,
         row_counts         = row_counts,
+        database_sha256    = dict(database_sha256 or {}),
         truth_stores       = [dict(item) for item in (truth_stores or [])],
     )
 

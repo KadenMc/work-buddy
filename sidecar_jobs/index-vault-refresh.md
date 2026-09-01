@@ -20,5 +20,12 @@ refresh never piles onto another partition's build. A job that always woke into 
 pileup would therefore be *starved* (skipped every time) rather than queued; firing at :23 lets it
 take the gate.
 
+Journal, Projects, Contracts, and Personal Knowledge roots whose SQLite authority is sealed are
+resolved read-only on every run. They are pruned before filesystem traversal and direct parsing is
+fenced. The first refresh after a seal also reconciles the old ledger, deleting archive documents
+that were indexed earlier; its `wb.legacy-root-detachment-evidence/v1` receipt reports whether any
+excluded item remains. A cutover operator may perform the same purge before exposure only through
+the bounded configured-domain API in `work_buddy.vault_index.cutover`; no live config edit is used.
+
 **One job per partition — by design.** Sibling to the other `index-<partition>-refresh` jobs; never
 folded into a single `build_all` cron.

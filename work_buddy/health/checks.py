@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -141,6 +142,101 @@ def check_obsidian_bridge() -> dict[str, Any]:
     if not tcp["ok"]:
         return {"ok": False, "detail": f"Bridge port {port} not open — Obsidian likely not running"}
     return _http_check(port, "/health", timeout=10.0)
+
+
+def _check_sqlite_authority(
+    path: Path,
+    *,
+    table: str,
+    query: str,
+    expected: tuple[str, ...],
+    label: str,
+) -> dict[str, Any]:
+    """Inspect one native authority without creating or migrating it."""
+
+    target = path.expanduser().resolve()
+    if not target.is_file():
+        return {"ok": False, "detail": f"{label} database is not initialized"}
+    try:
+        with sqlite3.connect(
+            f"file:{target.as_posix()}?mode=ro", uri=True, timeout=2
+        ) as connection:
+            integrity = connection.execute("PRAGMA quick_check").fetchone()
+            if integrity is None or str(integrity[0]) != "ok":
+                return {"ok": False, "detail": f"{label} database failed quick_check"}
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if exists is None:
+                return {"ok": False, "detail": f"{label} authority is not initialized"}
+            row = connection.execute(query).fetchone()
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.Error as exc:
+        return {"ok": False, "detail": f"{label} authority is unreadable: {exc}"}
+    values = () if row is None else tuple(str(value) for value in row)
+    if values != expected:
+        return {
+            "ok": False,
+            "detail": f"{label} authority is not active (schema v{version})",
+        }
+    return {"ok": True, "detail": f"{label} authority active (schema v{version})"}
+
+
+def check_journal_native_authority() -> dict[str, Any]:
+    return _check_sqlite_authority(
+        resolve("db/journal-capture"),
+        table="journal_authority_control",
+        query="SELECT mode FROM journal_authority_control WHERE singleton=1",
+        expected=("database_only",),
+        label="Journal SQLite",
+    )
+
+
+def _projects_db_path() -> Path:
+    from work_buddy.config import load_config
+    from work_buddy.paths import repo_root
+
+    cfg = load_config() or {}
+    custom = cfg.get("projects", {}).get("db_path")
+    if custom:
+        value = Path(custom)
+        return value if value.is_absolute() else repo_root() / value
+    return resolve("db/projects")
+
+
+def check_projects_native_authority() -> dict[str, Any]:
+    return _check_sqlite_authority(
+        _projects_db_path(),
+        table="project_authority_state",
+        query=(
+            "SELECT authority,state FROM project_authority_state WHERE singleton=1"
+        ),
+        expected=("sqlite", "active"),
+        label="Projects SQLite",
+    )
+
+
+def check_contracts_native_authority() -> dict[str, Any]:
+    return _check_sqlite_authority(
+        resolve("db/contracts"),
+        table="contract_authority",
+        query="SELECT state FROM contract_authority WHERE singleton=1",
+        expected=("native",),
+        label="Contracts SQLite",
+    )
+
+
+def check_personal_knowledge_native_authority() -> dict[str, Any]:
+    return _check_sqlite_authority(
+        resolve("db/personal-knowledge"),
+        table="personal_knowledge_authority",
+        query=(
+            "SELECT authority FROM personal_knowledge_authority WHERE singleton=1"
+        ),
+        expected=("sqlite",),
+        label="Personal Knowledge SQLite",
+    )
 
 
 def check_hindsight_api() -> dict[str, Any]:

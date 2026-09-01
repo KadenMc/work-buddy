@@ -37,6 +37,33 @@ def test_native_no_token_is_unavailable(monkeypatch):
     assert ok is False and "OAuth token" in reason
 
 
+def test_missing_provider_defaults_native_without_obsidian_probe(monkeypatch):
+    from work_buddy import tools
+    from work_buddy.calendar import google_auth
+    import work_buddy.config as cfgmod
+
+    monkeypatch.setattr(cfgmod, "load_config", lambda: {})
+    monkeypatch.setattr(
+        tools,
+        "_probe_obsidian",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("missing calendar config probed Obsidian")
+        ),
+    )
+    monkeypatch.setattr(
+        tools,
+        "_bridge_plugin_available",
+        lambda _plugin: (_ for _ in ()).throw(
+            AssertionError("missing calendar config inspected bridge plugins")
+        ),
+    )
+    monkeypatch.setattr(
+        google_auth, "token_status", lambda cfg=None: {"token_present": True}
+    )
+
+    assert tools._probe_calendar() == (True, "")
+
+
 def test_fake_provider_always_available(monkeypatch):
     from work_buddy import tools
 

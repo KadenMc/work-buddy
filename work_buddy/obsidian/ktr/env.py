@@ -93,6 +93,7 @@ def get_hot_files(
     since_date: str,
     until_date: str | None = None,
     limit: int = 20,
+    exclude_folders: list[str] | None = None,
 ) -> dict[str, Any]:
     """Get files ranked by writing activity "hotness" in a time window.
 
@@ -103,6 +104,7 @@ def get_hot_files(
         since_date: Start date YYYY-MM-DD (inclusive).
         until_date: End date YYYY-MM-DD (inclusive). Default: today.
         limit: Maximum files to return (default 20).
+        exclude_folders: Vault-relative roots excluded before aggregation.
 
     Returns a dict with:
     - window: {since, until}
@@ -121,10 +123,13 @@ def get_hot_files(
         from work_buddy.journal import user_now
         until_date = user_now().strftime("%Y-%m-%d")
 
+    import json
+
     return _run_js("hot_files.js", {
         "__SINCE_DATE__": _escape_js(since_date),
         "__UNTIL_DATE__": _escape_js(until_date),
         "__LIMIT__": str(limit),
+        "__EXCLUDE_FOLDERS__": json.dumps(exclude_folders or []),
     }, timeout=20)
 
 

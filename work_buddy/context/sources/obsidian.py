@@ -20,6 +20,7 @@ format.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
 
 from work_buddy.context.sources._markdown_wrapper import MarkdownCollectorSource
@@ -28,6 +29,28 @@ from work_buddy.context.types import ContextRequest, ContextSection
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class _JournalAuthoritySource:
+    """Native admission and legacy read serialization shared by Journal views."""
+
+    def serves_native_without_obsidian(self, request: ContextRequest) -> bool:
+        from work_buddy.collectors.obsidian_collector import (
+            _native_journal_authority,
+        )
+
+        return _native_journal_authority(self._build_cfg(request))
+
+    def collection_guard(self, request: ContextRequest):
+        from work_buddy.collectors.obsidian_collector import (
+            _native_journal_authority,
+        )
+
+        if _native_journal_authority(self._build_cfg(request)):
+            return nullcontext()
+        from work_buddy.journal_capture.authority import legacy_markdown_write_guard
+
+        return legacy_markdown_write_guard()
 
 
 class _ObsidianTupleSource(MarkdownCollectorSource):
@@ -45,7 +68,11 @@ class _ObsidianTupleSource(MarkdownCollectorSource):
             )
         cfg = self._build_cfg(request)
         try:
-            result = obsidian_collector.collect(cfg)
+            if self.name == "obsidian_tasks":
+                markdown = obsidian_collector.collect_tasks(cfg) or ""
+                result = ("", markdown)
+            else:
+                result = obsidian_collector.collect(cfg)
         except Exception as exc:
             logger.debug("%s source: obsidian_collector.collect raised: %s", self.name, exc)
             return ContextSection(
@@ -63,11 +90,20 @@ class _ObsidianTupleSource(MarkdownCollectorSource):
         )
 
 
-class ObsidianSource(_ObsidianTupleSource):
+class ObsidianSource(_JournalAuthoritySource, _ObsidianTupleSource):
     name = "obsidian"
     _index = 0
     _heading = "Obsidian Journal"
     _default_cfg: dict[str, Any] = {}
+
+    def is_stale(self, cached: ContextSection, request: ContextRequest) -> bool:
+        from work_buddy.collectors.obsidian_collector import (
+            _native_journal_authority,
+        )
+
+        # Never replay a Markdown-derived cache entry across the irreversible
+        # authority transition. Native reads are cheap SQLite queries.
+        return _native_journal_authority(self._build_cfg(request))
 
 
 class ObsidianTasksSource(_ObsidianTupleSource):
@@ -76,13 +112,40 @@ class ObsidianTasksSource(_ObsidianTupleSource):
     _heading = "Obsidian Tasks"
     _default_cfg: dict[str, Any] = {}
 
+    def serves_native_without_obsidian(self, request: ContextRequest) -> bool:
+        del request
+        from work_buddy.tasks.runtime import native_authority_active
 
-class ObsidianWellnessSource(MarkdownCollectorSource):
+        return native_authority_active()
+
+    def is_stale(self, cached: ContextSection, request: ContextRequest) -> bool:
+        del cached, request
+        from work_buddy.tasks.runtime import native_authority_active
+
+        # A pre-seal Markdown cache must be rejected immediately after the
+        # independent task authority latch and native epoch become visible.
+        return native_authority_active()
+
+    def collection_guard(self, request: ContextRequest):
+        del request
+        from work_buddy.collectors.obsidian_collector import legacy_task_read_guard
+
+        return legacy_task_read_guard()
+
+
+class ObsidianWellnessSource(_JournalAuthoritySource, MarkdownCollectorSource):
     """Wellness block via the separate ``collect_wellness`` entry point."""
 
     name = "obsidian_wellness"
     _heading = "Obsidian Wellness"
     _default_cfg: dict[str, Any] = {}
+
+    def is_stale(self, cached: ContextSection, request: ContextRequest) -> bool:
+        from work_buddy.collectors.obsidian_collector import (
+            _native_journal_authority,
+        )
+
+        return _native_journal_authority(self._build_cfg(request))
 
     def collect(self, request: ContextRequest) -> ContextSection:
         try:

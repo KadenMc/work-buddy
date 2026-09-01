@@ -135,11 +135,77 @@ class TestBrokeredEncoder:
         # config routes leaf-ir to the (down) lmstudio provider
         router = ProviderRouter(
             providers={"local": local, "lmstudio": down},
-            cfg={"embedding": {"models": {"leaf-ir": {"provider": "lmstudio"}}}},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "remote-leaf-ir",
+            }}}},
         )
         out = router.encode(["x"], model_id="leaf-ir", priority=Priority.BACKGROUND)
         assert out is not None and out.shape == (1, 4)  # fell back to local
-        assert local.calls  # local was invoked
+        assert local.calls[-1][1] == "leaf-ir"  # alias never leaks into local fallback
+
+    def test_router_uses_configured_lmstudio_model_alias(self):
+        local = FakeProvider(name="local")
+        remote = FakeProvider(name="lmstudio")
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "text-embedding-remote-leaf-ir",
+            }}}},
+        )
+
+        out = router.encode(["x"], model_id="leaf-ir", priority=Priority.BACKGROUND)
+
+        assert out is not None
+        assert remote.calls[-1][1] == "text-embedding-remote-leaf-ir"
+        assert not local.calls
+
+    def test_router_missing_lmstudio_alias_falls_back_without_remote_call(self):
+        local = FakeProvider(name="local")
+        remote = FakeProvider(name="lmstudio")
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "   ",
+            }}}},
+        )
+
+        out = router.encode(["x"], model_id="leaf-ir")
+
+        assert out is not None
+        assert not remote.calls
+        assert local.calls[-1][1] == "leaf-ir"
+
+    def test_router_temporarily_circuits_unavailable_lmstudio(self, monkeypatch):
+        local = FakeProvider(name="local")
+        remote = _NoneProvider()
+        remote.calls = []
+
+        def _remote_encode(texts, *, model_id, prompt_name=None, priority=Priority.BACKGROUND):
+            remote.calls.append((list(texts), model_id, prompt_name, priority))
+            return None
+
+        remote.encode = _remote_encode
+        now = [100.0]
+        monkeypatch.setattr("work_buddy.index.encode.monotonic", lambda: now[0])
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "remote-leaf-ir",
+            }}}},
+        )
+
+        router.encode(["first"], model_id="leaf-ir")
+        router.encode(["second"], model_id="leaf-ir")
+        assert [call[0] for call in remote.calls] == [["first"]]
+        assert [call[0] for call in local.calls] == [["first"], ["second"]]
+
+        now[0] += 301.0
+        router.encode(["probe"], model_id="leaf-ir")
+        assert [call[0] for call in remote.calls] == [["first"], ["probe"]]
 
     def test_router_routes_provider_st(self):
         from work_buddy.index.encode import SentenceTransformerProvider
@@ -288,22 +354,33 @@ class _FakeServiceModel:
 
 
 class TestLocalProvider:
-    def test_in_service_path_uses_get_model_and_slot(self, monkeypatch):
-        import contextlib
+    def test_in_service_path_uses_service_brokered_encode(self, monkeypatch):
         import work_buddy.ir.dense as dense
         import work_buddy.embedding.service as svc
         from work_buddy.index.encode import LocalProvider
 
         fake_model = _FakeServiceModel()
+        seen = {}
+
+        def _brokered(model, texts, *, priority, **kwargs):
+            seen.update(model=model, texts=list(texts), priority=priority, kwargs=kwargs)
+            return model.encode(texts, **kwargs)
+
         monkeypatch.setattr(dense, "_IN_SERVICE", True, raising=False)
         monkeypatch.setattr(svc, "_get_model", lambda key: fake_model, raising=False)
-        monkeypatch.setattr(
-            "work_buddy.inference.local_slot.local_embed_slot",
-            lambda *a, **k: contextlib.nullcontext(),
+        monkeypatch.setattr(svc, "_brokered_encode", _brokered, raising=False)
+        out = LocalProvider().encode(
+            ["x"], model_id="leaf-ir", prompt_name="document",
+            priority=Priority.INTERACTIVE,
         )
-        out = LocalProvider().encode(["x"], model_id="leaf-ir", prompt_name="document")
         assert out.shape == (1, 4)
         assert fake_model.calls[-1] == (["x"], "document")  # prompt_name forwarded
+        assert seen == {
+            "model": fake_model,
+            "texts": ["x"],
+            "priority": Priority.INTERACTIVE,
+            "kwargs": {"show_progress_bar": False, "prompt_name": "document"},
+        }
 
     def test_in_service_failure_returns_none(self, monkeypatch):
         import work_buddy.ir.dense as dense

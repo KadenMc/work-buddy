@@ -1,7 +1,7 @@
 ---
 name: Context Bundle
 kind: capability
-description: Run all (or selected) collectors and save a context bundle to disk. Use individual collectors (context_git, context_chat, etc.) when you only need one source.
+description: Run permitted native collectors and save a context bundle to disk. Obsidian app sources are skipped before cache or collector access when the feature is opted out; filesystem Vault and provider-neutral Calendar remain available. Use individual collectors when only one source is needed.
 capability_name: context_bundle
 category: context
 op: op.wb.context_bundle

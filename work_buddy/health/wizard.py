@@ -177,15 +177,18 @@ class SetupWizard:
 
         pref = get_preference(component)
 
-        # Requirements for this component
-        req_results = self.requirements.check_component(component)
+        # Apply the preference boundary before requirement checks.  An
+        # intentionally disabled integration must not touch the filesystem or
+        # return setup advice merely because somebody opened diagnostics.
+        diag = self.diagnostics.diagnose(component)
+        if diag.status == "disabled":
+            req_results = []
+        else:
+            req_results = self.requirements.check_component(component)
         req_summary = self.requirements.summarize(req_results)
 
         # Health status
         health = self.engine.get_component(component)
-
-        # Diagnostic check sequence
-        diag = self.diagnostics.diagnose(component)
 
         return {
             "mode": "diagnose",

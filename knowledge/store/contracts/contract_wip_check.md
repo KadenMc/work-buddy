@@ -1,7 +1,7 @@
 ---
 name: Contract Wip Check
 kind: capability
-description: Check if active contract count is within the WIP limit (max 3)
+description: Check the structured active-contract count from SQLite against the WIP limit (max 3), without requiring Obsidian.
 capability_name: contract_wip_check
 category: contracts
 op: op.wb.contract_wip_check
@@ -20,6 +20,4 @@ aliases:
 - over WIP
 parents:
 - contracts
-requires:
-- obsidian
 ---

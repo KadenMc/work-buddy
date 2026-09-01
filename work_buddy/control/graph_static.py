@@ -58,8 +58,8 @@ DOMAINS: list[_DomainDef] = [
         "id": "domain:journal",
         "label": "Journal",
         "description": (
-            "Daily journaling and running notes, alongside the native task "
-            "lifecycle and its Co-work knowledge documents."
+            "Native SQLite daily journaling and running notes, alongside "
+            "the native task lifecycle and Co-work knowledge documents."
         ),
         "grouping_parents": [],
         "children_components": [],  # reached via subsystem:daily-notes, subsystem:task-lifecycle
@@ -68,11 +68,11 @@ DOMAINS: list[_DomainDef] = [
         "id": "domain:notifications",
         "label": "Notifications",
         "description": (
-            "Surfaces that push information to you: dashboard views, "
-            "Obsidian modals, Telegram bot messages."
+            "Native surfaces that push information to you: dashboard views "
+            "and Telegram bot messages."
         ),
         "grouping_parents": [],
-        "children_components": ["dashboard", "obsidian", "telegram"],
+        "children_components": ["dashboard", "telegram"],
     },
     {
         "id": "domain:knowledge",
@@ -82,7 +82,11 @@ DOMAINS: list[_DomainDef] = [
             "structured knowledge."
         ),
         "grouping_parents": [],
-        "children_components": [],  # reached via subsystems
+        "children_components": [
+            "projects_native",
+            "contracts_native",
+            "personal_knowledge_native",
+        ],
     },
     {
         "id": "domain:browser",
@@ -97,9 +101,9 @@ DOMAINS: list[_DomainDef] = [
     {
         "id": "domain:calendar",
         "label": "Calendar",
-        "description": "Calendar integration via the Obsidian Google Calendar plugin.",
+        "description": "Calendar integration through the provider-neutral native API.",
         "grouping_parents": [],
-        "children_components": ["google_calendar"],
+        "children_components": ["google_calendar_native"],
     },
     {
         "id": "domain:email",
@@ -166,18 +170,12 @@ SUBSYSTEMS: list[_DomainDef] = [
         "id": "subsystem:daily-notes",
         "label": "Daily Notes",
         "description": (
-            "Daily note file per day under the journal directory, with "
-            "Log, Sign-In, and Running Notes sections."
+            "Native Journal records and configurable day compositions, with "
+            "database-backed Log and Running Note content."
         ),
         "grouping_parents": ["domain:journal"],
-        "component_deps": ["obsidian"],
-        "requirement_ids": [
-            "obsidian/daily-note/plugin-enabled",
-            "obsidian/daily-note/dir-exists",
-            "obsidian/daily-note/log-section",
-            "obsidian/daily-note/sign-in-section",
-            "obsidian/daily-note/running-notes-section",
-        ],
+        "component_deps": ["journal_native"],
+        "requirement_ids": [],
     },
     {
         "id": "subsystem:task-lifecycle",

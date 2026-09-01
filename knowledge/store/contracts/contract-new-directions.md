@@ -9,6 +9,7 @@ workflow: contracts/create-contract
 capabilities:
 - contracts/active_contracts
 - contracts/contract_wip_check
+- contracts/create_contract
 tags:
 - contracts
 - create
@@ -25,7 +26,8 @@ parents:
 - contracts
 ---
 
-Follow the create-contract workflow. Use the template at _template.md in the contracts directory (resolved from contracts.vault_path in config, via get_contracts_dir()).
+Follow the create-contract workflow. Draft a structured payload for the native
+Contracts SQLite service; do not use a vault template or create a Markdown file.
 
 ## Interview flow
 
@@ -61,7 +63,9 @@ This catches over-commitment at the contract level.
 
 ## Confirm and save
 
-Show the user the complete contract. Get explicit confirmation before saving. Set last_reviewed to today's date. Set status: draft unless the user explicitly says to activate it.
+Show the user the complete contract. Get explicit confirmation before calling
+`create_contract`. Set `last_reviewed` to today's date. Set status to `draft`
+unless the user explicitly says to activate it.
 
 ## Don'ts
 - Don't create a contract without user involvement -- this is collaborative

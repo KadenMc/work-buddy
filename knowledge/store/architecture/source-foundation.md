@@ -35,7 +35,7 @@ dev_notes: |-
 
   A machine restore publishes a central Source Foundation recovery fence. While present, persistence authorities—including filesystem-only Y.Doc tails/blobs and Co-work conversation-source dependencies—remain read-only and every dispatch path fails before transport. The high-consent reconciliation operator validates whole cohorts and never clears on partial evidence. Sanitized local enrollment is a trust input only; sessions and gestures are never restored.
 
-  Sources is deliberately excluded from the existing unencrypted remote vital-backup path. Until encryption, bounded retention, and restore-time redaction fencing are implemented, retained source bytes are local-only and must be exported only through the explicit authorized Sources export contract.
+  Sources remains deliberately excluded from the ordinary and remote `VITAL_DBS` archive. Use the authorized Sources export plus `data_sensitive_checkpoint` for local Journal/Sources recovery; rehearsal is isolated and never publishes into live authority. Live recovery still requires the Source Foundation fence and high-consent reconciliation.
 ---
 
 # Shared source foundation
@@ -116,6 +116,14 @@ domain persists the portable resolution, provenance, and redaction-safe
 tombstone facts it needs. Retained Sources bytes are not included in the legacy
 unencrypted GitHub backup workflow; this is a deliberate privacy boundary, not
 backup coverage.
+
+For coordinated local recovery, `data_sensitive_checkpoint` seals an already
+authorized Sources export beside a SQLite-hot native Journal member.
+`verify_sensitive_checkpoint` and `rehearse_sensitive_checkpoint_restore`
+validate member digests, identity-preserving Sources import, and
+Journal-to-Source dependency closure in an isolated destination. This
+local-only path remains separate from `VITAL_DBS` and the unencrypted remote
+backup.
 
 Every portable scoped Truth backup pairs the Truth ledger with an
 identity-bound document-causality companion. Import validates the permanent

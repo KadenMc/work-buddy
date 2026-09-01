@@ -49,7 +49,9 @@ const slotById = (slotId: WidgetSlotId): DefaultWidgetSlot => {
 describe("Journal contribution policy", () => {
   it("declares external widget types with required Capture and Timeline purposes", () => {
     expect(JOURNAL_APP_CONTRIBUTION.appId).toBe(JOURNAL_APP_ID);
-    expect(JOURNAL_APP_CONTRIBUTION.widgetDefinitions).toEqual([]);
+    expect(JOURNAL_APP_CONTRIBUTION.widgetDefinitions.map((widget) => widget.typeId)).toEqual([
+      "wb.journal.module",
+    ]);
     expect(JOURNAL_VIEW_DEFINITION.route).toBe("journal");
     expect(JOURNAL_VIEW_DEFINITION.grid.columns).toBe(24);
 

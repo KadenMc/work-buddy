@@ -74,6 +74,12 @@ _COWORK_TRUTH_ANALYSIS_CAPABILITIES = frozenset(
         "cowork_truth_analysis_job_submit",
     }
 )
+_JOURNAL_PROMPT_GENERATION_CAPABILITIES = frozenset(
+    {
+        "journal_prompt_generation_context",
+        "journal_prompt_generation_complete",
+    }
+)
 
 
 def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
@@ -87,6 +93,12 @@ def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
     from work_buddy.dashboard.assistance.execution_identity import (
         assistance_generation_from_session,
     )
+    from work_buddy.journal_capture.execution_identity import (
+        journal_prompt_request_from_session,
+    )
+
+    if journal_prompt_request_from_session(session_id) is not None:
+        return _JOURNAL_PROMPT_GENERATION_CAPABILITIES
 
     if assistance_generation_from_session(session_id) is not None:
         return _ASSISTED_DRAFT_CAPABILITIES

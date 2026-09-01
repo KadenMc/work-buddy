@@ -92,6 +92,7 @@ export interface WidgetHostProps<Input = unknown> {
   readonly onRetry?: () => void;
   readonly onHide?: () => void;
   readonly onRemove?: () => void;
+  readonly hideLabel?: string;
   readonly onRendererError?: (error: Error) => void;
 }
 
@@ -175,6 +176,7 @@ export function WidgetHost<Input>({
   onRetry,
   onHide,
   onRemove,
+  hideLabel,
   onRendererError,
 }: WidgetHostProps<Input>) {
   const themeRuntime = useTheme();
@@ -270,6 +272,7 @@ export function WidgetHost<Input>({
       lockedReason={lockedReason}
       onHide={onHide}
       onRemove={onRemove}
+      hideLabel={hideLabel}
     />
   ) : interactionMode === "operate" && definition.drafts && definition.drafts.length > 0 ? (
     <WidgetClearDraftButton

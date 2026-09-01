@@ -727,7 +727,7 @@ def get_vault_context() -> str:
 
 
 def get_calendar_context(*, date: str | None = None, check_ready: bool = False) -> str:
-    """Google Calendar schedule for a given date.
+    """Provider-neutral Calendar schedule for a given date.
 
     Args:
         date: Date to show schedule for (YYYY-MM-DD). Default: today.
@@ -735,10 +735,22 @@ def get_calendar_context(*, date: str | None = None, check_ready: bool = False) 
     """
     if check_ready:
         try:
-            from work_buddy.calendar import check_ready as _check_ready
-            return _check_ready()
+            import json
+
+            from work_buddy.calendar.provider import get_calendar_provider
+
+            provider = get_calendar_provider()
+            health = dict(provider.health())
+            health.setdefault("provider", provider.name)
+            return json.dumps(health, ensure_ascii=False, sort_keys=True)
         except Exception as exc:
-            return f'{{"available": false, "reason": "{exc}"}}'
+            import json
+
+            return json.dumps(
+                {"available": False, "reason": str(exc)},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
 
     from work_buddy.collectors import calendar_collector
 
@@ -753,16 +765,23 @@ def get_calendar_context(*, date: str | None = None, check_ready: bool = False) 
 def get_projects_context(*, statuses: list[str] | None = None) -> str:
     """Active projects with identity, state, and trajectory.
 
-    Synthesizes project inventory from vault directories, STATE.md files
-    in repos, task project tags, git activity, and contracts.
-    Also syncs results to the project store.
+    Under SQLite authority, renders the native registry through a read-only
+    connection without loading config or scanning legacy files.  Before the
+    authority seal, synthesizes project inventory from vault directories,
+    STATE.md files, task tags, git activity, and contracts, then syncs it.
 
-    ``statuses`` filters only the rendered markdown — every project still
-    gets scanned and synced. Default is active only (paused / future /
-    past are hidden to keep bundles uncluttered); valid values are
-    active, paused, future, past. Pass an explicit list to widen.
-    ``deleted`` is never rendered through this surface.
+    ``statuses`` filters only the rendered markdown. During the legacy epoch,
+    every project still gets scanned and synced. Default is active only;
+    valid values are active, paused, future, and past. ``deleted`` is never
+    rendered through this surface.
     """
+    from work_buddy.projects.authority import sqlite_authority_active
+
+    if sqlite_authority_active():
+        from work_buddy.projects.context import render_native_projects_context
+
+        return render_native_projects_context(statuses=statuses)
+
     from work_buddy.projects.sync import sync_projects
 
     cfg = _cfg_with_overrides()
@@ -1539,20 +1558,35 @@ def _gather_hot_files(
     since_date: str, until_date: str, sub_directory: str | None,
 ) -> list[dict]:
     """Fuse vault ledger + KTR data into a single scored file list."""
+    vault_root, sealed_roots, exclude = _hot_files_runtime_scope()
+    if _hot_file_path_blocked(
+        "",
+        vault_root=vault_root,
+        sealed_roots=sealed_roots,
+    ):
+        return []
+    if sub_directory and _hot_file_path_blocked(
+        sub_directory,
+        vault_root=vault_root,
+        sealed_roots=sealed_roots,
+    ):
+        return []
+
     files: dict[str, dict] = {}
 
     # Source 1: vault event ledger
     try:
         from work_buddy.obsidian.vault_events import bootstrap, get_hot_files as ledger_hot
-        bootstrap()
-        exclude = [
-            "journal", "agents", ".obsidian", ".specstory", "recovery-codes",
-            # Also exclude agent dirs nested under repos
-            "repos/work-buddy/agents",
-        ]
+        bootstrap(exclude_folders=exclude)
         result = ledger_hot(since_date, until_date, limit=500, exclude_folders=exclude)
         for f in result.get("files", []):
-            path = f["path"]
+            path = str(f.get("path") or "")
+            if not path or _hot_file_path_blocked(
+                path,
+                vault_root=vault_root,
+                sealed_roots=sealed_roots,
+            ):
+                continue
             files[path] = {
                 "path": path,
                 "score": f.get("hot_score", 0),
@@ -1568,10 +1602,21 @@ def _gather_hot_files(
     # Source 2: KTR writing intensity
     try:
         from work_buddy.obsidian.ktr import get_hot_files as ktr_hot
-        result = ktr_hot(since_date, until_date, limit=500)
+        result = ktr_hot(
+            since_date,
+            until_date,
+            limit=500,
+            exclude_folders=exclude,
+        )
         skip_segments = ("journal", "agents", ".obsidian", ".specstory", "recovery-codes")
         for f in result.get("files", []):
-            path = f["filePath"]
+            path = str(f.get("filePath") or "")
+            if not path or _hot_file_path_blocked(
+                path,
+                vault_root=vault_root,
+                sealed_roots=sealed_roots,
+            ):
+                continue
             if any(seg + "/" in path or path.startswith(seg + "/") for seg in skip_segments):
                 continue
             if path not in files:
@@ -1600,6 +1645,78 @@ def _gather_hot_files(
         result_list = [f for f in result_list if f["path"].startswith(prefix)]
 
     return result_list
+
+
+def _hot_files_runtime_scope() -> tuple["Path", tuple["Path", ...], list[str]]:
+    """Resolve current privacy fences before importing either bridge client."""
+
+    from pathlib import Path
+
+    try:
+        from work_buddy.config import load_config
+        from work_buddy.health.preferences import is_wanted
+        from work_buddy.vault_index.authority_exclusions import (
+            is_within,
+            sealed_legacy_roots,
+        )
+
+        if is_wanted("obsidian") is False:
+            raise RuntimeError("Legacy Obsidian activity is disabled by preference.")
+        cfg = load_config()
+        vault_value = cfg.get("vault_root")
+        if not vault_value:
+            raise RuntimeError("Vault activity requires a configured vault root.")
+        vault_root = Path(vault_value).expanduser().resolve(strict=False)
+        sealed_roots = tuple(
+            Path(path).expanduser().resolve(strict=False)
+            for path in sealed_legacy_roots(cfg, allow_default_data_root=True)
+        )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            "Legacy vault activity availability could not be verified."
+        ) from exc
+
+    configured_excludes = cfg.get("obsidian", {}).get("exclude_folders", [])
+    exclude = {
+        "journal",
+        "agents",
+        ".obsidian",
+        ".specstory",
+        "recovery-codes",
+        "repos/work-buddy/agents",
+    }
+    if isinstance(configured_excludes, (list, tuple, set)):
+        exclude.update(str(value).strip("/\\") for value in configured_excludes if value)
+    for root in sealed_roots:
+        if not is_within(root, vault_root, real=True):
+            continue
+        relative = root.relative_to(vault_root).as_posix()
+        if relative == ".":
+            relative = ""
+        exclude.add(relative)
+    return vault_root, sealed_roots, sorted(exclude)
+
+
+def _hot_file_path_blocked(
+    value: str,
+    *,
+    vault_root: "Path",
+    sealed_roots: tuple["Path", ...],
+) -> bool:
+    """Reject traversal/out-of-vault paths and every currently sealed root."""
+
+    from pathlib import Path
+
+    from work_buddy.vault_index.authority_exclusions import is_within
+
+    candidate = Path(value.replace("\\", "/")).expanduser()
+    if not candidate.is_absolute():
+        candidate = vault_root / candidate
+    if not is_within(candidate, vault_root, real=True):
+        return True
+    return any(is_within(candidate, root, real=True) for root in sealed_roots)
 
 
 def _build_hot_tree(

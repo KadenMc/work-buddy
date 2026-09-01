@@ -2,7 +2,7 @@
 name: Contracts
 kind: concept
 description: Explicit work commitments — schema, lifecycle, bounded deliverables
-summary: Contracts live in the Obsidian vault (contracts.vault_path in config) as markdown with YAML frontmatter. Any bounded deliverable qualifies.
+summary: Contracts are revisioned records in the Contracts SQLite authority. Any bounded deliverable qualifies; rich narrative roles may bind explicitly to Co-work.
 tags:
 - contracts
 - commitments
@@ -18,4 +18,8 @@ parents:
 - architecture
 ---
 
-Contracts make work commitments explicit. They live in the Obsidian vault at the path configured by contracts.vault_path in config.yaml (default: work-buddy/contracts, resolved relative to vault_root). Each is a markdown file with YAML frontmatter. Any bounded deliverable qualifies (papers, deployments, grants, admin).
+Contracts make work commitments explicit. Identity, status, dates, constraints,
+WIP policy, evidence references, revisions, and tombstones live in the Contracts
+SQLite authority. Any bounded deliverable qualifies (papers, deployments,
+grants, admin). A rich brief can use an explicit Co-work body role; legacy
+Markdown is accepted only by the deterministic pre-seal importer.

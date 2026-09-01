@@ -12,7 +12,7 @@ steps:
   depends_on: []
   invokes: []
 - id: draft-contract
-  name: Draft the contract file
+  name: Draft the structured contract
   step_type: reasoning
   depends_on:
   - identify-deliverable
@@ -30,12 +30,14 @@ steps:
   - draft-contract
   invokes: []
 - id: confirm-save
-  name: Confirm and save
+  name: Confirm and create in SQLite
   step_type: reasoning
   depends_on:
   - check-scope
   - review-existing
-  invokes: []
+  requires_individual_consent: true
+  invokes:
+  - create_contract
 tags:
 - contracts
 - create
@@ -54,9 +56,9 @@ Agentic step. The agent interviews the user to identify the deliverable. Behavio
 
 (main, reasoning)
 
-Agentic step. The agent drafts the contract file using the template at `_template.md` in the contracts directory (resolved via `get_contracts_dir()`).
-
-Create a new file in the contracts directory with a descriptive name (e.g., `my-project-experiment-1.md`, `deployment-pipeline.md`). The contracts directory is in the Obsidian vault, configured by `contracts.vault_path` in config.yaml. Behavioral instructions (minimum viable fields, initial status, what to tell the user) are in the slash command, not here.
+Agentic step. The agent drafts a structured payload for the native Contracts
+service. Include a logical-name alias, typed dates, commitments, constraints,
+evidence links, and explicit body roles. Do not create or edit a file.
 
 ## check-scope
 
@@ -74,4 +76,7 @@ Agentic step. The agent reviews the new contract against existing active contrac
 
 (main, reasoning)
 
-Agentic step. The agent presents the complete contract for user confirmation and saves it. Behavioral instructions (confirmation requirements, status rules) are in the slash command, not here.
+Agentic step. The agent presents the complete contract for user confirmation.
+After explicit confirmation, call `create_contract` with the structured JSON
+payload and a stable mutation identity. Behavioral instructions (confirmation
+requirements and status rules) are in the slash command, not here.

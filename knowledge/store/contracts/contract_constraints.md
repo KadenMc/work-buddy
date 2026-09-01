@@ -1,7 +1,7 @@
 ---
 name: Contract Constraints
 kind: capability
-description: Get active contracts with their current bottleneck constraints
+description: Read structured bottleneck constraints for active contracts from the Contracts SQLite authority, without requiring Obsidian.
 capability_name: contract_constraints
 category: contracts
 op: op.wb.contract_constraints
@@ -19,6 +19,4 @@ aliases:
 - blocking issues per contract
 parents:
 - contracts
-requires:
-- obsidian
 ---

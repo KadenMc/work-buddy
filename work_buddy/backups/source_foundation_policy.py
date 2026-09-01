@@ -32,6 +32,12 @@ SOURCE_FOUNDATION_BACKUP_POLICY = {
         "sqlite_hot_backup",
         "Start authority changes paused until document epochs reconcile.",
     ),
+    "db/installed-authority": BackupResourcePolicy(
+        "db/installed-authority",
+        "content_free_vital",
+        "sqlite_hot_backup_and_irreversible_restore_union",
+        "Never discard a live or restored sealed-domain latch; conflicting bindings block restore.",
+    ),
     "db/local-identity": BackupResourcePolicy(
         "db/local-identity",
         "authorized_sensitive_export_only",
@@ -42,7 +48,7 @@ SOURCE_FOUNDATION_BACKUP_POLICY = {
         "db/journal-capture",
         "authorized_sensitive_export_only",
         "preserve_live_or_reconstruct_review_required",
-        "Missing state falls back to Markdown with unknown provenance and review.",
+        "An installed seal makes missing or invalid Journal state fail closed; never resume Markdown.",
     ),
     "stores/sources": BackupResourcePolicy(
         "stores/sources",

@@ -1,7 +1,7 @@
 ---
 name: Contracts Summary
 kind: capability
-description: Markdown summary of all contracts with title, status, deadline, progress
+description: Formatted summary of Contracts SQLite records with title, status, deadline, and progress; no Obsidian dependency.
 capability_name: contracts_summary
 category: contracts
 op: op.wb.contracts_summary
@@ -19,6 +19,4 @@ aliases:
 - status of my deliverables
 parents:
 - contracts
-requires:
-- obsidian
 ---

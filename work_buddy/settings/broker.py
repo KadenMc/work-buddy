@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -1477,6 +1478,233 @@ def get_journal_day_window(
     )
     _boundary, record, _event = get_journal_day_boundary(observed_at=observed_at)
     return _policy_window_for_date(target_date, record)
+
+
+def _default_journal_policy_snapshot() -> tuple[
+    dict[str, Any], list[dict[str, Any]]
+]:
+    boundary = _configured_default(registry.JOURNAL_DAY_BOUNDARY_ID)
+    timezone_name = _timezone_name()
+    return (
+        {
+            "effective_value": boundary,
+            "pending_value": None,
+            "pending_timezone": None,
+            "effective_at": None,
+            "policy_timezone": timezone_name,
+            "configured_timezone": timezone_name,
+            "diagnostics": [],
+            "revision": "value:0",
+        },
+        [
+            {
+                "effective_local_date": None,
+                "window_start": None,
+                "boundary": boundary,
+                "timezone": timezone_name,
+                "sequence": 0,
+            }
+        ],
+    )
+
+
+def _read_journal_policy_snapshot(
+    observed_at: datetime,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Read Journal policy state without bootstrap, promotion, DDL, or commit."""
+
+    path = store._db_path()
+    if not path.is_file():
+        return _default_journal_policy_snapshot()
+
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            required = {"setting_value_state", "journal_day_policy_epoch"}
+            if not required.issubset(tables):
+                raise RuntimeError("Journal day policy state requires migration")
+            row = conn.execute(
+                """
+                SELECT * FROM setting_value_state
+                WHERE setting_id=? AND scope='profile' AND scope_id=?
+                """,
+                (registry.JOURNAL_DAY_BOUNDARY_ID, registry.PROFILE_SCOPE_ID),
+            ).fetchone()
+            epochs = [
+                dict(item)
+                for item in conn.execute(
+                    "SELECT * FROM journal_day_policy_epoch ORDER BY sequence"
+                ).fetchall()
+            ]
+    except sqlite3.Error as exc:
+        raise RuntimeError("Journal day policy state is unreadable") from exc
+
+    if row is None:
+        return _default_journal_policy_snapshot()
+    record = _record_from_row(row, observed_at)
+    if not epochs:
+        epochs.append(
+            {
+                "effective_local_date": None,
+                "window_start": None,
+                "boundary": record["effective_value"],
+                "timezone": record["policy_timezone"],
+                "sequence": 0,
+            }
+        )
+    return record, epochs
+
+
+def _policy_epochs_with_pending(
+    record: dict[str, Any],
+    epochs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result = list(epochs)
+    if record["pending_value"] is None or not record["effective_at"]:
+        return result
+    transition = datetime.fromisoformat(record["effective_at"])
+    timezone_name = record["pending_timezone"] or record["policy_timezone"]
+    effective_date = transition.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+    result.append(
+        {
+            "effective_local_date": effective_date,
+            "window_start": transition.isoformat(),
+            "boundary": record["pending_value"],
+            "timezone": timezone_name,
+            "sequence": max(
+                (int(item.get("sequence") or 0) for item in result), default=0
+            )
+            + 1,
+            "virtual_pending": True,
+        }
+    )
+    return result
+
+
+def _snapshot_policy_window(
+    local_date: date,
+    record: dict[str, Any],
+    epochs: list[dict[str, Any]],
+) -> JournalDayWindow:
+    candidates = _policy_epochs_with_pending(record, epochs)
+    applicable = [
+        item
+        for item in candidates
+        if item.get("effective_local_date") is None
+        or str(item["effective_local_date"]) <= local_date.isoformat()
+    ]
+    if not applicable:
+        raise RuntimeError("Journal day policy history has no base epoch")
+    epoch = max(
+        applicable,
+        key=lambda item: (
+            str(item.get("effective_local_date") or ""),
+            int(item.get("sequence") or 0),
+        ),
+    )
+    timezone_name = str(epoch["timezone"])
+    zone = ZoneInfo(timezone_name)
+    boundary = str(epoch["boundary"])
+    if (
+        epoch.get("effective_local_date") == local_date.isoformat()
+        and epoch.get("window_start")
+    ):
+        window_start = datetime.fromisoformat(str(epoch["window_start"])).astimezone(zone)
+    else:
+        window_start = window_for_local_date(local_date, zone, boundary).start
+
+    next_date = local_date + timedelta(days=1)
+    next_epochs = [
+        item
+        for item in candidates
+        if item.get("effective_local_date") == next_date.isoformat()
+        and item.get("window_start")
+    ]
+    if next_epochs:
+        next_epoch = max(
+            next_epochs, key=lambda item: int(item.get("sequence") or 0)
+        )
+        window_end = datetime.fromisoformat(
+            str(next_epoch["window_start"])
+        ).astimezone(zone)
+    else:
+        window_end = window_for_local_date(local_date, zone, boundary).end
+    return JournalDayWindow(
+        local_date=local_date,
+        timezone=timezone_name,
+        boundary=boundary,
+        start=window_start,
+        end=window_end,
+    )
+
+
+def peek_journal_day_window(
+    local_date: date | str,
+    *,
+    observed_at: datetime | None = None,
+) -> JournalDayWindow:
+    """Pure historical Journal-day resolution for GET and inventory paths."""
+
+    now = _observed_at(observed_at)
+    target = date.fromisoformat(local_date) if isinstance(local_date, str) else local_date
+    record, epochs = _read_journal_policy_snapshot(now)
+    return _snapshot_policy_window(target, record, epochs)
+
+
+def peek_journal_day_binding(
+    instant: datetime | None = None,
+) -> tuple[dict[str, Any], None]:
+    """Pure current Journal-day binding; due promotion is evaluated in memory."""
+
+    now = _observed_at(instant)
+    record, epochs = _read_journal_policy_snapshot(now)
+    boundary = str(record["effective_value"])
+    timezone_name = str(record["policy_timezone"])
+    if record["pending_value"] is not None and record["effective_at"]:
+        transition_at = datetime.fromisoformat(record["effective_at"])
+        pending_timezone = str(
+            record["pending_timezone"] or record["policy_timezone"]
+        )
+        if now.astimezone(timezone.utc) >= transition_at.astimezone(timezone.utc):
+            boundary = str(record["pending_value"])
+            timezone_name = pending_timezone
+    zone = ZoneInfo(timezone_name)
+    local_date = day_for_instant(now, zone, boundary)
+
+    if record["pending_value"] is not None and record["effective_at"]:
+        transition_at = datetime.fromisoformat(record["effective_at"])
+        pending_zone = ZoneInfo(
+            record["pending_timezone"] or record["policy_timezone"]
+        )
+        transition_day = transition_at.astimezone(pending_zone).date()
+        if (
+            now.astimezone(timezone.utc)
+            < transition_at.astimezone(timezone.utc)
+            and local_date >= transition_day
+        ):
+            local_date = transition_day - timedelta(days=1)
+    window = _snapshot_policy_window(local_date, record, epochs)
+    return (
+        {
+            "local_date": local_date.isoformat(),
+            "timezone": window.timezone,
+            "day_boundary_start": window.boundary,
+            "window_start": window.start.isoformat(),
+            "window_end": window.end.isoformat(),
+            "boundary_setting_revision": record["revision"],
+            "pending_day_boundary_start": record["pending_value"],
+            "boundary_effective_at": record["effective_at"],
+            "configured_timezone": record["configured_timezone"],
+            "diagnostics": record["diagnostics"],
+        },
+        None,
+    )
 
 
 def get_journal_day_binding(

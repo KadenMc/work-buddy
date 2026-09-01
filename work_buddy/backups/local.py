@@ -74,6 +74,9 @@ logger = get_logger(__name__)
 VITAL_DBS: dict[str, str] = {
     "tasks":    "db/tasks",     # on-disk: task_metadata.db
     "projects": "db/projects",  # on-disk: projects.db
+    "contracts": "db/contracts",  # on-disk: contracts.db
+    "personal_knowledge": "db/personal-knowledge",
+    "installed_authority": "db/installed-authority",
     "messages": "db/messages",  # on-disk: messages.db
     "threads":  "db/threads",   # on-disk: threads.db
     "entities": "db/entities",  # on-disk: entities.db
@@ -156,19 +159,24 @@ def run_backup(*, manual: bool = False) -> dict[str, Any]:
         staging = Path(staging_str)
         registry = _truth_registry_for_backup(db_paths)
         truth_stores = _stage_truth_stores(staging, registry)
+        staged_databases: dict[str, Path] = {}
         for name, src in db_paths.items():
             dst = staging / src.name  # e.g. "task_metadata.db" for the "tasks" entry
             _hot_backup(src, dst)
+            staged_databases[name] = dst
         _stage_local_identity_enrollment(staging)
 
-        # 2. Build manifest by probing the LIVE DBs (not the
-        #    staging copies) — they're identical in content but the
-        #    live ones are where the canonical user_version + row
-        #    counts come from. The probe is read-only.
+        # 2. Build the manifest from the exact staged SQLite members.  A live
+        #    writer may advance immediately after its hot backup completes;
+        #    probing live paths here could bind row counts from newer bytes.
         manifest = build_manifest(
             snapshot_ts=ts,
-            db_paths=db_paths,
+            db_paths=staged_databases,
             truth_stores=truth_stores,
+            database_sha256={
+                name: _sha256_file(path)
+                for name, path in staged_databases.items()
+            },
         )
         write_manifest(manifest, staging)
 
@@ -342,6 +350,7 @@ def _stage_truth_stores(staging: Path, registry) -> list[dict[str, Any]]:
                 {
                     "backup_status": "included",
                     "profile_member": profile_target.relative_to(staging).as_posix(),
+                    "profile_sha256": _sha256_file(profile_target),
                     "export_member": export_target.relative_to(staging).as_posix(),
                     "export_sha256": exported.sha256,
                     "causality_member": causality_target.relative_to(staging).as_posix(),
@@ -382,6 +391,14 @@ def _hot_backup(src: Path, dst: Path) -> None:
     finally:
         dst_conn.close()
         src_conn.close()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _stage_local_identity_enrollment(staging: Path) -> Path | None:

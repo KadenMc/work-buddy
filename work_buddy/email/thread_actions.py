@@ -145,7 +145,7 @@ def email_create_tasks(
     """Walk an email-cluster thread and create one task per email.
 
     Each task's text uses the email subject; the sender + date land in the
-    summary-backed Co-work knowledge document under native task authority.
+    explicitly requested Co-work knowledge document under native task authority.
 
     Returns ``{"thread_id": str, "created": [...], "failed": [...]}``.
     """
@@ -182,6 +182,9 @@ def email_create_tasks(
                 urgency=urgency,
                 project=project,
                 summary=summary,
+                requested_note_role=("working_document/v1" if summary else None),
+                initial_note=summary,
+                requested_truth_policy_resolution=("disabled" if summary else None),
                 creation_provenance="agent_inferred_from_email",
                 user_involvement="medium",
             )
@@ -257,6 +260,9 @@ def email_create_umbrella_task(
             urgency=urgency,
             project=project,
             summary=summary,
+            requested_note_role="working_document/v1",
+            initial_note=summary,
+            requested_truth_policy_resolution="disabled",
             creation_provenance="agent_inferred_from_email",
             user_involvement="medium",
         )

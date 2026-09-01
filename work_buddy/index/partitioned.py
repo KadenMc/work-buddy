@@ -105,8 +105,64 @@ class IndexPartition:
         :meth:`HybridSearcher.prewarm`). Returns the number of projections warmed."""
         return self._searcher.prewarm()
 
-    def build(self, *, force: bool = False, on_progress=None) -> dict[str, Any]:
-        return self._builder.build(force=force, on_progress=on_progress)
+    def build(
+        self, *, force: bool = False, on_progress=None,
+        defer_changed_vectors: bool = False,
+    ) -> dict[str, Any]:
+        """Build, then durably acknowledge the partition's outbox snapshot.
+
+        The acknowledgement is intentionally *after* the locked index build.
+        If discovery, parsing, encoding, the index commit, or acknowledgement
+        itself fails, the domain events remain pending and a later scheduled
+        build replays them idempotently.  ``force=True`` is the partition-level
+        restore/backfill path and follows the same boundary.
+        """
+
+        from work_buddy.index.outbox import (
+            acknowledge_events,
+            pending_event_count,
+            reconciliation_evidence,
+            snapshot_pending_events,
+        )
+
+        batch = snapshot_pending_events(self._partition)
+
+        def _finish_delivery(stats: dict[str, Any]) -> None:
+            parity = (
+                reconciliation_evidence(self._partition, self._store)
+                if batch is not None
+                else None
+            )
+            evidence = getattr(self._partition, "search_build_evidence", None)
+            if evidence is not None:
+                stats["evidence"] = evidence(self._store)
+            parity_mismatches = int((parity or {}).get("parity_mismatches", 0))
+            # Parity is part of the delivery boundary, not merely diagnostic.
+            # A concurrent source change may land after discovery but before this
+            # check; in that case retain the entire snapshot for idempotent replay.
+            delivered = (
+                acknowledge_events(self._partition, batch)
+                if parity_mismatches == 0
+                else 0
+            )
+            if batch is not None:
+                pending_after = pending_event_count(self._partition)
+                stats["outbox"] = {
+                    "schema": "wb.search-outbox-delivery/v1",
+                    "pending_before": batch.count,
+                    "delivered": delivered,
+                    "pending_after": pending_after,
+                    "mode": "backfill" if force else "incremental_replay",
+                    **(parity or {}),
+                    "ready": pending_after == 0 and parity_mismatches == 0,
+                }
+
+        return self._builder.build(
+            force=force,
+            on_progress=on_progress,
+            after_build=_finish_delivery,
+            defer_changed_vectors=defer_changed_vectors,
+        )
 
     def status(self):
         from work_buddy.indexing.protocol import PartitionStatus

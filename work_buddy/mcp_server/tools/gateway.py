@@ -1671,6 +1671,7 @@ def _prune_old_operations() -> None:
 # Tool registration
 # ---------------------------------------------------------------------------
 
+
 def register_tools(mcp: FastMCP) -> None:
     """Register the gateway tools on the given FastMCP server."""
 
@@ -2034,6 +2035,32 @@ def register_tools(mcp: FastMCP) -> None:
                     })
             else:
                 return _prepare({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
+
+        from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
+
+        admission = evaluate_runtime_admission(entry)
+        if not admission.preference_available:
+            return _prepare({
+                "error": (
+                    f"Capability {capability!r} is unavailable because its "
+                    "feature preferences could not be verified."
+                ),
+                "disabled": True,
+                "error_code": "feature_preference_unavailable",
+                "requires": list(getattr(entry, "requires", ()) or ()),
+            })
+        if admission.opted_out:
+            return _prepare({
+                "error": (
+                    f"Capability {capability!r} is unavailable because you "
+                    f"opted out of: {', '.join(admission.opted_out)}. "
+                    "To re-enable, run: /wb-setup preferences"
+                ),
+                "disabled": True,
+                "error_code": "feature_opted_out",
+                "opted_out": list(admission.opted_out),
+                "requires": list(getattr(entry, "requires", ()) or ()),
+            })
 
         # Mode gate: reject when the capability/workflow declares an
         # ``available_when`` the session's active modes don't satisfy. The
@@ -3225,6 +3252,32 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
     if entry is None:
         _complete_operation(operation_id, error=f"Capability {record['name']!r} no longer exists")
         return {"error": f"Capability {record['name']!r} no longer exists"}
+
+    # ``retry`` itself has no integration requirements, so the outer wb_run
+    # admission cannot speak for the cached inner entry being replayed.
+    from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
+
+    admission = evaluate_runtime_admission(entry)
+    if not admission.preference_available:
+        error = "Feature preferences could not be verified for replay."
+        _complete_operation(operation_id, error=error)
+        return {
+            "error": error,
+            "error_code": "feature_preference_unavailable",
+            "suppressed": True,
+        }
+    if admission.opted_out:
+        error = (
+            "Capability replay is disabled by current feature preferences: "
+            + ", ".join(admission.opted_out)
+        )
+        _complete_operation(operation_id, error=error)
+        return {
+            "error": error,
+            "error_code": "feature_opted_out",
+            "suppressed": True,
+            "opted_out": list(admission.opted_out),
+        }
 
     # Pre-flight consent for capabilities with declared operations
     cap_name = record["name"]

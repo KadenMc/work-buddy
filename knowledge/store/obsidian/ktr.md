@@ -1,7 +1,7 @@
 ---
 name: Keep the Rhythm Integration
 kind: integration
-description: Writing activity tracking via KTR plugin (v0.2.8) -- per-file word/char deltas in 5-minute buckets
+description: Retired app-only writing activity integration retained for explicit Obsidian compatibility; never part of the opted-out normal path.
 tags:
 - obsidian
 - ktr
@@ -19,7 +19,9 @@ parents:
 - obsidian
 ---
 
-Writing activity tracking via Keep the Rhythm plugin (v0.2.8) + eval_js bridge.
+Historical compatibility reference for Keep the Rhythm plugin (v0.2.8) +
+`eval_js`. The integration is disabled with the Obsidian feature and must not
+trigger a bridge probe, retry, or setup recommendation in that state.
 
 ## What it provides
 

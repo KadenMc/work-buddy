@@ -2,13 +2,13 @@
 
 Loads system PromptUnit data from the file-per-unit markdown store at
 ``knowledge/store/`` (one ``.md`` file per unit), merges user patches from
-``knowledge/store.local/``, and optionally loads personal VaultUnit data from
-the Obsidian vault.
+``knowledge/store.local/``, and loads personal ``VaultUnit`` compatibility
+objects from the personal-knowledge SQLite authority.
 
 Three scopes:
 
 * ``"system"`` — system documentation only (default, backward-compatible)
-* ``"personal"`` — personal knowledge from the vault only
+* ``"personal"`` — personal knowledge from the database provider only
 * ``"all"`` — merged view of both stores
 """
 
@@ -37,6 +37,7 @@ _LOCAL_DIR = _KNOWLEDGE_DIR / "store.local"
 # Caches
 _STORE: dict[str, PromptUnit] | None = None
 _VAULT_STORE: dict[str, VaultUnit] | None = None
+_VAULT_PROVIDER: object | None = None
 
 
 def _load_json_dir(directory: Path) -> dict[str, dict[str, Any]]:
@@ -101,51 +102,35 @@ def _derive_children(units: dict[str, PromptUnit]) -> None:
         unit.children = sorted(by_parent.get(path, []))
 
 
-def _vault_dir() -> Path | None:
-    """Resolve the configured vault directory for personal knowledge.
-
-    Returns None if personal knowledge is disabled or the path doesn't exist.
-    """
-    from work_buddy.config import load_config
-
-    cfg = load_config()
-    pk = cfg.get("personal_knowledge", {})
-
-    if not pk.get("enabled", True):
-        return None
-
-    vault_root = cfg.get("vault_root", "")
-    if not vault_root:
-        return None
-
-    vault_subpath = pk.get("vault_path", "Meta/WorkBuddy")
-    full = Path(vault_root) / vault_subpath
-
-    return full if full.is_dir() else None
-
-
 def load_vault(force: bool = False) -> dict[str, VaultUnit]:
-    """Load personal knowledge units from the Obsidian vault.
+    """Load personal units from the configured database authority provider.
 
-    Lazy-loads and caches. Returns empty dict if vault is unavailable.
+    The historical function name is retained for callers.  It performs no
+    filesystem discovery and has no vault fallback.
     """
-    global _VAULT_STORE  # noqa: PLW0603
+    global _VAULT_STORE, _VAULT_PROVIDER  # noqa: PLW0603
 
-    if _VAULT_STORE is not None and not force:
+    from work_buddy.knowledge.personal.provider import get_personal_knowledge_provider
+
+    # Provider selection is authority-aware and must run even when content is
+    # cached, otherwise a process that cached Markdown before cutover could
+    # keep serving it after the installation latch is sealed.
+    provider = get_personal_knowledge_provider()
+    if _VAULT_STORE is not None and _VAULT_PROVIDER is provider and not force:
         return _VAULT_STORE
 
-    vdir = _vault_dir()
-    if vdir is None:
-        _VAULT_STORE = {}
-        return _VAULT_STORE
-
-    from work_buddy.knowledge.vault_adapter import load_vault_units
-
-    _VAULT_STORE = load_vault_units(vdir)
+    _VAULT_STORE = provider.load_units(force=force)
+    _VAULT_PROVIDER = provider
     if _VAULT_STORE:
-        logger.info("Vault store ready: %d personal units", len(_VAULT_STORE))
+        logger.info("Personal knowledge store ready: %d units", len(_VAULT_STORE))
 
     return _VAULT_STORE
+
+
+def load_personal(force: bool = False) -> dict[str, VaultUnit]:
+    """Preferred name for :func:`load_vault` after the SQLite cutover."""
+
+    return load_vault(force)
 
 
 def load_store(
@@ -164,7 +149,7 @@ def load_store(
         force: Bypass cache and reload from disk.
         scope: Which store(s) to return:
                - ``"system"`` — system docs only (default, backward-compatible)
-               - ``"personal"`` — personal vault knowledge only
+               - ``"personal"`` — personal database knowledge only
                - ``"all"`` — merged view of both
 
     Returns:
@@ -231,14 +216,15 @@ def load_store(
 def get_unit(path: str) -> KnowledgeUnit | None:
     """Look up a single unit by exact path.
 
-    Checks system store first, then vault store for ``personal/`` paths.
+    Checks system Markdown first, then the personal database provider.
     """
     unit = load_store().get(path)
     if unit is not None:
         return unit
-    # Check vault for personal/ paths
+    # Resolve current or historical logical aliases through the provider.
     if path.startswith("personal/"):
-        return load_vault().get(path)
+        from work_buddy.knowledge.personal.provider import get_personal_knowledge_provider
+        return get_personal_knowledge_provider().get_unit(path)
     return None
 
 
@@ -258,19 +244,31 @@ def get_subtree(prefix: str) -> dict[str, KnowledgeUnit]:
 
 
 def invalidate_vault() -> None:
-    """Clear only the vault cache so it reloads on next access."""
-    global _VAULT_STORE  # noqa: PLW0603
+    """Clear only the personal-provider cache so it reloads on next access."""
+    global _VAULT_STORE, _VAULT_PROVIDER  # noqa: PLW0603
     _VAULT_STORE = None
+    _VAULT_PROVIDER = None
+    from work_buddy.knowledge.personal.provider import (
+        invalidate_personal_knowledge_provider,
+    )
+    invalidate_personal_knowledge_provider()
     # Also invalidate the search index since vault content changed
     from work_buddy.knowledge.index import invalidate_index
     invalidate_index()
 
 
+def invalidate_personal() -> None:
+    """Preferred name for invalidating the personal authority projection."""
+
+    invalidate_vault()
+
+
 def invalidate_store() -> None:
     """Clear both caches so they reload on next access."""
-    global _STORE, _VAULT_STORE  # noqa: PLW0603
+    global _STORE, _VAULT_STORE, _VAULT_PROVIDER  # noqa: PLW0603
     _STORE = None
     _VAULT_STORE = None
+    _VAULT_PROVIDER = None
     # Also invalidate the search index since store content changed
     from work_buddy.knowledge.index import invalidate_index
     invalidate_index()

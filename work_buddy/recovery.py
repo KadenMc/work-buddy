@@ -113,9 +113,20 @@ def recheck_tool(tool_id: str, *, force: bool = False) -> bool:
         ``tool_id`` isn't a registered probe, returns whatever
         ``is_tool_available`` says (typically False).
     """
+    from work_buddy.health.preferences import is_wanted
     from work_buddy.tools import is_tool_available, reprobe_one
 
     with _RECOVERY_LOCK:
+        # ``force`` bypasses only the cool-down.  It must never override an
+        # explicit user opt-out, otherwise status refreshes and retry workers
+        # quietly bring a retired integration back to life.
+        if is_wanted(tool_id) is False:
+            logger.debug(
+                "recheck_tool(%s): skipped because the feature is opted out",
+                tool_id,
+            )
+            return False
+
         last = _LAST_RECHECK_AT.get(tool_id, 0.0)
         elapsed = time.monotonic() - last
         if not force and elapsed < _COOLDOWN_SECONDS:
@@ -173,6 +184,7 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
     unknown (the caller must distinguish those two cases by checking
     ``_REGISTRY`` separately).
     """
+    from work_buddy.health.preferences import is_wanted
     from work_buddy.tools import DISABLED_CAPABILITIES, is_tool_available
     from work_buddy.mcp_server.registry import (
         _DISABLED_REGISTRY,
@@ -203,6 +215,14 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
         from work_buddy.tools import reprobe_one
 
         for tool_id in list(missing):
+            if is_wanted(tool_id) is False:
+                logger.debug(
+                    "recheck_disabled_capability(%s): tool %s is opted out; "
+                    "skipping probe",
+                    name,
+                    tool_id,
+                )
+                continue
             last = _LAST_RECHECK_AT.get(tool_id, 0.0)
             elapsed = time.monotonic() - last
             if not force and elapsed < _COOLDOWN_SECONDS:
@@ -223,7 +243,10 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
                 )
 
         # Re-evaluate which tools are still missing.
-        still_missing = [t for t in missing if not is_tool_available(t)]
+        still_missing = [
+            t for t in missing
+            if is_wanted(t) is False or not is_tool_available(t)
+        ]
 
         if still_missing:
             # Update the disabled list — may have shrunk if some tools

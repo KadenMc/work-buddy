@@ -9,4 +9,9 @@ tags:
 - restore
 ---
 
-Work-buddy periodically snapshots its vital SQLite databases (task metadata, projects, messages, threads), tar+gzips them with a manifest, and optionally pushes to a remote GitHub Releases repo. Backups run on an hourly sidecar cron and on demand via the `/wb-backup-now` and `/wb-backup-restore` slash commands.
+Work-buddy periodically snapshots its vital SQLite databases (including Tasks,
+Projects, Contracts, Personal Knowledge, Messages, and Threads), tar+gzips them
+with a manifest, and can push to a remote GitHub Releases repo. Backups run on
+an hourly sidecar cron and on demand via `/wb-backup-now`. Local snapshots are
+the default; unattended upload of the unencrypted private archive requires the
+explicit `backups.github.allow_unencrypted_private_content: true` opt-in.

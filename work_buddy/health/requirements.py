@@ -252,6 +252,10 @@ _register(RequirementDef(
     },
     fix_preview="Creates the directory under the vault and sets "
                 "projects.markdown_dir in config.yaml.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "projects_markdown_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
@@ -356,6 +360,10 @@ _register(RequirementDef(
         "should appear in the list with value `true` (or in the array).\n"
         "5. Ask the user to refresh the dashboard Settings tab."
     ),
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "journal_markdown_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
@@ -369,6 +377,10 @@ _register(RequirementDef(
     fix_kind="programmatic",
     fix_fn="work_buddy.health.fixers.fix_journal_dir",
     fix_preview="Create the configured journal/ directory inside your vault if it doesn't exist.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "journal_markdown_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
@@ -385,6 +397,10 @@ _register(RequirementDef(
     fix_kind="programmatic",
     fix_fn="work_buddy.health.fixers.fix_log_section",
     fix_preview="Append '# Log' section to today's (or last available) daily note.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "journal_markdown_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
@@ -401,6 +417,10 @@ _register(RequirementDef(
     fix_kind="programmatic",
     fix_fn="work_buddy.health.fixers.fix_sign_in_section",
     fix_preview="Append '# Sign-In' section to today's (or last available) daily note.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "journal_markdown_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
@@ -417,6 +437,10 @@ _register(RequirementDef(
     fix_kind="programmatic",
     fix_fn="work_buddy.health.fixers.fix_running_notes_section",
     fix_preview="Append '# Running Notes' section to today's (or last available) daily note.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "journal_markdown_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
@@ -524,6 +548,10 @@ _register(RequirementDef(
     fix_kind="programmatic",
     fix_fn="work_buddy.health.fixers.fix_contracts_dir",
     fix_preview="Create the configured contracts directory inside your vault.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "contracts_markdown_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
@@ -537,6 +565,10 @@ _register(RequirementDef(
     fix_kind="programmatic",
     fix_fn="work_buddy.health.fixers.fix_personal_knowledge_dir",
     fix_preview="Create the configured personal-knowledge directory inside your vault.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks."
+        "personal_knowledge_markdown_compatibility_required"
+    ),
 ))
 
 # --- Integrations ---
@@ -1060,8 +1092,28 @@ _register(RequirementDef(
     },
     fix_preview=(
         "Writes `backups.github.repo` to config.local.yaml, then calls "
-        "`gh repo create --private` if the repo doesn't already exist."
+        "`gh repo create --private` if the repo doesn't already exist. "
+        "This names a destination but does not enable private-content uploads."
     ),
+))
+
+_register(RequirementDef(
+    id="integrations/github_backups/private-content-opt-in",
+    component="github_backups",
+    description=(
+        "Unencrypted private backup uploads are explicitly authorized"
+    ),
+    check_fn=(
+        "work_buddy.health.requirement_checks."
+        "check_backup_private_content_opt_in"
+    ),
+    severity="required",
+    fix_hint=(
+        "Review the backup contents and GitHub repository access first. Then "
+        "set `backups.github.allow_unencrypted_private_content: true` in "
+        "config.local.yaml. Keep it false or absent for local-only backups."
+    ),
+    setup_group="backups",
 ))
 
 # --- Google Calendar (native OAuth) ---
@@ -1196,14 +1248,22 @@ class RequirementChecker:
 
     def check_bootstrap(self) -> list[RequirementResult]:
         """Check only core/* requirements (fast, no component filter)."""
+        from work_buddy.health.preferences import is_wanted
+
         return [
             self._run_check(req)
             for req in REQUIREMENT_REGISTRY.values()
-            if req.id.startswith("core/") and self.is_applicable(req)
+            if req.id.startswith("core/")
+            and self.is_applicable(req)
+            and (req.component is None or is_wanted(req.component) is not False)
         ]
 
     def check_component(self, component_id: str) -> list[RequirementResult]:
         """Check requirements for a specific component."""
+        from work_buddy.health.preferences import is_wanted
+
+        if is_wanted(component_id) is False:
+            return []
         return [
             self._run_check(req)
             for req in REQUIREMENT_REGISTRY.values()
@@ -1212,10 +1272,14 @@ class RequirementChecker:
 
     def check_group(self, group_name: str) -> list[RequirementResult]:
         """Check requirements for a setup group (e.g. 'journal', 'tasks')."""
+        from work_buddy.health.preferences import is_wanted
+
         return [
             self._run_check(req)
             for req in REQUIREMENT_REGISTRY.values()
-            if req.setup_group == group_name and self.is_applicable(req)
+            if req.setup_group == group_name
+            and self.is_applicable(req)
+            and (req.component is None or is_wanted(req.component) is not False)
         ]
 
     @staticmethod

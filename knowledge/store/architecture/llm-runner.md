@@ -140,7 +140,7 @@ Fingerprinting happens automatically inside `run_task` — callers don't compute
 
 Legacy on-disk entries (pre-content-aware refactor) lack `input_hash` and never satisfy a lookup; they age out via TTL and `cache.prune()` evicts them on next call.
 
-**Segmenter-specific cache.** The journal segmenter does NOT use the LLM-prompt cache (`cache_ttl_minutes=0` on its calls). The prompt cache's SimHash fuzzy-match fallback is wrong for line-number-output callers — a small content edit shifts line numbers but stays within the Hamming threshold, serving stale partitions. Instead, the segmenter uses a domain-specific content-addressable cache at `work_buddy.journal_backlog.segmentation_cache` that keys on the *content set* of input lines (per-line content hashes, not the prompt text). Robust to line reordering, blank-line edits, and whitespace-only changes; misses on any meaningful content change.
+**Retired Journal segmenter cache.** The migration-only Journal segmenter does not use the LLM-prompt cache (`cache_ttl_minutes=0` on its calls). Its archived domain-specific cache remains at `work_buddy.journal_backlog.segmentation_cache` so old receipts and fixtures can be interpreted; the native Journal does not invoke it.
 
 ## Broker integration (per-call priority + metrics)
 
@@ -161,8 +161,7 @@ The Anthropic backend is NOT broker-wrapped — Anthropic is a cloud service, it
 - `work_buddy.triage.capabilities.journal_triage_scan` — same escalation policy (via `verdict_call`)
 - `work_buddy.triage.recommend.group_intents` (Chrome intent grouping) — FRONTIER_BALANCED
 - `work_buddy.llm.classify`, `work_buddy.llm.summarize` — FRONTIER_FAST (Haiku)
-- `work_buddy.triage.adapters.journal._call_segmenter` — LOCAL_FAST → FRONTIER_FAST escalation chain (configurable via `triage.segment.tier_chain`) for running-notes thread segmentation
-- `work_buddy.journal_backlog.manifest.build_thread_manifest` — FRONTIER_FAST per-thread tag/summary generation for the backlog pipeline
+- `work_buddy.triage.adapters.journal._call_segmenter` and `work_buddy.journal_backlog.manifest.build_thread_manifest` — retained migration/receipt compatibility only; no native Journal surface invokes them
 
 ## Current limitations (tracked in task t-a373609f)
 

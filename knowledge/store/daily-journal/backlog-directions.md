@@ -1,14 +1,8 @@
 ---
-name: Journal Backlog Processing Directions
-kind: directions
-description: How to run Running Notes backlog pipeline — cluster review, routing proposals, rewrite presentation
-summary: Default to today's journal unless a date is specified. Requires active user participation. Review clusters before routing (bad grouping cascades). Never auto-route without confirmation.
-trigger: user wants to process or clean up their Running Notes backlog
-command: wb-journal-backlog
-workflow: daily-journal/process-backlog
-capabilities:
-- journal/running_notes
-- journal/vault_write_at_location
+name: Retired Journal Backlog Processing
+kind: concept
+description: Historical description of the retired Markdown Running Notes backlog pipeline.
+summary: The file segmentation, clustering, routing, and section-rewrite workflow is retired. Native Running Notes are edited, routed, or tombstoned through the React Journal and domain APIs.
 tags:
 - journal
 - backlog
@@ -22,12 +16,14 @@ aliases:
 - clean up running notes
 parents:
 - daily-journal
-- daily-journal
 ---
 
-Default to today's journal unless a date is specified. Requires active user participation — review clusters before routing (bad grouping cascades), and confirm the rewrite preview before granting consent for the file write. Never auto-route without confirmation.
+The `/wb-journal-backlog` launcher, workflow declaration, and hourly schedule
+are retired. Do not run the legacy source pipeline or recommend an Obsidian
+section rewrite. Native Running Notes have stable identities, revisions,
+Sources provenance, routing state, and tombstones in the Journal authority.
 
-## What the workflow does
+## Historical workflow
 
 1. **Extract** the Running Notes section from the journal file.
 2. **Segment** via line-range partition (`work_buddy.triage.adapters.journal._segment_with_escalation`). The LLM emits line-number groups; ids are generated on our side. Tier escalation (LOCAL_FAST → FRONTIER_FAST by default) handles validation failures.
@@ -37,11 +33,12 @@ Default to today's journal unless a date is specified. Requires active user part
 6. **Route**: user-confirmed routing decisions go to `execute_routing_plan` (consent-gated). Destinations: task list, consideration file, existing note (append), or delete/skip/split.
 7. **Rewrite**: `rewrite_running_notes` produces a new Running Notes section with processed lines stripped (consent-gated; refuses to write if file changed on disk since the rewrite was prepared).
 
-## Scheduled scan dedup
+## Historical scheduled scan
 
-The hourly `journal-triage-scan` cron invokes `run_source_pipeline(source="journal_backlog")`. The runner short-circuits the spawn when an open umbrella for the same `journal_date` already exists (key: `journal_backlog:<journal_date>`, stored in the umbrella's `inciting_event_summary.dedup_key`). One umbrella per day until it reaches a terminal state. Items captured into the running notes after the umbrella was spawned are NOT auto-routed into it — that requires a manual re-run after the existing umbrella is resolved (done / dismissed), at which point the next scan produces a fresh umbrella.
+The `journal-triage-scan` system job is disabled. The old date-keyed dedup
+behavior remains documented only so archived Threads can be interpreted.
 
-## Operator notes
+## Archive notes
 
 - Multi-thread overlap (a line in two clusters) is handled conservatively in the rewrite: the line is kept if any of its memberships is a keep-decision. Silent data loss is the worse failure mode.
 - Split actions require a `rewrite_map[id]` entry naming what to put in place of the original lines (string = replacement text, None = drop).

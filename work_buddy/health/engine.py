@@ -213,10 +213,18 @@ class HealthEngine:
                 if "user_opted_out" not in details:
                     details["user_opted_out"] = True
 
-            # If any parent is unhealthy, mark as blocked
+            # A child of an explicitly opted-out integration is disabled, not
+            # unhealthy.  That distinction keeps setup/help from treating an
+            # intentional retirement as an outage.
             if status not in ("disabled", "blocked"):
                 for dep_id in comp.depends_on:
                     dep_status = resolved.get(dep_id, "unknown")
+                    dep_pref = prefs.get(dep_id)
+                    if dep_pref is not None and dep_pref.wanted is False:
+                        status = "disabled"
+                        details["user_opted_out"] = True
+                        details["blocked_by_opt_out"] = dep_id
+                        break
                     if dep_status not in ("healthy", "disabled", "unknown"):
                         status = "blocked"
                         details["blocked_by"] = dep_id
@@ -272,6 +280,14 @@ class HealthEngine:
         if wanted is False and status != "disabled":
             status = "disabled"
             details["user_opted_out"] = True
+
+        if status != "disabled":
+            for dep_id in comp.depends_on:
+                if is_wanted(dep_id) is False:
+                    status = "disabled"
+                    details["user_opted_out"] = True
+                    details["blocked_by_opt_out"] = dep_id
+                    break
 
         child_map: dict[str, list[str]] = {}
         for c in COMPONENT_CATALOG.values():

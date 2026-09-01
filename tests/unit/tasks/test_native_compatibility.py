@@ -66,6 +66,17 @@ def test_work_item_port_uses_native_store_without_legacy_mutation(
     assert task.description == "Author in the neutral store"
     assert task.namespace_tags == ("systems/tasks",)
 
+    summary_only = task_adapter.create(
+        "Keep the summary scalar",
+        summary="Useful context without a document role.",
+        client_mutation_id="compat-create-summary-only-1",
+    )
+    summary_task = native_runtime.get(summary_only["task_id"])
+    assert summary_task is not None
+    assert summary_task.summary_text == "Useful context without a document role."
+    assert summary_task.note_uuid is None
+    assert native_runtime.get_task_document_link(summary_task.task_id) is None
+
     changed = task_adapter.update(
         task_id,
         state="active",
@@ -83,6 +94,63 @@ def test_work_item_port_uses_native_store_without_legacy_mutation(
         client_mutation_id="compat-complete-1",
     )
     assert completed["task"]["state"] == "done"
+
+
+@pytest.mark.parametrize(
+    ("actor", "expected"),
+    [
+        ("human:local", "human"),
+        ("user:owner", "human"),
+        ("dashboard:owner", "human"),
+        ("agent:session", "ai"),
+        ("service:collector", "ai"),
+    ],
+)
+def test_task_note_creation_authorship_uses_task_actor_vocabulary(actor, expected):
+    from work_buddy.work_item import task_adapter
+
+    assert task_adapter._creation_authorship(actor) == expected
+
+
+def test_legacy_create_consumes_native_note_controls(monkeypatch):
+    from work_buddy.obsidian.tasks import mutations
+    from work_buddy.work_item import task_adapter
+
+    captured = {}
+
+    def legacy_create(
+        task_text,
+        urgency="medium",
+        project=None,
+        due_date=None,
+        contract=None,
+        summary=None,
+        tags=None,
+    ):
+        captured.update(
+            task_text=task_text,
+            urgency=urgency,
+            project=project,
+            due_date=due_date,
+            contract=contract,
+            summary=summary,
+            tags=tags,
+        )
+        return {"success": True, "task_line": "legacy"}
+
+    monkeypatch.setattr(task_adapter, "_native_active", lambda: False)
+    monkeypatch.setattr(mutations, "create_task", legacy_create)
+
+    result = task_adapter.create(
+        "Legacy-compatible explicit note",
+        summary="A scalar unavailable to the legacy writer",
+        requested_note_role="working_document/v1",
+        initial_note="  Exact legacy note body.  \n",
+        requested_truth_policy_resolution="disabled",
+    )
+
+    assert result["success"] is True
+    assert captured["summary"] == "  Exact legacy note body.  \n"
 
 
 def test_task_facade_reads_native_authority(native_runtime):

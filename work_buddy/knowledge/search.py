@@ -11,7 +11,7 @@ with keyword fallback when the embedding service is unavailable.
 
 The ``knowledge_scope`` parameter controls which stores are searched:
   - ``"system"`` — system docs only (default, backward-compatible)
-  - ``"personal"`` — personal vault knowledge only
+  - ``"personal"`` — personal database knowledge only
   - ``"all"`` — merged view of both stores
 """
 
@@ -267,7 +267,7 @@ def _lookup(
     unit = store.get(path)
 
     # Fallback: if not found and scope is specific, try the other scope
-    if unit is None and knowledge_scope != "all":
+    if unit is None and (knowledge_scope != "all" or path.startswith("personal/")):
         unit = get_unit(path)
 
     if unit is None:

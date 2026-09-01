@@ -15,7 +15,7 @@ steps:
   step_type: code
   depends_on: []
   auto_run:
-    callable: work_buddy.journal.read_journal_state
+    callable: work_buddy.journal_capture.native_ops.journal_state
     kwargs:
       create_on_read: true
     input_map:

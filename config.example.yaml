@@ -22,6 +22,15 @@ gateway:
 paths:
   data_root: ".data"
 
+# Local snapshots always run. Remote GitHub Release uploads are disabled by
+# default because the archive is unencrypted and contains private domain data.
+# A repository names the destination; it does not authorize uploads by itself.
+backups:
+  github:
+    repo: null                         # e.g. "username/my-work-buddy-data"
+    cadence_minutes: 60
+    allow_unencrypted_private_content: false
+
 git:
   active_days: 30
   detail_days: 7
@@ -369,10 +378,6 @@ telegram:
   bot_token_env: "TELEGRAM_BOT_TOKEN"
   allowed_chat_ids: []
   enabled: false
-  capture:
-    note: "latest_journal"
-    section: "Running Notes"
-    position: "top"
 
 # Background-triage overrides.
 #
@@ -499,15 +504,14 @@ thunderbird:
   # tighten if a slow IMAP folder sync is hanging requests.
   timeout_seconds: 10
 
-# Calendar integration. Default provider is "obsidian_bridge" (reads Google
-# Calendar via the Obsidian google-calendar plugin over the eval_js bridge).
-# Use "fake" to exercise the Python pipeline without Obsidian, or "google_native"
-# for direct own-OAuth access (no Obsidian dependency). The bridge capabilities
-# are additionally gated by the `google_calendar` tool probe.
+# Calendar integration. The default provider is direct Google OAuth and has no
+# Obsidian dependency. Use "fake" to exercise the Python pipeline without a
+# calendar account. "obsidian_bridge" remains an explicit compatibility choice
+# for an installation that intentionally retains the old plugin bridge.
 calendar:
   enabled: true
-  provider: "obsidian_bridge"
-  # Direct Google Calendar access via own OAuth (provider: "google_native").
+  provider: "google_native"
+  # Direct Google Calendar access via own OAuth.
   # Setup: create a Google Cloud project, enable the Calendar API, configure the
   # OAuth consent screen and PUBLISH IT TO "Production" (so the refresh token does
   # not expire), create a "Desktop app" OAuth client, and download its JSON.

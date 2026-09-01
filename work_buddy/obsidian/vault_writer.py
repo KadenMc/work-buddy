@@ -17,6 +17,7 @@ or at EOF.
 from __future__ import annotations
 
 import re
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,10 @@ from work_buddy.journal import current_journal_date
 # Note resolvers
 # ---------------------------------------------------------------------------
 
+def _journal_dir_relative() -> Path:
+    configured = load_config().get("obsidian", {}).get("journal_dir", "journal")
+    return Path(str(configured or "journal"))
+
 def _resolve_note_path(note: str, vault_root: Path) -> Path | None:
     """Resolve a note specifier to a vault-relative Path.
 
@@ -38,7 +43,7 @@ def _resolve_note_path(note: str, vault_root: Path) -> Path | None:
         return _resolve_latest_journal(vault_root)
     elif note == "today":
         date_str = current_journal_date().isoformat()
-        return Path("journal") / f"{date_str}.md"
+        return _journal_dir_relative() / f"{date_str}.md"
     else:
         # Explicit path — use as-is
         return Path(note)
@@ -50,7 +55,8 @@ def _resolve_latest_journal(vault_root: Path) -> Path | None:
     Respects the App-owned Journal boundary rather than assuming midnight
     or embedding a second 5 AM cutoff in this adapter.
     """
-    journal_dir = vault_root / "journal"
+    journal_relative = _journal_dir_relative()
+    journal_dir = vault_root / journal_relative
     if not journal_dir.is_dir():
         return None
 
@@ -67,9 +73,9 @@ def _resolve_latest_journal(vault_root: Path) -> Path | None:
 
     logical_today = current_journal_date().isoformat() + ".md"
     if logical_today in journal_files:
-        return Path("journal") / logical_today
+        return journal_relative / logical_today
 
-    return Path("journal") / journal_files[0]
+    return journal_relative / journal_files[0]
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +138,51 @@ def _find_section_bounds(
 # Public API
 # ---------------------------------------------------------------------------
 
+
+def _guard_write_at_location_legacy_roots(func):
+    """Fence configured legacy roots before a resolver can inspect them."""
+
+    @wraps(func)
+    def guarded(
+        content: str,
+        note: str = "latest_journal",
+        section: str = "Running Notes",
+        position: str = "top",
+        source: str | None = None,
+        vault_root: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = load_config()
+        root = Path(vault_root) if vault_root is not None else Path(cfg["vault_root"])
+        if note in {"latest_journal", "today"}:
+            guard_target = root / _journal_dir_relative()
+        else:
+            guard_target = root / Path(note)
+            resolved_root = root.expanduser().resolve()
+            resolved_target = guard_target.expanduser().resolve()
+            if not resolved_target.is_relative_to(resolved_root):
+                return {
+                    "status": "error",
+                    "error": f"Note path resolves outside the configured vault: {note!r}",
+                }
+            guard_target = resolved_target
+        from work_buddy.vault_index.authority_exclusions import (
+            legacy_root_write_guard,
+        )
+
+        with legacy_root_write_guard(guard_target, cfg=cfg):
+            return func(
+                content,
+                note=note,
+                section=section,
+                position=position,
+                source=source,
+                vault_root=vault_root,
+            )
+
+    return guarded
+
 @bridge_retry()
+@_guard_write_at_location_legacy_roots
 def write_at_location(
     content: str,
     note: str = "latest_journal",
@@ -289,6 +339,37 @@ def _read_note(vault_rel_path: str, abs_path: Path) -> str | None:
         return None
 
 
+def _guard_legacy_root_write(func):
+    """Serialize a vault write with every matching domain authority."""
+
+    @wraps(func)
+    def guarded(
+        vault_rel_path: str,
+        abs_path: Path,
+        content: str,
+        *,
+        write_mode: str = "replace",
+        content_hint: str | None = None,
+        journal_owned_write: bool = False,
+    ) -> bool:
+        from work_buddy.vault_index.authority_exclusions import (
+            legacy_root_write_guard,
+        )
+
+        with legacy_root_write_guard(abs_path, cfg=load_config()):
+            return func(
+                vault_rel_path,
+                abs_path,
+                content,
+                write_mode=write_mode,
+                content_hint=content_hint,
+                journal_owned_write=journal_owned_write,
+            )
+
+    return guarded
+
+
+@_guard_legacy_root_write
 def vault_write(
     vault_rel_path: str,
     abs_path: Path,

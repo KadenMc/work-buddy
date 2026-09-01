@@ -48,6 +48,7 @@ from work_buddy.cowork.paths import (
     resolve_markdown_path,
 )
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.cowork.truth_activation import resolve_document_truth_policy
 from work_buddy.dashboard import local_identity_api
 from work_buddy.dashboard.local_identity_api import authenticate_request_session
 from work_buddy.document_kernel.cowork_integration import (
@@ -452,81 +453,91 @@ def api_doc_list():
     entries: list[dict] = []
     repairable_count = 0
     with store._read_connection() as conn:
-        for document in documents.list_documents(
-            store, include_retired=include_retired, conn=conn
-        ):
-            if (
-                document_class_filter
-                and document.document_class != document_class_filter
+        conn.execute("BEGIN")
+        try:
+            for document in documents.list_documents(
+                store, include_retired=include_retired, conn=conn
             ):
-                continue
-            open_props = proposals.open_proposals(
-                store, document_id=document.id, conn=conn
-            )
-            events = store._document_events_locked(conn, document.id)
-            lifecycle = documents.current_lifecycle(store, document.id, conn=conn)
-            readiness_view = readiness.classify_document(
-                store, document, read_only=read_only
-            ).to_dict()
-            try:
-                resolve_document_source_path(store, document)
-            except CoworkPathError:
-                readiness_view.update(
-                    {
-                        "initialization_state": "corrupt",
-                        "disabled_reason": "invalid_path",
-                        "permissions": {
-                            "open": False,
-                            "edit": False,
-                            "materialize": False,
-                            "repair": False,
-                            "retire": bool(
-                                readiness_view["permissions"].get("retire")
-                            ),
-                        },
-                    }
+                if (
+                    document_class_filter
+                    and document.document_class != document_class_filter
+                ):
+                    continue
+                open_props = proposals.open_proposals(
+                    store, document_id=document.id, conn=conn
                 )
-            if readiness_view["permissions"]["repair"]:
-                repairable_count += 1
-            observed_source_sha256 = _current_file_sha256(store, document)
-            current_file_sha256 = (
-                document.content_sha256
-                if documents.source_is_detached(document)
-                else observed_source_sha256
-            )
-            import_source_sha256 = (
-                documents.retained_file_import_source_sha256(document.meta_json)
-                if documents.source_is_detached(document)
-                else None
-            )
-            entry = {
-                "document_id": document.id,
-                "path": document.path,
-                "title": document.title or "",
-                "document_class": document.document_class,
-                "profile": document.document_class,
-                "source_writeback": documents.source_writeback_policy(document),
-                "lifecycle": lifecycle,
-                "current_file_sha256": current_file_sha256,
-                "import_source_sha256": import_source_sha256,
-                "observed_source_file_sha256": observed_source_sha256,
-                # Compatibility alias retained while clients move to the
-                # explicit observed-source field above.
-                "source_file_sha256": observed_source_sha256,
-                "last_materialized_sha256": document.content_sha256,
-                "drift_state": (
-                    "unknown"
-                    if readiness_view["disabled_reason"] == "invalid_path"
-                    else _drift_from_hash(document, current_file_sha256)
-                ),
-                "open_proposal_count": len(open_props),
-                "open_flag_count": sum(
-                    1 for item in open_props if item.replacement is None
-                ),
-                "updated_at": events[-1].at if events else document.created_at,
-            }
-            entry.update(readiness_view)
-            entries.append(entry)
+                events = store._document_events_locked(conn, document.id)
+                lifecycle = documents.current_lifecycle(store, document.id, conn=conn)
+                truth_policy = resolve_document_truth_policy(
+                    store, document.id, conn=conn
+                )
+                readiness_view = readiness.classify_document(
+                    store, document, read_only=read_only
+                ).to_dict()
+                try:
+                    resolve_document_source_path(store, document)
+                except CoworkPathError:
+                    readiness_view.update(
+                        {
+                            "initialization_state": "corrupt",
+                            "disabled_reason": "invalid_path",
+                            "permissions": {
+                                "open": False,
+                                "edit": False,
+                                "materialize": False,
+                                "repair": False,
+                                "retire": bool(
+                                    readiness_view["permissions"].get("retire")
+                                ),
+                            },
+                        }
+                    )
+                if readiness_view["permissions"]["repair"]:
+                    repairable_count += 1
+                observed_source_sha256 = _current_file_sha256(store, document)
+                current_file_sha256 = (
+                    document.content_sha256
+                    if documents.source_is_detached(document)
+                    else observed_source_sha256
+                )
+                import_source_sha256 = (
+                    documents.retained_file_import_source_sha256(document.meta_json)
+                    if documents.source_is_detached(document)
+                    else None
+                )
+                entry = {
+                    "document_id": document.id,
+                    "path": document.path,
+                    "title": document.title or "",
+                    "document_class": document.document_class,
+                    "profile": document.document_class,
+                    "source_writeback": documents.source_writeback_policy(document),
+                    "lifecycle": lifecycle,
+                    "current_file_sha256": current_file_sha256,
+                    "import_source_sha256": import_source_sha256,
+                    "observed_source_file_sha256": observed_source_sha256,
+                    # Compatibility alias retained while clients move to the
+                    # explicit observed-source field above.
+                    "source_file_sha256": observed_source_sha256,
+                    "last_materialized_sha256": document.content_sha256,
+                    "drift_state": (
+                        "unknown"
+                        if readiness_view["disabled_reason"] == "invalid_path"
+                        else _drift_from_hash(document, current_file_sha256)
+                    ),
+                    "open_proposal_count": len(open_props),
+                    "open_flag_count": sum(
+                        1 for item in open_props if item.replacement is None
+                    ),
+                    "updated_at": events[-1].at if events else document.created_at,
+                    "capability_envelope": truth_policy.capability_envelope(),
+                    "truth_policy": truth_policy.to_dict(),
+                }
+                entry.update(readiness_view)
+                entries.append(entry)
+        finally:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
     return jsonify(
         {
             "store_id": store.store_id,
@@ -539,6 +550,10 @@ def api_doc_list():
 
 @cowork_blueprint.get("/api/truth/doc/<document_id>")
 def api_doc_get(document_id: str):
+    include_truth_value = request.args.get("include_truth")
+    if include_truth_value not in {None, "0", "1"}:
+        return _fail("include_truth must be 0 or 1", 400)
+    include_truth = include_truth_value != "0"
     store, error = _resolve_store(request.args.get("store_id"))
     if error:
         return error
@@ -554,10 +569,20 @@ def api_doc_get(document_id: str):
             document_id=document.id,
             conn=conn,
         )
-        expr_records = expressions.expressions_for_document(
-            store,
-            document.id,
-            conn=conn,
+        truth_policy = resolve_document_truth_policy(
+            store, document.id, conn=conn
+        )
+        # Provenance is a document capability, independent from Truth. A
+        # disabled/unsupported document must not query claim or expression
+        # tables just to render its editor payload.
+        expr_records = (
+            expressions.expressions_for_document(
+                store,
+                document.id,
+                conn=conn,
+            )
+            if include_truth and truth_policy.truth_observable
+            else ()
         )
         span_rows = conn.execute(
             "SELECT id, selector_json, quote_exact, author_kind, author_ref, "
@@ -681,6 +706,11 @@ def api_doc_get(document_id: str):
         "provenance_spans": _provenance_spans(span_rows),
         "authorship_attestations": authorship_attestations,
         "provenance": provenance_view,
+        "truth_policy": truth_policy.to_dict(),
+        "capability_envelope": truth_policy.capability_envelope(),
+        "truth_projection_included": bool(
+            include_truth and truth_policy.truth_observable
+        ),
         "events_cursor": events[-1].id if events else "",
     }
     # Additive capability handshake. Older dashboard bundles ignore these

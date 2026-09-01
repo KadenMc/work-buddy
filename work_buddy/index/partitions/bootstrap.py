@@ -27,6 +27,30 @@ def ensure_partitions_registered() -> None:
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("knowledge partition registration failed: %s", exc)
 
+    # Journal — domain-owned SQLite content and typed observations.
+    try:
+        import work_buddy.journal_capture.partition  # noqa: F401
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("journal partition registration failed: %s", exc)
+
+    # Projects — stable SQLite identities and per-revision hash discovery.
+    try:
+        import work_buddy.projects.partition  # noqa: F401
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("projects partition registration failed: %s", exc)
+
+    # Contracts — current native revisions and transactional search outbox.
+    try:
+        import work_buddy.contracts_domain.partition  # noqa: F401
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("contracts partition registration failed: %s", exc)
+
+    # Personal Knowledge — stable SQLite unit IDs, paths retained as aliases.
+    try:
+        import work_buddy.knowledge.personal.partition  # noqa: F401
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("personal knowledge partition registration failed: %s", exc)
+
     # IR sources (conversation, projects, chrome, summary, task_note) via the wrapper.
     try:
         from work_buddy.index.partitions.ir_source import register_ir_partitions

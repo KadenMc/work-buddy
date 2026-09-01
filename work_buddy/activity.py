@@ -1,9 +1,9 @@
-"""Structured activity timeline: parse journal entries and infer recent activity.
+"""Structured activity timeline: project Journal records and infer activity.
 
 Provides a composable ``infer_activity()`` primitive that returns a typed
-``ActivityTimeline`` from journal entries (shallow) and optionally deeper
+``ActivityTimeline`` from Journal entries (shallow) and optionally deeper
 signals like git commits (deep mode).  Multiple workflows can consume this
-instead of re-inventing "what happened recently?" from raw markdown.
+instead of re-inventing "what happened recently?" from storage details.
 
 Phase 1: journal parsing + shallow timeline + gap analysis + formatting.
 Phase 2+: deep mode with git, chat, vault, message sources.
@@ -16,14 +16,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from work_buddy.journal import (
-    _LOG_TIMESTAMP_RE,
     _get_log_section_bounds,
-    journal_path_for_date,
     user_now,
 )
 from work_buddy.timefmt import to_local_naive
+
+if TYPE_CHECKING:
+    from work_buddy.journal_capture.models import JournalNativeItem
+    from work_buddy.journal_capture.store import JournalCaptureStore
 
 
 # ---------------------------------------------------------------------------
@@ -96,69 +99,65 @@ class ActivityTimeline:
 
 # Extracts bullet char, time, and everything after the separator dash.
 _LOG_LINE_RE = re.compile(
-    r"^([\*\-])\s+"  # bullet: * or -
-    r"(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))"  # time
+    r"^(?P<bullet>[\*\-])\s+"  # bullet: * or -
+    r"(?P<time>\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))"  # time
     r"\s*-\s*"  # separator dash
-    r"(.+)$",  # rest of line
+    r"(?P<rest>.+)$",  # rest of line
+)
+
+# Native Journal records store the semantic value without a Markdown bullet.
+_NATIVE_LOG_LINE_RE = re.compile(
+    r"^(?:(?P<bullet>[\*\-])\s+)?"
+    r"(?P<time>\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))"
+    r"\s*-\s*"
+    r"(?P<rest>.+)$",
 )
 
 _TAG_RE = re.compile(r"#\S+")
 
 
-def parse_journal_log(
-    journal_content: str,
+def _parse_log_lines(
+    lines: list[str],
     journal_date: str,
+    *,
+    allow_unbulleted: bool = False,
+    default_source: EventSource | None = None,
 ) -> list[JournalEntry]:
-    """Parse all Log section lines into ``JournalEntry`` objects.
+    """Parse legacy bullets or native semantic log values for one local day."""
 
-    Args:
-        journal_content: Full text of the journal file.
-        journal_date: ISO date string (YYYY-MM-DD).
-
-    Returns:
-        List of entries, sorted by timestamp.
-    """
-    bounds = _get_log_section_bounds(journal_content)
-    if bounds is None:
-        return []
-
-    log_start, log_end = bounds
-    log_body = journal_content[log_start:log_end]
     date_obj = datetime.strptime(journal_date, "%Y-%m-%d").date()
     entries: list[JournalEntry] = []
+    pattern = _NATIVE_LOG_LINE_RE if allow_unbulleted else _LOG_LINE_RE
 
-    for line in log_body.split("\n"):
+    for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
 
-        match = _LOG_LINE_RE.match(stripped)
+        match = pattern.match(stripped)
         if not match:
             continue
 
-        bullet, time_str, rest = match.group(1), match.group(2), match.group(3)
+        bullet = match.group("bullet")
+        time_str = match.group("time")
+        rest = match.group("rest")
 
-        # Parse timestamp
         try:
             time_obj = datetime.strptime(time_str.strip(), "%I:%M %p").time()
         except ValueError:
             continue
         timestamp = datetime.combine(date_obj, time_obj)
 
-        # Extract tags and clean description
         tags = _TAG_RE.findall(rest)
         description = _TAG_RE.sub("", rest).strip().rstrip(".")
 
-        # Determine source
         has_log_tag = "#wb/journal/log" in tags
-        is_asterisk = bullet == "*"
-        if is_asterisk or has_log_tag:
+        if bullet is None and default_source is not None:
+            source = default_source
+        elif bullet == "*" or has_log_tag:
             source = EventSource.JOURNAL_AGENT
         else:
             source = EventSource.JOURNAL_MANUAL
-
-        # Check for incomplete marker
-        incomplete = any("#wb/TODO" in t for t in tags)
 
         entries.append(
             JournalEntry(
@@ -167,12 +166,217 @@ def parse_journal_log(
                 source=source,
                 tags=tags,
                 raw_line=stripped,
-                incomplete=incomplete,
+                incomplete=any("#wb/TODO" in tag for tag in tags),
             )
         )
 
-    entries.sort(key=lambda e: e.timestamp)
+    entries.sort(key=lambda entry: entry.timestamp)
     return entries
+
+
+def parse_journal_log(
+    journal_content: str,
+    journal_date: str,
+) -> list[JournalEntry]:
+    """Parse all legacy Log section lines into ``JournalEntry`` objects.
+
+    This parser remains the pre-seal compatibility representation. Native
+    activity projection consumes SQLite items and parses their semantic values
+    without opening a Journal Markdown file.
+    """
+
+    bounds = _get_log_section_bounds(journal_content)
+    if bounds is None:
+        return []
+    log_start, log_end = bounds
+    return _parse_log_lines(
+        journal_content[log_start:log_end].splitlines(),
+        journal_date,
+    )
+
+
+def _journal_authority_mode() -> str:
+    """Read the durable authority latch without creating Journal state."""
+
+    from work_buddy.journal_capture.authority import existing_authority_mode
+
+    return existing_authority_mode()
+
+
+def _legacy_journal_allowed() -> bool:
+    from work_buddy.health.preferences import is_wanted
+
+    return is_wanted("obsidian") is not False
+
+
+def _legacy_journal_entries(dates: list[str]) -> list[JournalEntry]:
+    """Read compatibility Markdown only while legacy authority is still open."""
+
+    # Keep the authority check beside the physical read so this helper cannot
+    # be reused as an unguarded post-cutover path.
+    if (
+        _journal_authority_mode() != "legacy_compatibility"
+        or not _legacy_journal_allowed()
+    ):
+        return []
+
+    from work_buddy.journal import journal_path_for_date
+    from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+    entries: list[JournalEntry] = []
+    for date_str in dates:
+        journal_file = journal_path_for_date(date_str)
+        if not journal_file.exists():
+            continue
+        content = JournalContentAdapter(journal_file.parent.parent).read_day(date_str)
+        entries.extend(parse_journal_log(content, date_str))
+    return entries
+
+
+def _native_journal_store() -> JournalCaptureStore:
+    """Open the existing read-only Journal runtime, never a writable fallback."""
+
+    from work_buddy.journal_capture.native_ops import _read_runtime
+
+    store, _service = _read_runtime()
+    return store
+
+
+def _native_authorship_by_item(
+    store: JournalCaptureStore,
+    local_date: str,
+) -> dict[str, str]:
+    """Project current revision authorship without returning Source contents."""
+
+    with store._connect() as conn:
+        rows = conn.execute(
+            "SELECT revision.item_id,revision.authorship "
+            "FROM journal_item_revisions AS revision "
+            "JOIN journal_items AS item ON item.item_id=revision.item_id "
+            "AND item.current_revision=revision.revision "
+            "WHERE item.local_date=?",
+            (local_date,),
+        ).fetchall()
+    return {str(row["item_id"]): str(row["authorship"]) for row in rows}
+
+
+def _source_for_authorship(authorship: str | None) -> EventSource:
+    return (
+        EventSource.JOURNAL_AGENT
+        if (authorship or "").casefold() in {"ai", "agent", "assistant", "model"}
+        else EventSource.JOURNAL_MANUAL
+    )
+
+
+def _native_created_timestamp(created_at: str, journal_date: str) -> datetime | None:
+    """Anchor a storage timestamp to the item's logical Journal date."""
+
+    try:
+        timestamp = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    if timestamp.tzinfo is not None:
+        timestamp = to_local_naive(timestamp)
+    local_date = datetime.strptime(journal_date, "%Y-%m-%d").date()
+    return datetime.combine(local_date, timestamp.time().replace(tzinfo=None))
+
+
+def _native_item_entries(
+    item: JournalNativeItem,
+    journal_date: str,
+    *,
+    authorship: str | None,
+) -> list[JournalEntry]:
+    """Turn one visible native record into the legacy-compatible event shape."""
+
+    if item.item_kind not in {"record", "log"} or not item.plain_value:
+        return []
+    value = item.plain_value
+
+    # Imported history can retain an exact full Log section. Prefer the legacy
+    # bullet semantics there, then accept native unbulleted semantic records.
+    entries = parse_journal_log(value, journal_date)
+    if not entries:
+        entries = _parse_log_lines(
+            value.splitlines(),
+            journal_date,
+            allow_unbulleted=True,
+            default_source=_source_for_authorship(authorship),
+        )
+    if entries:
+        return entries
+
+    timestamp = _native_created_timestamp(item.created_at, journal_date)
+    if timestamp is None:
+        return []
+    tags = _TAG_RE.findall(value)
+    description = _TAG_RE.sub("", value).strip().rstrip(".")
+    if not description:
+        return []
+    return [
+        JournalEntry(
+            timestamp=timestamp,
+            description=description,
+            source=_source_for_authorship(authorship),
+            tags=tags,
+            raw_line=value,
+            incomplete=any("#wb/TODO" in tag for tag in tags),
+        )
+    ]
+
+
+def _native_journal_entries(dates: list[str]) -> list[JournalEntry]:
+    """Read the visible native Journal projection for the requested days."""
+
+    from work_buddy.journal_capture.authority import (
+        JournalAuthorityCoordinator,
+        JournalAuthorityStateError,
+    )
+    from work_buddy.journal_capture.domain import JournalDomainService
+
+    store = _native_journal_store()
+    state = JournalAuthorityCoordinator(store).state()
+    if state.mode not in {"database_only", "recovery_fenced"}:
+        raise JournalAuthorityStateError(
+            "Native activity projection requires database Journal authority."
+        )
+
+    domain = JournalDomainService(store)
+    entries: list[JournalEntry] = []
+    for date_str in dates:
+        authorship = _native_authorship_by_item(store, date_str)
+        for item in domain.list_native_items(date_str):
+            entries.extend(
+                _native_item_entries(
+                    item,
+                    date_str,
+                    authorship=authorship.get(item.item_id),
+                )
+            )
+    return entries
+
+
+def _journal_entries_for_dates(dates: list[str]) -> list[JournalEntry]:
+    """Select one Journal projection from the durable authority state."""
+
+    mode = _journal_authority_mode()
+    if mode == "legacy_compatibility":
+        entries = _legacy_journal_entries(dates)
+        # If authority moved while compatibility content was being read, never
+        # return that stale projection. Re-read from SQLite after activation.
+        final_mode = _journal_authority_mode()
+        if final_mode == "legacy_compatibility":
+            return entries
+        if final_mode in {"database_only", "recovery_fenced"}:
+            return _native_journal_entries(dates)
+        return []
+    if mode in {"database_only", "recovery_fenced"}:
+        return _native_journal_entries(dates)
+    # A paused cutover is deliberately neither authority. Do not inspect the
+    # mutable compatibility files while the seal is being established.
+    if mode == "cutover_paused":
+        return []
+    raise RuntimeError(f"Unsupported Journal authority state: {mode}")
 
 
 # ---------------------------------------------------------------------------
@@ -181,10 +385,9 @@ def parse_journal_log(
 
 
 def _normalize_dt(value: datetime | str) -> datetime:
-    """Convert ISO string or datetime to a naive datetime."""
-    if isinstance(value, str):
-        return datetime.fromisoformat(value)
-    return value
+    """Convert ISO string or datetime to a local-naive datetime."""
+    timestamp = datetime.fromisoformat(value) if isinstance(value, str) else value
+    return to_local_naive(timestamp) if timestamp.tzinfo is not None else timestamp
 
 
 def _journal_entry_to_event(entry: JournalEntry) -> ActivityEvent:
@@ -223,22 +426,14 @@ def infer_activity(
     else:
         dates = _date_range(since_dt, until_dt)
 
-    # Parse journal entries from all relevant dates
-    all_entries: list[JournalEntry] = []
-    for date_str in dates:
-        journal_file = journal_path_for_date(date_str)
-        if not journal_file.exists():
-            continue
-        from work_buddy.journal_capture.content_adapter import JournalContentAdapter
-
-        content = JournalContentAdapter(journal_file.parent.parent).read_day(date_str)
-        entries = parse_journal_log(content, date_str)
-        all_entries.extend(entries)
+    # Read exactly one authority-aware Journal projection for all relevant days.
+    all_entries = _journal_entries_for_dates(dates)
 
     # Filter to the requested window
     all_entries = [
         e for e in all_entries if since_dt <= e.timestamp <= until_dt
     ]
+    all_entries.sort(key=lambda entry: entry.timestamp)
 
     # Convert to events
     events = [_journal_entry_to_event(e) for e in all_entries]
@@ -411,24 +606,54 @@ def _collect_vault_events(
     Uses the vault event ledger (event-driven) when available, falls back
     to O(n) mtime scanning. Enriches with KTR writing intensity data.
     """
-    # Try event-driven ledger first
-    ledger_files = _get_ledger_recent(since, until)
+    if not _obsidian_activity_enabled():
+        return []
+
+    from work_buddy.config import load_config
+
+    cfg = load_config()
+    vault_value = cfg.get("vault_root")
+    if not vault_value:
+        return []
+    vault_root = Path(vault_value).expanduser().resolve()
+    try:
+        from work_buddy.vault_index.authority_exclusions import sealed_legacy_roots
+
+        authority_exclusions = sealed_legacy_roots(
+            cfg, allow_default_data_root=True
+        )
+    except Exception:
+        # If authority cannot be established safely, do not fall back to a
+        # whole-vault walk that could revive a retired archive.
+        return []
+
+    exclude_folders = set(cfg.get("obsidian", {}).get("exclude_folders", []))
+    # Preserve the established journal de-duplication and additionally tell
+    # the bridge ledger about every sealed root that is vault-relative.
+    exclude_folders.add("journal")
+    for root in authority_exclusions:
+        try:
+            exclude_folders.add(root.resolve().relative_to(vault_root).as_posix())
+        except ValueError:
+            continue
+
+    # Try event-driven ledger first.
+    ledger_files = _get_ledger_recent(
+        since,
+        until,
+        exclude_folders=sorted(exclude_folders),
+    )
 
     if ledger_files is not None:
         files = ledger_files
     else:
         # Fallback: mtime scanning
         from work_buddy.collectors.obsidian_collector import _get_recent_files
-        from work_buddy.config import load_config
-
-        cfg = load_config()
-        vault_root = Path(cfg["vault_root"])
-        exclude_folders = cfg.get("obsidian", {}).get("exclude_folders", [])
-        exclude_folders = list(set(exclude_folders) | {"journal"})
 
         raw = _get_recent_files(
-            vault_root, days=0, exclude_folders=exclude_folders,
+            vault_root, days=0, exclude_folders=sorted(exclude_folders),
             since=since.isoformat(), until=until.isoformat(),
+            authority_exclusions=authority_exclusions,
         )
         files = []
         for f in raw:
@@ -443,8 +668,24 @@ def _collect_vault_events(
                 continue
             files.append({"path": f["path"].replace("\\", "/"), "ts": ts})
 
-    # Try to get KTR hot-file data for enrichment
-    ktr_scores = _get_ktr_scores(since, until)
+    files = [
+        item
+        for item in files
+        if not _is_sealed_vault_path(
+            item.get("path", ""),
+            vault_root=vault_root,
+            sealed_roots=authority_exclusions,
+        )
+    ]
+
+    # Try to get KTR hot-file data for enrichment. Results are filtered again
+    # because KTR has no server-side exclude parameter.
+    ktr_scores = _get_ktr_scores(
+        since,
+        until,
+        vault_root=vault_root,
+        sealed_roots=authority_exclusions,
+    )
 
     events: list[ActivityEvent] = []
     for f in files:
@@ -473,19 +714,22 @@ def _collect_vault_events(
 
 
 def _get_ledger_recent(
-    since: datetime, until: datetime,
+    since: datetime,
+    until: datetime,
+    *,
+    exclude_folders: list[str] | None = None,
 ) -> list[dict] | None:
     """Try to get recent files from the vault event ledger. Returns None on failure."""
     try:
         from work_buddy.obsidian.vault_events import bootstrap, get_recent_files
 
         # Ensure ledger is active (idempotent)
-        bootstrap()
+        bootstrap(exclude_folders=exclude_folders or ["journal"])
 
         since_hours = max(0.1, (until - since).total_seconds() / 3600)
         result = get_recent_files(
             since_hours=since_hours, limit=100,
-            exclude_folders=["journal"],
+            exclude_folders=exclude_folders or ["journal"],
         )
 
         files = []
@@ -711,7 +955,50 @@ def _is_junk_path(path: str) -> bool:
     return False
 
 
-def _get_ktr_scores(since: datetime, until: datetime) -> dict[str, dict]:
+def _obsidian_activity_enabled() -> bool:
+    """Fail closed before any bridge, KTR, ledger, or vault-file access."""
+
+    try:
+        from work_buddy.health.preferences import is_wanted
+
+        return is_wanted("obsidian") is not False
+    except Exception:
+        return False
+
+
+def _is_sealed_vault_path(
+    value: str | Path,
+    *,
+    vault_root: Path,
+    sealed_roots: tuple[Path, ...],
+) -> bool:
+    """Use resolved containment so aliases/symlinks cannot escape filtering."""
+
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = vault_root / candidate
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return True
+    for root in sealed_roots:
+        try:
+            resolved.relative_to(root.resolve(strict=False))
+            return True
+        except ValueError:
+            continue
+        except OSError:
+            return True
+    return False
+
+
+def _get_ktr_scores(
+    since: datetime,
+    until: datetime,
+    *,
+    vault_root: Path | None = None,
+    sealed_roots: tuple[Path, ...] = (),
+) -> dict[str, dict]:
     """Try to fetch KTR hot-file scores. Returns empty dict on failure."""
     try:
         from work_buddy.obsidian.ktr import get_hot_files
@@ -719,10 +1006,37 @@ def _get_ktr_scores(since: datetime, until: datetime) -> dict[str, dict]:
             since_date=since.strftime("%Y-%m-%d"),
             until_date=until.strftime("%Y-%m-%d"),
             limit=100,
+            exclude_folders=[
+                root.resolve(strict=False).relative_to(
+                    vault_root.resolve(strict=False)
+                ).as_posix()
+                for root in sealed_roots
+                if vault_root is not None
+                and _path_is_within(root, vault_root)
+            ],
         )
-        return {f["filePath"]: f for f in result.get("files", [])}
+        return {
+            f["filePath"]: f
+            for f in result.get("files", [])
+            if not (
+                vault_root is not None
+                and _is_sealed_vault_path(
+                    f.get("filePath", ""),
+                    vault_root=vault_root,
+                    sealed_roots=sealed_roots,
+                )
+            )
+        }
     except Exception:
         return {}
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    """Containment helper for server-side bridge exclusion arguments."""
+
+    from work_buddy.vault_index.authority_exclusions import is_within
+
+    return is_within(path, root, real=True)
 
 
 # ---------------------------------------------------------------------------

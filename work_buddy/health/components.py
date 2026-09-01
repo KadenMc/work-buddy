@@ -190,29 +190,15 @@ _register(ComponentDef(
 
 _register(ComponentDef(
     id="obsidian",
-    display_name="Obsidian Bridge",
+    display_name="Obsidian Bridge (legacy compatibility)",
     category="integration",
     health_source="tool_probe",
     requirements=[
-        # Foundational: where the vault lives. check_vault_root verifies
-        # both that the path exists AND that it contains an .obsidian/
-        # subdirectory (= it's actually an Obsidian vault), so we don't
-        # need a separate `obsidian/vault/obsidian-dir` requirement.
+        # This component now owns only the explicit legacy bridge/filesystem
+        # compatibility surface. Native Journal, Tasks, Contracts, Projects,
+        # Personal Knowledge, and Calendar have independent authorities.
         "core/config/vault-root",
-        # The bridge plugin is the reason this component exists — without
-        # it the HTTP probe has nothing to answer it. Listed first so
-        # it's the first thing users see when obsidian is broken.
         "obsidian/plugins/work-buddy-plugin",
-        "obsidian/daily-note/plugin-enabled",
-        "obsidian/daily-note/dir-exists",
-        "obsidian/daily-note/log-section",
-        "obsidian/daily-note/sign-in-section",
-        "obsidian/daily-note/running-notes-section",
-        # Task authority is native.  The frozen master-list and Tasks-plugin
-        # checks remain discoverable only through their pre-cutover
-        # applicability predicates; they are not Obsidian bridge health.
-        "obsidian/contracts/dir-exists",
-        "obsidian/knowledge/personal-path",
     ],
     check_sequence=[
         CheckStep(
@@ -226,6 +212,49 @@ _register(ComponentDef(
         ),
     ],
 ))
+
+# Native content authorities are local, core storage boundaries. Their health
+# checks are read-only and never create/migrate a database merely because the
+# Settings page is opened.
+for _component_id, _display_name, _check_fn in (
+    (
+        "journal_native",
+        "Journal SQLite Authority",
+        "work_buddy.health.checks.check_journal_native_authority",
+    ),
+    (
+        "projects_native",
+        "Projects SQLite Authority",
+        "work_buddy.health.checks.check_projects_native_authority",
+    ),
+    (
+        "contracts_native",
+        "Contracts SQLite Authority",
+        "work_buddy.health.checks.check_contracts_native_authority",
+    ),
+    (
+        "personal_knowledge_native",
+        "Personal Knowledge SQLite Authority",
+        "work_buddy.health.checks.check_personal_knowledge_native_authority",
+    ),
+):
+    _register(ComponentDef(
+        id=_component_id,
+        display_name=_display_name,
+        category="service",
+        is_core=True,
+        health_source="custom",
+        check_sequence=[
+            CheckStep(
+                description=f"{_display_name} is intact and sealed",
+                check_fn=_check_fn,
+                on_fail=(
+                    "Inspect the authority and its latest verified backup; do "
+                    "not re-enable a legacy Markdown writer as recovery."
+                ),
+            ),
+        ],
+    ))
 
 _register(ComponentDef(
     id="tailscale",
@@ -487,7 +516,7 @@ _register(ComponentDef(
     # but specific features change state. Each note below describes
     # precisely what the user loses, so the UI doesn't lie by saying
     # "may be reduced" when the truth is "this feature is gone."
-    soft_depends_on=["embedding", "messaging", "obsidian", "hindsight"],
+    soft_depends_on=["embedding", "messaging", "hindsight"],
     soft_dep_notes={
         "embedding": (
             "Hybrid search on tasks/palette falls back to substring "
@@ -500,13 +529,6 @@ _register(ComponentDef(
             "dismissal (click to dismiss in Obsidian, have it vanish "
             "from the dashboard) will no longer work until messaging "
             "is healthy again."
-        ),
-        "obsidian": (
-            "Task/contract/journal panels still read the markdown "
-            "files directly, so basic reads work; but any feature "
-            "that routes through the bridge (live task mutations, "
-            "Obsidian command-palette execution, vault writes) is "
-            "unavailable."
         ),
         "hindsight": (
             "Project-detail panel shows an empty memory section; "
@@ -529,7 +551,7 @@ _register(ComponentDef(
 
 _register(ComponentDef(
     id="datacore",
-    display_name="Datacore Plugin",
+    display_name="Datacore Plugin (legacy Obsidian)",
     category="plugin",
     depends_on=["obsidian"],
     health_source="tool_probe",
@@ -544,7 +566,7 @@ _register(ComponentDef(
 
 _register(ComponentDef(
     id="google_calendar",
-    display_name="Google Calendar Plugin",
+    display_name="Google Calendar Plugin (legacy Obsidian)",
     category="plugin",
     depends_on=["obsidian"],
     health_source="tool_probe",
@@ -565,7 +587,8 @@ _register(ComponentDef(
     # requirements entirely via the preference toggle. Local rolling
     # backups run unconditionally (regardless of this component's
     # wanted state); the component gates only the remote push to
-    # GitHub Releases.
+    # GitHub Releases. A repository alone is not authorization: the
+    # private-content opt-in requirement must also pass.
     is_core=False,
     # 'custom' over 'tool_probe' — the freshness check reads a local
     # JSON file (.data/backups/last_run.json) written by the sidecar
@@ -576,6 +599,7 @@ _register(ComponentDef(
         "integrations/github_backups/gh-cli-installed",
         "integrations/github_backups/gh-authenticated",
         "integrations/github_backups/repo-configured",
+        "integrations/github_backups/private-content-opt-in",
     ],
     check_sequence=[
         CheckStep(

@@ -1,50 +1,18 @@
-"""Vault editor — create and update personal knowledge units in the Obsidian vault.
+"""Compatibility entry point for personal-knowledge mutations.
 
-The ``mint_personal_unit`` function creates a new markdown file with YAML
-frontmatter in the configured vault directory, or appends evidence to an
-existing file. Uses the bridge-first write pattern from vault_writer.
+The module name remains because the shipped ``knowledge_mint`` operation
+imports it. Its implementation is database-only and has no vault fallback.
 """
 
 from __future__ import annotations
 
-import re
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from work_buddy.config import load_config, USER_TZ
-from work_buddy.logging_config import get_logger
-
-logger = get_logger(__name__)
-
-# Category → subdirectory mapping
-_CATEGORY_DIRS: dict[str, str] = {
-    "work_pattern": "work_patterns",
-    "self_regulation": "self_regulation",
-    "skill_gap": "skill_gaps",
-    "feedback": "feedback",
-    "preference": "preferences",
-    "reference": "reference",
-}
-
-
-def _slugify(name: str) -> str:
-    """Convert a name to a filesystem-safe slug."""
-    slug = name.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[\s_]+", "-", slug)
-    return slug.strip("-")
-
-
-def _vault_knowledge_dir() -> Path | None:
-    """Resolve the vault directory for personal knowledge."""
-    cfg = load_config()
-    vault_root = cfg.get("vault_root", "")
-    if not vault_root:
-        return None
-    pk = cfg.get("personal_knowledge", {})
-    subpath = pk.get("vault_path", "Meta/WorkBuddy")
-    return Path(vault_root) / subpath
+from work_buddy.knowledge.personal.service import (
+    PersonalKnowledgeService,
+    build_structured_body as _build_structured_body,
+    slugify as _slugify,
+)
 
 
 def mint_personal_unit(
@@ -59,183 +27,74 @@ def mint_personal_unit(
     triggers: str = "",
     signals: str = "",
     default_response: str = "",
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    """Create or update a personal knowledge unit in the Obsidian vault.
+    """Mutate whichever authority is active at the migration seam."""
 
-    Args:
-        name: Human-readable name (e.g., "Branch Explosion").
-        category: One of: work_pattern, self_regulation, skill_gap,
-                  feedback, preference, reference.
-        content_body: Full markdown body. If empty, builds from structured fields.
-        severity: HIGH, MODERATE, or LOW (optional).
-        tags: Comma-separated tags (e.g., "wb/metacognition, wb/work-pattern").
-        evidence: Initial evidence entry (appended with timestamp).
-        definition: Pattern definition text.
-        triggers: What typically triggers this pattern.
-        signals: Observable signals.
-        default_response: Agent's default response.
+    from work_buddy.knowledge.personal.store import PersonalKnowledgeStore
 
-    Returns:
-        Dict with status, path, vault_file, and created/updated flag.
+    if PersonalKnowledgeStore.existing_authority() != "sqlite":
+        from work_buddy.knowledge.personal.legacy import mint_legacy_personal_unit
 
-    The retired ``context_before`` / ``context_after`` parameters were
-    removed when their underlying mechanism was retired in favour of
-    inline ``<<wb:path>>`` placeholders.
-    """
-    vdir = _vault_knowledge_dir()
-    if vdir is None:
-        return {"error": "Personal knowledge vault path not configured (check vault_root and personal_knowledge.vault_path in config)"}
+        result = mint_legacy_personal_unit(
+            name=name,
+            category=category,
+            content_body=content_body,
+            severity=severity,
+            tags=tags,
+            evidence=evidence,
+            definition=definition,
+            triggers=triggers,
+            signals=signals,
+            default_response=default_response,
+        )
+        from work_buddy.knowledge.store import invalidate_vault
 
-    # Determine subdirectory
-    subdir = _CATEGORY_DIRS.get(category, "")
-    slug = _slugify(name)
+        invalidate_vault()
+        return result
 
-    if subdir:
-        target_dir = vdir / subdir
-        vault_rel = f"{subdir}/{slug}.md"
-    else:
-        target_dir = vdir
-        vault_rel = f"{slug}.md"
+    result = PersonalKnowledgeService().mint(
+        name=name,
+        category=category,
+        content_body=content_body,
+        severity=severity,
+        tags=tags,
+        evidence=evidence,
+        definition=definition,
+        triggers=triggers,
+        signals=signals,
+        default_response=default_response,
+        idempotency_key=idempotency_key,
+    )
+    from work_buddy.knowledge.store import invalidate_vault
 
-    abs_path = target_dir / f"{slug}.md"
-    pk_cfg = load_config().get("personal_knowledge", {})
-    vault_subpath = pk_cfg.get("vault_path", "Meta/WorkBuddy")
-    full_vault_rel = f"{vault_subpath}/{vault_rel}"
+    invalidate_vault()
+    return result
 
-    # Check if file already exists → append evidence
-    if abs_path.exists():
-        return _append_evidence(abs_path, full_vault_rel, evidence, slug, subdir)
 
-    # Ensure directory exists
-    target_dir.mkdir(parents=True, exist_ok=True)
+def update_personal_unit(
+    *,
+    path: str,
+    updates: dict[str, Any],
+    expected_revision: int,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """CAS/idempotent update surface for personal knowledge callers."""
 
-    # Build frontmatter
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-    if not tag_list:
-        tag_list = [f"wb/metacognition/{category}"] if category else ["wb/metacognition"]
+    from work_buddy.knowledge.personal.store import (
+        PersonalKnowledgeConflict,
+        PersonalKnowledgeStore,
+    )
 
-    now = datetime.now(USER_TZ).strftime("%Y-%m-%d")
-
-    fm_lines = [
-        "---",
-        f"name: {name}",
-        f"category: {category}",
-    ]
-    if severity:
-        fm_lines.append(f"severity: {severity}")
-    fm_lines.append(f"tags: [{', '.join(tag_list)}]")
-    fm_lines.append(f"last_observed: \"{now}\"")
-    fm_lines.append(f"observation_count: {1 if evidence else 0}")
-    fm_lines.append("---")
-
-    # Build body
-    if content_body:
-        body = content_body
-    else:
-        body = _build_structured_body(
-            name, definition, triggers, signals, default_response, evidence, now,
+    if PersonalKnowledgeStore.existing_authority() != "sqlite":
+        raise PersonalKnowledgeConflict(
+            "revisioned personal updates require the sealed SQLite authority"
         )
 
-    full_content = "\n".join(fm_lines) + "\n\n" + body
-
-    # Write via vault_writer pattern
-    from work_buddy.obsidian.vault_writer import vault_write
-
-    success = vault_write(full_vault_rel, abs_path, full_content)
-
-    if not success:
-        return {"error": f"Failed to write {full_vault_rel}"}
-
-    # Invalidate vault cache
-    from work_buddy.knowledge.store import invalidate_vault
-    invalidate_vault()
-
-    unit_path = f"personal/{subdir}/{slug}" if subdir else f"personal/{slug}"
-
-    return {
-        "status": "created",
-        "path": unit_path,
-        "vault_file": full_vault_rel,
-    }
-
-
-def _build_structured_body(
-    name: str,
-    definition: str,
-    triggers: str,
-    signals: str,
-    default_response: str,
-    evidence: str,
-    date: str,
-) -> str:
-    """Build a structured markdown body from individual fields."""
-    sections = [f"# {name}"]
-
-    if definition:
-        sections.append(f"\n## Definition\n\n{definition}")
-    if triggers:
-        sections.append(f"\n## Typical Triggers\n\n{triggers}")
-    if signals:
-        sections.append(f"\n## Observable Signals\n\n{signals}")
-    if default_response:
-        sections.append(f"\n## Default Response\n\n{default_response}")
-
-    sections.append("\n## Evidence")
-    if evidence:
-        sections.append(f"\n* {date} - {evidence}")
-    else:
-        sections.append("\n*No observations yet.*")
-
-    return "\n".join(sections) + "\n"
-
-
-def _append_evidence(
-    abs_path: Path,
-    vault_rel: str,
-    evidence: str,
-    slug: str,
-    subdir: str,
-) -> dict[str, Any]:
-    """Append evidence to an existing personal unit file."""
-    if not evidence:
-        unit_path = f"personal/{subdir}/{slug}" if subdir else f"personal/{slug}"
-        return {"status": "exists", "path": unit_path, "message": "File exists. Provide evidence to append."}
-
-    from work_buddy.frontmatter import parse_frontmatter
-
-    fm, body = parse_frontmatter(abs_path)
-    now = datetime.now(USER_TZ).strftime("%Y-%m-%d")
-
-    # Update frontmatter fields
-    fm["last_observed"] = now
-    fm["observation_count"] = fm.get("observation_count", 0) + 1
-
-    # Append evidence line
-    evidence_line = f"* {now} - {evidence}"
-    if "## Evidence" in body:
-        body = body.replace("## Evidence\n", f"## Evidence\n{evidence_line}\n", 1)
-    else:
-        body = body.rstrip() + f"\n\n## Evidence\n{evidence_line}\n"
-
-    # Rebuild full content
-    import yaml
-    fm_yaml = yaml.dump(fm, default_flow_style=False, allow_unicode=True).strip()
-    full_content = f"---\n{fm_yaml}\n---\n\n{body}"
-
-    from work_buddy.obsidian.vault_writer import vault_write
-    success = vault_write(vault_rel, abs_path, full_content)
-
-    if not success:
-        return {"error": f"Failed to update {vault_rel}"}
-
-    from work_buddy.knowledge.store import invalidate_vault
-    invalidate_vault()
-
-    unit_path = f"personal/{subdir}/{slug}" if subdir else f"personal/{slug}"
-
-    return {
-        "status": "updated",
-        "path": unit_path,
-        "vault_file": vault_rel,
-        "observation_count": fm["observation_count"],
-    }
+    return PersonalKnowledgeService().update(
+        path,
+        updates,
+        expected_revision=expected_revision,
+        actor="agent",
+        idempotency_key=idempotency_key,
+    )

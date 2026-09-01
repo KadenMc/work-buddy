@@ -1,7 +1,7 @@
 ---
 name: Context Block
 kind: capability
-description: Collect + render a context block from registered sources (git, tasks, projects, chrome, obsidian, obsidian_tasks, obsidian_wellness, calendar, day_planner, session_activity, chat, message, vault, datacore). Structured sources (git / tasks / projects / chrome) emit curated prompt text; the rest wrap legacy collectors. Supports per-source depth, target_date windows, max_chars budget, markdown or JSON output, and cache reuse via max_age_seconds.
+description: Collect and render native context sources plus explicitly enabled compatibility sources. Obsidian, Obsidian wellness/tasks, Day Planner, and Datacore sources are skipped before cache or collector access when Obsidian is opted out; filesystem Vault and provider-neutral Calendar remain independent. Supports per-source depth, target-date windows, max-chars budgets, Markdown or JSON, and cache reuse.
 capability_name: context_block
 category: context
 op: op.wb.context_block
@@ -9,7 +9,7 @@ schema_version: wb-capability/v1
 parameters:
   sources:
     type: list
-    description: 'Source names to include. Default: all registered.'
+    description: 'Source names to include. Default: all registered sources permitted by feature preferences.'
     required: false
   exclude:
     type: list

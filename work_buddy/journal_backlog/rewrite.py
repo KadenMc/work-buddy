@@ -41,6 +41,7 @@ guarantees every non-blank content line is in at least one thread, so
 from __future__ import annotations
 
 import re
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,28 @@ from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _guard_legacy_rewrite(func):
+    """Hold Journal and configured-root authority through the entire rewrite."""
+
+    @wraps(func)
+    def guarded(*args, **kwargs):
+        journal_path = kwargs.get("journal_path")
+        if journal_path is None:
+            raise ValueError("journal_path is required")
+        from work_buddy.journal_capture.authority import (
+            legacy_markdown_write_guard,
+        )
+        from work_buddy.vault_index.authority_exclusions import (
+            legacy_root_write_guard,
+        )
+
+        with legacy_markdown_write_guard():
+            with legacy_root_write_guard(Path(journal_path)):
+                return func(*args, **kwargs)
+
+    return guarded
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +249,7 @@ def build_rewrite_preview(
     reason="Rewrite the Running Notes section of a daily journal file with processed items removed.",
     risk="high",
 )
+@_guard_legacy_rewrite
 def rewrite_running_notes(
     *,
     journal_path: str | Path,

@@ -339,11 +339,10 @@ def main() -> None:
     if persisted_ids:
         allowed_ids |= persisted_ids
         logger.info("Loaded %d persisted chat ID(s)", len(persisted_ids))
-    capture_cfg = telegram_cfg.get("capture", {
-        "note": "latest_journal",
-        "section": "Running Notes",
-        "position": "top",
-    })
+    # Retained as an empty compatibility slot on BotState.  Native Telegram
+    # capture resolves the Journal day and module server-side and never accepts
+    # a file, section, or placement target from configuration.
+    capture_cfg: dict[str, Any] = {}
 
     _bot_state = BotState(
         allowed_chat_ids=allowed_ids,

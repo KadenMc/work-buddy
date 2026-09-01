@@ -30,6 +30,20 @@ from work_buddy.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+# These source names contain legacy Obsidian branches.  Some also have native
+# database routes after their domain seal, so opt-out admission is decided by
+# the source rather than suppressing the whole adapter unconditionally.
+# Filesystem-native ``vault`` and provider-neutral ``calendar`` are deliberately
+# absent from this set.
+_OBSIDIAN_APP_SOURCES = frozenset({
+    "obsidian",
+    "obsidian_tasks",
+    "obsidian_wellness",
+    "day_planner",
+    "datacore",
+})
+
+
 class ContextCollector:
     """Fetch raw sections for a :class:`ContextRequest`.
 
@@ -57,11 +71,23 @@ class ContextCollector:
         """
         target_sources = _resolve_targets(request)
         ctx = Context(request=request)
+        obsidian_opted_out = _obsidian_is_opted_out()
 
         for name in target_sources:
             source = registry.get(name)
             if source is None:
                 logger.warning("ContextCollector: unknown source %r; skipping", name)
+                continue
+            if (
+                obsidian_opted_out
+                and name in _OBSIDIAN_APP_SOURCES
+                and not _serves_native_without_obsidian(source, request)
+            ):
+                logger.debug(
+                    "ContextCollector: legacy-only source %r disabled by Obsidian "
+                    "opt-out; skipping without cache or collector access",
+                    name,
+                )
                 continue
 
             try:
@@ -84,7 +110,36 @@ class ContextCollector:
         source: ContextSource,
         request: ContextRequest,
     ) -> ContextSection | None:
-        """Cache-aware fetch for one source. Returns None on exception."""
+        """Cache-aware fetch for one source. Returns None on exception.
+
+        Authority-aware sources may expose ``collection_guard(request)``.  A
+        legacy Journal guard holds the same SQLite writer barrier as sealing,
+        and deliberately spans cache lookup, the filesystem snapshot, and
+        atomic cache publication.
+        """
+        guard_factory = getattr(source, "collection_guard", None)
+        if callable(guard_factory):
+            try:
+                with guard_factory(request):
+                    return self._collect_one_admitted(source, request)
+            except BaseException:
+                # A guard can detect an authority transition on exit, after a
+                # fresh section was atomically published.  Remove that bucket
+                # before propagating so legacy content cannot survive the
+                # failed admission attempt.
+                cache_mod.evict(
+                    source.name,
+                    cache_mod.bucket_key(source.name, request),
+                )
+                raise
+        return self._collect_one_admitted(source, request)
+
+    def _collect_one_admitted(
+        self,
+        source: ContextSource,
+        request: ContextRequest,
+    ) -> ContextSection | None:
+        """Perform one cache/read/publication sequence after admission."""
         name = source.name
         bucket = cache_mod.bucket_key(name, request)
 
@@ -127,3 +182,44 @@ def _resolve_targets(request: ContextRequest) -> Iterable[str]:
         return list(request.sources)
     excluded = set(request.exclude or ())
     return [n for n in registry.names() if n not in excluded]
+
+
+def _obsidian_is_opted_out() -> bool:
+    """Return whether compatibility sources are fenced by preference.
+
+    Preference lookup is intentionally lazy: the context primitives remain
+    usable in small/test deployments that do not import the health subsystem.
+    An unreadable preference is treated as undecided, preserving the existing
+    explicit legacy path rather than silently disabling it.
+    """
+    try:
+        from work_buddy.health.preferences import is_wanted
+
+        return is_wanted("obsidian") is False
+    except Exception:
+        return False
+
+
+def _serves_native_without_obsidian(
+    source: ContextSource,
+    request: ContextRequest,
+) -> bool:
+    """Ask a mixed source whether its native authority route is available.
+
+    Unknown adapters remain legacy-only.  Authority inspection failures also
+    suppress the adapter under opt-out, which is safer than probing a retired
+    bridge or archive as an implicit fallback.
+    """
+
+    check = getattr(source, "serves_native_without_obsidian", None)
+    if not callable(check):
+        return False
+    try:
+        return bool(check(request))
+    except Exception:
+        logger.exception(
+            "ContextCollector: native authority check for %r failed; "
+            "legacy route remains suppressed",
+            source.name,
+        )
+        return False

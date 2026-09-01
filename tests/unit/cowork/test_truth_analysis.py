@@ -13,6 +13,10 @@ from work_buddy.cowork import (
     truth_surface,
 )
 from work_buddy.cowork.proposal_applicability import CurrentProjection
+from work_buddy.cowork.truth_activation import (
+    resolve_document_truth_policy,
+    transition_document_truth_activation,
+)
 from work_buddy.security.actors import ActorRef
 from work_buddy.security.local_identity import (
     HUMAN_AUTHORITY_ASSURANCE,
@@ -292,6 +296,61 @@ def _stage_one(analysis_env, proposition, *, evidence=None):
         ),
     )
     return run, staged["candidates"][0]
+
+
+def test_truth_activation_exit_terminalizes_prepared_analysis(analysis_env):
+    run = _prepare(analysis_env)
+    policy = resolve_document_truth_policy(
+        analysis_env["store"], analysis_env["document"].id
+    )
+    assert policy.activation_state == "enabled"
+
+    disabled = transition_document_truth_activation(
+        analysis_env["store"],
+        document_id=analysis_env["document"].id,
+        next_state="disabled",
+        expected_activation_revision=int(policy.activation_revision or 0),
+        actor=HUMAN,
+        intent_id="analysis-policy-exit-disable",
+    )
+
+    stored = truth_analysis_runtime.get_run(run.run_id)
+    assert disabled.activation_state == "disabled"
+    assert stored is not None
+    assert stored.status == "unavailable"
+    assert stored.error_code == "truth_activation_changed"
+    view = truth_analysis.analysis_run_view(stored, store=analysis_env["store"])
+    assert view["status"] == "failed"
+    assert view["error_code"] == "truth_activation_changed"
+
+
+def test_truth_activation_exit_terminates_running_analysis(
+    analysis_env,
+    monkeypatch,
+):
+    run = _prepare(analysis_env)
+    running = truth_analysis_runtime.update_run(run.run_id, status="running", pid=445577)
+    terminated = []
+    monkeypatch.setattr(
+        "work_buddy.sidecar.dispatch.executor.terminate_detached_process",
+        lambda pid, *, owner_token: terminated.append((pid, owner_token)) or True,
+    )
+    policy = resolve_document_truth_policy(
+        analysis_env["store"], analysis_env["document"].id
+    )
+
+    transition_document_truth_activation(
+        analysis_env["store"],
+        document_id=analysis_env["document"].id,
+        next_state="disabled",
+        expected_activation_revision=int(policy.activation_revision or 0),
+        actor=HUMAN,
+        intent_id="analysis-policy-exit-running",
+    )
+
+    stored = truth_analysis_runtime.get_run(run.run_id)
+    assert stored is not None and stored.status == "unavailable"
+    assert terminated == [(445577, running.session_id)]
 
 
 def test_source_aware_submit_binds_every_candidate_to_complete_manifest(

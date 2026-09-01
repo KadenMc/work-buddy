@@ -163,14 +163,14 @@ def test_unwanted_cascades_to_requirement_node(mock_inputs):
     assert daily_req_node.effective_state == "disabled"
 
 
-def test_unwanted_cascades_to_subsystem(mock_inputs):
-    """subsystem:daily-notes has a dep edge to component:obsidian — unwanting obsidian disables the subsystem."""
+def test_unwanted_cascades_to_legacy_obsidian_subsystem_only(mock_inputs):
+    """Obsidian opt-out disables its plugin subsystem, not native Journal."""
     mock_inputs["prefs"]["obsidian"] = mock_inputs["_FeaturePreference"](
         component_id="obsidian", wanted=False,
     )
     nodes = cg.build_graph(force=True)
-    # All daily-note requirements disabled + dep on obsidian disabled
-    assert nodes["subsystem:daily-notes"].effective_state == "disabled"
+    assert nodes["subsystem:obsidian-knowledge"].effective_state == "disabled"
+    assert nodes["subsystem:daily-notes"].effective_state != "disabled"
 
 
 # ---------------------------------------------------------------------------
@@ -320,9 +320,11 @@ def test_calendar_is_own_domain(mock_inputs):
     nodes = cg.build_graph(force=True)
     assert "domain:calendar" in nodes
     assert "domain:knowledge" in nodes
-    # google_calendar should be under domain:calendar, not knowledge
-    cal_parents = nodes["component:google_calendar"].grouping_parents
+    # The provider-neutral native owner is under Calendar; the legacy
+    # Obsidian plugin is no longer a native-domain dependency.
+    cal_parents = nodes["component:google_calendar_native"].grouping_parents
     assert "domain:calendar" in cal_parents
+    assert "domain:calendar" not in nodes["component:google_calendar"].grouping_parents
 
 
 def test_sidecar_is_in_domain_system(mock_inputs):

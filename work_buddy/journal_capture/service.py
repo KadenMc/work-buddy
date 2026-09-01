@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Mapping, Protocol
 
 from work_buddy.journal_capture.content_adapter import JournalContentAdapter, marker_for
+from work_buddy.journal_capture.authority import JournalAuthorityCoordinator
 from work_buddy.journal_capture.models import (
     CaptureMode,
     CaptureTarget,
@@ -114,6 +115,7 @@ class JournalCaptureService:
         smart_configuration: Callable[[], tuple[SmartCaptureProcessor | None, JournalSmartAvailability]] | None = None,
     ) -> None:
         self.store = store
+        self.authority = JournalAuthorityCoordinator(store)
         self.adapter = adapter
         self.adapter.journal_store_path = store.path
         self.smart_processor = smart_processor or SmartProcessingUnavailable()
@@ -228,6 +230,7 @@ class JournalCaptureService:
         run_smart: bool = False,
         follow_up_action: str | None = None,
         smart_disclosure_sha256: str | None = None,
+        postseal_drain_batch_id: str | None = None,
     ) -> JournalCapture:
         if follow_up_action is not None and (
             follow_up_action != "task_proposal" or mode is not CaptureMode.DUMB
@@ -254,6 +257,10 @@ class JournalCaptureService:
             follow_up_action=follow_up_action,
             smart_disclosure_sha256=smart_disclosure_sha256,
         )
+        # Fence before creating even the capture receipt. A race with an
+        # authority transition is closed again inside native materialization.
+        if postseal_drain_batch_id is None:
+            self.authority.capture_mode()
         capture = self.store.create_capture(
             client_mutation_id=client_mutation_id,
             request_sha256=request_sha,
@@ -271,9 +278,15 @@ class JournalCaptureService:
             submitted_at=submitted_at or datetime.now(UTC).isoformat(),
             authorization_fingerprint=ingress.authorization_fingerprint,
             authorization_expires_at=ingress.authorization_expires_at,
+            postseal_drain_batch_id=postseal_drain_batch_id,
         )
         if target is not CaptureTarget.AUTO:
-            self._materialize(capture, exact_text=exact_text, target=target)
+            self._materialize(
+                capture,
+                exact_text=exact_text,
+                target=target,
+                postseal_drain_batch_id=postseal_drain_batch_id,
+            )
         if mode is CaptureMode.SMART and smart_disclosure_sha256 is not None:
             self.store.bind_smart_disclosure(capture.capture_id, smart_disclosure_sha256)
         if follow_up_action == "task_proposal":
@@ -286,7 +299,13 @@ class JournalCaptureService:
                 authorization_fingerprint=ingress.authorization_fingerprint,
                 authorization_expires_at=ingress.authorization_expires_at,
             )
-        if run_smart and mode is CaptureMode.SMART:
+        if postseal_drain_batch_id is not None:
+            # The cutover operator may persist only the already-authorized
+            # Source command and its deterministic native row. Model calls and
+            # cross-domain follow-ups resume through their ordinary workers
+            # after the fence opens.
+            pass
+        elif run_smart and mode is CaptureMode.SMART:
             self.process_smart(capture.capture_id, exact_text=exact_text)
         else:
             self.deliver_proposal(capture.capture_id)
@@ -295,6 +314,9 @@ class JournalCaptureService:
         return latest
 
     def process_smart(self, capture_id: str, *, exact_text: str) -> JournalCapture:
+        # Check before reading/ leasing model work. Controlled postseal drains
+        # persist the request but must never invoke a model behind the fence.
+        self.authority.capture_mode()
         capture = self.store.get_capture(capture_id)
         if capture is None:
             raise KeyError("journal_capture_not_found")
@@ -424,6 +446,10 @@ class JournalCaptureService:
     def deliver_proposal(self, capture_id: str) -> None:
         """Replay one local delivery effect through Threads' hash-bound ingress."""
 
+        # Proposal maintenance is a write to another authority. Keep it held
+        # with Journal until the evidence-bound postseal release opens ingress.
+        self.authority.capture_mode()
+
         effect = next((item for item in self.store.effects_for_capture(capture_id)
                        if item.effect_type == "task_proposal"), None)
         if effect is None or effect.state.value == "succeeded" or effect.error_code == "journal_proposal_source_withdrawn":
@@ -465,6 +491,7 @@ class JournalCaptureService:
         latest link immediately, while canonical note resolution converges here.
         """
 
+        self.authority.capture_mode()
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("Proposal reconciliation limit must be between 1 and 100.")
         report = {"delivery_checked": 0, "resolution_checked": 0, "resolution_synced": 0}
@@ -562,7 +589,21 @@ class JournalCaptureService:
         *,
         exact_text: str,
         target: CaptureTarget,
+        postseal_drain_batch_id: str | None = None,
     ) -> None:
+        mode = (
+            "database_only"
+            if postseal_drain_batch_id is not None
+            else self.authority.capture_mode()
+        )
+        if mode == "database_only":
+            self.authority.materialize_native_capture(
+                capture,
+                exact_text=exact_text,
+                target=target,
+                postseal_drain_batch_id=postseal_drain_batch_id,
+            )
+            return
         digest = hashlib.sha256(exact_text.encode("utf-8")).hexdigest()
         entry_id = hashlib.sha256(
             f"journal-entry:{capture.capture_id}".encode("utf-8")

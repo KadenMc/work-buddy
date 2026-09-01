@@ -3,8 +3,9 @@
 Flow (under the DB-wide writer gate + the per-partition advisory lock):
   discover → diff by ``change_key`` (content-hash default, or mtime) → for each
   changed item: delete its old docs, parse, upsert, encode projections (BACKGROUND,
-  batched across docs) → prune deleted items → if anything changed, bump the partition
-  ``build_version`` and invalidate its resident matrices.
+  batched across docs; optionally deferred to the global resume pass) → prune deleted
+  items → if anything changed, bump the partition ``build_version`` and invalidate its
+  resident matrices.
 
 Two advisory locks, both heartbeated for the whole hold:
 - ``<db>.build`` — the DB-wide WRITER GATE. SQLite allows one writer per DB and all
@@ -21,7 +22,6 @@ bounded batches so each pass commits durable progress.
 
 from __future__ import annotations
 
-import contextlib
 from typing import TYPE_CHECKING, Any, Callable
 
 from work_buddy.index.partition import (
@@ -61,32 +61,28 @@ class IndexBuilder:
         self._residents = residents
 
     def _lock_ctx(self):
-        if not self._use_lock:
-            return contextlib.nullcontext()
-        try:
-            from work_buddy.utils.index_lock import index_lock
-        except Exception as exc:  # lock infra unavailable → proceed without (best-effort)
-            logger.debug("index_lock unavailable (%s); building without a lock", exc)
-            return contextlib.nullcontext()
+        from work_buddy.index.locking import index_writer_locks
 
-        db = self._store.db_path
-        gate = db.parent / f"{db.name}.build"          # DB-wide writer gate
-        mine = db.parent / f"{db.name}.{self._partition.name}"  # partition identity
-
-        @contextlib.contextmanager
-        def _locks():
-            # Gate first, partition second — a single fixed order, so two builders
-            # can never deadlock holding one each.
-            with index_lock(gate):
-                with index_lock(mine):
-                    yield
-
-        return _locks()
+        return index_writer_locks(
+            self._store.db_path,
+            self._partition.name,
+            enabled=self._use_lock,
+        )
 
     def build(
         self, *, force: bool = False,
         on_progress: Callable[[dict], None] | None = None,
+        after_build: Callable[[dict[str, Any]], None] | None = None,
+        defer_changed_vectors: bool = False,
     ) -> dict[str, Any]:
+        """Reconcile the partition and finish any missing-vector backfill.
+
+        ``defer_changed_vectors`` is an opt-in for bounded maintenance builds with
+        many changed source items.  It keeps each item's lexical documents and
+        change-ledger entry durable as usual, but leaves vector work to the global,
+        resumable ``_encode_missing`` pass below.  Ordinary builds retain immediate
+        per-item encoding by default.
+        """
         pname = self._partition.name
         change_key = get_change_key(self._partition)
         schema = get_projection_schema(self._partition)
@@ -122,7 +118,8 @@ class IndexBuilder:
                         d.partition = pname
                     d.ensure_hash()
                 self._store.upsert_documents(docs, item_id=ref.item_id)
-                self._encode_docs(docs, schema)
+                if not defer_changed_vectors:
+                    self._encode_docs(docs, schema)
                 self._store.mark_item_indexed(
                     ref.item_id, pname, mtime=ref.mtime,
                     content_hash=ref.content_hash or "", doc_count=len(docs),
@@ -138,10 +135,18 @@ class IndexBuilder:
             changed_any = bool(changed or deleted)
             if changed_any:
                 self._store.bump_version(pname)
-                from datetime import datetime, timezone
-                self._store.set_meta(f"last_build:{pname}", datetime.now(timezone.utc).isoformat())
                 for proj_name in schema:
                     self._residents.invalidate(f"{pname}:{proj_name}")
+
+            # A successful empty/no-op build is still material cutover evidence:
+            # it proves the registered native source was reconciled, including a
+            # legitimately empty corpus. Keep version bumps change-only, but stamp
+            # every completed build so read-only certification can distinguish it
+            # from a partition that has never run.
+            from datetime import datetime, timezone
+            self._store.set_meta(
+                f"last_build:{pname}", datetime.now(timezone.utc).isoformat()
+            )
 
             stats = {
                 "partition": pname,
@@ -151,6 +156,11 @@ class IndexBuilder:
                 "doc_count": self._store.doc_count(pname),
                 "version": self._store.build_version(pname),
             }
+            # Domain delivery reconciliation belongs to the same writer-gate
+            # hold. The index commit is already durable, but no second builder
+            # can interleave between its parity check and exact outbox ack.
+            if after_build is not None:
+                after_build(stats)
             logger.info("index build [%s]: %s", pname, stats)
             return stats
 

@@ -1,13 +1,29 @@
 // Bootstrap vault event tracking. Idempotent — safe to call multiple times.
 // __WINDOW_DAYS__ = rolling window in days (default 7)
+// __EXCLUDE_FOLDERS__ = JSON array of vault-relative roots to ignore
 // Stores compact per-file stats in localStorage, never raw event streams.
 return (async () => {
     const WINDOW_DAYS = __WINDOW_DAYS__;
+    const excludeFolders = __EXCLUDE_FOLDERS__;
     const STORAGE_KEY = "wb-vault-ledger";
     const FLAG = "__wb_vault_ledger_active";
+    window.__wb_vault_ledger_excludes = excludeFolders;
+    const isExcluded = (path) => {
+        const normalized = String(path || "").replace(/\\/g, "/");
+        return (window.__wb_vault_ledger_excludes || []).some(raw => {
+            const folder = String(raw || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            return folder === "" || normalized === folder ||
+                normalized.startsWith(folder + "/") ||
+                normalized.includes("/" + folder + "/");
+        });
+    };
 
     // Already bootstrapped this session?
     if (window[FLAG]) {
+        for (const path of Object.keys(window.__wb_vault_ledger.files)) {
+            if (isExcluded(path)) delete window.__wb_vault_ledger.files[path];
+        }
+        window.__wb_vault_ledger_save?.();
         return {
             status: "already_active",
             file_count: Object.keys(window.__wb_vault_ledger.files).length,
@@ -30,6 +46,12 @@ return (async () => {
     ledger.windowDays = WINDOW_DAYS;
     ledger.bootstrapped = new Date().toISOString();
 
+    // A root may have become sealed since the prior session. Purge its
+    // metadata before any reconciliation or query can expose it.
+    for (const path of Object.keys(ledger.files)) {
+        if (isExcluded(path)) delete ledger.files[path];
+    }
+
     // Compact: remove days outside the window
     const cutoff = new Date(Date.now() - WINDOW_DAYS * 86400000)
         .toISOString().slice(0, 10);
@@ -51,10 +73,11 @@ return (async () => {
     let reconciled = 0;
 
     for (const file of app.vault.getMarkdownFiles()) {
+        const fp = file.path;
+        if (isExcluded(fp)) continue;
         const mtime = file.stat.mtime;
         if (mtime < cutoffMs) continue;
 
-        const fp = file.path;
         const isNew = !ledger.files[fp];
         if (isNew) {
             ledger.files[fp] = { last: 0, days: {}, created: null };
@@ -98,6 +121,12 @@ return (async () => {
         const dateKey = new Date(ts).toISOString().slice(0, 10);
         const ledger = window.__wb_vault_ledger;
         if (!ledger) return;
+        if (isExcluded(fp) || (oldPath && isExcluded(oldPath))) {
+            delete ledger.files[fp];
+            if (oldPath) delete ledger.files[oldPath];
+            window.__wb_vault_ledger_save();
+            return;
+        }
 
         if (type === "delete") {
             delete ledger.files[fp];

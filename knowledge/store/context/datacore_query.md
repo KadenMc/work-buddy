@@ -1,7 +1,7 @@
 ---
 name: Datacore Query
 kind: capability
-description: Execute a Datacore query against the vault index. Supports @page, @section, @block, @task, @list-item, @codeblock with filters like path(), tags, childof(), parentof(). Returns serialized results.
+description: Explicit legacy-only Datacore query against an opted-in Obsidian vault. Native domain queries and search do not require this capability; never suggest enabling Obsidian when it is opted out.
 capability_name: datacore_query
 category: context
 op: op.wb.datacore_query

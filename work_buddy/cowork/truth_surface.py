@@ -15,6 +15,11 @@ from typing import Any, Mapping
 from work_buddy.cowork import readiness
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.proposal_applicability import load_current_projection
+from work_buddy.cowork.truth_activation import (
+    DocumentTruthPolicy,
+    TruthActivationError,
+    require_truth_access,
+)
 from work_buddy.security.local_identity import HumanAuthorityContext
 from work_buddy.truth import documents, expressions, queries
 from work_buddy.truth.anchors import CompositeSelector, reanchor, serialize_selector
@@ -68,6 +73,32 @@ class ConnectionWrite:
     projection_sha256: str
     structured_head_sha256: str
     ydoc_generation_sha256: str
+
+
+def _require_document_truth(
+    store: TruthStore,
+    document_id: str,
+    *,
+    mutation: bool,
+    expected_activation_revision: int | None = None,
+    conn: sqlite3.Connection,
+) -> DocumentTruthPolicy:
+    try:
+        return require_truth_access(
+            store,
+            document_id,
+            mutation=mutation,
+            expected_activation_revision=expected_activation_revision,
+            conn=conn,
+        )
+    except TruthActivationError as exc:
+        raise TruthSurfaceError(
+            exc.code,
+            str(exc),
+            status=exc.status,
+            retryable=exc.retryable,
+            details=exc.details,
+        ) from exc
 
 
 def _authority_actor_ref(
@@ -522,6 +553,9 @@ def truth_list(
     with store._read_connection() as conn:
         conn.execute("BEGIN")
         try:
+            policy = _require_document_truth(
+                store, document.id, mutation=False, conn=conn
+            )
             states = queries.resolve_claim_states(store, conn=conn)
             fact_ids = frozenset(
                 item.claim_id
@@ -551,7 +585,7 @@ def truth_list(
                 conn.execute("ROLLBACK")
 
     document_active = documents.current_lifecycle(store, document.id) == "active"
-    can_modify = not read_only and document_active
+    can_modify = not read_only and document_active and policy.truth_mutable
     can_decide = (
         can_modify and "dashboard" in store.profile.gate.confirmation_surfaces
     )
@@ -874,6 +908,9 @@ def truth_claim_detail(
     with store._read_connection() as conn:
         conn.execute("BEGIN")
         try:
+            policy = _require_document_truth(
+                store, document.id, mutation=False, conn=conn
+            )
             context = _claim_observability_context(store, claim_id, conn=conn)
             state = context["state"]
             facts = frozenset({claim_id}) if context["is_fact"] else frozenset()
@@ -882,7 +919,7 @@ def truth_claim_detail(
             document_active = (
                 documents.current_lifecycle(store, document.id) == "active"
             )
-            can_modify = not read_only and document_active
+            can_modify = not read_only and document_active and policy.truth_mutable
             can_decide = (
                 can_modify
                 and "dashboard" in store.profile.gate.confirmation_surfaces
@@ -1140,6 +1177,7 @@ def connect_claim(
     selector_json = serialize_selector(resolved_selector)
 
     with store.write_transaction(conn) as conn:
+        _require_document_truth(store, document.id, mutation=True, conn=conn)
         if claim_input is not None:
             proposition = claim_input.get("proposition")
             claim_kind = claim_input.get("claim_kind")
@@ -1405,6 +1443,7 @@ def decide_claim(
     normalized = str(action or "").strip().lower().replace("_", "-")
     lifecycle = TruthLifecycle(store)
     with store.write_transaction() as conn:
+        _require_document_truth(store, document.id, mutation=True, conn=conn)
         context = _claim_observability_context(
             store,
             claim_id,
@@ -1562,6 +1601,7 @@ def challenge_claim(
             status=409,
         )
     with store.write_transaction() as conn:
+        _require_document_truth(store, document.id, mutation=True, conn=conn)
         target = store.get_claim(claim_id, conn=conn)
         challenger = store.get_claim(challenging_claim_id, conn=conn)
         if target is None or challenger is None:

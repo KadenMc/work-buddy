@@ -1,7 +1,7 @@
 ---
 name: Journal Rewrite Running Notes
 kind: capability
-description: 'Remove processed lines from today''s daily note. Consent-gated wrapper around ``journal_backlog.rewrite_running_notes``. Umbrella-level cleanup: typically run after all the umbrella''s groups have been routed.'
+description: 'Explicit legacy compatibility cleanup for an archived Markdown Running Notes thread. Disabled when Obsidian is opted out and fenced by native Journal authority.'
 capability_name: journal_rewrite_running_notes
 category: journal
 op: op.wb.journal_rewrite_running_notes

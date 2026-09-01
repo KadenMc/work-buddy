@@ -13,6 +13,19 @@ from .errors import (
     TaskTransitionError,
     TaskValidationError,
 )
+from .creation import (
+    FieldDerivation,
+    PublishedTaskCreationDecision,
+    TaskCreationCoordinator,
+    TaskCreationDecisionVerificationError,
+    TaskCreationIntent,
+    TaskCreationIntentError,
+    verify_published_task_creation_decision,
+)
+from .aggregate_creation import (
+    TaskAggregateCreationService,
+    reconcile_task_creation_intents,
+)
 from .models import (
     BatchMutationResult,
     MutationReceipt,
@@ -32,11 +45,18 @@ from .store import TaskStore, default_task_db_path
 __all__ = [
     "MutationReceipt",
     "BatchMutationResult",
+    "FieldDerivation",
+    "PublishedTaskCreationDecision",
     "MutationResult",
     "Tag",
     "Task",
     "TaskActionItem",
     "TaskApplicationService",
+    "TaskAggregateCreationService",
+    "TaskCreationCoordinator",
+    "TaskCreationDecisionVerificationError",
+    "TaskCreationIntent",
+    "TaskCreationIntentError",
     "TaskDeletedError",
     "TaskDocumentLink",
     "TaskDomainError",
@@ -51,4 +71,6 @@ __all__ = [
     "TaskValidationError",
     "TaskStore",
     "default_task_db_path",
+    "reconcile_task_creation_intents",
+    "verify_published_task_creation_decision",
 ]

@@ -1,7 +1,7 @@
 ---
 name: Hot Files
 kind: capability
-description: Rank vault files by activity intensity, fusing modification frequency (vault events) with writing intensity (Keep the Rhythm). Hierarchically collapses busy directories to prevent context flooding. Use sub_directory to drill into a specific area.
+description: Explicit legacy-only Obsidian activity view that fuses Vault Events and Keep the Rhythm. Disabled when Obsidian is opted out; retained only for compatibility inspection.
 capability_name: hot_files
 category: journal
 op: op.wb.hot_files

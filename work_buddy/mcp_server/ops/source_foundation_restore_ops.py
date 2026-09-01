@@ -23,10 +23,16 @@ from work_buddy.backups.source_foundation_restore import (
     authorized_restore_reconciliation,
     read_restore_fence,
     restore_fence_lock,
+    write_restore_fence,
 )
 from work_buddy.consent import ConsentPrompt, requires_consent
 from work_buddy.mcp_server.op_registry import register_op
 from work_buddy.sources.models import canonical_sha256
+
+
+_INSTALLED_AUTHORITY_REBIND_AUTHORIZATION_SCHEMA = (
+    "wb.installed-authority-restore-rebind-authorization/v1"
+)
 
 
 def _prompt(
@@ -98,6 +104,163 @@ def _frozen_inventory_sha256(payload: Mapping[str, Any]) -> str:
             "truth_stores": payload.get("truth_stores"),
         }
     )
+
+
+def _installed_authority_rebind_plan(
+    paths: SourceFoundationPaths,
+) -> tuple[Path, dict[str, Path], dict[str, Any]]:
+    """Return the current installation's content-free relocation plan."""
+
+    from work_buddy.installed_authority import (
+        LEDGER_FILENAME,
+        inspect_restore_rebind_plan,
+    )
+
+    ledger = paths.journal_capture_db.parent / LEDGER_FILENAME
+    if not ledger.is_file():
+        return ledger, {}, inspect_restore_rebind_plan(ledger, {})
+    from work_buddy.paths import resolve
+
+    targets = {
+        "journal": paths.journal_capture_db,
+        "projects": resolve("db/projects"),
+        "contracts": resolve("db/contracts"),
+        "personal_knowledge": resolve("db/personal-knowledge"),
+    }
+    return ledger, targets, inspect_restore_rebind_plan(ledger, targets)
+
+
+def _status_with_installed_authority(
+    status: dict[str, Any],
+    paths: SourceFoundationPaths,
+) -> dict[str, Any]:
+    """Add relocation blockers to the central restore status."""
+
+    _ledger, _targets, plan = _installed_authority_rebind_plan(paths)
+    result = {**status, "installedAuthorityRebind": plan}
+    fence = read_restore_fence()
+    pending = None
+    if fence.valid and fence.payload is not None:
+        reconciliation = fence.payload.get("reconciliation")
+        if isinstance(reconciliation, Mapping):
+            candidate = reconciliation.get("installed_authority_rebind")
+            if (
+                isinstance(candidate, Mapping)
+                and candidate.get("schema")
+                == _INSTALLED_AUTHORITY_REBIND_AUTHORIZATION_SCHEMA
+                and candidate.get("state") == "authorized"
+            ):
+                pending = dict(candidate)
+    if plan["ready"] and not plan["required"] and pending is None:
+        return result
+    blocker = {
+        "code": (
+            "installed_authority_rebind_receipt_pending"
+            if pending is not None
+            else "installed_authority_rebind_required"
+            if plan["required"] and plan["ready"]
+            else "installed_authority_rebind_unavailable"
+        ),
+        "detail": (
+            "An authorized path rebind needs an explicit receipt-finalization retry"
+            if pending is not None
+            else "Sealed domain paths require an explicit restore rebind"
+            if plan["required"] and plan["ready"]
+            else "Every sealed domain must prove its restored cohort before path rebind"
+        ),
+        "context": {
+            "plan_sha256": plan["plan_sha256"],
+            "domains": [
+                row["domain"]
+                for row in plan["rows"]
+                if row["requires_rebind"] or not row["ready"]
+            ],
+        },
+    }
+    cohorts = dict(result.get("cohorts") or {})
+    cohorts["installed_authority"] = [blocker]
+    result["cohorts"] = cohorts
+    result["blockers"] = [*(result.get("blockers") or []), blocker]
+    result["state"] = "blocked"
+    return result
+
+
+def _pending_rebind_authorization(
+    payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    reconciliation = payload.get("reconciliation")
+    if not isinstance(reconciliation, Mapping):
+        return None
+    value = reconciliation.get("installed_authority_rebind")
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("schema") != _INSTALLED_AUTHORITY_REBIND_AUTHORIZATION_SCHEMA:
+        return None
+    if value.get("state") != "authorized" or not isinstance(
+        value.get("plan"), Mapping
+    ):
+        raise ValueError("installed_authority_restore_rebind_receipt_invalid")
+    return dict(value)
+
+
+def _authorized_rebind_intent(
+    *,
+    snapshot_id: str,
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema": _INSTALLED_AUTHORITY_REBIND_AUTHORIZATION_SCHEMA,
+        "state": "authorized",
+        "snapshot_id": snapshot_id,
+        "authorized_plan_sha256": plan["plan_sha256"],
+        "plan": dict(plan),
+    }
+
+
+def _prove_pending_rebind_completed(
+    pending: Mapping[str, Any],
+    current_plan: Mapping[str, Any],
+) -> None:
+    """Prove the exact post-transaction half of a crash-interrupted receipt."""
+
+    prior = pending.get("plan")
+    if (
+        not isinstance(prior, Mapping)
+        or pending.get("authorized_plan_sha256") != prior.get("plan_sha256")
+        or pending.get("snapshot_id") is None
+        or current_plan.get("required")
+        or not current_plan.get("ready")
+    ):
+        raise ValueError("installed_authority_restore_rebind_completion_unproven")
+    prior_rows = {
+        row.get("domain"): row
+        for row in prior.get("rows", [])
+        if isinstance(row, Mapping) and isinstance(row.get("domain"), str)
+    }
+    current_rows = {
+        row.get("domain"): row
+        for row in current_plan.get("rows", [])
+        if isinstance(row, Mapping) and isinstance(row.get("domain"), str)
+    }
+    if set(prior_rows) != set(current_rows):
+        raise ValueError("installed_authority_restore_rebind_completion_unproven")
+    for domain, before in prior_rows.items():
+        after = current_rows[domain]
+        expected_revision = int(before["revision"]) + (
+            1 if before.get("requires_rebind") else 0
+        )
+        if (
+            after.get("state") != before.get("state")
+            or after.get("cohort_id") != before.get("cohort_id")
+            or after.get("current_path_sha256")
+            != before.get("target_path_sha256")
+            or after.get("target_path_sha256")
+            != before.get("target_path_sha256")
+            or int(after.get("revision", -1)) != expected_revision
+        ):
+            raise ValueError(
+                "installed_authority_restore_rebind_completion_unproven"
+            )
 
 
 def _reconcile_disclosures(
@@ -187,11 +350,16 @@ def source_foundation_restore_operator(
     quarantine_truth_store_ids: list[str] | tuple[str, ...] | None = None,
     quarantine_missing_cohorts: list[str] | tuple[str, ...] | None = None,
     defer_source_effect_ids: list[str] | tuple[str, ...] | None = None,
+    rebind_installed_authority: bool = False,
 ) -> dict[str, Any]:
     """Inspect or explicitly reconcile one durable restore fence."""
 
     if action == "status":
-        return inspect_source_foundation_cohorts()
+        paths = SourceFoundationPaths.current()
+        return _status_with_installed_authority(
+            inspect_source_foundation_cohorts(paths=paths),
+            paths,
+        )
     if action != "reconcile":
         raise ValueError("action must be status or reconcile")
     fence = read_restore_fence()
@@ -207,6 +375,16 @@ def source_foundation_restore_operator(
         else _default_enrollment_path(fence.payload, fence.path)
     )
     paths = SourceFoundationPaths.current()
+    authority_ledger, authority_targets, authority_plan = (
+        _installed_authority_rebind_plan(paths)
+    )
+    pending_rebind = _pending_rebind_authorization(fence.payload)
+    if not authority_plan["ready"]:
+        raise ValueError("installed_authority_restore_rebind_not_ready")
+    if (
+        authority_plan["required"] or pending_rebind is not None
+    ) and not rebind_installed_authority:
+        raise ValueError("installed_authority_restore_rebind_requires_explicit_consent")
     truth_targets = {
         str(store_id): str(Path(target).expanduser().resolve())
         for store_id, target in (truth_recovery_targets or {}).items()
@@ -236,6 +414,11 @@ def source_foundation_restore_operator(
         "quarantine_truth_store_ids": list(quarantine_ids),
         "quarantine_missing_cohorts": list(missing_cohorts),
         "defer_source_effect_ids": list(deferred_source_effects),
+        "installed_authority_rebind": {
+            "requested": bool(rebind_installed_authority),
+            "plan": authority_plan,
+            "pending_authorization": pending_rebind,
+        },
     }
     _authorize(
         actual_snapshot_id,
@@ -256,6 +439,66 @@ def source_foundation_restore_operator(
             "frozen_inventory_sha256"
         ]:
             raise ValueError("source_foundation_restore_inventory_changed")
+        if _pending_rebind_authorization(current.payload) != pending_rebind:
+            raise ValueError("installed_authority_restore_receipt_changed")
+        _current_ledger, current_targets, current_authority_plan = (
+            _installed_authority_rebind_plan(paths)
+        )
+        if (
+            _current_ledger != authority_ledger
+            or current_authority_plan["plan_sha256"]
+            != authority_plan["plan_sha256"]
+        ):
+            raise ValueError("installed_authority_restore_plan_changed")
+        installed_authority_rebind_receipt = None
+        if rebind_installed_authority:
+            from work_buddy.installed_authority import (
+                rebind_restored_authority_paths,
+            )
+
+            if pending_rebind is not None and not authority_plan["required"]:
+                _prove_pending_rebind_completed(
+                    pending_rebind,
+                    current_authority_plan,
+                )
+            else:
+                intent = _authorized_rebind_intent(
+                    snapshot_id=actual_snapshot_id,
+                    plan=current_authority_plan,
+                )
+                updated_marker = dict(current.payload)
+                reconciliation = dict(updated_marker.get("reconciliation") or {})
+                reconciliation["installed_authority_rebind"] = intent
+                updated_marker["reconciliation"] = reconciliation
+                write_restore_fence(updated_marker, path=current.path)
+                current = read_restore_fence(current.path)
+                if not current.valid or current.payload is None:
+                    raise ValueError("source_foundation_restore_fence_changed")
+            with authorized_restore_reconciliation():
+                installed_authority_rebind_receipt = rebind_restored_authority_paths(
+                    authority_ledger,
+                    current_targets,
+                    expected_plan_sha256=current_authority_plan["plan_sha256"],
+                    snapshot_id=actual_snapshot_id,
+                )
+            if pending_rebind is not None:
+                installed_authority_rebind_receipt[
+                    "original_authorized_plan_sha256"
+                ] = pending_rebind["authorized_plan_sha256"]
+                if not authority_plan["required"]:
+                    installed_authority_rebind_receipt["result"] = (
+                        "recovered_rebind_receipt"
+                    )
+            updated_marker = dict(current.payload)
+            reconciliation = dict(updated_marker.get("reconciliation") or {})
+            reconciliation["installed_authority_rebind"] = (
+                installed_authority_rebind_receipt
+            )
+            updated_marker["reconciliation"] = reconciliation
+            write_restore_fence(updated_marker, path=current.path)
+            current = read_restore_fence(current.path)
+            if not current.valid or current.payload is None:
+                raise ValueError("source_foundation_restore_fence_changed")
         identity_record = current.payload.get("identity_enrollment")
         expected_identity_digest = (
             identity_record.get("sha256")
@@ -351,6 +594,7 @@ def source_foundation_restore_operator(
                 "truthRecovery": truth_recovery,
                 "missingCohortQuarantine": missing_cohort_receipts,
                 "sourceEffectQuarantine": source_effect_quarantine,
+                "installedAuthorityRebind": installed_authority_rebind_receipt,
                 "cleared": False,
             }
         receipt = archive_cleared_restore_fence(
@@ -367,6 +611,7 @@ def source_foundation_restore_operator(
         "truthRecovery": truth_recovery,
         "missingCohortQuarantine": missing_cohort_receipts,
         "sourceEffectQuarantine": source_effect_quarantine,
+        "installedAuthorityRebind": installed_authority_rebind_receipt,
         "cleared": True,
         "receiptPath": str(receipt),
     }

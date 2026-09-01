@@ -607,6 +607,7 @@ def create_action_snapshot(
     egress_boundary: Mapping[str, Any] | None = None,
     at: str | None = None,
     snapshot_id: str | None = None,
+    truth_activation_revision: int | None = None,
 ) -> ActionSnapshot:
     """Freeze one exact, server-validated action input without materializing."""
 
@@ -760,6 +761,19 @@ def create_action_snapshot(
         store._store_blob_bytes(projection_digest, projection_bytes)
         store._store_blob_bytes(target_digest, target_bytes)
         with store.write_transaction() as conn:
+            if truth_activation_revision is not None:
+                # Truth analysis admission is authoritative in the same
+                # transaction that freezes its action snapshot. Import here
+                # to keep ordinary Verify snapshots independent from Truth.
+                from work_buddy.cowork.truth_activation import require_truth_access
+
+                require_truth_access(
+                    store,
+                    document_ref,
+                    mutation=True,
+                    expected_activation_revision=truth_activation_revision,
+                    conn=conn,
+                )
             existing = verify_store.get_by_canonical_sha256(
                 store,
                 ActionSnapshot,

@@ -298,32 +298,6 @@ def script() -> str:
         renderThreads();
     };
 
-    // Trigger the journal-backlog source pipeline via the dashboard's
-    // gateway shim. Falls back to a friendly message on error so the
-    // empty-state CTA never throws an unhandled rejection.
-    window.threadsRunJournalScan = function () {
-        const btns = document.querySelectorAll('.threads-empty-cta');
-        for (const b of btns) { b.disabled = true; }
-        fetch('/api/run/run_source_pipeline', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({source: 'journal_backlog'}),
-        })
-            .then(r => r.ok ? r.json() : Promise.reject(r.status))
-            .then(data => {
-                window._topLevelCache = null;
-                renderThreads();
-            })
-            .catch(err => {
-                alert('Could not run scan: ' + err
-                      + '. Run "run_source_pipeline" via the MCP '
-                      + 'gateway (e.g. wb_run from an agent with '
-                      + 'source="journal_backlog"), or open Obsidian '
-                      + 'and ensure the work-buddy plugin is enabled.');
-                for (const b of btns) { b.disabled = false; }
-            });
-    };
-
     function renderTopLevel() {
         if (window._topLevelCache !== null) {
             return _renderTopLevelHtml(window._topLevelCache);
@@ -495,21 +469,12 @@ def script() -> str:
                       + '<a href="#" data-on-click="threadsClearFiltersLink">Clear filters</a>'
                       + '</p>';
             } else {
-                // Calls-to-action: bridge between "list is empty"
-                // and "what should I do." Surfaces the two real
-                // source pipelines so the user can produce some
-                // threads without leaving the dashboard.
+                // Keep the empty state useful without reviving retired
+                // file-backed Journal scanners.
                 html += '<div class="threads-empty-state">';
                 html += '<p>No active Threads. As source scanners run, '
                       + 'they\'ll surface here.</p>';
                 html += '<div class="threads-empty-cta-row">';
-                html += '<button class="threads-empty-cta" '
-                      + 'data-on-click="threadsRunJournalScan" '
-                      + 'title="Run the journal-backlog source pipeline '
-                      + 'on today\'s Running Notes (segment + cluster + '
-                      + 'spawn group threads)">'
-                      + 'Scan today\'s journal'
-                      + '</button>';
                 html += '<button class="threads-empty-cta" '
                       + 'data-on-click="threadsToggleMidProcess" '
                       + 'title="Show in-flight states (inferring, executing, '
@@ -1379,7 +1344,6 @@ def script() -> str:
         threadsClearFilters();
     });
 
-    window.wbAction('threadsRunJournalScan', function (el) { threadsRunJournalScan(); });
     window.wbAction('threadsToggleMidProcess', function (el) { threadsToggleMidProcess(); });
 
     window.wbAction('threadsPushPathAction', function (el) {

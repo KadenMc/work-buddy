@@ -1,7 +1,7 @@
 ---
 name: Run Source Pipeline
 kind: capability
-description: 'Run an end-to-end source pipeline: collect raw items, annotate with tags + summary, algorithmically cluster, LLM-refine cluster boundaries + per-cluster action proposals (local-first tier_chain), and spawn a group umbrella thread + group sub-threads with the items as ContextItems. Replaces the per-source journal/chrome/email scan entry points.'
+description: 'Run an end-to-end non-Journal source pipeline: collect raw items, annotate with tags + summary, algorithmically cluster, LLM-refine cluster boundaries + per-cluster action proposals (local-first tier_chain), and spawn a group umbrella thread + group sub-threads with the items as ContextItems.'
 capability_name: run_source_pipeline
 category: threads
 op: op.wb.run_source_pipeline
@@ -9,15 +9,11 @@ schema_version: wb-capability/v1
 parameters:
   source:
     type: str
-    description: Registered pipeline name (one of 'chrome_triage', 'email_triage', 'journal_backlog')
+    description: Registered pipeline name (one of 'chrome_triage', 'email_triage')
     required: true
-  journal_date:
-    type: str
-    description: 'Journal pipeline: YYYY-MM-DD; defaults to today'
-    required: false
   profile:
     type: str
-    description: 'Journal pipeline: override segmentation tier profile'
+    description: 'Optional source-specific pipeline profile'
     required: false
   engagement_window:
     type: str
@@ -68,8 +64,6 @@ tags:
 - pipeline
 aliases:
 - run pipeline
-- process backlog
-- scan journal
 - triage chrome
 - triage email
 - scan inbox

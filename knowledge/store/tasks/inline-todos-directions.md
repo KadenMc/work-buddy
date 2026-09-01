@@ -1,13 +1,9 @@
 ---
-name: Inline TODOs Directions
+name: Inline TODOs Directions (Retired)
 kind: directions
-description: 'How to triage and execute #wb/TODO vault markers — batch presentation, execution rules, tag cleanup'
-summary: 'Present items in batches of 5. For each: file, full line, parsed instruction (bold), 1-2 lines context. Actions: Handle, Skip, Delete tag. Confirm ambiguous instructions before executing. Never delete lines — only replace #wb/TODO with #wb/DONE.'
-trigger: 'user wants to process #wb/TODO markers from across the vault'
-command: wb-inline-todos
-workflow: tasks/inline-todos
-capabilities:
-- tasks/task_create
+description: The Obsidian inline #wb/TODO scanner, workflow, slash command, and scheduled sync are retired; use native Tasks and explicit actions.
+summary: 'Do not scan or mutate vault files for #wb/TODO markers. Create and manage native TaskStore records instead.'
+trigger: user asks why the former inline TODO command is unavailable
 tags:
 - tasks
 - inline
@@ -23,33 +19,10 @@ parents:
 - tasks
 ---
 
-Start via mcp__work-buddy__wb_run("inline-todos"), then advance with wb_advance.
+`/wb-inline-todos` and the `inline-todos` workflow are retired. There is no
+replacement background file scanner. Use native Tasks, selections, and
+explicit actions. Do not import `work_buddy.obsidian.inline_todos`, scan the
+vault, mutate tags, probe Obsidian, or recommend enabling it.
 
-## Triage rules
-
-Present items in batches of 5. For each item show:
-1. File: vault path
-2. Line: full line with #wb/TODO highlighted
-3. Instruction: parsed instruction text (bold)
-4. Context: 1-2 lines before/after
-
-Actions:
-- Handle -- execute the instruction
-- Skip -- leave for next time
-- Delete tag -- remove tag without executing
-
-## Executing instructions
-
-For Handle items:
-1. Read the instruction text (freeform natural language)
-2. Use surrounding context to interpret
-3. If clear, execute directly
-4. If ambiguous, ask the user first
-
-Report what was done for each handled item.
-
-## Don'ts
-- Don't execute without showing the user what you'll do
-- Don't modify files outside the cleanup step
-- Don't delete lines -- only replace #wb/TODO with #wb/DONE
-- Don't assume what ambiguous instructions mean -- ask
+Retained code is a filesystem compatibility aid only; it is not a supported
+runtime workflow or migration authority.

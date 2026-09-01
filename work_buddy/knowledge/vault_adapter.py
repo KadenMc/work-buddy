@@ -1,8 +1,8 @@
-"""Vault adapter — load personal knowledge from Obsidian vault markdown files.
+"""Legacy adapter for importing personal knowledge Markdown files.
 
-Reads markdown files with YAML frontmatter from a configured vault directory
+Reads markdown files with YAML frontmatter from an explicit source directory
 and converts them into :class:`VaultUnit` instances that participate in the
-unified knowledge search alongside system :class:`PromptUnit` objects.
+the deterministic importer can compare against the former API projection.
 
 Expected frontmatter schema (all optional except ``name``)::
 

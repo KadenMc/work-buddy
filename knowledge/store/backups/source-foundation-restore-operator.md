@@ -47,6 +47,10 @@ parameters:
     type: list[str]
     description: Exact imported_inert paused Sources effects to defer until a separately approved post-restore recovery.
     required: false
+  rebind_installed_authority:
+    type: bool
+    description: Explicitly rebind sealed domain latches to this installation after a path-changing machine restore. Every target database must still prove its exact sealed cohort.
+    required: false
 mutates_state: true
 consent_operations:
 - source_foundation.restore_reconcile
@@ -75,6 +79,15 @@ The approval fingerprint binds the frozen marker inventory, enrollment and
 Sources archive digests, resolved paths, exact Truth permanent identities and
 targets, quarantine identities, deferred effect IDs, and disclosure outcomes.
 A changed marker or changed archive is rejected after approval.
+
+Installed domain latches bind the SHA-256 of each absolute database path. A
+restore to another machine or data root therefore remains fail closed until
+`rebind_installed_authority=true` is included in this fresh approval. The
+operator binds consent to the exact semantic ledger plan, proves every target
+database and sealed cohort again under the restore lock, updates all changed
+path hashes in one SQLite transaction, and records a content-free receipt in
+the durable restore marker. Missing, corrupt, incomplete, or changed domain
+state prevents every rebind; no row is guessed or silently discarded.
 
 Fresh or partial restores converge through explicit recovery, never guesswork:
 missing Sources can be rebuilt from a same-authority authorized archive;

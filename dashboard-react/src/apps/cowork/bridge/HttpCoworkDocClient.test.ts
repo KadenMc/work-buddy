@@ -11,6 +11,27 @@ import { HttpCoworkDocClient } from "./HttpCoworkDocClient";
 describe("HttpCoworkDocClient Verify setup", () => {
   beforeEach(() => resetLocalIdentityForTests());
 
+  it("opts provenance-only documents out of the Truth projection", async () => {
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const client = new HttpCoworkDocClient({
+      documentId: "doc-1",
+      storeId: "store-1",
+      includeTruthProjection: false,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.fetchDoc();
+
+    expect(applicationRequest(fetchImpl)?.[0]).toBe(
+      "/api/truth/doc/doc-1?store_id=store-1&include_truth=0",
+    );
+  });
+
   it("sends the exact effective activation as a compare-and-set precondition", async () => {
     const configuration = {
       schema: "work-buddy.cowork-verify-configuration/v1",

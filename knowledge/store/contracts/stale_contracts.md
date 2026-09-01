@@ -1,7 +1,7 @@
 ---
 name: Stale Contracts
 kind: capability
-description: List contracts not reviewed in N days (default 7)
+description: List Contracts SQLite records not reviewed in N days (default 7), without requiring Obsidian.
 capability_name: stale_contracts
 category: contracts
 op: op.wb.stale_contracts
@@ -24,6 +24,4 @@ aliases:
 - neglected contracts
 parents:
 - contracts
-requires:
-- obsidian
 ---

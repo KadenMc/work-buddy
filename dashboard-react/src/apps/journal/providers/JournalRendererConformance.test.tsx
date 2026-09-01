@@ -44,7 +44,7 @@ import {
   toQuickTextCaptureInput,
   toRunningNotesInput,
 } from "../rendererBindings";
-import { JOURNAL_APP_CONTRIBUTION } from "../contribution";
+import { JOURNAL_APP_CONTRIBUTION, JOURNAL_WIDGET_MODULES } from "../contribution";
 import { JOURNAL_VIEW_DEFINITION } from "../viewDefinition";
 import { InMemoryJournalProvider } from "./InMemoryJournalProvider";
 
@@ -102,7 +102,7 @@ describe("Journal and the real widget library", () => {
     registry.registerApp(CAPTURE_APP_CONTRIBUTION, [QUICK_TEXT_CAPTURE_MODULE]);
     registry.registerApp(TIMELINE_APP_CONTRIBUTION, [DAY_TIMELINE_MODULE]);
     registry.registerApp(NOTES_APP_CONTRIBUTION, [RUNNING_NOTES_MODULE]);
-    registry.registerApp(JOURNAL_APP_CONTRIBUTION, []);
+    registry.registerApp(JOURNAL_APP_CONTRIBUTION, JOURNAL_WIDGET_MODULES);
 
     expect(registry.requireView(JOURNAL_VIEW_DEFINITION_ID).definition).toBe(
       JOURNAL_VIEW_DEFINITION,

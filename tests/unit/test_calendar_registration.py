@@ -75,4 +75,4 @@ def test_example_config_has_calendar_block():
     cfg = yaml.safe_load((root / "config.example.yaml").read_text(encoding="utf-8"))
     assert "calendar" in cfg
     assert cfg["calendar"]["enabled"] is True
-    assert cfg["calendar"]["provider"] == "obsidian_bridge"
+    assert cfg["calendar"]["provider"] == "google_native"

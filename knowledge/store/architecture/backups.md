@@ -1,7 +1,7 @@
 ---
 name: Data Backups
 kind: concept
-description: Off-machine snapshots and restore for vital SQLite databases plus portable Truth store recovery payloads. Hot-backup -> tarball -> manifest -> GitHub Releases. Tiered retention, gh-CLI driven, integrates with the health Component system.
+description: Local and opt-in off-machine restore coverage for ordinary vital SQLite databases and portable Truth payloads, plus local-only authorized Journal/Sources checkpoints.
 tags:
 - backups
 - snapshot
@@ -24,16 +24,15 @@ aliases:
 - data-restore
 parents:
 - architecture
-- architecture
 dev_notes: |-
-  Centerpiece of the backups documentation cluster. Pairs with architecture/migrations, which is a separate concern used beyond restore. VITAL_DBS is the single source of truth for machine databases. Truth coverage has two parts: the machine registry is a vital database, and registered scoped stores contribute dynamic portable payloads. If a new vital DB or dynamic recovery source is added, this unit needs the corresponding inventory updated. File pointers for each subsystem live next to the code in the relevant modules. Search `work_buddy/backups/` and `work_buddy/health/` to discover them.
+  Centerpiece of the backups documentation cluster. Pairs with architecture/migrations, which is a separate concern used beyond restore. VITAL_DBS is the ordinary snapshot inventory, not an inventory of every machine database: native Journal and retained Sources use the separate authorized sensitive-checkpoint path. Truth coverage has two parts: the machine registry is a vital database, and registered scoped stores contribute dynamic portable payloads. If a new ordinary vital DB, sensitive cohort, or dynamic recovery source is added, this unit needs the corresponding inventory updated. File pointers for each subsystem live next to the code in the relevant modules. Search `work_buddy/backups/` and `work_buddy/health/` to discover them.
 
   Remote retention (`prune_remote_snapshots`) buckets releases by `parse_snapshot_ts(tag)`, never by the `gh` release `createdAt` field: `createdAt` is the date of the commit a release tag points at, and in a data-only backup repo every tag points at the single seed commit -- so `createdAt` is identical across every release, and keying retention on it collapses all rolling snapshots into one bucket (the sweep then deletes all but one off-machine copy). `list_remote_snapshots` surfaces `publishedAt` (the real push time) for display only.
 ---
 
-Off-machine snapshot + restore for work-buddy's vital SQLite databases and registered scoped Truth stores. Machine databases use SQLite's hot-backup API. Truth stores contribute portable recovery payloads. Everything is tarballed with a structured manifest, pushed to a user-owned private GitHub Releases bucket, and recoverable on a freshly installed machine through the schema-aware restore pipeline and the Truth import library.
+Snapshot + restore for work-buddy's ordinary vital SQLite databases and registered scoped Truth stores. Machine databases use SQLite's hot-backup API. Truth stores contribute portable recovery payloads. Everything is tarballed locally with a structured manifest and is recoverable through the schema-aware restore pipeline and Truth import library. Upload to a user-owned private GitHub Releases bucket is optional and requires explicit authorization because the archive is unencrypted and contains private domain data. Native Journal and retained Sources use a separate authorized, local-only sensitive checkpoint.
 
-Lives in `work_buddy/backups/`. The system has four moving parts (local snapshot, manifest, remote push, restore) plus a health-Component for setup and observability.
+Lives in `work_buddy/backups/`. The ordinary snapshot system has four moving parts (local snapshot, manifest, remote push, restore) plus a health-Component for setup and observability. The sensitive path adds guarded Sources export, coordinated Journal checkpoint, verification, and isolated restore rehearsal.
 
 ## Why it exists
 
@@ -43,17 +42,48 @@ Vital DBs that get backed up (declared in `work_buddy/backups/local.py` as `VITA
 
 | Logical name | On-disk file | Owner |
 |---|---|---|
-| `tasks` | `.data/db/tasks/task_metadata.db` | `obsidian/tasks-plugin` |
+| `tasks` | `.data/db/task_metadata.db` | `tasks/` |
 | `projects` | `.data/db/projects.db` | `projects/` |
+| `contracts` | `.data/db/contracts.db` | `contracts_domain/` |
+| `personal_knowledge` | `.data/db/personal_knowledge.db` | `knowledge/personal/` |
+| `installed_authority` | `.data/db/installed_authority.db` | `installed_authority.py` |
 | `messages` | `.data/db/messages.db` | `messaging/` |
 | `threads` | `.data/db/threads.db` | `threads/` |
 | `entities` | `.data/db/entities.db` | `entities/` |
-| `settings` | `.data/db/settings/settings.db` | `settings` |
+| `settings` | `.data/db/settings.db` | `settings` |
 | `truth_registry` | `<data_root>/db/truth_registry.db` | `truth/registry.py` |
+| `agent_execution` | `.data/db/agent_execution.db` | `agent_execution/` |
+| `cowork_conversation_source_dependencies` | `.data/db/cowork_conversation_source_dependencies.db` | `cowork/` |
+| `task_note_migration` | `.data/db/task_note_migration.db` | `task_notes/` |
 
 The logical name is what appears in the manifest and the snapshot tag. The on-disk filename is preserved inside the tarball so restore can reconstruct the directory layout.
 
 `truth_registry` is only the machine inventory of known scoped stores. Authoritative claims live beside the material they govern in the canonical `.wbuddy/cowork/` sidecar. Those sidecars are covered dynamically through portable exports, not by adding their live SQLite databases to `VITAL_DBS`.
+
+Native `journal_capture.db` and the retained Sources store are intentionally
+absent from `VITAL_DBS`. They form one sensitive recovery cohort so an exact
+Sources occurrence cannot be restored independently of the Journal rows that
+depend on it. They are never added to the ordinary remote-eligible tarball.
+
+## Sensitive Journal and Sources checkpoints
+
+Sensitive backup is an explicit two-step local operation. First,
+`source_maintenance_operator(action="export")` produces a content-carrying
+Sources archive and records the issued offline copy behind its high-consent
+boundary. Then `data_sensitive_checkpoint` verifies that exact receipt and
+adds a SQLite-hot `journal_capture.db` member plus
+`SENSITIVE-MANIFEST.json` in the same directory. The Sources archive is not
+copied or renamed, and the manifest is always `remoteEligible: false`.
+
+`verify_sensitive_checkpoint` checks member digests, the Journal SQLite
+integrity/schema, and the authorized Sources export receipt.
+`rehearse_sensitive_checkpoint_restore` requires explicit operational-state
+import authorization and restores both members into a fresh isolated
+destination. It verifies identity-preserving import counts and every
+Journal-to-Source dependency before publication. Rehearsal is not an in-place
+or live restore operator; callers remove the isolated destination after
+capturing its content-free receipt. Sensitive checkpoints are not consumed by
+ordinary `data_restore`.
 
 ## Snapshot pipeline (`work_buddy/backups/local.py`)
 
@@ -62,7 +92,7 @@ The logical name is what appears in the manifest and the snapshot tag. The on-di
 3. Write `MANIFEST.json` alongside the machine database snapshots and portable Truth payloads.
 4. Tar+gzip the directory via Python's `tarfile` standard library.
 5. Sweep retention (see Retention).
-6. If `backups.github.repo` is configured and `gh` is authenticated, push to GitHub Releases (see Remote push).
+6. Push to GitHub Releases only when a destination repo is configured and the explicit private-content policy allows it (see Remote push). Repository configuration alone never authorizes upload.
 7. Write `.data/backups/last_run.json` with the snapshot and remote-push outcome. The returned result and `MANIFEST.json` carry detailed Truth coverage. Health checks read the last-run sentinel and never hit GitHub on the hot path.
 
 Snapshot IDs are ISO-timestamped: `snap-<utc-isoformat>`. Manual snapshots (triggered via `/wb-backup-now` or `data_backup(manual=True)`) get a `-manual` suffix and live in their own retention bucket.
@@ -121,15 +151,27 @@ The remote target is a *user-owned private GitHub repository*. Snapshots are upl
 
 Transient-fault handling: `push_snapshot` retries a push that fails with a network/DNS fault (e.g. intermittent resolution of `uploads.github.com`) up to three attempts with a short backoff -- well inside the hourly cron window. Permanent faults (gh missing, unauthenticated) are not retried. `gh release create` uploads the asset after creating the release object; if an earlier attempt created the release but its asset upload failed, the retry detects the "already exists" error and falls back to `gh release upload --clobber`, so a retried push converges instead of looping.
 
-No encryption layer. A private GitHub repo is the same trust model as the user's other private code repositories -- the threat model is account compromise, not in-transit interception. Adding GPG encryption would buy nothing and add a key-management failure mode.
+There is no encryption layer. The archive can contain Projects descriptions,
+Contracts, Personal Knowledge, Tasks, messages, identities, settings, and
+portable scoped Truth exports. Therefore `backups.github.repo` only names the
+destination. Scheduled/default backup calls remain local-only unless
+`backups.github.allow_unencrypted_private_content` is the YAML boolean `true`;
+strings such as `"true"` fail closed. An explicit `push_remote=True` without
+the persistent opt-in is allowed only through a high-risk, per-invocation
+consent prompt bound to the repository and content class. Consent is checked
+before the local snapshot is created, so a denied request cannot accidentally
+upload or create duplicate retry snapshots. The low-level `push_snapshot`
+boundary rechecks the persistent flag or the exact consumed per-invocation
+authorization, so another production caller cannot bypass the public policy by
+calling the transport helper directly.
 
 Fresh-repo gotcha: the first push to an empty repo errors with `Repository is empty`. The `fix_backup_repo_configured` fixer creates the repo with `gh repo create --private --add-readme` to seed the default branch.
 
 ## Restore pipeline (`work_buddy/backups/restore.py`)
 
-`data_restore(snapshot_id)` (capability) executes:
+`data_restore(snapshot_id, from_remote=False)` (capability) executes:
 
-1. Download `<tag>.tar.gz` from GitHub Releases into a staging directory.
+1. Resolve a local snapshot ID or absolute snapshot-directory path by default. When `from_remote=true`, download the GitHub Release tarball into a temporary local snapshot directory first.
 2. Read `MANIFEST.json` and validate: `manifest_version` is recognized; for each DB, snapshot's `schema_versions[db]` <= code's max migration (forward-time-travel guard).
 3. Unpack into `.data/db.staging_<ts>/`. Remove `truth_stores/` from the machine database staging tree so portable scoped payloads cannot be moved into `<data_root>/db/`.
 4. Open each staged DB through its migration authority (see `architecture/migrations`) -- the ladder rolls the staged schema forward to current. The Settings database and Truth registry use their own versioned ladders and the same forward-version guard.
@@ -143,6 +185,15 @@ Fresh-repo gotcha: the first push to an empty repo errors with `Repository is em
 
 Steps 3-6 are staging-only. The live DB is first touched in step 7, immediately
 before the directory swap, and is retained as the pre-restore rollback copy.
+
+Before publication, restore conservatively unions irreversible rows from the
+live and snapshot `installed_authority.db` ledgers. When a current installation
+exists, it also snapshots the live Journal, local identity, Co-work
+conversation-source dependencies, and retained Sources into staging instead
+of rolling those Source Foundation authorities backward with an ordinary
+archive. On a fresh machine those live-only cohorts remain absent, so the
+recovery fence cannot clear until their explicit recovery and reconciliation
+requirements are satisfied.
 
 The restore marker is a fail-closed authority fence, not a warning. Normal
 Source Foundation mutations, background delivery, model/provider dispatch,
@@ -171,6 +222,7 @@ Registered as a non-core opt-in Component `github_backups` (see `architecture/he
 | `gh-cli-installed` | `agent_handoff` | Spawns a Claude Code session that walks the user through OS-appropriate install. |
 | `gh-authenticated` | `agent_handoff` | Walks through `gh auth login --web`. |
 | `repo-configured` | `input_required` | Form for repo name, calls `gh repo create --private --add-readme` if absent, writes `backups.github.repo` to `config.local.yaml`. |
+| `private-content-opt-in` | `none` | Requires `backups.github.allow_unencrypted_private_content` to be exactly `true`. The user must review the unencrypted archive scope and edit local config deliberately; repository setup does not flip it. |
 
 The Component declares one custom check (`check_github_backup_freshness`) that reads `.data/backups/last_run.json` and returns success/warning/failure based on whether the last snapshot landed inside the configured cadence window. It never polls GitHub directly.
 
@@ -178,7 +230,7 @@ A `domain:backups` entry in `work_buddy/control/graph_static.py` makes the Compo
 
 ## Cron + slash commands
 
-- `sidecar_jobs/data-backup.md` -- hourly cron, calls `data_backup` capability. Skips silently if the Component is unwanted or its Requirements are unmet.
+- `sidecar_jobs/data-backup.md` -- hourly cron, calls `data_backup` capability. Local hot snapshots always run; remote push occurs only with the explicit persistent private-content opt-in.
 - `/wb-backup-now` -- manual one-off snapshot. Used as an anchor point before a risky operation.
 - `/wb-backup-restore [snapshot-id]` -- list remote snapshots or restore a specified one.
 
@@ -186,12 +238,14 @@ There are no `/wb-backup-setup`, `/wb-backup-status`, or `/wb-backup-config` sla
 
 ## Capabilities (registered in `work_buddy/mcp_server/registry.py`)
 
-- `data_backup(manual: bool = False)` -- take a snapshot, push to remote.
-- `data_backup_list()` -- list local + remote snapshots with sizes and timestamps.
-- `data_restore(snapshot_id: str, force: bool = False)` -- restore from a given snapshot.
+- `data_backup(manual: bool = False, push_remote: bool | None = None)` -- take a snapshot. Default/scheduled calls are local-only unless the persistent opt-in is true; an exceptional explicit remote request uses exact per-invocation consent.
+- `data_backup_list(include_remote: bool = False)` -- list local snapshots, optionally including the configured remote releases.
+- `data_sensitive_checkpoint(...)` -- seal and verify a local-only Journal member beside an already authorized Sources export; see `backups/data_sensitive_checkpoint` for the receipt parameters.
+- `data_restore(snapshot_id: str, from_remote: bool = False, force: bool = False)` -- restore a local snapshot by default or explicitly download a remote release first.
 
 ## See also
 
 - `architecture/migrations` -- the MigrationRunner schema-version ladder that restore depends on for forward-rolling a staged DB.
+- `architecture/source-foundation`, `backups/data_sensitive_checkpoint` -- the sensitive Sources/Journal boundary and its guarded capability contract.
 - `architecture/health`, `architecture/control-graph` -- how the Component and its Requirements surface in Settings.
 - `tasks/task_delete` -- the soft-delete safety pattern that complements off-machine backups.

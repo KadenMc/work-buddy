@@ -100,15 +100,25 @@ class KnowledgePartition:
             ct = _content_text(unit, store)
             aliases = _aliases(unit)
             h = content_hash(ct + "\x01" + "\x01".join(aliases))
-            refs.append(ItemRef(item_id=path, content_hash=h))
+            # Personal paths are mutable aliases; the opaque database ID is
+            # the index source identity. System documentation keeps its
+            # tracked path identity.
+            item_id = getattr(unit, "unit_id", "") or path
+            refs.append(ItemRef(item_id=item_id, content_hash=h))
         return refs
 
     def parse(self, item_id: str) -> list[Document]:
         store = self._store()
         unit = store.get(item_id)
+        path = item_id
+        if unit is None:
+            for candidate_path, candidate in store.items():
+                if getattr(candidate, "unit_id", "") == item_id:
+                    path, unit = candidate_path, candidate
+                    break
         if unit is None:
             return []
-        return [self._to_document(item_id, unit, store)]
+        return [self._to_document(path, unit, store)]
 
     def _to_document(self, path: str, unit: Any, store: dict) -> Document:
         from work_buddy.knowledge.model import VaultUnit
@@ -124,6 +134,7 @@ class KnowledgePartition:
         # post-filtered from a bounded pool.
         category = getattr(unit, "category", "") or ""
         severity = getattr(unit, "severity", "") or ""
+        stable_id = getattr(unit, "unit_id", "") or path
 
         # Body for lexical recall = full content text + aliases (title=name weighted higher).
         body = ct + (("\n" + " ".join(aliases)) if aliases else "")
@@ -137,13 +148,18 @@ class KnowledgePartition:
             projections["aliases"] = Projection(text=aliases)
 
         return Document(
-            doc_id=make_doc_id(_PARTITION, path),
+            doc_id=make_doc_id(_PARTITION, stable_id),
             partition=_PARTITION,
             fields=fields,
             display_text=f"[{kind}] {path}: {description}",
             metadata={
                 "kind": kind, "path": path, "scope": scope, "tags": tags,
                 "category": category, "severity": severity,
+                "stable_id": stable_id,
+                "revision": getattr(unit, "revision", 0) or 0,
+                "privacy_class": getattr(unit, "privacy_class", "") or "",
+                "disclosure_class": getattr(unit, "disclosure_class", "") or "",
+                "body_mode": getattr(unit, "body_mode", "") or "",
             },
             projections=projections,
         )
@@ -153,8 +169,14 @@ class KnowledgePartition:
         store = self._store()
         out: list[Any] = []
         for h in hits:
-            path = h.doc_id.split(":", 1)[1] if ":" in h.doc_id else h.doc_id
+            stable_id = h.doc_id.split(":", 1)[1] if ":" in h.doc_id else h.doc_id
+            path = getattr(h, "metadata", {}).get("path") or stable_id
             unit = store.get(path)
+            if unit is None:
+                for candidate_path, candidate in store.items():
+                    if getattr(candidate, "unit_id", "") == stable_id:
+                        path, unit = candidate_path, candidate
+                        break
             if unit is None:
                 continue
             try:

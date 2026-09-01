@@ -285,6 +285,16 @@ def archive_completed(older_than_days: int = 7) -> dict[str, Any]:
     }
 
 
+def task_creation_reconcile(limit: int = 25) -> dict[str, Any]:
+    """Boundedly roll hidden task/document aggregates through crash recovery."""
+
+    from .aggregate_creation import reconcile_task_creation_intents
+    from .runtime import assert_task_mutations_allowed
+
+    assert_task_mutations_allowed()
+    return reconcile_task_creation_intents(limit=max(1, min(int(limit), 100)))
+
+
 def task_provenance(task_id: str) -> dict[str, Any]:
     store = TaskStore()
     task = store.get(task_id, include_deleted=True)

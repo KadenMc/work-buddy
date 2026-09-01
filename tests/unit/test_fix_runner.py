@@ -63,6 +63,26 @@ def _noop_fixer(**kwargs):
     return {"ok": True, "detail": "ok", "side_effects": []}
 
 
+def _enable_legacy_journal_fixer(monkeypatch) -> None:
+    """Make frozen Markdown compatibility deterministic on any workstation."""
+
+    def _raw_vault_write(_rel_path, path, content, **_kwargs):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.encode("utf-8"))
+        return True
+
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.journal_markdown_compatibility_required",
+        lambda: True,
+    )
+    monkeypatch.setattr("work_buddy.obsidian.bridge.is_available", lambda: False)
+    monkeypatch.setattr("work_buddy.obsidian.bridge.is_obsidian_running", lambda: False)
+    monkeypatch.setattr(
+        "work_buddy.obsidian.vault_writer.vault_write",
+        _raw_vault_write,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Smoke fix: data/ writable
 # ---------------------------------------------------------------------------
@@ -118,6 +138,7 @@ def test_fix_journal_dir_creates(tmp_path, monkeypatch):
         "work_buddy.config.load_config",
         lambda: {"vault_root": str(vault), "obsidian": {"journal_dir": "journal"}},
     )
+    _enable_legacy_journal_fixer(monkeypatch)
     from work_buddy.health.fixers import fix_journal_dir
     result = fix_journal_dir()
     assert result["ok"] is True
@@ -127,13 +148,14 @@ def test_fix_journal_dir_creates(tmp_path, monkeypatch):
 
 def test_fix_journal_dir_no_vault_root(monkeypatch):
     monkeypatch.setattr("work_buddy.config.load_config", lambda: {"vault_root": ""})
+    _enable_legacy_journal_fixer(monkeypatch)
     from work_buddy.health.fixers import fix_journal_dir
     result = fix_journal_dir()
     assert result["ok"] is False
     assert "vault_root" in result["detail"].lower()
 
 
-def test_fix_contracts_dir(tmp_path, monkeypatch):
+def test_fix_contracts_dir_is_noop_under_native_authority(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setattr(
@@ -143,13 +165,39 @@ def test_fix_contracts_dir(tmp_path, monkeypatch):
             "contracts": {"vault_path": "wb/contracts"},
         },
     )
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.contracts_markdown_compatibility_required",
+        lambda: False,
+    )
+    from work_buddy.health.fixers import fix_contracts_dir
+    result = fix_contracts_dir()
+    assert result["ok"] is True
+    assert result["detail"] == "No action: Contracts SQLite is authoritative."
+    assert result["side_effects"] == []
+    assert not (vault / "wb" / "contracts").exists()
+
+
+def test_fix_contracts_dir_creates_during_legacy_compatibility(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {
+            "vault_root": str(vault),
+            "contracts": {"vault_path": "wb/contracts"},
+        },
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.contracts_markdown_compatibility_required",
+        lambda: True,
+    )
     from work_buddy.health.fixers import fix_contracts_dir
     result = fix_contracts_dir()
     assert result["ok"] is True
     assert (vault / "wb" / "contracts").is_dir()
 
 
-def test_fix_personal_knowledge_dir(tmp_path, monkeypatch):
+def test_fix_personal_knowledge_dir_is_noop_under_native_authority(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     vault.mkdir()
     monkeypatch.setattr(
@@ -158,6 +206,34 @@ def test_fix_personal_knowledge_dir(tmp_path, monkeypatch):
             "vault_root": str(vault),
             "personal_knowledge": {"vault_path": "Meta/PK"},
         },
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.personal_knowledge_markdown_compatibility_required",
+        lambda: False,
+    )
+    from work_buddy.health.fixers import fix_personal_knowledge_dir
+    result = fix_personal_knowledge_dir()
+    assert result["ok"] is True
+    assert result["detail"] == "No action: personal-knowledge SQLite is authoritative."
+    assert result["side_effects"] == []
+    assert not (vault / "Meta" / "PK").exists()
+
+
+def test_fix_personal_knowledge_dir_creates_during_legacy_compatibility(
+    tmp_path, monkeypatch,
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {
+            "vault_root": str(vault),
+            "personal_knowledge": {"vault_path": "Meta/PK"},
+        },
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.personal_knowledge_markdown_compatibility_required",
+        lambda: True,
     )
     from work_buddy.health.fixers import fix_personal_knowledge_dir
     result = fix_personal_knowledge_dir()
@@ -171,6 +247,10 @@ def test_fix_master_task_list_creates_with_seed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "work_buddy.config.load_config",
         lambda: {"vault_root": str(vault)},
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+        lambda: True,
     )
     from work_buddy.health.fixers import fix_master_task_list
     result = fix_master_task_list()
@@ -189,6 +269,10 @@ def test_fix_master_task_list_idempotent(tmp_path, monkeypatch):
         "work_buddy.config.load_config",
         lambda: {"vault_root": str(vault)},
     )
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+        lambda: True,
+    )
     from work_buddy.health.fixers import fix_master_task_list
     result = fix_master_task_list()
     assert result["ok"] is True
@@ -200,8 +284,8 @@ def test_fix_master_task_list_idempotent(tmp_path, monkeypatch):
 # Fix-B: daily-note section appenders
 # ---------------------------------------------------------------------------
 
-def test_fix_log_section_creates_today_when_no_note_exists(tmp_path, monkeypatch):
-    """If no daily note exists at all, fix creates today's note with the section."""
+def test_fix_log_section_is_noop_under_native_authority(tmp_path, monkeypatch):
+    """Native Journal authority never recreates a retired Markdown note."""
     vault = tmp_path / "vault"
     journal = vault / "journal"
     journal.mkdir(parents=True)
@@ -209,13 +293,18 @@ def test_fix_log_section_creates_today_when_no_note_exists(tmp_path, monkeypatch
         "work_buddy.config.load_config",
         lambda: {"vault_root": str(vault), "obsidian": {"journal_dir": "journal"}},
     )
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.journal_markdown_compatibility_required",
+        lambda: False,
+    )
     from datetime import date
     from work_buddy.health.fixers import fix_log_section
     result = fix_log_section()
     assert result["ok"] is True
+    assert result["detail"] == "No action: Journal SQLite is authoritative."
+    assert result["side_effects"] == []
     today_path = journal / f"{date.today().strftime('%Y-%m-%d')}.md"
-    assert today_path.exists()
-    assert "# Log" in today_path.read_text(encoding="utf-8")
+    assert not today_path.exists()
 
 
 def test_fix_log_section_appends_to_yesterday_if_today_missing(tmp_path, monkeypatch):
@@ -231,6 +320,7 @@ def test_fix_log_section_appends_to_yesterday_if_today_missing(tmp_path, monkeyp
         "work_buddy.config.load_config",
         lambda: {"vault_root": str(vault), "obsidian": {"journal_dir": "journal"}},
     )
+    _enable_legacy_journal_fixer(monkeypatch)
     from work_buddy.health.fixers import fix_log_section
     result = fix_log_section()
     assert result["ok"] is True
@@ -251,6 +341,7 @@ def test_fix_log_section_idempotent_when_section_present(tmp_path, monkeypatch):
         "work_buddy.config.load_config",
         lambda: {"vault_root": str(vault), "obsidian": {"journal_dir": "journal"}},
     )
+    _enable_legacy_journal_fixer(monkeypatch)
     from work_buddy.health.fixers import fix_log_section
     result = fix_log_section()
     assert result["ok"] is True
@@ -267,6 +358,7 @@ def test_fix_sign_in_and_running_notes(tmp_path, monkeypatch):
         "work_buddy.config.load_config",
         lambda: {"vault_root": str(vault), "obsidian": {"journal_dir": "journal"}},
     )
+    _enable_legacy_journal_fixer(monkeypatch)
     from work_buddy.health.fixers import fix_sign_in_section, fix_running_notes_section
     r1 = fix_sign_in_section()
     r2 = fix_running_notes_section()
@@ -395,11 +487,15 @@ def test_fix_telegram_bot_token_writes_env(tmp_path, monkeypatch):
 # Fix-D: agent_handoff dispatch
 # ---------------------------------------------------------------------------
 
-def test_run_fix_agent_handoff_spawns_session():
+def test_run_fix_agent_handoff_spawns_session(monkeypatch):
     """An agent_handoff requirement triggers a Claude Code spawn with
     the registered fix_agent_brief as the prompt. Verified by mocking
     begin_session."""
     from work_buddy.control.fix_runner import run_fix
+    monkeypatch.setattr(
+        "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+        lambda: True,
+    )
     with mock.patch(
         "work_buddy.session_launcher.begin_session",
         return_value={"status": "ok", "session_id": "s-test", "pid": 42, "message": "ok"},

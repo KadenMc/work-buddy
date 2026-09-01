@@ -68,6 +68,10 @@ One derived label per node. Six values: ``ok``, ``degraded``, ``blocked``, ``dis
 Key rules:
 
 * ``preference=unwanted`` → ``disabled`` (the cascade rule: unwanted is invisible; probes skip it).
+* A hard child of an unwanted component is also ``disabled`` with
+  ``blocked_by_opt_out`` rather than reported as an outage. Diagnostics and
+  requirement checks stop at this boundary and return no remediation advice.
+  A force refresh bypasses cache only; it never overrides the opt-out.
 * ``preference=required`` (core components, ``is_core=True``) is treated like ``wanted`` for cascade.
 * **Unknown is distinct from failure.** A hard dep in ``unknown`` (pending probe) → downstream is also ``unknown``, NOT ``blocked``. Propagating uncertainty as certainty-of-failure is what painted the whole graph red on dashboard startup before this rule landed.
 * Soft-dep ``unknown`` doesn't degrade either — we don't announce a known reduction in functionality on the basis of a probe that hasn't completed.
@@ -94,7 +98,7 @@ Universal ``?`` button on every non-ok requirement (except those already offerin
 ## Endpoints (``work_buddy/dashboard/service.py``)
 
 * ``GET /api/control/graph[?force=1]`` — serialized node map + cache info.
-* ``POST /api/control/reprobe`` — runs ``probe_all(force=True)`` (re-pings every service, ~10s worst case), rewrites tool_status.json, returns fresh graph. Read-only-gated.
+* ``POST /api/control/reprobe`` — runs ``probe_all(force=True)`` for wanted components, rewrites tool_status.json, and returns a fresh graph. It never probes opted-out components or their hard children. Read-only-gated.
 * ``POST /api/control/preference`` — ``{updates: {component_id: {wanted, reason}}}``. Auto-consents; calls ``apply_preference_updates`` + invalidates graph.
 * ``POST /api/control/fix/<req_id>`` — applies the fix; body ``{params}`` for input_required. Re-runs the check, returns ``{ok, detail, side_effects, recheck, spawned}``.
 * ``POST /api/control/help/<node_id>`` — spawns a help session.

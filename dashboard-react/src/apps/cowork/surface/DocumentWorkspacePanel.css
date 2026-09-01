@@ -1,0 +1,69 @@
+.wb-document-workspace-panel {
+  min-block-size: 32rem;
+  block-size: min(72vh, 56rem);
+}
+
+.wb-document-workspace-panel > .wb-workspace-side-panel {
+  block-size: 100%;
+}
+
+.wb-document-workspace-panel__primary,
+.wb-document-workspace-panel__document,
+.wb-document-workspace-panel__document > aside {
+  min-block-size: 0;
+}
+
+.wb-document-workspace-panel__document > aside {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-document-workspace-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-3);
+  border-block-end: var(--wb-border-width) solid var(--wb-color-border-subtle);
+}
+
+.wb-document-workspace-panel__header h2,
+.wb-document-workspace-panel__header p {
+  margin: 0;
+}
+
+.wb-document-workspace-panel__header p {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-document-workspace-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.wb-document-workspace-panel__editor,
+.wb-document-editor-surface,
+.wb-document-editor-surface > .wb-cowork-editor {
+  min-block-size: 0;
+  flex: 1;
+}
+
+.wb-document-workspace-panel__editor {
+  display: flex;
+  overflow: auto;
+}
+
+@media (max-width: 760px) {
+  .wb-document-workspace-panel {
+    block-size: min(78vh, 48rem);
+  }
+
+  .wb-document-workspace-panel__header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

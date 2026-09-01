@@ -197,6 +197,37 @@ def retained_file_import_source_sha256(meta_json: str | None) -> str | None:
     return digest
 
 
+def _provision_default_document_truth_policy(
+    store: TruthStore,
+    document: DocumentRecord,
+    *,
+    actor: Actor,
+    conn: sqlite3.Connection,
+) -> None:
+    """Preserve legacy full Co-work behavior for uncoordinated registrations.
+
+    Domain coordinators pass an outer transaction and provision their explicit
+    contract before it commits. Legacy callers own no such coordinator, so the
+    document and its compatibility policy must become visible atomically.
+    """
+
+    from work_buddy.cowork.truth_activation import (
+        LEGACY_FULL_COWORK_CONTRACT,
+        provision_document_policy,
+    )
+
+    provision_document_policy(
+        store,
+        document_id=document.id,
+        interaction_contract_id=LEGACY_FULL_COWORK_CONTRACT,
+        initial_activation="enabled",
+        explicit_truth_acknowledged=True,
+        actor=actor,
+        intent_id=f"document-registration:{document.id}:legacy-truth-policy",
+        conn=conn,
+    )
+
+
 def register_document(
     store: TruthStore,
     *,
@@ -208,6 +239,7 @@ def register_document(
     actor: Actor,
     at: str | None = None,
     document_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> DocumentRecord:
     """Register a scope-relative file as a cowork doc, idempotent by path.
 
@@ -236,9 +268,14 @@ def register_document(
     meta_json = _producer_meta_json(actor)
     title_value = None if title is None else _require_text(title, "title")
 
-    with store.write_transaction() as conn:
-        existing = store._get_document_by_path_locked(conn, relative_path)
+    owns_transaction = conn is None
+    with store.write_transaction(conn) as write_conn:
+        existing = store._get_document_by_path_locked(write_conn, relative_path)
         if existing is not None:
+            if owns_transaction:
+                _provision_default_document_truth_policy(
+                    store, existing, actor=actor, conn=write_conn
+                )
             return existing
         record = DocumentRecord(
             id=identifier,
@@ -252,10 +289,10 @@ def register_document(
             created_by_ref=actor.ref,
             meta_json=meta_json,
         )
-        store._insert_document_locked(conn, record)
-        _insert_path_key_locked(conn, document_id=identifier, path=relative_path)
+        store._insert_document_locked(write_conn, record)
+        _insert_path_key_locked(write_conn, document_id=identifier, path=relative_path)
         store._insert_doc_event_locked(
-            conn,
+            write_conn,
             DocEventRecord(
                 id=_record_id(None, "doc event id"),
                 document_id=identifier,
@@ -269,7 +306,7 @@ def register_document(
             ),
         )
         store._insert_doc_event_locked(
-            conn,
+            write_conn,
             DocEventRecord(
                 id=_record_id(None, "doc event id"),
                 document_id=identifier,
@@ -282,6 +319,10 @@ def register_document(
                 detail=None,
             ),
         )
+        if owns_transaction:
+            _provision_default_document_truth_policy(
+                store, record, actor=actor, conn=write_conn
+            )
         return record
 
 
@@ -377,6 +418,10 @@ def register_ready_document(
                 and existing_versions
                 and existing_versions[-1].structured_head_sha256 == head_digest
             ):
+                if conn is None:
+                    _provision_default_document_truth_policy(
+                        store, existing, actor=actor, conn=write_conn
+                    )
                 return existing, existing_versions[-1], False
             raise InvariantViolation("document path is already registered differently")
         store._insert_document_locked(write_conn, record)
@@ -398,6 +443,10 @@ def register_ready_document(
                     ydoc_snapshot_sha256=snapshot_digest,
                     detail=mode,
                 ),
+            )
+        if conn is None:
+            _provision_default_document_truth_policy(
+                store, record, actor=actor, conn=write_conn
             )
         return record, version, True
 

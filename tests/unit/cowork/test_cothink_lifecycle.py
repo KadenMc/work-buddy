@@ -184,10 +184,18 @@ def test_v5_portable_stream_upcasts_initial_open_status(
         json.loads(line)
         for line in exported.path.read_text(encoding="utf-8").splitlines()
     ]
+    post_v5_records = {
+        "cothink_item_status_event",
+        "interaction_contract_definition",
+        "document_interaction_contract_assignment",
+        "document_truth_activation_transition",
+        "document_truth_policy_receipt",
+        "document_truth_admission_seal_event",
+    }
     objects = [
         value
         for value in objects
-        if value.get("record_type") != "cothink_item_status_event"
+        if value.get("record_type") not in post_v5_records
     ]
     header = objects[0]
     footer = objects[-1]

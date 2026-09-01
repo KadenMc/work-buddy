@@ -5,7 +5,7 @@ Data sources:
     - ``sidecar_state.json`` for service health and job state
     - Native TaskStore for task summaries (legacy Markdown only pre-cutover)
     - Agent session manifests for session info
-    - Contract markdown files for contract summaries
+    - Authority-aware Contract projections for contract summaries
 """
 
 from __future__ import annotations
@@ -31,9 +31,6 @@ _cfg = load_config()
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
 _STATE_FILE = resolve("runtime/sidecar-state")
-from work_buddy.contracts import get_contracts_dir
-
-_CONTRACTS_DIR = get_contracts_dir()
 _AGENTS_DIR = data_dir("agents")
 
 # Rolling bridge latency samples (kept in dashboard process memory)
@@ -1361,46 +1358,50 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
 
 
 def get_contracts_summary() -> dict[str, Any]:
-    """Active contract summaries from contracts/ directory."""
+    """Active contract summaries from the current Contracts authority.
+
+    ``work_buddy.contracts.load_all_contracts`` switches to SQLite after the
+    reviewed cohort is sealed.  Keeping this endpoint on that provider prevents
+    the dashboard from reading or linking to the retired Markdown archive.
+    """
     contracts: list[dict[str, Any]] = []
 
     try:
-        if not _CONTRACTS_DIR.exists():
-            return {"contracts": []}
+        from work_buddy.contracts import load_all_contracts
 
-        for md_file in sorted(_CONTRACTS_DIR.glob("*.md")):
-            if md_file.name.startswith("_"):
-                continue  # skip templates
-
-            try:
-                content = md_file.read_text(encoding="utf-8")
-                # Parse YAML frontmatter
-                if content.startswith("---"):
-                    end = content.index("---", 3)
-                    frontmatter = content[3:end].strip()
-                    contract: dict[str, Any] = {"file": md_file.name}
-
-                    for line in frontmatter.splitlines():
-                        if ":" in line:
-                            key, val = line.split(":", 1)
-                            contract[key.strip()] = val.strip().strip('"').strip("'")
-
-                    # Only include active contracts
-                    status = contract.get("status", "active")
-                    if status in ("active", "in-progress", "stalled"):
-                        contracts.append({
-                            "file": md_file.name,
-                            "title": contract.get("title", md_file.stem),
-                            "status": status,
-                            "type": contract.get("type", ""),
-                            "deadline": contract.get("deadline", ""),
-                            "priority": contract.get("priority", ""),
-                            # Vault-relative path for obsidian:// URI in the dashboard.
-                            # Mirrors the config default (contracts.vault_path).
-                            "vault_path": f"work-buddy/contracts/{md_file.name}",
-                        })
-            except Exception:
+        configured_subpath = str(
+            load_config().get("contracts", {}).get(
+                "vault_path", "work-buddy/contracts"
+            )
+        ).strip("/\\")
+        for contract in load_all_contracts():
+            status = str(contract.get("status", "active"))
+            if (
+                contract.get("lifecycle", "current") != "current"
+                or status not in ("active", "in-progress", "stalled")
+            ):
                 continue
+            path = Path(contract.get("path") or f"{contract.get('title', 'contract')}.md")
+            if path.name.startswith("_"):
+                continue
+            native = "structured" in contract
+            contracts.append(
+                {
+                    "file": path.name,
+                    "title": contract.get("title", path.stem),
+                    "status": status,
+                    "type": contract.get("type", ""),
+                    "deadline": contract.get("deadline", ""),
+                    "priority": contract.get("priority", ""),
+                    # The legacy dashboard renders an Obsidian link only for a
+                    # truthy path. Native contracts have no live vault target.
+                    "vault_path": (
+                        None
+                        if native
+                        else f"{configured_subpath}/{path.name}"
+                    ),
+                }
+            )
     except Exception as exc:
         logger.warning("Failed to read contracts: %s", exc)
         return {"contracts": [], "error": str(exc)}
@@ -1779,6 +1780,11 @@ def _matches_filter(command_id: str, filter_cfg: dict) -> bool:
 def _obsidian_commands(cfg: dict) -> list[dict]:
     """Fetch Obsidian commands, filtered by config."""
     try:
+        from work_buddy.health.preferences import is_wanted
+
+        if is_wanted("obsidian") is False:
+            return []
+
         from work_buddy.obsidian.commands import ObsidianCommands
 
         vault_root = Path(cfg.get("vault_root", ""))
@@ -1820,6 +1826,7 @@ def _workbuddy_commands(cfg: dict) -> list[dict]:
             WorkflowDefinition,
             get_registry,
         )
+        from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
 
         wb_cfg = cfg.get("command_palette", {}).get("workbuddy_filter", {})
         exclude_cats: list[str] = wb_cfg.get("exclude_categories", [])
@@ -1827,6 +1834,8 @@ def _workbuddy_commands(cfg: dict) -> list[dict]:
 
         results = []
         for name, entry in get_registry().items():
+            if not evaluate_runtime_admission(entry).allowed:
+                continue
             if isinstance(entry, WorkflowDefinition):
                 if exclude_workflows:
                     continue

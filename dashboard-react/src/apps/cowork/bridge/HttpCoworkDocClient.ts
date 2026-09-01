@@ -90,21 +90,29 @@ export interface HttpCoworkDocClientOptions {
   readonly storeId: string;
   /** Injectable for tests, else the global fetch bound to the window. */
   readonly fetchImpl?: typeof fetch;
+  /**
+   * False requests the provenance/review projection without claim or expression
+   * projection. Legacy servers may ignore the additive query parameter.
+   */
+  readonly includeTruthProjection?: boolean;
 }
 
 export class HttpCoworkDocClient implements CoworkDocClient {
   readonly #documentId: string;
   readonly #storeId: string;
   readonly #fetch: typeof fetch;
+  readonly #includeTruthProjection: boolean;
 
   constructor(options: HttpCoworkDocClientOptions) {
     this.#documentId = options.documentId;
     this.#storeId = options.storeId;
     this.#fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    this.#includeTruthProjection = options.includeTruthProjection ?? true;
   }
 
   #endpoint(): string {
-    return `/api/truth/doc/${encodeURIComponent(this.#documentId)}?store_id=${encodeURIComponent(this.#storeId)}`;
+    const base = `/api/truth/doc/${encodeURIComponent(this.#documentId)}?store_id=${encodeURIComponent(this.#storeId)}`;
+    return this.#includeTruthProjection ? base : `${base}&include_truth=0`;
   }
 
   #authority(

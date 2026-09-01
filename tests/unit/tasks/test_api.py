@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -171,6 +172,105 @@ def test_native_task_api_preserves_mit_and_allows_project_removal(tmp_path: Path
     task = updated.get_json()["result"]["task"]
     assert task["attention_state"] == "mit"
     assert task["project"] is None
+
+
+@pytest.mark.parametrize(
+    ("truth_resolution", "expected_truth_resolution"),
+    [(None, "disabled"), ("disabled", "disabled"), ("enabled", "enabled")],
+)
+def test_native_task_api_atomically_creates_provenance_note_with_default_or_explicit_truth_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    truth_resolution: str | None,
+    expected_truth_resolution: str,
+) -> None:
+    from work_buddy.cowork import truth_analysis_runtime
+    from work_buddy.cowork.truth_activation import resolve_document_truth_policy
+
+    analysis_db = tmp_path / "truth-analysis-runtime.db"
+    monkeypatch.setattr(truth_analysis_runtime, "_DB_PATH", analysis_db)
+    app, store, _authorized = _app(tmp_path)
+    client = app.test_client()
+    body = {
+        "client_mutation_id": f"rich-task-{truth_resolution or 'default'}",
+        "title": f"Rich task {truth_resolution or 'default'}",
+        "attention_state": "inbox",
+        "urgency": "medium",
+        "initial_note": "Human seed\n\nKeep exact spacing.\n",
+        "requested_note_role": "working_document/v1",
+    }
+    if truth_resolution is not None:
+        body["requested_truth_policy_resolution"] = truth_resolution
+
+    first = client.post("/api/tasks", json=body)
+    replay = client.post("/api/tasks", json=body)
+
+    assert first.status_code == replay.status_code == 200
+    task = first.get_json()["result"]["task"]
+    assert task["document"]["state"] == "available"
+    assert replay.get_json()["result"]["replayed"] is True
+    link = store.get_task_document_link(task["task_id"])
+    assert link is not None
+    cowork_store = app.config["TEST_TASK_DOCUMENT_SERVICE"].stores.open_existing()
+    policy = resolve_document_truth_policy(cowork_store, link.document_id)
+    assert policy.interaction_contract_id == "working_document"
+    assert policy.activation_state == expected_truth_resolution
+    assert policy.activation_revision == 1
+    assert policy.admission_state == "committed"
+    assert not analysis_db.exists()
+    conn = store.connect()
+    try:
+        intent = conn.execute(
+            "SELECT status,truth_requested,task_receipt_id FROM task_creation_intents "
+            "WHERE client_mutation_id=?",
+            (body["client_mutation_id"],),
+        ).fetchone()
+        derivations = conn.execute(
+            "SELECT field_name,value_sha256,authorship "
+            "FROM task_field_derivation_receipts "
+            "WHERE task_id=? ORDER BY field_name",
+            (task["task_id"],),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert tuple(intent) == (
+        "published",
+        int(expected_truth_resolution == "enabled"),
+        first.get_json()["result"]["receipt"]["receipt_id"],
+    )
+    assert [
+        (row["field_name"], row["value_sha256"], row["authorship"])
+        for row in derivations
+    ] == [
+        (
+            "description",
+            hashlib.sha256(body["title"].encode("utf-8")).hexdigest(),
+            "human",
+        ),
+        (
+            "task_note.initial_body",
+            hashlib.sha256(body["initial_note"].encode("utf-8")).hexdigest(),
+            "human",
+        ),
+    ]
+
+
+def test_native_task_api_rejects_truth_choice_without_note(tmp_path: Path) -> None:
+    app, store, _authorized = _app(tmp_path)
+    response = app.test_client().post(
+        "/api/tasks",
+        json={
+            "client_mutation_id": "truth-without-note",
+            "title": "Invalid shape",
+            "requested_truth_policy_resolution": "enabled",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "requested_truth_policy_resolution" in response.get_json()["error"][
+        "field_errors"
+    ]
+    assert store.list() == []
 
 
 def test_native_task_api_batch_is_atomic_and_replay_safe(tmp_path: Path) -> None:
@@ -457,6 +557,306 @@ def test_native_task_api_provisions_projection_free_cowork_document(tmp_path: Pa
     assert opened.status_code == 200
     assert opened.get_json()["document"]["document_id"]
     assert list((tmp_path / "task-knowledge").rglob("*.md")) == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_document_attach_surfaces_revision_race_without_silent_rebase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.tasks.service import TaskApplicationService
+
+    app, store, _authorized = _app(tmp_path)
+    client = app.test_client()
+    task = _create(
+        client,
+        mutation_id="doc-race-task-create",
+        title="Document attach race",
+    ).get_json()["result"]["task"]
+    documents = app.config["TEST_TASK_DOCUMENT_SERVICE"]
+    original_create = documents.create
+
+    def racing_create(**kwargs):
+        created = original_create(**kwargs)
+        TaskApplicationService(store).update(
+            task["task_id"],
+            expected_revision=task["revision"],
+            client_mutation_id="document-race-field-edit",
+            actor="human:other-window",
+            changes={"description": "Concurrent field edit"},
+        )
+        return created
+
+    monkeypatch.setattr(documents, "create", racing_create)
+    response = client.post(
+        f"/api/tasks/{task['task_id']}/document",
+        json={
+            "client_mutation_id": "document-race-attach",
+            "expected_revision": task["revision"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "task_revision_conflict"
+    assert store.get_task_document_link(task["task_id"]) is None
+    assert store.get(task["task_id"]).description == "Concurrent field edit"
+
+    from work_buddy.cowork.truth_activation import resolve_document_truth_policy
+
+    cowork_store = documents.stores.open_existing()
+    causality = DocumentCausalityStore(cowork_store.paths.sidecar)
+    with causality.connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM domain_document_bindings WHERE domain_namespace='tasks' "
+            "AND domain_kind='task_knowledge' AND domain_entity_id=?",
+            (task["task_id"],),
+        ).fetchall()
+    assert len(rows) == 1
+    orphan_document_id = str(rows[0]["document_id"])
+    assert rows[0]["lifecycle"] == "retired"
+    assert truth_documents.current_lifecycle(cowork_store, orphan_document_id) == "retired"
+    assert (
+        resolve_document_truth_policy(cowork_store, orphan_document_id).admission_state
+        == "aborted"
+    )
+
+    # A new mutation can reserve a successor because the losing binding was
+    # retired, and admission only commits after its exact TaskStore link wins.
+    monkeypatch.setattr(documents, "create", original_create)
+    current = store.get(task["task_id"])
+    retry = client.post(
+        f"/api/tasks/{task['task_id']}/document",
+        json={
+            "client_mutation_id": "document-race-attach-retry",
+            "expected_revision": current.revision,
+        },
+    )
+    assert retry.status_code == 200, retry.get_json()
+    link = store.get_task_document_link(task["task_id"])
+    assert link is not None
+    assert link.document_id != orphan_document_id
+    assert resolve_document_truth_policy(
+        cowork_store, link.document_id
+    ).admission_state == "committed"
+    current_bindings = causality.list_bindings()
+    assert len(current_bindings) == 1
+    assert current_bindings[0].binding_id == link.binding_id
+    with causality.connection() as conn:
+        lifecycles = conn.execute(
+            "SELECT lifecycle,COUNT(*) AS count FROM domain_document_bindings "
+            "WHERE domain_namespace='tasks' AND domain_kind='task_knowledge' "
+            "AND domain_entity_id=? GROUP BY lifecycle ORDER BY lifecycle",
+            (task["task_id"],),
+        ).fetchall()
+    assert [(row["lifecycle"], row["count"]) for row in lifecycles] == [
+        ("current", 1),
+        ("retired", 1),
+    ]
+    conn = store.connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_document_links WHERE task_id=?",
+            (task["task_id"],),
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("concurrent_edit", [False, True])
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
+def test_document_attach_pre_cas_hard_crash_is_drained_by_maintenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    concurrent_edit: bool,
+) -> None:
+    from work_buddy.cowork.truth_activation import resolve_document_truth_policy
+    from work_buddy.tasks.aggregate_creation import TaskAggregateCreationService
+    from work_buddy.tasks.service import TaskApplicationService
+
+    app, store, _authorized = _app(tmp_path)
+    client = app.test_client()
+    task = _create(
+        client,
+        mutation_id=f"pre-cas-crash-task-{concurrent_edit}",
+        title="Pre-CAS crash recovery",
+    ).get_json()["result"]["task"]
+    documents = app.config["TEST_TASK_DOCUMENT_SERVICE"]
+    original_create = documents.create
+    crashed = False
+
+    def crash_after_reservation(**kwargs):
+        nonlocal crashed
+        created = original_create(**kwargs)
+        if not crashed:
+            crashed = True
+            raise RuntimeError("hard crash immediately after document reservation")
+        return created
+
+    monkeypatch.setattr(documents, "create", crash_after_reservation)
+    response = client.post(
+        f"/api/tasks/{task['task_id']}/document",
+        json={
+            "client_mutation_id": f"pre-cas-crash-attach-{concurrent_edit}",
+            "expected_revision": task["revision"],
+        },
+    )
+
+    assert response.status_code == 500
+    assert store.get_task_document_link(task["task_id"]) is None
+    conn = store.connect()
+    try:
+        intent = conn.execute(
+            "SELECT * FROM task_document_attachment_intents WHERE task_id=?",
+            (task["task_id"],),
+        ).fetchone()
+        assert intent["status"] == "prepared"
+        reserved_document_id = str(intent["document_id"])
+    finally:
+        conn.close()
+    cowork = documents.stores.open_existing()
+    assert (
+        resolve_document_truth_policy(
+            cowork, reserved_document_id
+        ).admission_state
+        == "pending"
+    )
+    assert len(DocumentCausalityStore(cowork.paths.sidecar).list_bindings()) == 1
+
+    if concurrent_edit:
+        TaskApplicationService(store).update(
+            task["task_id"],
+            expected_revision=task["revision"],
+            client_mutation_id=f"pre-cas-concurrent-edit-{concurrent_edit}",
+            actor="human:other-window",
+            changes={"description": "Changed while attachment was pending"},
+        )
+    monkeypatch.setattr(documents, "create", original_create)
+
+    maintenance = TaskAggregateCreationService(
+        store,
+        task_service=TaskApplicationService(store),
+        document_service=documents,
+    )
+    report = maintenance.reconcile_pending(limit=10)
+    attachments = report["document_attachments"]
+    assert attachments["examined"] == 1
+    assert attachments["failed"] == []
+    assert attachments["remaining"] == 0
+    assert maintenance.reconcile_pending(limit=10)["document_attachments"][
+        "examined"
+    ] == 0
+
+    if not concurrent_edit:
+        assert len(attachments["admitted"]) == 1
+        assert attachments["aborted"] == []
+        link = store.get_task_document_link(task["task_id"])
+        assert link is not None
+        assert link.document_id == reserved_document_id
+        assert (
+            resolve_document_truth_policy(
+                cowork, link.document_id
+            ).admission_state
+            == "committed"
+        )
+        assert truth_documents.current_lifecycle(cowork, link.document_id) == "active"
+        current_bindings = DocumentCausalityStore(
+            cowork.paths.sidecar
+        ).list_bindings()
+        assert len(current_bindings) == 1
+        assert current_bindings[0].binding_id == link.binding_id
+    else:
+        assert attachments["admitted"] == []
+        assert len(attachments["aborted"]) == 1
+        assert store.get_task_document_link(task["task_id"]) is None
+        assert (
+            resolve_document_truth_policy(
+                cowork, reserved_document_id
+            ).admission_state
+            == "aborted"
+        )
+        assert (
+            truth_documents.current_lifecycle(cowork, reserved_document_id)
+            == "retired"
+        )
+        assert DocumentCausalityStore(cowork.paths.sidecar).list_bindings() == ()
+
+        current = store.get(task["task_id"])
+        fresh = client.post(
+            f"/api/tasks/{task['task_id']}/document",
+            json={
+                "client_mutation_id": "pre-cas-fresh-successor",
+                "expected_revision": current.revision,
+            },
+        )
+        assert fresh.status_code == 200, fresh.get_json()
+        link = store.get_task_document_link(task["task_id"])
+        assert link is not None
+        assert link.document_id != reserved_document_id
+        assert (
+            resolve_document_truth_policy(
+                cowork, link.document_id
+            ).admission_state
+            == "committed"
+        )
+        current_bindings = DocumentCausalityStore(
+            cowork.paths.sidecar
+        ).list_bindings()
+        assert len(current_bindings) == 1
+        assert current_bindings[0].binding_id == link.binding_id
+
+    conn = store.connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_document_links WHERE task_id=?",
+            (task["task_id"],),
+        ).fetchone()[0] == 1
+        statuses = [
+            row[0]
+            for row in conn.execute(
+                "SELECT status FROM task_document_attachment_intents "
+                "WHERE task_id=? ORDER BY created_at,intent_id",
+                (task["task_id"],),
+            )
+        ]
+    finally:
+        conn.close()
+    assert statuses == (
+        ["admitted"]
+        if not concurrent_edit
+        else ["aborted", "admitted"]
+    )
+    conn = cowork.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == (
+            2 if concurrent_edit else 1
+        )
+        seal_states = {
+            row["state"]: row["count"]
+            for row in conn.execute(
+                "SELECT state,COUNT(*) AS count FROM "
+                "document_truth_admission_seals_current GROUP BY state"
+            )
+        }
+    finally:
+        conn.close()
+    assert seal_states == (
+        {"committed": 1}
+        if not concurrent_edit
+        else {"aborted": 1, "committed": 1}
+    )
+    with DocumentCausalityStore(cowork.paths.sidecar).connection() as conn:
+        binding_states = {
+            row["lifecycle"]: row["count"]
+            for row in conn.execute(
+                "SELECT lifecycle,COUNT(*) AS count FROM "
+                "domain_document_bindings GROUP BY lifecycle"
+            )
+        }
+    assert binding_states == (
+        {"current": 1}
+        if not concurrent_edit
+        else {"current": 1, "retired": 1}
+    )
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")

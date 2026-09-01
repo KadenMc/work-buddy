@@ -5,6 +5,7 @@ import {
   canClearRealizedProposal,
   draftFromTaskProposal,
   retainedProposalResolution,
+  taskDraftFields,
   taskDraftFingerprint,
   taskProposalResolution,
   type TaskCreateDraft,
@@ -24,6 +25,23 @@ const linked: TaskCreateDraft = {
 };
 
 describe("Task proposal draft terminal evidence", () => {
+  it("carries the requested note role and explicit Truth resolution in canonical fields", () => {
+    expect(taskDraftFields({ ...fields, create_note: false, enable_truth_tools: true })).toMatchObject({
+      requested_note_role: null,
+      initial_note: null,
+      requested_truth_policy_resolution: null,
+    });
+    expect(taskDraftFields({ ...fields, create_note: true, initial_note: "  Exact text\n", enable_truth_tools: false })).toMatchObject({
+      requested_note_role: "working_document/v1",
+      initial_note: "  Exact text\n",
+      requested_truth_policy_resolution: "disabled",
+    });
+    expect(taskDraftFields({ ...fields, create_note: true, enable_truth_tools: true })).toMatchObject({
+      requested_note_role: "working_document/v1",
+      requested_truth_policy_resolution: "enabled",
+    });
+  });
+
   it("permits clearing only a realized exact-bound, unchanged canonical draft", () => {
     expect(canClearRealizedProposal(linked, realized)).toBe(true);
     expect(canClearRealizedProposal({ ...linked, title: "Later human edit" }, realized)).toBe(false);

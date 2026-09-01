@@ -38,6 +38,10 @@ from work_buddy.sources import (
 )
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth import documents as truth_documents, ydoc_store
+from work_buddy.cowork.truth_activation import (
+    WORKING_DOCUMENT_CONTRACT,
+    resolve_document_truth_policy,
+)
 
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node is required")
@@ -179,6 +183,17 @@ def test_running_note_capture_materializes_binds_projects_and_inspects(
         )
         assert result.document.binding.content_authority == "co_work"
         assert result.document.binding.content_authority_epoch == 1
+        policy = resolve_document_truth_policy(
+            result.document.store,
+            result.document.binding.document_id,
+        )
+        assert policy.interaction_contract_id == WORKING_DOCUMENT_CONTRACT
+        assert policy.binding_id == result.document.binding.binding_id
+        assert policy.eligibility == "allowed"
+        assert policy.activation_state == "disabled"
+        assert policy.provenance_enabled is True
+        assert policy.truth_observable is False
+        assert policy.truth_mutable is False
         assert result.document.change.source_ref == reserved.resolved.source_ref.uri
         assert result.document.change.exact_copied_text_sha256 == hashlib.sha256(
             text.encode()
@@ -456,6 +471,116 @@ def test_running_note_capture_materializes_binds_projects_and_inspects(
             ).fetchone()
         assert usage is not None
         assert tuple(usage) == ("acknowledged", "pending_redaction")
+    finally:
+        kernel.close()
+
+
+def test_database_only_document_redaction_never_reads_retired_journal_markdown(
+    tmp_path: Path,
+) -> None:
+    text = "A native source-backed Running Note.\n"
+    day_id = "2026-08-09"
+    vault = tmp_path / "vault"
+    sources, principal, reserved = _source(tmp_path, text)
+    journal = JournalCaptureStore(tmp_path / "journal.db")
+    capture = journal.create_capture(
+        client_mutation_id="native-redaction-capture",
+        request_sha256=hashlib.sha256(text.encode()).hexdigest(),
+        source_ref=reserved.resolved.source_ref.uri,
+        representation_id=reserved.resolved.representation.representation_id,
+        submission_id="native-redaction-submission",
+        command_id="native-redaction-command",
+        source_effect_id="native-redaction-effect",
+        source_usage_id=None,
+        day_id=day_id,
+        requested_target=CaptureTarget.RUNNING_NOTES,
+        mode=CaptureMode.DUMB,
+        input_mode="direct_entry",
+        stated_at=None,
+        submitted_at="2026-08-09T21:00:00+00:00",
+        authorization_fingerprint="a" * 64,
+    )
+    entry = journal.ensure_entry(
+        capture_id=capture.capture_id,
+        entry_kind=CaptureTarget.RUNNING_NOTES,
+        markdown=text,
+        content_sha256=hashlib.sha256(text.encode()).hexdigest(),
+        projection_marker="native-redaction-projection",
+        created_at=capture.submitted_at,
+    )
+    journal_path = _daily_note(
+        vault,
+        entry_id=entry.entry_id,
+        text=text,
+        day_id=day_id,
+    )
+    kernel, documents, projections = _services(tmp_path, vault, sources, principal)
+    try:
+        result = RunningNotePilotService(
+            documents=documents,
+            projections=projections,
+        ).execute(
+            vault_root=vault,
+            entry_id=entry.entry_id,
+            day_id=day_id,
+            domain_revision="journal-entry-v1",
+            source_store=sources,
+            reserved_source=reserved,
+            actors={"selected_by": "human:profile-00000001"},
+            idempotency_key="native-redaction-document",
+            expected_initial_text=text,
+        )
+        journal.record_document_binding(
+            entry_id=entry.entry_id,
+            binding_id=result.document.binding.binding_id,
+            store_id=result.document.binding.store_id,
+            document_id=result.document.binding.document_id,
+            change_id=result.document.change.change_id,
+            source_consumer_id="1" * 32,
+            source_usage_id=reserved.reservation.usage_id,
+            cowork_href=result.cowork_href,
+            content_authority_epoch=result.document.binding.content_authority_epoch,
+            entry_version=entry.version,
+            inspection=result.inspection(),
+        )
+        with journal.transaction() as conn:
+            conn.execute(
+                "UPDATE journal_authority_control SET mode='database_only' "
+                "WHERE singleton=1"
+            )
+        journal_path.unlink()
+
+        sources.grant_access(
+            source_ref=reserved.resolved.source_ref,
+            principal=principal,
+            purpose="redaction",
+            access_mode="metadata",
+            authorization_fingerprint="b" * 64,
+        )
+        redaction = redact_source(
+            sources,
+            source_ref=reserved.resolved.source_ref,
+            actor=principal,
+            authorization_fingerprint="b" * 64,
+            reason_code="user_requested",
+        )
+        assert len(redaction.pending_effect_ids) == 1
+
+        summary = CoworkDocumentSourceDispatcher(
+            sources,
+            journal,
+            service_principal=principal,
+            registry=documents.stores.registry,
+            vault_root=vault,
+        ).drain()
+
+        assert summary.completed == 1
+        assert summary.deferred == 0
+        assert not journal_path.exists()
+        mirror = journal.get_document_binding(entry.entry_id)
+        assert mirror is not None and mirror.state == "retired"
+        effect = SourceOutbox(sources).get(redaction.pending_effect_ids[0])
+        assert effect is not None and effect.status == "succeeded"
     finally:
         kernel.close()
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,120 @@ def frozen_task_compatibility_required() -> bool:
         return not native_authority_active()
     except Exception:
         return False
+
+
+def journal_markdown_compatibility_required() -> bool:
+    """Return whether Journal's retired Markdown setup is still applicable.
+
+    ``existing_authority_mode`` is a non-creating authority read and includes
+    the installation latch.  Any unavailable, corrupt, or incomplete seal
+    fails closed so health/setup cannot inspect or recreate the archive.
+    """
+
+    try:
+        from work_buddy.journal_capture.authority import existing_authority_mode
+
+        return existing_authority_mode() == "legacy_compatibility"
+    except Exception:
+        return False
+
+
+def _authority_database_path(domain: str) -> Path:
+    """Resolve a domain DB path without creating its parent directory."""
+
+    resource_ids = {
+        "projects": "db/projects",
+        "contracts": "db/contracts",
+        "personal_knowledge": "db/personal-knowledge",
+    }
+    if domain == "projects":
+        custom = _cfg().get("projects", {}).get("db_path")
+        if custom:
+            target = Path(custom)
+            if not target.is_absolute():
+                target = paths.repo_root() / target
+            return target.expanduser().resolve()
+    resource_id = resource_ids[domain]
+    return (
+        paths._data_base() / paths.RESOURCES[resource_id]
+    ).expanduser().resolve()
+
+
+def _legacy_domain_compatibility_required(domain: str) -> bool:
+    """Read one native-domain authority without migrations or file creation."""
+
+    tables = {
+        "projects": "project_authority_state",
+        "contracts": "contract_authority",
+        "personal_knowledge": "personal_knowledge_authority",
+    }
+    queries = {
+        "projects": (
+            "SELECT authority,state FROM project_authority_state WHERE singleton=1"
+        ),
+        "contracts": "SELECT state FROM contract_authority WHERE singleton=1",
+        "personal_knowledge": (
+            "SELECT authority FROM personal_knowledge_authority WHERE singleton=1"
+        ),
+    }
+    try:
+        from work_buddy.installed_authority import installed_authority_status
+
+        target = _authority_database_path(domain)
+        # A valid latch proves the irreversible native epoch.  An incomplete
+        # or unprovable latch raises and is caught below as fail-closed.
+        if installed_authority_status(domain, target) is not None:
+            return False
+        if not target.is_file():
+            return True
+        with sqlite3.connect(
+            f"file:{target.as_posix()}?mode=ro", uri=True
+        ) as connection:
+            table_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (tables[domain],),
+            ).fetchone()
+            if table_exists is None:
+                return True
+            row = connection.execute(queries[domain]).fetchone()
+        if row is None:
+            return False
+        if domain == "projects":
+            native = str(row[0]) == "sqlite" and str(row[1]) in {
+                "active",
+                "write_fenced",
+                "recovery",
+            }
+        elif domain == "contracts":
+            native = str(row[0]) == "native"
+        else:
+            native = str(row[0]) == "sqlite"
+        return not native
+    except Exception:
+        return False
+
+
+def projects_markdown_compatibility_required() -> bool:
+    """Read the Projects authority without creating or migrating its DB.
+
+    The legacy directory requirement is useful only before the SQLite seal.
+    Corrupt or unreadable authority fails closed: setup must never repair a
+    retired Markdown tree as an accidental recovery mechanism.
+    """
+
+    return _legacy_domain_compatibility_required("projects")
+
+
+def contracts_markdown_compatibility_required() -> bool:
+    """Return whether the retired Contracts directory remains authoritative."""
+
+    return _legacy_domain_compatibility_required("contracts")
+
+
+def personal_knowledge_markdown_compatibility_required() -> bool:
+    """Return whether retired personal-knowledge Markdown remains authoritative."""
+
+    return _legacy_domain_compatibility_required("personal_knowledge")
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +367,11 @@ def check_data_writable() -> dict[str, Any]:
 
 def check_daily_notes_plugin() -> dict[str, Any]:
     """Check that the Daily Notes core plugin is enabled."""
+    if not journal_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "Retired after Journal SQLite cutover; Obsidian was not inspected.",
+        }
     vault = _vault_root()
     if not vault or not vault.is_dir():
         return {"ok": False, "detail": "vault_root is not set or doesn't exist"}
@@ -282,6 +402,11 @@ def check_daily_notes_plugin() -> dict[str, Any]:
 
 def check_journal_dir() -> dict[str, Any]:
     """Check that the journal directory exists."""
+    if not journal_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "Retired after Journal SQLite cutover; the archive was not inspected.",
+        }
     vault = _vault_root()
     cfg = _cfg()
     journal_dir_name = cfg.get("obsidian", {}).get("journal_dir", "journal")
@@ -350,6 +475,14 @@ def _note_has_section(header_pattern: str) -> dict[str, Any]:
     detail string surfaces which date was actually checked.
     """
     import re
+
+    if not journal_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": (
+                "Retired after Journal SQLite cutover; daily notes were not inspected."
+            ),
+        }
     note, which_date = _find_latest_daily_note()
     if note is None:
         return {
@@ -623,6 +756,11 @@ def check_work_buddy_plugin() -> dict[str, Any]:
 
 def check_contracts_dir() -> dict[str, Any]:
     """Check that the contracts directory exists in the vault."""
+    if not contracts_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": "Retired after Contracts SQLite cutover; the archive was not inspected.",
+        }
     vault = _vault_root()
     cfg = _cfg()
     contracts_path = cfg.get("contracts", {}).get("vault_path", "work-buddy/contracts")
@@ -634,6 +772,14 @@ def check_contracts_dir() -> dict[str, Any]:
 
 def check_personal_knowledge_path() -> dict[str, Any]:
     """Check that the personal knowledge vault path exists."""
+    if not personal_knowledge_markdown_compatibility_required():
+        return {
+            "ok": True,
+            "detail": (
+                "Retired after personal-knowledge SQLite cutover; "
+                "the archive was not inspected."
+            ),
+        }
     vault = _vault_root()
     cfg = _cfg()
     pk_path = cfg.get("personal_knowledge", {}).get("vault_path", "Meta/WorkBuddy")
@@ -963,6 +1109,32 @@ def check_backup_repo_configured() -> dict[str, Any]:
             ),
         }
     return {"ok": False, "detail": f"gh repo view failed: {stderr}"}
+
+
+def check_backup_private_content_opt_in() -> dict[str, Any]:
+    """Require a strict, explicit opt-in before unattended remote uploads."""
+
+    try:
+        from work_buddy.backups.remote import remote_private_content_opted_in
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"could not inspect backup privacy policy: {exc}",
+        }
+    if remote_private_content_opted_in():
+        return {
+            "ok": True,
+            "detail": (
+                "explicit opt-in permits unencrypted private backup uploads"
+            ),
+        }
+    return {
+        "ok": False,
+        "detail": (
+            "remote uploads are local-only until "
+            "backups.github.allow_unencrypted_private_content is exactly true"
+        ),
+    }
 
 
 def check_projects_markdown_dir() -> dict[str, Any]:

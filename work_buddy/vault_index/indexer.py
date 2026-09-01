@@ -142,7 +142,14 @@ def build_index(cfg: dict | None = None, *, force: bool = False) -> dict:
     if cfg is None:
         cfg = load_config()
 
-    source = FilesystemSource(cfg)
+    from work_buddy.vault_index.authority_exclusions import sealed_legacy_roots
+
+    source = FilesystemSource(
+        cfg,
+        authority_exclusions=sealed_legacy_roots(
+            cfg, allow_default_data_root=True
+        ),
+    )
     files, statuses = source.discover()
     conn = store.get_connection(cfg)
 
