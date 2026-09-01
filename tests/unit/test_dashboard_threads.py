@@ -114,6 +114,11 @@ class TestThreadsListFilters:
         doesn't."""
         # Bootstrap registers the journal cleanup adapter
         from work_buddy.threads import cleanup_adapters
+        monkeypatch.setattr(
+            cleanup_adapters,
+            "_legacy_journal_cleanup_available",
+            lambda: True,
+        )
         cleanup_adapters.register_default_adapters()
         a = _make_thread(source="journal_note", description="has cleanup")
         b = _make_thread(source="unknown_source",
@@ -343,15 +348,15 @@ class TestActionOptionsEndpoint:
     action switcher (a child opened directly has no group grid to
     populate the switcher's options)."""
 
-    def test_returns_source_library_for_journal_thread(self, client):
+    def test_retired_journal_source_returns_universal_actions(self, client):
         t = _make_thread(source="journal_backlog", description="meditation")
         resp = client.get(f"/api/threads/{t.thread_id}/action_options")
         assert resp.status_code == 200
         data = resp.get_json()
         opts = data["action_options"]
         by_name = {o["capability_name"]: o for o in opts}
-        assert "journal_route_to_tasks" in by_name
-        assert by_name["journal_route_to_tasks"]["cardinality"] == "per_group"
+        assert data["source"] == "journal_backlog"
+        assert set(by_name) == {"thread_dismiss", "thread_defer", "thread_rename"}
 
     def test_unknown_source_returns_universal_actions(self, client):
         t = _make_thread(source="unknown_source")
@@ -362,7 +367,7 @@ class TestActionOptionsEndpoint:
         # registered source pipeline.
         assert "thread_dismiss" in names
 
-    def test_resolves_from_child_own_inciting_summary(self, client):
+    def test_retired_child_source_resolves_to_universal_actions(self, client):
         """A group child carries its own ``source_pipeline``, so it
         resolves to the real library without a parent lookup."""
         from work_buddy.threads.enums import FSMState
@@ -375,7 +380,7 @@ class TestActionOptionsEndpoint:
         resp = client.get(f"/api/threads/{child.thread_id}/action_options")
         assert resp.status_code == 200
         names = {o["capability_name"] for o in resp.get_json()["action_options"]}
-        assert "journal_route_to_tasks" in names
+        assert names == {"thread_dismiss", "thread_defer", "thread_rename"}
 
     def test_missing_thread_404(self, client):
         resp = client.get("/api/threads/th-does-not-exist/action_options")
@@ -388,10 +393,9 @@ class TestActionOptionsEndpoint:
         resp = client.get(f"/api/threads/{t.thread_id}/action_options")
         by_name = {o["capability_name"]: o
                    for o in resp.get_json()["action_options"]}
-        append = by_name["journal_append_to_note"]
-        params = {p["name"]: p for p in append["parameters"]}
-        assert params["note_path"]["required"] is True
-        assert params["bullet_prefix"]["required"] is False
+        rename = by_name["thread_rename"]
+        params = {p["name"]: p for p in rename["parameters"]}
+        assert params["new_title"]["required"] is True
         # thread_id is runtime-bound (executor-injected) — never surfaced
         # as a field for the user to fill.
         assert "thread_id" not in params

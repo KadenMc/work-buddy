@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from work_buddy.cowork import provenance
-from work_buddy.truth import documents, migrations, ydoc_store
+from work_buddy.truth import documents, export as truth_export, migrations, ydoc_store
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import new_id
 from work_buddy.truth.store import TruthStore
@@ -77,11 +77,18 @@ def test_v10_migration_preserves_lineage_and_admits_direct_entry_basis(
     monkeypatch: pytest.MonkeyPatch,
 ):
     current_runner = migrations.TRUTH_MIGRATIONS
+    current_format_version = truth_export.FORMAT_VERSION
     v9_runner = migrations._TruthMigrationRunner(
         "truth",
         migrations=list(current_runner.migrations[:9]),
     )
     monkeypatch.setattr(migrations, "TRUTH_MIGRATIONS", v9_runner)
+    monkeypatch.setattr(truth_export, "FORMAT_VERSION", 9)
+    monkeypatch.setattr(
+        documents,
+        "_provision_default_document_truth_policy",
+        lambda *_args, **_kwargs: None,
+    )
 
     root = tmp_path / "v9-store"
     root.mkdir()
@@ -126,6 +133,7 @@ def test_v10_migration_preserves_lineage_and_admits_direct_entry_basis(
         assert migrations.current_version(conn) == 9
 
     monkeypatch.setattr(migrations, "TRUTH_MIGRATIONS", current_runner)
+    monkeypatch.setattr(truth_export, "FORMAT_VERSION", current_format_version)
     migrated = TruthStore.open(store.paths.sidecar)
     after = migrated.list_document_provenance_attestations(document.id)
 
@@ -141,10 +149,10 @@ def test_v10_migration_preserves_lineage_and_admits_direct_entry_basis(
     ]
     assert after[1].supersedes_id == after[0].id
     with migrated.connect() as conn:
-        assert migrations.current_version(conn) == 10
+        assert migrations.current_version(conn) == 11
         assert conn.execute(
             "SELECT schema_version FROM store_info"
-        ).fetchone()[0] == 10
+        ).fetchone()[0] == 11
         table_sql = conn.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = 'document_provenance_attestations'"

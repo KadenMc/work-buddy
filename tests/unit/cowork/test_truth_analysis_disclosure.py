@@ -300,6 +300,19 @@ def test_truth_search_and_fetch_account_both_provider_and_worker_directions(
     boundary: TruthAnalysisDisclosureBoundary,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This test exercises disclosure accounting around the research broker.
+    # The Truth activation gate itself is covered by the truth-analysis tests;
+    # keep this isolated runtime fixture independent of the global registry.
+    monkeypatch.setattr(
+        truth_analysis.TruthStoreRegistry,
+        "open_store",
+        lambda _registry, _store_id: object(),
+    )
+    monkeypatch.setattr(
+        truth_analysis,
+        "_require_run_truth",
+        lambda _store, _run: None,
+    )
     run = _run()
     search_calls = 0
 

@@ -1,8 +1,7 @@
 """Phase B flagship — verify morning-routine's transitive dependencies resolve correctly.
 
-The morning-routine workflow composes multiple capabilities that touch
-Obsidian, Google Calendar, and (via the update-journal sub-workflow)
-the journal. The control graph's capability resolver should walk
+The morning-routine workflow composes native journal, task, contract, and
+calendar capabilities. The control graph's capability resolver should walk
 ``workflow → steps → invokes → capabilities → requires`` and produce
 the expected set of tool/component IDs.
 
@@ -28,8 +27,8 @@ def registry():
 
     The default registry drops capabilities whose required tools fail
     their probes at build time. That makes resolver tests environment-
-    dependent (an Obsidian bridge that's briefly down would filter
-    every obsidian-requiring capability and break these assertions).
+    dependent (a temporarily unavailable provider would otherwise filter
+    capabilities and break these assertions).
 
     We rebuild with ``is_tool_available`` patched to True so the
     registry contains every declared capability and workflow, letting
@@ -104,15 +103,9 @@ def test_specific_step_invokes(workflow):
 def test_workflow_requires_union_from_step_invokes(workflow, registry):
     """``WorkflowDefinition.requires`` = union of step.requires + resolve(step.invokes).requires."""
     req = set(workflow.requires)
-    # Obsidian is touched by several invoked capabilities (journal_*, task_*, etc.)
-    assert "obsidian" in req, (
-        "obsidian should be in morning-routine.requires because many of its "
-        "invoked capabilities declare requires=['obsidian']"
-    )
-    # google_calendar flows in via context_calendar.requires
-    assert "google_calendar" in req, (
-        "google_calendar should appear via context_calendar (calendar-today step)"
-    )
+    assert "obsidian" not in req
+    # The native calendar provider flows in via context_calendar.requires.
+    assert "google_calendar_native" in req
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +117,8 @@ def test_resolve_dependencies_transitive_set(workflow, registry):
     from work_buddy.control.capability_resolver import resolve_dependencies
 
     deps = resolve_dependencies("morning-routine", registry=registry)
-    assert "obsidian" in deps["components"], (
-        f"expected obsidian in components; got {deps['components']}"
-    )
-    assert "google_calendar" in deps["components"]
+    assert "obsidian" not in deps["components"]
+    assert "google_calendar_native" in deps["components"]
     # tools is an alias for components
     assert deps["tools"] == deps["components"]
 

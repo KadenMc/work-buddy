@@ -45,9 +45,9 @@ class IsolatedRehearsalAuthorization:
     """Process-local capability for exact temporary authority database files."""
 
     root: str
-    root_identity: tuple[int, int]
+    root_identity: tuple[int, int, int]
     authority_paths: tuple[tuple[str, str], ...]
-    authority_identities: tuple[tuple[str, int, int], ...]
+    authority_identities: tuple[tuple[str, int, int, int], ...]
     proof: str
 
 
@@ -175,9 +175,15 @@ def require_mutations_open(conn: sqlite3.Connection, *, domain: str) -> None:
         raise CutoverMaintenanceFenced("domain mutations are fenced for cutover")
 
 
-def _identity(path: Path) -> tuple[int, int]:
+def _identity(path: Path) -> tuple[int, int, int]:
     value = path.stat()
-    return int(value.st_dev), int(value.st_ino)
+    # Windows can recycle ``st_ino`` immediately after unlink/recreate. Its
+    # ``st_ctime_ns`` is the file creation timestamp and remains stable across
+    # normal SQLite writes, so include it to distinguish a replacement file.
+    # POSIX ctime changes on ordinary writes, so inode identity remains the
+    # stable capability boundary there.
+    creation_stamp = int(value.st_ctime_ns) if os.name == "nt" else 0
+    return int(value.st_dev), int(value.st_ino), creation_stamp
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -285,9 +291,9 @@ def _same_file(left: Path, right: Path) -> bool:
 def _capability_payload(
     *,
     root: Path,
-    root_identity: tuple[int, int],
+    root_identity: tuple[int, int, int],
     authority_paths: tuple[tuple[str, str], ...],
-    authority_identities: tuple[tuple[str, int, int], ...],
+    authority_identities: tuple[tuple[str, int, int, int], ...],
 ) -> bytes:
     return canonical_json(
         {
@@ -336,7 +342,7 @@ def authorize_isolated_rehearsal_root(
             "configured live data cannot share a rehearsal root"
         )
     normalized: list[tuple[str, str]] = []
-    identities: list[tuple[str, int, int]] = []
+    identities: list[tuple[str, int, int, int]] = []
     for domain in domains:
         raw_path = Path(authority_paths[domain]).expanduser()
         candidate = raw_path.resolve()
@@ -349,9 +355,9 @@ def authorize_isolated_rehearsal_root(
             raise CutoverMaintenanceError(
                 "a configured authority database cannot be authorized for rehearsal"
             )
-        device, inode = _identity(candidate)
+        device, inode, creation_stamp = _identity(candidate)
         normalized.append((domain, str(candidate)))
-        identities.append((domain, device, inode))
+        identities.append((domain, device, inode, creation_stamp))
     normalized_scope = tuple(normalized)
     identity_scope = tuple(identities)
     root_identity = _identity(resolved_root)
@@ -400,8 +406,8 @@ def require_isolated_rehearsal_path(
         raise CutoverMaintenanceError("isolated rehearsal root identity changed")
     scoped_paths = dict(authorization.authority_paths)
     scoped_identities = {
-        name: (device, inode)
-        for name, device, inode in authorization.authority_identities
+        name: (device, inode, creation_stamp)
+        for name, device, inode, creation_stamp in authorization.authority_identities
     }
     candidate = Path(path).expanduser().resolve()
     if scoped_paths.get(domain) != str(candidate):

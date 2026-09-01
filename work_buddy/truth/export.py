@@ -4490,6 +4490,25 @@ def _assert_all_rows_are_ordered(
 def _assert_policy_projections_match_history(conn: sqlite3.Connection) -> None:
     """Reject a live store whose mutable policy projections drifted from history."""
 
+    policy_tables = {
+        "document_truth_activation_transitions",
+        "document_truth_activation_current",
+        "document_truth_admission_seal_events",
+        "document_truth_admission_seals_current",
+    }
+    existing_tables = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    present_policy_tables = policy_tables & existing_tables
+    if not present_policy_tables:
+        # Pre-v11 stores do not have document Truth policy history or its
+        # projections. They remain exportable so the migration runner can
+        # preserve and upgrade them.
+        return
+    if present_policy_tables != policy_tables:
+        raise TruthExportError("document Truth policy schema is incomplete")
+
     expected_activations = {
         str(row["document_id"]): (
             int(row["activation_revision"]),

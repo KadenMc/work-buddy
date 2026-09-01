@@ -294,8 +294,10 @@ class TestMorningDocs:
         assert "plan-today" not in summary
 
     def test_directions_description_mentions_new_steps(self, morning_docs):
-        desc = morning_docs["morning/directions"]["description"]
-        assert "propose-mits" in desc or "persist-briefing" in desc or "day-planner" in desc
+        desc = morning_docs["morning/directions"]["description"].lower()
+        assert "proposed mits" in desc
+        assert "briefing persistence" in desc
+        assert "day planner" in desc
 
     def test_directions_description_does_not_mention_plan_today(self, morning_docs):
         desc = morning_docs["morning/directions"]["description"]

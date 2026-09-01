@@ -173,10 +173,11 @@ def test_real_update_journal_resolves_its_bound_directions():
     )
     assert src == "journal/update-directions"
     assert rendered is not None
-    # Sentinels from journal/update-directions — the Log-entry format rules the
-    # agent would otherwise reach blind on the nested (morning-routine) path.
+    # Sentinels from journal/update-directions — the native record format rules
+    # the agent would otherwise reach blind on the nested morning-routine path.
     assert "#projects/" in rendered
-    assert "wb/journal/log" in rendered
+    assert "journal_write" in rendered
+    assert "native records" in rendered
 
 
 def test_inline_instruction_is_not_overridden(monkeypatch):

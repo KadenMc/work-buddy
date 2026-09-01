@@ -92,12 +92,23 @@ def create_document_store(
 # --- Throwaway-row seeding helpers.
 
 
-def _commit(store: TruthStore, statements: list[tuple[str, tuple[Any, ...]]]) -> None:
+def _commit(
+    store: TruthStore,
+    statements: list[tuple[str, tuple[Any, ...]]],
+    *,
+    backfill_document_policies: bool = False,
+) -> None:
     conn = store.connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         for sql, params in statements:
             conn.execute(sql, params)
+        if backfill_document_policies:
+            from work_buddy.cowork.truth_activation import (
+                backfill_legacy_document_policies,
+            )
+
+            backfill_legacy_document_policies(conn)
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
@@ -153,7 +164,7 @@ def seed_document(
                 (document_id,),
             )
         )
-    _commit(store, statements)
+    _commit(store, statements, backfill_document_policies=ledger)
     return document_id
 
 
