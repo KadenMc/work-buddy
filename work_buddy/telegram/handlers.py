@@ -17,15 +17,23 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
-
-from telegram import Update
-from telegram.ext import ContextTypes
+from typing import TYPE_CHECKING, Any
 
 from work_buddy.journal_capture.ingress import JournalIngressQueued
 
 if TYPE_CHECKING:
+    from telegram import Update
+    from telegram.ext import ContextTypes
+
     from work_buddy.telegram.bot import BotState
+else:
+    # ``python-telegram-bot`` is an optional extra.  The handler module uses
+    # these names only in postponed annotations, so importing it for native
+    # Journal helpers must not require the Telegram runtime.
+    Update = Any
+
+    class ContextTypes:
+        DEFAULT_TYPE = Any
 
 logger = logging.getLogger(__name__)
 
