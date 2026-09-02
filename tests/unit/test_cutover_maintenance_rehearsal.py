@@ -44,6 +44,21 @@ def test_exact_process_capability_is_required_and_scoped(
             domain="projects",
             authorization=None,
         )
+    original_pin_check = maintenance._require_pinned_rehearsal_handles
+
+    def pin_check_after_scope(
+        authorization: maintenance.IsolatedRehearsalAuthorization,
+        domain: str,
+    ) -> None:
+        if domain == "contracts":
+            pytest.fail("pin validation ran before domain scope validation")
+        return original_pin_check(authorization, domain)
+
+    monkeypatch.setattr(
+        maintenance,
+        "_require_pinned_rehearsal_handles",
+        pin_check_after_scope,
+    )
     with pytest.raises(maintenance.CutoverMaintenanceError, match="scope"):
         maintenance.require_isolated_rehearsal_path(
             database,

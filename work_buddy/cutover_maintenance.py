@@ -500,7 +500,6 @@ def require_isolated_rehearsal_path(
     ).hexdigest()
     if not hmac.compare_digest(expected, authorization.proof):
         raise CutoverMaintenanceError("isolated rehearsal authorization changed")
-    _require_pinned_rehearsal_handles(authorization, domain)
     if not root.is_dir() or _identity(root) != authorization.root_identity:
         raise CutoverMaintenanceError("isolated rehearsal root identity changed")
     scoped_paths = dict(authorization.authority_paths)
@@ -511,6 +510,7 @@ def require_isolated_rehearsal_path(
     candidate = Path(path).expanduser().resolve()
     if scoped_paths.get(domain) != str(candidate):
         raise CutoverMaintenanceError("rehearsal authority is outside its scope")
+    _require_pinned_rehearsal_handles(authorization, domain)
     _reject_reparse_below(Path(path).expanduser(), root)
     if not candidate.is_file() or _identity(candidate) != scoped_identities.get(domain):
         raise CutoverMaintenanceError("rehearsal authority file identity changed")
