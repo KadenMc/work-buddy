@@ -17,6 +17,8 @@ import secrets
 import sqlite3
 import stat
 import tempfile
+import threading
+import weakref
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +32,8 @@ _POSTSEAL_EVIDENCE_KEYS = frozenset(
     {"databaseCheckpoint", "search", "detachment", "authorityHead"}
 )
 _REHEARSAL_CAPABILITY_SECRET = secrets.token_bytes(32)
+_REHEARSAL_HANDLE_LOCK = threading.Lock()
+_REHEARSAL_OPEN_HANDLES: dict[int, tuple[int, tuple[tuple[str, int], ...]]] = {}
 
 
 class CutoverMaintenanceError(RuntimeError):
@@ -40,7 +44,7 @@ class CutoverMaintenanceFenced(CutoverMaintenanceError):
     """An ordinary domain mutation was attempted while maintenance is held."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class IsolatedRehearsalAuthorization:
     """Process-local capability for exact temporary authority database files."""
 
@@ -175,8 +179,7 @@ def require_mutations_open(conn: sqlite3.Connection, *, domain: str) -> None:
         raise CutoverMaintenanceFenced("domain mutations are fenced for cutover")
 
 
-def _identity(path: Path) -> tuple[int, int, int]:
-    value = path.stat()
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int]:
     # Windows can recycle ``st_ino`` immediately after unlink/recreate. Its
     # ``st_ctime_ns`` is the file creation timestamp and remains stable across
     # normal SQLite writes, so include it to distinguish a replacement file.
@@ -184,6 +187,99 @@ def _identity(path: Path) -> tuple[int, int, int]:
     # stable capability boundary there.
     creation_stamp = int(value.st_ctime_ns) if os.name == "nt" else 0
     return int(value.st_dev), int(value.st_ino), creation_stamp
+
+
+def _identity(path: Path) -> tuple[int, int, int]:
+    return _stat_identity(path.stat())
+
+
+def _release_rehearsal_handles(authorization_id: int) -> None:
+    with _REHEARSAL_HANDLE_LOCK:
+        pinned = _REHEARSAL_OPEN_HANDLES.pop(authorization_id, None)
+    if pinned is None:
+        return
+    root_fd, authority_fds = pinned
+    for fd in (root_fd, *(fd for _domain_name, fd in authority_fds)):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _pin_rehearsal_handles(
+    authorization: IsolatedRehearsalAuthorization,
+) -> None:
+    """Keep POSIX inodes alive so unlink/recreate cannot recycle identity."""
+
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | int(getattr(os, "O_CLOEXEC", 0))
+    opened: list[int] = []
+    try:
+        root_fd = os.open(authorization.root, flags)
+        opened.append(root_fd)
+        if _stat_identity(os.fstat(root_fd)) != authorization.root_identity:
+            raise CutoverMaintenanceError("isolated rehearsal root identity changed")
+        expected_identities = {
+            name: (device, inode, creation_stamp)
+            for name, device, inode, creation_stamp in authorization.authority_identities
+        }
+        authority_fds: list[tuple[str, int]] = []
+        for domain, path in authorization.authority_paths:
+            fd = os.open(path, flags)
+            opened.append(fd)
+            if _stat_identity(os.fstat(fd)) != expected_identities[domain]:
+                raise CutoverMaintenanceError(
+                    "rehearsal authority file identity changed"
+                )
+            authority_fds.append((domain, fd))
+        with _REHEARSAL_HANDLE_LOCK:
+            _REHEARSAL_OPEN_HANDLES[id(authorization)] = (
+                root_fd,
+                tuple(authority_fds),
+            )
+        weakref.finalize(
+            authorization,
+            _release_rehearsal_handles,
+            id(authorization),
+        )
+    except Exception:
+        for fd in reversed(opened):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+
+
+def _require_pinned_rehearsal_handles(
+    authorization: IsolatedRehearsalAuthorization,
+    domain: str,
+) -> None:
+    if os.name == "nt":
+        return
+    with _REHEARSAL_HANDLE_LOCK:
+        pinned = _REHEARSAL_OPEN_HANDLES.get(id(authorization))
+    if pinned is None:
+        raise CutoverMaintenanceError("isolated rehearsal authorization changed")
+    root_fd, authority_fds = pinned
+    domain_fds = dict(authority_fds)
+    try:
+        root_identity = _stat_identity(os.fstat(root_fd))
+        authority_identity = _stat_identity(os.fstat(domain_fds[domain]))
+    except (KeyError, OSError) as exc:
+        raise CutoverMaintenanceError(
+            "isolated rehearsal authorization changed"
+        ) from exc
+    expected_identities = {
+        name: (device, inode, creation_stamp)
+        for name, device, inode, creation_stamp in authorization.authority_identities
+    }
+    if (
+        root_identity != authorization.root_identity
+        or authority_identity != expected_identities.get(domain)
+    ):
+        raise CutoverMaintenanceError("isolated rehearsal authorization changed")
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -370,13 +466,15 @@ def authorize_isolated_rehearsal_root(
     proof = hmac.new(
         _REHEARSAL_CAPABILITY_SECRET, payload, hashlib.sha256
     ).hexdigest()
-    return IsolatedRehearsalAuthorization(
+    authorization = IsolatedRehearsalAuthorization(
         root=str(resolved_root),
         root_identity=root_identity,
         authority_paths=normalized_scope,
         authority_identities=identity_scope,
         proof=proof,
     )
+    _pin_rehearsal_handles(authorization)
+    return authorization
 
 
 def require_isolated_rehearsal_path(
@@ -402,6 +500,7 @@ def require_isolated_rehearsal_path(
     ).hexdigest()
     if not hmac.compare_digest(expected, authorization.proof):
         raise CutoverMaintenanceError("isolated rehearsal authorization changed")
+    _require_pinned_rehearsal_handles(authorization, domain)
     if not root.is_dir() or _identity(root) != authorization.root_identity:
         raise CutoverMaintenanceError("isolated rehearsal root identity changed")
     scoped_paths = dict(authorization.authority_paths)
