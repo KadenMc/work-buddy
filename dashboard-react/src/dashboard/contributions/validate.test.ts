@@ -102,6 +102,23 @@ describe("validateAppContribution", () => {
     expect(validate(contribution())).toEqual([]);
   });
 
+  it("accepts a domain catalog identity as an opaque widget instance ID", () => {
+    const value = contribution();
+    const slot = value.views[0]!.defaultSlots[0]!;
+    const withDomainInstance: AppContribution = {
+      ...value,
+      views: [{
+        ...value.views[0]!,
+        defaultSlots: [{
+          ...slot,
+          defaultInstanceId: asWidgetInstanceId("simple.capture"),
+        }],
+      }],
+    };
+
+    expect(validate(withDomainInstance)).toEqual([]);
+  });
+
   it("validates a view's stable settings-page reference without coupling it to a route", () => {
     const value = contribution();
     const withSettings: AppContribution = {

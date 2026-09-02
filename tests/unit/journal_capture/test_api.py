@@ -599,7 +599,7 @@ def test_document_module_opens_shared_cowork_target_with_truth_disabled(
         "description": "",
         "modules": [{
             "slotId": "reflection",
-            "moduleInstanceId": "user.documents.reflection",
+            "moduleInstanceId": "user.documents/reflection",
             "expectedVersion": 0,
             "moduleTypeId": "document",
             "moduleTypeVersion": 1,
@@ -680,7 +680,7 @@ def test_document_module_opens_shared_cowork_target_with_truth_disabled(
         csrf_token=session.csrf_token,
         boundary=_boundary(),
         action="journal.document.open",
-        subject="journal-document:2026-08-27:user.documents.reflection",
+        subject="journal-document:2026-08-27:user.documents/reflection",
         context_sha256=context_sha,
     )
     headers = {
@@ -690,7 +690,7 @@ def test_document_module_opens_shared_cowork_target_with_truth_disabled(
         "X-WB-Gesture": gesture.token,
     }
     opened = client.post(
-        "/api/journal/document-modules/2026-08-27/user.documents.reflection/open",
+        "/api/journal/document-modules/2026-08-27/user.documents%2Freflection/open",
         json=body,
         headers=headers,
         environ_base={"REMOTE_ADDR": "127.0.0.1"},
@@ -759,11 +759,11 @@ def test_document_module_opens_shared_cowork_target_with_truth_disabled(
         csrf_token=session.csrf_token,
         boundary=_boundary(),
         action="journal.document.open",
-        subject="journal-document:2026-08-27:user.documents.reflection",
+        subject="journal-document:2026-08-27:user.documents/reflection",
         context_sha256=context_sha,
     )
     replay = client.post(
-        "/api/journal/document-modules/2026-08-27/user.documents.reflection/open",
+        "/api/journal/document-modules/2026-08-27/user.documents%2Freflection/open",
         json=body,
         headers={**headers, "X-WB-Gesture": replay_gesture.token},
         environ_base={"REMOTE_ADDR": "127.0.0.1"},

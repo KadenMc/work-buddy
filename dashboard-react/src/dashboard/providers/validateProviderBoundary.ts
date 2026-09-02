@@ -10,6 +10,7 @@ import type {
   WidgetSnapshot,
   WidgetTypeId,
 } from "../contributions/contracts";
+import { isOpaqueWidgetInstanceId } from "../contributions/contracts";
 import { validateJsonValue } from "../contributions/validate";
 
 const SNAPSHOT_STATUSES = new Set<SnapshotStatus>([
@@ -24,7 +25,9 @@ const SNAPSHOT_STATUSES = new Set<SnapshotStatus>([
 const QUALITY_KINDS = new Set(["complete", "partial", "demo"]);
 const INTENT_RESULTS = new Set(["accepted", "rejected", "conflict", "unavailable"]);
 const NAMESPACED_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/;
-const INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
+const ROLE_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+@[1-9]\d*$/;
+const COMPOSITION_SLOT_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+const SLOT_PRESENCES = new Set(["required", "default_on", "default_off"]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -52,6 +55,154 @@ const requireRevision = (value: unknown, path: string): void => {
   if (value !== undefined && !revisionIsValid(value)) {
     throw new ProviderContractError(`${path} must be a non-empty string or finite number`);
   }
+};
+
+const requireCompositionOrder = (
+  value: unknown,
+  path: string,
+  slotIds: ReadonlySet<string>,
+  requiredSlotIds: ReadonlySet<string>,
+): void => {
+  if (!Array.isArray(value)) {
+    throw new ProviderContractError(`${path} must be an array`);
+  }
+  const seen = new Set<string>();
+  value.forEach((slotId, index) => {
+    if (typeof slotId !== "string" || !COMPOSITION_SLOT_ID.test(slotId)) {
+      throw new ProviderContractError(`${path}[${index}] must be a valid slot ID`);
+    }
+    if (seen.has(slotId)) {
+      throw new ProviderContractError(`${path} must not contain duplicate slot ${slotId}`);
+    }
+    if (!slotIds.has(slotId)) {
+      throw new ProviderContractError(`${path}[${index}] references unknown slot ${slotId}`);
+    }
+    seen.add(slotId);
+  });
+  for (const slotId of requiredSlotIds) {
+    if (!seen.has(slotId)) {
+      throw new ProviderContractError(`${path} must include slot ${slotId}`);
+    }
+  }
+};
+
+const requireEffectiveComposition = (
+  value: unknown,
+  widgetInputs: Readonly<Record<string, unknown>>,
+): void => {
+  const path = "snapshot.effectiveComposition";
+  if (!isRecord(value)) {
+    throw new ProviderContractError(`${path} must be an object`);
+  }
+  requireJson(value, path);
+  if (typeof value.compositionId !== "string" || value.compositionId.trim().length === 0) {
+    throw new ProviderContractError(`${path}.compositionId must be a non-empty string`);
+  }
+  if (!revisionIsValid(value.revision)) {
+    throw new ProviderContractError(
+      `${path}.revision must be a non-empty string or finite number`,
+    );
+  }
+  if (!Array.isArray(value.defaultSlots)) {
+    throw new ProviderContractError(`${path}.defaultSlots must be an array`);
+  }
+
+  const slotIds = new Set<string>();
+  const instanceIds = new Set<string>();
+  const mobileRequiredSlotIds = new Set<string>();
+  value.defaultSlots.forEach((slot, index) => {
+    const slotPath = `${path}.defaultSlots[${index}]`;
+    if (!isRecord(slot)) {
+      throw new ProviderContractError(`${slotPath} must be an object`);
+    }
+    if (typeof slot.slotId !== "string" || !COMPOSITION_SLOT_ID.test(slot.slotId)) {
+      throw new ProviderContractError(`${slotPath}.slotId must be a valid slot ID`);
+    }
+    if (slotIds.has(slot.slotId)) {
+      throw new ProviderContractError(`${path}.defaultSlots must not duplicate slot ${slot.slotId}`);
+    }
+    slotIds.add(slot.slotId);
+
+    if (!isOpaqueWidgetInstanceId(slot.defaultInstanceId)) {
+      throw new ProviderContractError(
+        `${slotPath}.defaultInstanceId must be an opaque instance ID`,
+      );
+    }
+    if (instanceIds.has(slot.defaultInstanceId)) {
+      throw new ProviderContractError(
+        `${path}.defaultSlots must not duplicate instance ${slot.defaultInstanceId}`,
+      );
+    }
+    instanceIds.add(slot.defaultInstanceId);
+    if (!Object.prototype.hasOwnProperty.call(widgetInputs, slot.defaultInstanceId)) {
+      throw new ProviderContractError(
+        `snapshot.widgetInputs must contain composed instance ${slot.defaultInstanceId}`,
+      );
+    }
+
+    if (typeof slot.requiredRole !== "string" || !ROLE_ID.test(slot.requiredRole)) {
+      throw new ProviderContractError(`${slotPath}.requiredRole must be a versioned role ID`);
+    }
+    if (
+      typeof slot.defaultWidgetTypeId !== "string" ||
+      !NAMESPACED_ID.test(slot.defaultWidgetTypeId)
+    ) {
+      throw new ProviderContractError(
+        `${slotPath}.defaultWidgetTypeId must be a namespaced widget type ID`,
+      );
+    }
+    if (typeof slot.presence !== "string" || !SLOT_PRESENCES.has(slot.presence)) {
+      throw new ProviderContractError(
+        `${slotPath}.presence must be required, default_on, or default_off`,
+      );
+    }
+    if (slot.presence !== "default_off") mobileRequiredSlotIds.add(slot.slotId);
+
+    if (
+      !isRecord(slot.help) ||
+      typeof slot.help.summary !== "string" ||
+      slot.help.summary.trim().length === 0 ||
+      typeof slot.help.details !== "string" ||
+      slot.help.details.trim().length === 0
+    ) {
+      throw new ProviderContractError(
+        `${slotPath}.help must contain non-empty summary and details strings`,
+      );
+    }
+    if (!isRecord(slot.defaultLayout)) {
+      throw new ProviderContractError(`${slotPath}.defaultLayout must be an object`);
+    }
+    const { x, y, w, h } = slot.defaultLayout;
+    if (
+      !Number.isInteger(x) ||
+      !Number.isInteger(y) ||
+      !Number.isInteger(w) ||
+      !Number.isInteger(h) ||
+      (x as number) < 0 ||
+      (y as number) < 0 ||
+      (w as number) < 1 ||
+      (h as number) < 1
+    ) {
+      throw new ProviderContractError(
+        `${slotPath}.defaultLayout must use non-negative integer coordinates and positive integer size`,
+      );
+    }
+    requireJson(slot.defaultSettings, `${slotPath}.defaultSettings`);
+    if (slot.defaultBindings !== undefined) {
+      if (!isRecord(slot.defaultBindings)) {
+        throw new ProviderContractError(`${slotPath}.defaultBindings must be an object`);
+      }
+      requireJson(slot.defaultBindings, `${slotPath}.defaultBindings`);
+    }
+  });
+
+  requireCompositionOrder(value.readingOrder, `${path}.readingOrder`, slotIds, slotIds);
+  requireCompositionOrder(
+    value.mobileOrder,
+    `${path}.mobileOrder`,
+    slotIds,
+    mobileRequiredSlotIds,
+  );
 };
 
 export function assertViewSnapshot(
@@ -84,11 +235,14 @@ export function assertViewSnapshot(
     throw new ProviderContractError("snapshot.widgetInputs must be an object");
   }
   for (const instanceId of Object.keys(value.widgetInputs)) {
-    if (!INSTANCE_ID.test(instanceId)) {
+    if (!isOpaqueWidgetInstanceId(instanceId)) {
       throw new ProviderContractError(
         `snapshot.widgetInputs key ${JSON.stringify(instanceId)} is not an opaque instance ID`,
       );
     }
+  }
+  if (value.effectiveComposition !== undefined) {
+    requireEffectiveComposition(value.effectiveComposition, value.widgetInputs);
   }
   requireJson(value.model, "snapshot.model");
   requireJson(value.bindings, "snapshot.bindings");
@@ -102,6 +256,12 @@ export function assertWidgetSnapshot(
   expectedRevision?: SnapshotRevision,
 ): asserts value is WidgetSnapshot {
   if (!isRecord(value)) throw new ProviderContractError("widget snapshot must be an object");
+  if (
+    !isOpaqueWidgetInstanceId(expectedInstanceId) ||
+    !isOpaqueWidgetInstanceId(value.instanceId)
+  ) {
+    throw new ProviderContractError("widget snapshot.instanceId must be an opaque instance ID");
+  }
   if (value.widgetTypeId !== expectedWidgetTypeId) {
     throw new ProviderContractError(
       `widget snapshot.widgetTypeId ${String(value.widgetTypeId)} does not match ${expectedWidgetTypeId}`,
@@ -156,7 +316,10 @@ export function assertDashboardIntent(
       `intent.view_id ${String(value.view_id)} does not match ${expectedViewId}`,
     );
   }
-  if (value.instance_id !== undefined && !INSTANCE_ID.test(String(value.instance_id))) {
+  if (
+    value.instance_id !== undefined &&
+    !isOpaqueWidgetInstanceId(value.instance_id)
+  ) {
     throw new ProviderContractError("intent.instance_id must be an opaque instance ID");
   }
   if (

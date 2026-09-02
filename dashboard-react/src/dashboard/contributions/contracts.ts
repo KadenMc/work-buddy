@@ -39,6 +39,22 @@ export type ViewModuleId = DashboardId<"view-module">;
 /** Stable identity resolved by the host-owned Settings registry, never a route. */
 export type SettingsPageId = DashboardId<"settings-page">;
 
+/**
+ * Runtime grammar for a stable widget placement identity.
+ *
+ * Instance IDs are opaque to Dashboard Core, but domain-backed providers may use
+ * their own stable catalog identity directly (for example `simple.capture`). Keep
+ * whitespace and control characters out while accepting the delimiter set used
+ * by domain catalogs. Delimiters remain atomic data; Dashboard Core never treats
+ * a slash as a route or a period as a namespace boundary.
+ */
+const WIDGET_INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+
+export const isOpaqueWidgetInstanceId = (
+  value: unknown,
+): value is WidgetInstanceId =>
+  typeof value === "string" && WIDGET_INSTANCE_ID.test(value);
+
 export const asAppId = (value: string): AppId => value as AppId;
 export const asViewId = (value: string): ViewId => value as ViewId;
 export const asWidgetTypeId = (value: string): WidgetTypeId => value as WidgetTypeId;

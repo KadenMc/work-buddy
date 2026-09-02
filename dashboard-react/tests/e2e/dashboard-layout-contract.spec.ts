@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const openJournal = async (page: Page) => {
-  await page.goto("/app/journal");
+  await page.goto("/app/journal?provider=demo");
   await expect(page.getByRole("textbox", { name: "Capture text" })).toBeVisible();
   await expect(page.locator(".wb-dashboard-grid-container")).toHaveAttribute(
     "data-grid-measured",

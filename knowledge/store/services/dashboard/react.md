@@ -25,6 +25,14 @@ dev_notes: |-
 
   The production build is emitted to `dashboard-react/dist` and served by Flask. Tests inject fixture providers so component behavior does not require a live Work Buddy process. Keep grid, calendar, and other dependency-specific objects behind Work Buddy adapters.
 
+  Browser specifications that submit, edit, delete, or save must select an
+  explicit in-memory provider or an isolated temporary data root. Tests against
+  the live Flask-served dashboard are limited to reads, local presentation
+  changes, and documented pure previews; record authoritative database counts
+  before and after the run. The main test workflow runs the dashboard unit suite,
+  the Journal contract suite in Chromium and Firefox, and the production build so
+  provider boundary regressions cannot pass on Python coverage alone.
+
   In a source checkout, a full sidecar boot is also the React activation boundary: the sidecar fingerprints build inputs, compares them with the versioned full-output marker in `dist`, and runs the bounded npm build only when stale. This preflight runs once per daemon boot, not on dashboard health restarts. Packaged payloads contain no authoring tree and use their validated shipped `dist` without requiring Node.js.
 
   This `services/dashboard/react` subtree is an explicit migration namespace. After the Python-generated root dashboard at `/` is fully retired, collapse these units into `services/dashboard/*` so React stops being an architectural qualifier: merge this parent into `services/dashboard`, move children such as `services/dashboard/react/widget-platform` up one level, and repair cross-references in the same documentation change.

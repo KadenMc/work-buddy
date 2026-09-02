@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 
 import type { DashboardIntent } from "../../../dashboard/contributions/contracts";
 import { asWidgetInstanceId } from "../../../dashboard/contributions/contracts";
-import { assertDashboardIntent } from "../../../dashboard/providers/validateProviderBoundary";
+import {
+  assertDashboardIntent,
+  assertViewSnapshot,
+} from "../../../dashboard/providers/validateProviderBoundary";
 import { resetLocalIdentityForTests } from "../../../security/localIdentity";
 import {
   JOURNAL_INSTANCE_IDS,
@@ -284,6 +287,7 @@ describe("HttpJournalProvider", () => {
 
     const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
 
+    expect(() => assertViewSnapshot(snapshot, JOURNAL_VIEW_DEFINITION_ID)).not.toThrow();
     expect(fetchImpl.mock.calls.map(([input]) => String(input))).not.toContain(LEGACY_TODAY_ENDPOINT);
     expect(snapshot.effectiveComposition?.defaultSlots.map((slot) => slot.defaultInstanceId)).toEqual([
       "simple.capture", "simple.stream", "simple.notes", "custom.check-in",
@@ -320,7 +324,7 @@ describe("HttpJournalProvider", () => {
   it("opens a configured document module through an exact gesture and returns its panel target", async () => {
     const documentModule = {
       slotId: "reflection", ordinal: 0,
-      moduleInstanceId: "custom.reflection", moduleInstanceVersion: 2,
+      moduleInstanceId: "custom/reflection", moduleInstanceVersion: 2,
       moduleTypeId: "document", moduleTypeVersion: 1, label: "Daily reflection",
       behaviorId: "provenance_only", behaviorVersion: 1, aiContribution: "allowed",
       semanticMembership: "included", settings: {
@@ -375,7 +379,7 @@ describe("HttpJournalProvider", () => {
           expires_at: Date.now() / 1000 + 30,
         } });
       }
-      if (url === `${JOURNAL_DOCUMENT_MODULE_ENDPOINT}/${day.localDate}/custom.reflection/open`) {
+      if (url === `${JOURNAL_DOCUMENT_MODULE_ENDPOINT}/${day.localDate}/custom%2Freflection/open`) {
         openBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         openHeaders = new Headers(init?.headers);
         return json({ ok: true, deduplicated: false, document: target }, 201);
@@ -384,7 +388,7 @@ describe("HttpJournalProvider", () => {
     });
     const provider = new HttpJournalProvider({ fetchImpl });
     const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
-    expect(snapshot.widgetInputs["custom.reflection"]).toMatchObject({
+    expect(snapshot.widgetInputs["custom/reflection"]).toMatchObject({
       moduleTypeId: "document",
       document: { state: "available", role: "daily_reflection" },
     });
@@ -395,14 +399,14 @@ describe("HttpJournalProvider", () => {
       intent_id: "open-document-module-one",
       client_mutation_id: "journal-document-open-one",
       view_id: JOURNAL_VIEW_DEFINITION_ID,
-      instance_id: asWidgetInstanceId("custom.reflection"),
+      instance_id: asWidgetInstanceId("custom/reflection"),
       payload: { local_date: day.localDate, module_instance_version: 2 },
     });
 
     expect(result).toMatchObject({ status: "accepted", value: target });
     expect(gestureBody).toMatchObject({
       action: "journal.document.open",
-      subject: `journal-document:${day.localDate}:custom.reflection`,
+      subject: `journal-document:${day.localDate}:custom/reflection`,
       context_sha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
     expect(openBody).toEqual({

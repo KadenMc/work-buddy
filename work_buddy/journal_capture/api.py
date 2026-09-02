@@ -691,7 +691,7 @@ def save_journal_configuration():
 
 
 @journal_capture_blueprint.post(
-    "/api/journal/configuration/profiles/<profile_id>/<int:profile_revision>/activate"
+    "/api/journal/configuration/profiles/<path:profile_id>/<int:profile_revision>/activate"
 )
 def activate_journal_configuration(profile_id: str, profile_revision: int):
     """Schedule a reviewed profile revision for an explicit future date."""
@@ -1738,7 +1738,7 @@ def retry_journal_capture(capture_id: str):
 
 
 @journal_capture_blueprint.post(
-    "/api/journal/document-modules/<local_date>/<module_instance_id>/open"
+    "/api/journal/document-modules/<local_date>/<path:module_instance_id>/open"
 )
 def open_journal_document_module(local_date: str, module_instance_id: str):
     """Provision a day-scoped Journal working document on explicit user intent."""

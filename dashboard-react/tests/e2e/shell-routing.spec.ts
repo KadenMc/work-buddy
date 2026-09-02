@@ -24,7 +24,7 @@ test("the Journal view supports direct navigation and refresh", async ({ page })
 test("Quick Capture persists exact text and updates bound sibling input through the provider", async ({
   page,
 }) => {
-  await page.goto("/app/journal", { waitUntil: "domcontentloaded" });
+  await page.goto("/app/journal?provider=demo", { waitUntil: "domcontentloaded" });
   const capture = page.getByRole("region", { name: "Quick Capture", exact: true });
 
   await capture.getByRole("textbox", { name: "Capture text" }).fill("Meeting ran long");

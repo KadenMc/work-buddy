@@ -16,6 +16,7 @@ import type {
   WidgetRoleId,
   WidgetTypeId,
 } from "./contracts";
+import { isOpaqueWidgetInstanceId } from "./contracts";
 import {
   STANDARD_WIDGET_THEME_SUPPORT,
   THEME_CONTRACT_VERSION,
@@ -60,7 +61,6 @@ const NAMESPACED_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/;
 const ROLE_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+@[1-9]\d*$/;
 const SLOT_ID = /^[a-z][a-z0-9-]*$/;
 const REGION_ID = /^[a-z][a-z0-9-]*$/;
-const INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const LAYOUT_KINDS = new Set<ViewLayoutKind>(["standard-grid", "single-surface"]);
 const THEME_SUPPORT = new Set<WidgetThemeSupport>([
   "light",
@@ -899,12 +899,12 @@ const validateViewDefinition = (
       );
     }
     validateHelpContent(slot.help, `${slotPath}.help`, issues);
-    if (!INSTANCE_ID.test(slot.defaultInstanceId)) {
+    if (!isOpaqueWidgetInstanceId(slot.defaultInstanceId)) {
       addIssue(
         issues,
         "invalid_instance_id",
         `${slotPath}.defaultInstanceId`,
-        "must be an opaque stable instance ID using letters, numbers, colon, underscore, or hyphen",
+        "must be an opaque stable instance ID using letters, numbers, period, underscore, colon, slash, or hyphen",
       );
     }
     validateRoleId(slot.requiredRole, `${slotPath}.requiredRole`, issues);

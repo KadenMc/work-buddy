@@ -414,13 +414,15 @@ def test_configuration_http_save_and_future_activation_require_human_gestures(
     journal_api.register_routes(app)
     client = app.test_client()
 
+    slash_profile = deepcopy(_draft())
+    slash_profile["profileId"] = "user.focus/profile"
     saved = client.post(
         "/api/journal/configuration/profiles",
-        json={"clientMutationId": "http-save-focus", "draft": _draft()},
+        json={"clientMutationId": "http-save-focus", "draft": slash_profile},
     )
     assert saved.status_code == 201, saved.json
     activated = client.post(
-        "/api/journal/configuration/profiles/user.focus/1/activate",
+        "/api/journal/configuration/profiles/user.focus%2Fprofile/1/activate",
         json={
             "clientMutationId": "http-activate-focus",
             "expectedActivationRevision": 1,
@@ -430,8 +432,8 @@ def test_configuration_http_save_and_future_activation_require_human_gestures(
     assert activated.status_code == 200, activated.json
     assert activated.json["activation"]["activationRevision"] == 2
     assert gestures == [
-        ("journal.profile.save", "journal-profile:user.focus"),
-        ("journal.profile.activate", "journal-profile:user.focus:1"),
+        ("journal.profile.save", "journal-profile:user.focus/profile"),
+        ("journal.profile.activate", "journal-profile:user.focus/profile:1"),
     ]
 
 

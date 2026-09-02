@@ -26,7 +26,7 @@ export const COWORK_VIEW_MODULE_ID = asViewModuleId("wb.cowork.workspace.module"
 /**
  * Identities for the composite workspace card: the one durable widget the standard-grid
  * Co-work view places. The slot is the view's single stable purpose, the instance id is
- * its opaque placement (a colon separates the segments because instance ids forbid dots),
+ * its opaque placement (the colon is a readable delimiter with no host-level meaning),
  * and the role, type, and renderer-module ids are the registry safety-invariant units.
  */
 export const COWORK_WORKSPACE_SLOT_ID = asWidgetSlotId("workspace");

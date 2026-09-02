@@ -339,7 +339,9 @@ test("an interrupted resize cannot survive pointer loss or Customize exit", asyn
   await beginCustomize(page);
 
   const capture = page.locator('[data-widget-instance-id="default:capture"]');
-  const resizeHandle = capture.locator(".react-resizable-handle-se");
+  // The explicit east handle has a real hit target in both browser engines;
+  // react-resizable's legacy southeast corner relies on engine-specific styling.
+  const resizeHandle = capture.locator('[data-wb-resize-axis="e"]');
   await resizeHandle.scrollIntoViewIfNeeded();
   const handleBox = await resizeHandle.boundingBox();
   expect(handleBox).not.toBeNull();
@@ -349,7 +351,7 @@ test("an interrupted resize cannot survive pointer loss or Customize exit", asyn
   const startY = handleBox.y + handleBox.height / 2;
   await page.mouse.move(startX, startY);
   await page.mouse.down();
-  await page.mouse.move(startX + 120, startY + 80, { steps: 12 });
+  await page.mouse.move(startX + 120, startY, { steps: 12 });
   await expect(capture).toHaveClass(/resizing/);
   await expect(page.locator(".react-grid-placeholder")).toHaveCount(1);
 
@@ -368,14 +370,23 @@ test("resizing Quick Capture cannot remove its shared scroll boundary", async ({
   await openJournal(page);
   await beginCustomize(page);
 
-  const captureHandle = page
-    .locator('[data-widget-instance-id="default:capture"]')
-    .getByRole("button", { name: /Move or resize widget/ });
-  for (let index = 0; index < 8; index += 1) {
-    await captureHandle.press("Shift+ArrowUp");
-  }
+  const capture = page.locator('[data-widget-instance-id="default:capture"]');
+  const resizeHandle = capture.locator('[data-wb-resize-axis="s"]');
+  await resizeHandle.scrollIntoViewIfNeeded();
+  const handleBox = await resizeHandle.boundingBox();
+  expect(handleBox).not.toBeNull();
+  if (handleBox === null) return;
+  const startX = handleBox.x + handleBox.width / 2;
+  const startY = handleBox.y + handleBox.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX, startY - 220, { steps: 8 });
+  await page.mouse.up();
 
   const content = widget(page, "Quick Capture").locator(".wb-widget-frame__content");
+  await expect
+    .poll(() => content.evaluate((element) => element.scrollHeight - element.clientHeight))
+    .toBeGreaterThan(0);
   const metrics = await content.evaluate((element) => {
     const style = getComputedStyle(element);
     element.scrollTop = element.scrollHeight;
@@ -421,38 +432,24 @@ test("a scrollable widget owns available movement and exposes the native boundar
 }) => {
   await page.setViewportSize({ width: 1280, height: 500 });
   await openJournal(page);
-  await beginCustomize(page);
 
-  const captureHandle = page
-    .locator('[data-widget-instance-id="default:capture"]')
-    .getByRole("button", { name: /Move or resize widget/ });
-  for (let index = 0; index < 8; index += 1) {
-    await captureHandle.press("Shift+ArrowUp");
-  }
-  const arrangedContent = widget(page, "Quick Capture").locator(
-    ".wb-widget-frame__content",
-  );
-  const arrangeScrollMetrics = await arrangedContent.evaluate((element) => ({
-    clientHeight: element.clientHeight,
-    scrollHeight: element.scrollHeight,
-  }));
-  expect(arrangeScrollMetrics.scrollHeight).toBeGreaterThan(
-    arrangeScrollMetrics.clientHeight,
-  );
-  await page.getByRole("button", { name: "Preview interactions" }).click();
-
-  const content = widget(page, "Quick Capture").locator(".wb-widget-frame__content");
-  await content.scrollIntoViewIfNeeded();
+  const content = widget(page, "Running Notes").locator(".wb-widget-frame__content");
+  // Constrain the real widget boundary with a deterministic, local-only overflow fixture.
+  // The preceding test covers resizing through the layout editor; this one isolates native
+  // wheel propagation without provider writes or repeated animated layout commands.
   await content.evaluate((element) => {
+    element.style.maxHeight = "6rem";
+    const overflowFixture = document.createElement("div");
+    overflowFixture.setAttribute("aria-hidden", "true");
+    overflowFixture.style.height = "20rem";
+    overflowFixture.style.flex = "0 0 20rem";
+    element.append(overflowFixture);
     element.scrollTop = 0;
   });
-  const previewScrollMetrics = await content.evaluate((element) => ({
-    clientHeight: element.clientHeight,
-    scrollHeight: element.scrollHeight,
-  }));
-  expect(previewScrollMetrics.scrollHeight).toBeGreaterThan(
-    previewScrollMetrics.clientHeight,
-  );
+  await expect
+    .poll(() => content.evaluate((element) => element.scrollHeight - element.clientHeight))
+    .toBeGreaterThan(0);
+  await content.scrollIntoViewIfNeeded();
   await content.hover();
 
   const pageBeforeInternalScroll = await page.evaluate(() => window.scrollY);
