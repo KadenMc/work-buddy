@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import uuid
 from collections import Counter
@@ -16,6 +17,8 @@ from flask import Blueprint, jsonify, request
 from work_buddy.dashboard import local_identity_api
 from work_buddy.security.local_identity import LocalIdentityError
 from work_buddy.tasks.documents import TaskDocumentService
+from work_buddy.tasks.aggregate_creation import TaskAggregateCreationService
+from work_buddy.tasks.creation import FieldDerivation
 from work_buddy.tasks.errors import (
     TaskAuthorityUnavailable,
     TaskDomainError,
@@ -77,6 +80,66 @@ def _required_text(body: Mapping[str, Any], key: str) -> str:
 
 def _client_mutation_id(body: Mapping[str, Any]) -> str:
     return _required_text(body, "client_mutation_id")
+
+
+def _requested_task_note(body: Mapping[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """Validate the explicit task-note shape without inferring intent from prose."""
+
+    role = body.get("requested_note_role")
+    truth_resolution = body.get("requested_truth_policy_resolution")
+    initial_note = body.get("initial_note", body.get("note_markdown"))
+    errors: dict[str, str] = {}
+    if role not in {None, "working_document/v1"}:
+        errors["requested_note_role"] = "Unsupported task note role."
+    if role is None:
+        if truth_resolution is not None:
+            errors["requested_truth_policy_resolution"] = "Truth requires a task note."
+        if initial_note is not None:
+            errors["initial_note"] = "Choose a task note role before supplying note text."
+    else:
+        if truth_resolution is None:
+            truth_resolution = "disabled"
+        if truth_resolution not in {"disabled", "enabled"}:
+            errors["requested_truth_policy_resolution"] = (
+                "Choose whether Truth tools start disabled or enabled."
+            )
+        if initial_note is None:
+            initial_note = ""
+        elif not isinstance(initial_note, str):
+            errors["initial_note"] = "The initial note must be text or null."
+    if errors:
+        raise TaskValidationError(errors)
+    return role, truth_resolution, initial_note
+
+
+def _creation_derivations(
+    body: Mapping[str, Any],
+    *,
+    title: str,
+    initial_note: str | None,
+) -> tuple[FieldDerivation, ...]:
+    values: list[tuple[str, str]] = [("description", title)]
+    for wire, domain in (
+        ("summary", "summary_text"),
+        ("desired_outcome", "outcome_text"),
+        ("next_action", "next_action_text"),
+        ("definition_of_done", "definition_of_done"),
+    ):
+        value = body.get(wire)
+        if isinstance(value, str) and value.strip():
+            values.append((domain, value.strip()))
+    if initial_note is not None:
+        values.append(("task_note.initial_body", initial_note))
+    return tuple(
+        FieldDerivation(
+            field_name=field_name,
+            value_sha256=hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            authorship="human",
+            review_state="unreviewed",
+            detail={"originating_surface": "dashboard"},
+        )
+        for field_name, value in values
+    )
 
 
 def _expected_revision(body: Mapping[str, Any]) -> int:
@@ -866,17 +929,20 @@ def create_tasks_blueprint(
         try:
             body = _json_body()
             store, service = stack()
+            client_mutation_id = _client_mutation_id(body)
             actor = authorize(
                 store,
                 operation="create",
-                subject=f"task:new:{_client_mutation_id(body)}",
+                subject=f"task:new:{client_mutation_id}",
                 path="/api/tasks",
                 body=body,
             )
             state = str(body.get("attention_state") or "inbox")
-            result = service.create(
-                description=_required_text(body, "title"),
-                client_mutation_id=_client_mutation_id(body),
+            title = _required_text(body, "title")
+            requested_role, truth_resolution, initial_note = _requested_task_note(body)
+            create_kwargs = dict(
+                description=title,
+                client_mutation_id=client_mutation_id,
                 actor=actor,
                 state=state,
                 urgency="high" if body.get("urgency") == "critical" else str(body.get("urgency") or "medium"),
@@ -893,6 +959,37 @@ def create_tasks_blueprint(
                 user_required_contexts=body.get("required_contexts") or (),
                 required_contexts_source=(
                     "user_authored" if body.get("required_contexts") else None
+                ),
+            )
+            if requested_role is None:
+                result = service.create(**create_kwargs)
+                return jsonify(_mutation_envelope(store, result))
+
+            requested_task_id = body.get("task_id")
+            if requested_task_id is not None and not isinstance(requested_task_id, str):
+                raise TaskValidationError({"task_id": "Task ID must be text."})
+            task_values = {
+                key: value
+                for key, value in create_kwargs.items()
+                if key not in {"client_mutation_id", "actor"}
+            }
+            if isinstance(requested_task_id, str) and requested_task_id.strip():
+                task_values["task_id"] = requested_task_id.strip()
+            result = TaskAggregateCreationService(
+                store,
+                task_service=service,
+                document_service=document_factory(),
+            ).create(
+                client_mutation_id=client_mutation_id,
+                actor=actor,
+                session_id=None,
+                task_values=task_values,
+                initial_note=str(initial_note or ""),
+                requested_truth_policy_resolution=str(truth_resolution),
+                field_derivations=_creation_derivations(
+                    body,
+                    title=title,
+                    initial_note=initial_note,
                 ),
             )
             return jsonify(_mutation_envelope(store, result))
@@ -1201,6 +1298,7 @@ def create_tasks_blueprint(
             if task is None:
                 raise TaskNotFound(task_id)
             expected = _expected_revision(body)
+            mutation_id = _client_mutation_id(body)
             existing_link = store.get_task_document_link(task_id)
             if existing_link is None and task.revision != expected:
                 raise TaskRevisionConflict(
@@ -1209,45 +1307,51 @@ def create_tasks_blueprint(
                     current_task=task.to_dict(),
                 )
             if existing_link is None:
-                created = document_factory().create(
-                    task_id=task_id,
-                    title=task.description,
-                    domain_revision=str(task.revision),
-                    created_by=actor,
+                from work_buddy.tasks.document_attachment import (
+                    TaskDocumentAttachmentRunner,
+                    prepare_task_document_attachment,
                 )
-                now = _now()
-                link = TaskDocumentLink(
+
+                document_service = document_factory()
+                decision = prepare_task_document_attachment(
+                    store,
+                    document_service,
                     task_id=task_id,
-                    note_uuid=task.note_uuid or str(uuid.UUID(hex=created.document_id)),
-                    store_id=created.store_id,
-                    document_id=created.document_id,
-                    binding_id=created.binding_id,
-                    lifecycle="active",
-                    created_at=now,
-                    updated_at=now,
-                )
-            else:
-                link = existing_link
-            try:
-                result = service.attach_document(
-                    task_id,
-                    link=link,
-                    expected_revision=expected,
-                    client_mutation_id=_client_mutation_id(body),
+                    client_mutation_id=mutation_id,
+                    expected_task_revision=expected,
                     actor=actor,
+                    title=task.description,
                 )
-            except TaskRevisionConflict:
-                # A field edit may race the external document reservation.
-                # Attaching the deterministic link cannot overwrite that edit,
-                # so finish the saga against the fresh revision.
-                current = service.get(task_id, include_deleted=True)
-                if current is None:
-                    raise TaskNotFound(task_id)
+                if decision.status == "aborted":
+                    raise TaskDomainError(
+                        "That task document attachment was already aborted."
+                    )
+                outcome = TaskDocumentAttachmentRunner(
+                    store,
+                    document_service,
+                    task_service=service,
+                ).resume(decision.intent_id)
+                if outcome.intent.status != "admitted":
+                    raise TaskDomainError(
+                        "The task document attachment did not finish."
+                    )
+                result = outcome.result
+                if result is None:
+                    # A maintenance worker may have completed the exact intent
+                    # after this request read the missing link.
+                    result = service.attach_document(
+                        task_id,
+                        link=decision.link(),
+                        expected_revision=decision.expected_task_revision,
+                        client_mutation_id=decision.client_mutation_id,
+                        actor=decision.actor,
+                    )
+            else:
                 result = service.attach_document(
                     task_id,
-                    link=link,
-                    expected_revision=current.revision,
-                    client_mutation_id=_client_mutation_id(body),
+                    link=existing_link,
+                    expected_revision=expected,
+                    client_mutation_id=mutation_id,
                     actor=actor,
                 )
             return jsonify(_mutation_envelope(store, result))

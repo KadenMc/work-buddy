@@ -114,6 +114,12 @@ class RetrySweep:
                         "retry_succeeded", record["operation_id"],
                         f"Retry OK: {record['name']} (attempt {record['attempt']})",
                     )
+            elif replay_result.get("suppressed"):
+                # A preference opt-out is neither a transient outage nor an
+                # exhausted operation. Retire the queued delivery silently so
+                # the sidecar cannot keep probing, retrying, or notifying the
+                # user about an integration they deliberately disabled.
+                self._on_suppressed(record, replay_result)
             elif record["attempt"] >= record.get("max_retries", 5):
                 self._on_exhausted(record, replay_result)
                 if self._event_log:
@@ -416,6 +422,34 @@ class RetrySweep:
             )
 
             reg = get_registry()
+            disabled = get_disabled_registry()
+
+            admission = _runtime_admission_for_record(
+                record,
+                active_registry=reg,
+                disabled_registry=disabled,
+            )
+            if not admission.preference_available:
+                return {
+                    "success": False,
+                    "error": "Capability suppressed because feature preferences could not be verified.",
+                    "error_code": "feature_preference_unavailable",
+                    "transient": False,
+                    "suppressed": True,
+                }
+            if admission.opted_out:
+                return {
+                    "success": False,
+                    "error": (
+                        "Capability suppressed because its feature is opted "
+                        f"out: {', '.join(admission.opted_out)}"
+                    ),
+                    "error_code": "feature_opted_out",
+                    "transient": False,
+                    "suppressed": True,
+                    "opted_out_tools": list(admission.opted_out),
+                }
+
             entry = reg.get(record["name"])
 
             if entry is None:
@@ -435,7 +469,6 @@ class RetrySweep:
                 # mutates _REGISTRY in place to restore the capability.
                 # Strictly cheaper than a full registry rebuild, and
                 # this is the same path the gateway uses (gateway.py:887).
-                disabled = get_disabled_registry()
                 disabled_entry = disabled.get(record["name"])
                 if disabled_entry is not None:
                     logger.info(
@@ -768,6 +801,38 @@ class RetrySweep:
         if wf_ctx:
             self._resume_workflow(wf_ctx, replay_result.get("result"))
 
+    def _on_suppressed(
+        self,
+        record: dict[str, Any],
+        replay_result: dict[str, Any],
+    ) -> None:
+        """Retire queued work blocked by an explicit feature opt-out.
+
+        Suppression is intentionally notification-free.  The preference is
+        already the user's decision; converting it into an outage alert or a
+        recurring retry would contradict that decision.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        record["queued"] = False
+        record["queued_for_retry"] = False
+        record["status"] = "cancelled"
+        record["error"] = replay_result.get("error")
+        record["error_code"] = "feature_opted_out"
+        record["cancelled_at"] = now
+        record["completed_at"] = now
+        record["cancelled_reason"] = "feature_opted_out"
+        record["opted_out_tools"] = replay_result.get("opted_out_tools", [])
+        record["locked_until"] = None
+        record["lease_token"] = None
+        _write_record(record)
+
+        wf_ctx = record.get("workflow_context")
+        if wf_ctx:
+            self._fail_workflow_step(
+                wf_ctx,
+                str(replay_result.get("error") or "Feature opted out"),
+            )
+
     def _on_exhausted(self, record: dict[str, Any], replay_result: dict[str, Any]) -> None:
         """Attempts exhausted — notify the agent session always; alert the
         user via surfaces only for retry-reason ops (background submits and
@@ -978,6 +1043,40 @@ def _partial_verified_fields(verified: Any) -> list[str]:
 # inner op record. The wrapper itself has no effects manifest — verify paths
 # need the inner capability's manifest to walk multi-effect state correctly.
 _WRAPPER_CAPS: frozenset[str] = frozenset({"retry", "obsidian_retry"})
+
+
+def _runtime_admission_for_record(
+    record: dict[str, Any],
+    *,
+    active_registry: dict[str, Any],
+    disabled_registry: dict[str, Any],
+) -> Any:
+    """Evaluate current preferences for the effective queued call.
+
+    Retry wrappers point at an inner operation, so their own (usually empty)
+    requirement list is not authoritative for preference gating.  Use the
+    inner record when present and fall back to the registry's disabled-tool
+    inventory when no Capability object is currently reachable.
+    """
+    effective = _resolve_inner_op_for_wrapper(record) or record
+    capability_name = str(effective.get("name") or "")
+    entry = (
+        active_registry.get(capability_name)
+        or disabled_registry.get(capability_name)
+    )
+    required = list(getattr(entry, "requires", []) or [])
+    if entry is None:
+        from work_buddy.tools import DISABLED_CAPABILITIES
+
+        required = list(DISABLED_CAPABILITIES.get(capability_name, []))
+
+    from types import SimpleNamespace
+
+    from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
+
+    return evaluate_runtime_admission(
+        entry if entry is not None else SimpleNamespace(requires=required)
+    )
 
 
 def _effective_task_record(record: dict[str, Any]) -> dict[str, Any]:

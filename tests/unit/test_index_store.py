@@ -189,6 +189,21 @@ class TestLedgerAndVersion:
         items = store.get_indexed_items("knowledge")
         assert items["f.md"] == (123.0, "abc")
 
+    def test_partition_item_ids_include_unmarked_documents(self, store):
+        store.mark_item_indexed(
+            "ledger.md", "knowledge", mtime=123.0, content_hash="abc", doc_count=0
+        )
+        store.upsert_documents(
+            [_doc("knowledge:dangling", name="dangling")],
+            item_id="dangling.md",
+        )
+        store.upsert_documents(
+            [_doc("vault:other", partition="vault", name="other")],
+            item_id="other.md",
+        )
+
+        assert store.partition_item_ids("knowledge") == ["dangling.md", "ledger.md"]
+
     def test_build_version_bump(self, store):
         assert store.build_version("knowledge") == 0
         assert store.bump_version("knowledge") == 1

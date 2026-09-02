@@ -13,7 +13,7 @@ parameters:
     required: false
   force:
     type: bool
-    description: Re-run all tool probes fresh instead of reading the cached result. Use when a previously-failed tool (e.g. Obsidian) may now be available.
+    description: Re-run probes for wanted tools instead of reading cached results. Force never overrides features.<component>.wanted=false and never probes an opted-out Obsidian bridge or child plugin.
     required: false
 tags:
 - status

@@ -1,7 +1,7 @@
 ---
 name: Vault Event Tracking
 kind: concept
-description: Event-driven file change tracking for Obsidian -- replaces O(n) mtime scanning, persists in localStorage
+description: Retired app-only Obsidian event ledger retained for explicit compatibility; never bootstrapped on the opted-out normal path.
 tags:
 - obsidian
 - vault-events
@@ -18,7 +18,9 @@ parents:
 - obsidian
 ---
 
-Event-driven file change tracking for Obsidian, replacing O(n) mtime scanning.
+Historical compatibility reference for the event-driven Obsidian file ledger.
+It is disabled with the Obsidian feature and must not bootstrap listeners,
+probe the bridge, retry, or produce setup advice in that state.
 
 ## How it works
 

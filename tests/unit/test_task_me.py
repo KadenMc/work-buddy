@@ -27,7 +27,11 @@ from work_buddy import task_me as tm
 def test_load_context_returns_expected_keys(monkeypatch):
     """All four sub-calls succeed → status='ok', no errors."""
     monkeypatch.setattr(
-        "work_buddy.obsidian.tasks.manager.daily_briefing",
+        "work_buddy.tasks.runtime.native_authority_active",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "work_buddy.tasks.capabilities.daily_briefing",
         lambda: {"focused": [{"description": "X", "task_id": "t-x"}]},
     )
     monkeypatch.setattr(
@@ -48,9 +52,13 @@ def test_load_context_returns_expected_keys(monkeypatch):
 
 def test_load_context_degrades_on_briefing_failure(monkeypatch):
     def boom():
-        raise RuntimeError("bridge down")
+        raise RuntimeError("task store unavailable")
     monkeypatch.setattr(
-        "work_buddy.obsidian.tasks.manager.daily_briefing", boom,
+        "work_buddy.tasks.runtime.native_authority_active",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "work_buddy.tasks.capabilities.daily_briefing", boom,
     )
     monkeypatch.setattr(
         "work_buddy.dashboard.service._build_engage_view_payload",
@@ -78,7 +86,7 @@ def test_build_now_plan_uses_engage_focused_tasks(monkeypatch):
              "text": focused_tasks[0]["description"]},
         ]
     monkeypatch.setattr(
-        "work_buddy.obsidian.day_planner.planner.generate_plan",
+        "work_buddy.journal_capture.planner.generate_plan",
         fake_generate,
     )
     context = {
@@ -103,7 +111,7 @@ def test_build_now_plan_skips_blocked_engage_items(monkeypatch):
     """Tasks the agent and user both can't satisfy are excluded."""
     captured = {}
     monkeypatch.setattr(
-        "work_buddy.obsidian.day_planner.planner.generate_plan",
+        "work_buddy.journal_capture.planner.generate_plan",
         lambda calendar_events, focused_tasks, cfg: (
             captured.update(focused=focused_tasks) or []
         ),
@@ -129,7 +137,7 @@ def test_build_now_plan_falls_back_to_task_briefing(monkeypatch):
     """When engage is empty/missing, use task_briefing.focused."""
     captured = {}
     monkeypatch.setattr(
-        "work_buddy.obsidian.day_planner.planner.generate_plan",
+        "work_buddy.journal_capture.planner.generate_plan",
         lambda calendar_events, focused_tasks, cfg: (
             captured.update(focused=focused_tasks) or []
         ),
@@ -153,7 +161,7 @@ def test_build_now_plan_handles_generator_failure(monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError("planner crashed")
     monkeypatch.setattr(
-        "work_buddy.obsidian.day_planner.planner.generate_plan", boom,
+        "work_buddy.journal_capture.planner.generate_plan", boom,
     )
     out = tm.build_now_plan(
         context={"engage": {"items": []}, "calendar": []},

@@ -68,7 +68,7 @@ def test_forward_migration_preserves_v11_rows_and_history(tmp_path):
 
     conn = store.connect()
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == TASK_MIGRATIONS.target_version == 19
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == TASK_MIGRATIONS.target_version == 22
         assert conn.execute("SELECT COUNT(*) FROM task_metadata").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM task_tags").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM task_action_items").fetchone()[0] == 1
@@ -87,7 +87,19 @@ def test_forward_migration_preserves_v11_rows_and_history(tmp_path):
                 "SELECT version FROM _migration_history WHERE version >= 12"
             )
         }
-        assert native_versions == {12, 13, 14, 15, 16, 17, 18, 19}
+        assert native_versions == {
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+        }
     finally:
         conn.close()
 
@@ -146,7 +158,7 @@ def test_v11_inventory_can_stage_evolved_rows_after_forward_migration(tmp_path):
 
     conn = store.connect()
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
         assert conn.execute(
             "SELECT COUNT(*) FROM task_migration_existing_task_stage "
             "WHERE cohort_id='v11-forward-stage'"
@@ -182,6 +194,9 @@ def test_fresh_store_contains_native_support_tables(task_store):
             "task_migration_binding_transitions",
             "task_migration_gates",
             "task_migration_receipts",
+            "task_creation_intents",
+            "task_field_derivation_receipts",
+            "task_document_attachment_intents",
         } <= tables
         assert task_store.system_state().authority_epoch == "legacy"
         indexes = {
@@ -196,6 +211,72 @@ def test_fresh_store_contains_native_support_tables(task_store):
             for row in conn.execute("PRAGMA table_info(task_migration_document_stage)")
         }
         assert "source_receipt_id" in document_stage_columns
+        aggregate_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(task_creation_intents)")
+        }
+        assert {
+            "task_prepare_receipt_id",
+            "document_prepare_receipt_id",
+            "document_admission_prepare_receipt_id",
+            "document_content_sha256",
+            "document_head_sha256",
+            "document_provenance_sha256",
+            "decision_payload_json",
+            "coordinator_decision_sha256",
+            "recovery_attempts",
+            "last_recovery_at",
+        } <= aggregate_columns
+        attachment_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(task_document_attachment_intents)"
+            )
+        }
+        assert {
+            "request_hash",
+            "request_json",
+            "status",
+            "expected_task_revision",
+            "generation",
+            "store_id",
+            "document_id",
+            "binding_id",
+            "note_uuid",
+            "link_created_at",
+            "coordinator_decision_id",
+            "coordinator_decision_sha256",
+            "task_receipt_id",
+            "recovery_attempts",
+            "last_recovery_at",
+        } <= attachment_columns
+    finally:
+        conn.close()
+
+
+def test_v22_upgrades_v21_with_durable_attachment_intent_ledger(tmp_path):
+    path = tmp_path / "v21-task-metadata.db"
+    conn = sqlite3.connect(path)
+    try:
+        v21 = NativeTaskMigrationRunner(
+            "task_metadata",
+            migrations=TASK_MIGRATIONS.migrations[:-1],
+        )
+        v21.run(conn)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 21
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name='task_document_attachment_intents'"
+        ).fetchone()[0] == 0
+
+        TASK_MIGRATIONS.run(conn)
+
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+            "AND name='task_document_attachment_intents'"
+        ).fetchone()[0] == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
         conn.close()
 
@@ -204,7 +285,7 @@ def test_native_upgrade_remains_openable_through_legacy_store_seam(task_store):
     conn = sqlite3.connect(task_store.path)
     try:
         legacy_store_migrate(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
     finally:
         conn.close()
 
@@ -216,7 +297,7 @@ def test_v19_safely_backfills_document_stage_source_receipt(tmp_path):
     try:
         v18 = NativeTaskMigrationRunner(
             "task_metadata",
-            migrations=TASK_MIGRATIONS.migrations[:-1],
+            migrations=TASK_MIGRATIONS.migrations[:-4],
         )
         v18.run(conn)
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 18
@@ -291,7 +372,7 @@ def test_v19_safely_backfills_document_stage_source_receipt(tmp_path):
 
         TASK_MIGRATIONS.run(conn)
 
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 19
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 22
         assert conn.execute(
             "SELECT source_receipt_id FROM task_migration_document_stage "
             "WHERE cohort_id='cohort-v18' AND note_uuid='note-v18'"

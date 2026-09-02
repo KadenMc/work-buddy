@@ -15,6 +15,7 @@ from work_buddy.journal_capture.content_adapter import (
     JournalContentAdapter,
     redacted_marker_for,
 )
+from work_buddy.journal_capture.authority import existing_authority_mode
 from work_buddy.journal_capture.models import (
     JournalMigrationRecord,
     JournalMigrationState,
@@ -202,6 +203,12 @@ class CoworkDocumentSourceDispatcher:
             raise _RedactionReviewRequired()
         if mirror.source_usage_id != usage_id:
             raise ValueError("cowork_document_redaction_invalid")
+        journal_authority = existing_authority_mode(self.journal.path)
+        if journal_authority in {"cutover_paused", "recovery_fenced"}:
+            # Do not partly advance a document redaction while Journal authority
+            # is changing or recovery-fenced.  The durable Sources effect will
+            # retry after the authority transition resolves.
+            raise _RedactionTargetPending()
         actor = json.dumps(
             self.service_principal.to_dict(),
             sort_keys=True,
@@ -215,8 +222,7 @@ class CoworkDocumentSourceDispatcher:
             actors={"applied_by": actor},
         )
         entry = self.journal.get_entry(mirror.entry_id)
-        cursor = causality.projection_cursor(binding.binding_id)
-        if entry is None or cursor is None or cursor.section_sha256 is None:
+        if entry is None:
             self.journal.mark_document_source_review_required(
                 mirror.entry_id,
                 details={
@@ -229,17 +235,47 @@ class CoworkDocumentSourceDispatcher:
                 },
             )
             raise _RedactionReviewRequired()
-        journal_path = self.journal_adapter.journal_path(entry.day_id)
-        sibling_tombstone = redacted_marker_for(entry.entry_id, event_id)
-        try:
-            sibling_already_scrubbed = sibling_tombstone in journal_path.read_text(
-                encoding="utf-8-sig"
-            )
-        except OSError:
-            sibling_already_scrubbed = False
-        if not sibling_already_scrubbed:
-            observed = inspect_managed_section(journal_path, entry.entry_id)
-            if observed.body_sha256 != cursor.section_sha256:
+        if journal_authority == "legacy_compatibility":
+            cursor = causality.projection_cursor(binding.binding_id)
+            if cursor is None or cursor.section_sha256 is None:
+                self.journal.mark_document_source_review_required(
+                    mirror.entry_id,
+                    details={
+                        "schema": "wb.source-maintenance-attention/v1",
+                        "kind": "source_redaction_review_required",
+                        "reason": "compatibility_projection_unverifiable",
+                        "bindingId": binding.binding_id,
+                        "sourceRef": source_ref.uri,
+                        "redactionEventId": event_id,
+                    },
+                )
+                raise _RedactionReviewRequired()
+            journal_path = self.journal_adapter.journal_path(entry.day_id)
+            sibling_tombstone = redacted_marker_for(entry.entry_id, event_id)
+            try:
+                sibling_already_scrubbed = sibling_tombstone in journal_path.read_text(
+                    encoding="utf-8-sig"
+                )
+            except OSError:
+                sibling_already_scrubbed = False
+            if not sibling_already_scrubbed:
+                observed = inspect_managed_section(journal_path, entry.entry_id)
+                if observed.body_sha256 != cursor.section_sha256:
+                    self.journal.mark_document_source_review_required(
+                        mirror.entry_id,
+                        details={
+                            "schema": "wb.source-maintenance-attention/v1",
+                            "kind": "source_redaction_review_required",
+                            "reason": "compatibility_projection_diverged",
+                            "bindingId": binding.binding_id,
+                            "sourceRef": source_ref.uri,
+                            "redactionEventId": event_id,
+                        },
+                    )
+                    raise _RedactionReviewRequired()
+            try:
+                self.journal_adapter.redact(entry, redaction_event_id=event_id)
+            except JournalProjectionDiverged:
                 self.journal.mark_document_source_review_required(
                     mirror.entry_id,
                     details={
@@ -252,21 +288,8 @@ class CoworkDocumentSourceDispatcher:
                     },
                 )
                 raise _RedactionReviewRequired()
-        try:
-            self.journal_adapter.redact(entry, redaction_event_id=event_id)
-        except JournalProjectionDiverged:
-            self.journal.mark_document_source_review_required(
-                mirror.entry_id,
-                details={
-                    "schema": "wb.source-maintenance-attention/v1",
-                    "kind": "source_redaction_review_required",
-                    "reason": "compatibility_projection_diverged",
-                    "bindingId": binding.binding_id,
-                    "sourceRef": source_ref.uri,
-                    "redactionEventId": event_id,
-                },
-            )
-            raise _RedactionReviewRequired()
+        elif journal_authority != "database_only":
+            raise ValueError("cowork_document_redaction_invalid")
         coverage = scrub_exact_managed_document_content(
             store,
             document_id=binding.document_id,

@@ -59,13 +59,14 @@ def test_task_migration_v10_creates_lww_meta(tmp_path: Path) -> None:
 def test_projects_migration_v7_creates_lww_meta(tmp_path: Path) -> None:
     from work_buddy.projects.migrations import PROJECT_MIGRATIONS
 
+    latest = max(m.version for m in PROJECT_MIGRATIONS.migrations)
     conn = sqlite3.connect(str(tmp_path / "projects.db"))
     try:
         PROJECT_MIGRATIONS.run(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == latest
         assert "lww_meta" in _tables(conn)
         PROJECT_MIGRATIONS.run(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == latest
     finally:
         conn.close()
 

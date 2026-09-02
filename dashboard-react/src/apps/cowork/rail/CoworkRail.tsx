@@ -121,6 +121,8 @@ export interface CoworkRailProps {
   readonly reviewAnchors?: ReviewAnchorController;
   readonly shortcutBindings?: CoworkShortcutBindings;
   readonly initialTab?: RailTab;
+  /** Server-resolved tabs for this document. Omitted preserves the legacy full rail. */
+  readonly availableTabs?: readonly RailTab[];
   /** Whether the containing workspace currently exposes the Review pane. */
   readonly reviewVisible?: boolean;
   readonly truthVisible?: boolean;
@@ -210,16 +212,21 @@ function CoworkConversationGate({
 }
 
 export function CoworkRail(props: CoworkRailProps) {
+  const availableTabs = props.availableTabs ?? RAIL_TABS;
+  const defaultTab = availableTabs[0] ?? "review";
   const [store] = useState(() => {
     if (props.store) return props.store;
     // The injecting site owns its own persistence, so only a rail-created store seeds its tab
     // from storage and mirrors later changes back. Precedence: an explicit initialTab wins,
     // then the retained tab, then the Review default.
     const storage = props.storage ?? window.localStorage;
-    const initialTab =
+    const requestedTab =
       props.initialTab ??
       loadRailTab(storage, props.documentId, props.storeId) ??
-      "review";
+      defaultTab;
+    const initialTab = availableTabs.includes(requestedTab)
+      ? requestedTab
+      : defaultTab;
     return new RailStore(
       { tab: initialTab },
       {
@@ -229,6 +236,11 @@ export function CoworkRail(props: CoworkRailProps) {
     );
   });
   const tab = useRailState(store, (state) => state.tab);
+  useEffect(() => {
+    if (!availableTabs.includes(store.getState().tab)) {
+      store.setTab(defaultTab);
+    }
+  }, [availableTabs, defaultTab, store]);
   const tabRefs = useRef<Partial<Record<RailTab, HTMLButtonElement | null>>>(
     {},
   );
@@ -281,20 +293,20 @@ export function CoworkRail(props: CoworkRailProps) {
     event: KeyboardEvent<HTMLButtonElement>,
     current: RailTab,
   ): void => {
-    const index = RAIL_TABS.indexOf(current);
+    const index = availableTabs.indexOf(current);
     let nextIndex: number | null = null;
     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      nextIndex = (index + 1) % RAIL_TABS.length;
+      nextIndex = (index + 1) % availableTabs.length;
     } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      nextIndex = (index - 1 + RAIL_TABS.length) % RAIL_TABS.length;
+      nextIndex = (index - 1 + availableTabs.length) % availableTabs.length;
     } else if (event.key === "Home") {
       nextIndex = 0;
     } else if (event.key === "End") {
-      nextIndex = RAIL_TABS.length - 1;
+      nextIndex = availableTabs.length - 1;
     }
     if (nextIndex === null) return;
     event.preventDefault();
-    const next = RAIL_TABS[nextIndex];
+    const next = availableTabs[nextIndex];
     selectRailTab(next);
     if (next === "chat") {
       revealRailTabs();
@@ -318,6 +330,7 @@ export function CoworkRail(props: CoworkRailProps) {
           role="tablist"
           aria-label="Co-work side panels"
         >
+          {availableTabs.includes("review") ? (
           <HelpTarget content={REVIEW_TAB_HELP} placement="bottom start">
             <button
               type="button"
@@ -336,6 +349,8 @@ export function CoworkRail(props: CoworkRailProps) {
               Review
             </button>
           </HelpTarget>
+          ) : null}
+          {availableTabs.includes("provenance") ? (
           <HelpTarget content={PROVENANCE_TAB_HELP} placement="bottom">
             <button
               type="button"
@@ -354,6 +369,8 @@ export function CoworkRail(props: CoworkRailProps) {
               Provenance
             </button>
           </HelpTarget>
+          ) : null}
+          {availableTabs.includes("truth") ? (
           <HelpTarget content={TRUTH_TAB_HELP} placement="bottom">
             <button
               type="button"
@@ -372,6 +389,8 @@ export function CoworkRail(props: CoworkRailProps) {
               Truth
             </button>
           </HelpTarget>
+          ) : null}
+          {availableTabs.includes("chat") ? (
           <HelpTarget content={CHAT_TAB_HELP} placement="bottom">
             <button
               type="button"
@@ -399,9 +418,11 @@ export function CoworkRail(props: CoworkRailProps) {
               ) : null}
             </button>
           </HelpTarget>
+          ) : null}
         </div>
       ) : null}
 
+      {availableTabs.includes("review") ? (
       <div
         role="tabpanel"
         id="wb-cowork-rail-panel-review"
@@ -438,7 +459,9 @@ export function CoworkRail(props: CoworkRailProps) {
           }
         />
       </div>
+      ) : null}
 
+      {availableTabs.includes("provenance") ? (
       <div
         role="tabpanel"
         id="wb-cowork-rail-panel-provenance"
@@ -471,7 +494,9 @@ export function CoworkRail(props: CoworkRailProps) {
           />
         )}
       </div>
+      ) : null}
 
+      {availableTabs.includes("truth") ? (
       <div
         role="tabpanel"
         id="wb-cowork-rail-panel-truth"
@@ -512,7 +537,9 @@ export function CoworkRail(props: CoworkRailProps) {
           />
         )}
       </div>
+      ) : null}
 
+      {availableTabs.includes("chat") ? (
       <div
         role="tabpanel"
         id="wb-cowork-rail-panel-chat"
@@ -554,6 +581,7 @@ export function CoworkRail(props: CoworkRailProps) {
           />
         )}
       </div>
+      ) : null}
     </div>
   );
 }

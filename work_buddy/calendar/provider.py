@@ -111,7 +111,7 @@ def get_calendar_provider() -> CalendarProvider:
     """Return the configured calendar provider.
 
     Selection is driven by ``calendar.provider`` in config (default
-    ``"obsidian_bridge"``). ``calendar.enabled: false`` short-circuits with
+    ``"google_native"``). ``calendar.enabled: false`` short-circuits with
     :class:`CalendarProviderDisabled` so the morning bundle degrades cleanly.
     The gateway's tool-probe layer (``requires: [google_calendar]`` on each
     capability) is the correct place to short-circuit before reaching this
@@ -128,7 +128,7 @@ def get_calendar_provider() -> CalendarProvider:
     if cfg.get("enabled", True) is False:
         raise CalendarProviderDisabled("calendar.enabled is False in config")
 
-    name = (cfg.get("provider") or "obsidian_bridge").lower()
+    name = (cfg.get("provider") or "google_native").lower()
     if name in ("obsidian_bridge", "obsidian", "bridge"):
         from work_buddy.calendar.providers.obsidian_bridge import (
             ObsidianBridgeCalendarProvider,

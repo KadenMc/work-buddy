@@ -23,7 +23,15 @@ Take an immediate manual snapshot of work-buddy's vital SQLite databases. Useful
 
 Manual snapshots get a `-manual` suffix on their snapshot ID and live in a separate retention bucket from the hourly rolling snapshots, so this won't be swept away by routine cron churn (cap: 20 manual snapshots; deliberately small -- anchor points, not archival).
 
-If `backups.github.repo` is configured AND `gh` is authenticated, the snapshot also pushes to GitHub Releases. Otherwise the snapshot stays local-only and a warning surfaces in the Settings -> Backups card.
+The snapshot stays local by default. It also pushes to GitHub Releases only
+when `backups.github.repo` is configured, `gh` is authenticated, and
+`backups.github.allow_unencrypted_private_content` is exactly `true`. A repo
+setting names a destination but does not authorize private-content uploads.
+
+For one exceptional upload without the persistent opt-in, call with
+`push_remote: true`. That path requires an exact high-risk, per-invocation
+consent decision before the snapshot is created or sent. The archive is not
+encrypted and includes private domain data and portable scoped Truth exports.
 
 ## How
 

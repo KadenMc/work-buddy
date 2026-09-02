@@ -117,6 +117,7 @@ def test_backup_stages_portable_payload_and_reports_unreachable_store(
     result = local.run_backup(manual=True)
     manifest = json.loads(result["manifest"])
     by_id = {item["store_id"]: item for item in manifest["truth_stores"]}
+    assert len(manifest["database_sha256"]["truth_registry"]) == 64
     assert by_id[included.store_id]["backup_status"] == "included"
     assert by_id[unavailable_id]["backup_status"] == "unreachable"
     assert result["unreachable_truth_stores"] == [by_id[unavailable_id]]
@@ -135,10 +136,14 @@ def test_backup_stages_portable_payload_and_reports_unreachable_store(
         assert f"truth_stores/{unavailable_id}/claims.jsonl" not in names
         export_bytes = archive.extractfile(export_member).read()
         causality_bytes = archive.extractfile(causality_member).read()
-        assert archive.extractfile(profile_member).read()
+        profile_bytes = archive.extractfile(profile_member).read()
+        assert profile_bytes
 
     assert hashlib.sha256(export_bytes).hexdigest() == by_id[included.store_id][
         "export_sha256"
+    ]
+    assert hashlib.sha256(profile_bytes).hexdigest() == by_id[included.store_id][
+        "profile_sha256"
     ]
     assert json.loads(export_bytes.splitlines()[0])["store_info"]["store_id"] == (
         included.store_id
@@ -198,6 +203,14 @@ def _seed_document_with_snapshot(store: TruthStore) -> str:
             (document_id, sha256_bytes(b"materialized body"), digest, NOW),
         )
         store._insert_ledger_record_locked(conn, "document", document_id)
+        # This fixture seeds below the public document API. Mirror the v11
+        # compatibility policy that ordinary registration now provisions in
+        # the same transaction so the portable export is structurally valid.
+        from work_buddy.cowork.truth_activation import (
+            backfill_legacy_document_policies,
+        )
+
+        assert backfill_legacy_document_policies(conn) == 1
     return digest
 
 

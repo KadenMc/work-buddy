@@ -59,7 +59,7 @@ from work_buddy.truth.store import TruthStore
 
 
 FORMAT_NAME = "work-buddy.truth-ledger"
-FORMAT_VERSION = 10
+FORMAT_VERSION = 11
 OLDEST_FORMAT_VERSION = 1
 _IMPORT_STAGING_PREFIX = ".wbuddy-cowork-import-"
 
@@ -85,6 +85,15 @@ _COTHINK_ITEM_TRANSITIONS = {
 _COTHINK_STATUS_DOMAIN = b"work-buddy:cothink-item-status:v1\0"
 _COORDINATION_ROLES = frozenset(
     {"specialist", "reviser", "coordinator", "cothink"}
+)
+_DOCUMENT_POLICY_RECORD_TYPES = frozenset(
+    {
+        "interaction_contract_definition",
+        "document_interaction_contract_assignment",
+        "document_truth_activation_transition",
+        "document_truth_policy_receipt",
+        "document_truth_admission_seal_event",
+    }
 )
 _COORDINATION_STATUSES = frozenset(
     {
@@ -927,6 +936,82 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "created_by_meta_json",
         ),
     ),
+    "interaction_contract_definition": (
+        "interaction_contract_definitions",
+        (
+            "id",
+            "contract_id",
+            "definition_version",
+            "definition_json",
+            "definition_sha256",
+            "created_at",
+        ),
+    ),
+    "document_interaction_contract_assignment": (
+        "document_interaction_contract_assignments",
+        (
+            "id",
+            "document_id",
+            "binding_id",
+            "interaction_contract_id",
+            "interaction_contract_version",
+            "interaction_contract_sha256",
+            "cowork_document_class",
+            "actor_ref",
+            "intent_id",
+            "assigned_at",
+        ),
+    ),
+    "document_truth_activation_transition": (
+        "document_truth_activation_transitions",
+        (
+            "id",
+            "document_id",
+            "activation_revision",
+            "previous_state",
+            "next_state",
+            "observed_head_sha256",
+            "ledger_high_water_seq",
+            "ledger_digest",
+            "actor_ref",
+            "intent_id",
+            "reason",
+            "request_sha256",
+            "created_at",
+        ),
+    ),
+    "document_truth_policy_receipt": (
+        "document_truth_policy_receipts",
+        (
+            "id",
+            "document_id",
+            "binding_id",
+            "interaction_contract_id",
+            "interaction_contract_version",
+            "interaction_contract_sha256",
+            "outcome",
+            "intent_id",
+            "actor_ref",
+            "request_sha256",
+            "created_at",
+        ),
+    ),
+    "document_truth_admission_seal_event": (
+        "document_truth_admission_seal_events",
+        (
+            "id",
+            "document_id",
+            "intent_id",
+            "activation_revision",
+            "state",
+            "seal_revision",
+            "coordinator_decision_id",
+            "coordinator_decision_sha256",
+            "actor_ref",
+            "canonical_sha256",
+            "created_at",
+        ),
+    ),
 }
 
 _ID_KEY_TYPES = frozenset(
@@ -974,6 +1059,11 @@ _ID_KEY_TYPES = frozenset(
         "cowork_coordination_job",
         "cowork_coordination_status_event",
         "cowork_review_application",
+        "interaction_contract_definition",
+        "document_interaction_contract_assignment",
+        "document_truth_activation_transition",
+        "document_truth_policy_receipt",
+        "document_truth_admission_seal_event",
     }
 )
 
@@ -1248,6 +1338,172 @@ def _validate_record_values(item: _DataRecord) -> None:
         raise TruthImportError(
             f"{record_type} record_key does not match its primary key"
         )
+
+    if record_type == "interaction_contract_definition":
+        _nonempty_text(row["contract_id"], "interaction contract.contract_id")
+        _positive_int(row["definition_version"], "interaction contract.version")
+        definition = _json_value(
+            row["definition_json"],
+            "interaction contract.definition_json",
+            mapping=True,
+        )
+        if definition.get("schema") != "wb.content-interaction-contract/v1":
+            raise TruthImportError("interaction contract definition schema is invalid")
+        if definition.get("definition_version") != row["definition_version"]:
+            raise TruthImportError(
+                "interaction contract definition version does not match its record"
+            )
+        truth_policy = definition.get("truth")
+        if not isinstance(truth_policy, Mapping):
+            raise TruthImportError("interaction contract Truth policy is required")
+        eligibility = truth_policy.get("eligibility")
+        activation_policy = truth_policy.get("activation_policy")
+        expected_pair = {
+            "unsupported": "not_applicable",
+            "allowed": "explicit_opt_in",
+            "required": "required_explicit_create",
+        }.get(eligibility)
+        if expected_pair is None or activation_policy != expected_pair:
+            raise TruthImportError(
+                "interaction contract Truth eligibility and activation policy disagree"
+            )
+        if canonical_json(definition) != row["definition_json"]:
+            raise TruthImportError(
+                "interaction contract definition must use canonical JSON"
+            )
+        digest = _digest(
+            row["definition_sha256"], "interaction contract.definition_sha256"
+        )
+        if sha256_bytes(row["definition_json"].encode("utf-8")) != digest:
+            raise TruthImportError("interaction contract definition digest does not match")
+        _timestamp(row["created_at"], "interaction contract.created_at")
+        return
+
+    if record_type == "document_interaction_contract_assignment":
+        _record_id(row["document_id"], "contract assignment.document_id")
+        if row["binding_id"] is not None:
+            _nonempty_text(row["binding_id"], "contract assignment.binding_id")
+        _nonempty_text(
+            row["interaction_contract_id"], "contract assignment.contract_id"
+        )
+        _positive_int(
+            row["interaction_contract_version"], "contract assignment.version"
+        )
+        _digest(
+            row["interaction_contract_sha256"], "contract assignment.contract_sha256"
+        )
+        if row["cowork_document_class"] not in {"co_authored", "generated"}:
+            raise TruthImportError("contract assignment document class is invalid")
+        _nonempty_text(row["actor_ref"], "contract assignment.actor_ref")
+        _nonempty_text(row["intent_id"], "contract assignment.intent_id")
+        _timestamp(row["assigned_at"], "contract assignment.assigned_at")
+        return
+
+    if record_type == "document_truth_activation_transition":
+        _record_id(row["document_id"], "Truth activation.document_id")
+        _positive_int(row["activation_revision"], "Truth activation.revision")
+        states = {"disabled", "enabled", "paused"}
+        if row["previous_state"] is not None and row["previous_state"] not in states:
+            raise TruthImportError("Truth activation previous state is invalid")
+        if row["next_state"] not in states:
+            raise TruthImportError("Truth activation next state is invalid")
+        if row["observed_head_sha256"] is not None:
+            _digest(row["observed_head_sha256"], "Truth activation.observed head")
+        _positive_int(
+            row["ledger_high_water_seq"],
+            "Truth activation.ledger_high_water_seq",
+            allow_zero=True,
+        )
+        _digest(row["ledger_digest"], "Truth activation.ledger_digest")
+        _nonempty_text(row["actor_ref"], "Truth activation.actor_ref")
+        _nonempty_text(row["intent_id"], "Truth activation.intent_id")
+        if row["reason"] is not None and not isinstance(row["reason"], str):
+            raise TruthImportError("Truth activation.reason must be text or null")
+        expected = {
+            "document_id": row["document_id"],
+            "previous_state": row["previous_state"],
+            "next_state": row["next_state"],
+            "activation_revision": row["activation_revision"],
+            "observed_head": row["observed_head_sha256"],
+            "actor_ref": row["actor_ref"],
+            "intent_id": row["intent_id"],
+            "reason": row["reason"],
+        }
+        if sha256_bytes(canonical_json(expected).encode("utf-8")) != _digest(
+            row["request_sha256"], "Truth activation.request_sha256"
+        ):
+            raise TruthImportError("Truth activation request digest does not match")
+        _timestamp(row["created_at"], "Truth activation.created_at")
+        return
+
+    if record_type == "document_truth_policy_receipt":
+        _record_id(row["document_id"], "Truth policy receipt.document_id")
+        if row["binding_id"] is not None:
+            _nonempty_text(row["binding_id"], "Truth policy receipt.binding_id")
+        _nonempty_text(
+            row["interaction_contract_id"], "Truth policy receipt.contract_id"
+        )
+        _positive_int(
+            row["interaction_contract_version"], "Truth policy receipt.version"
+        )
+        _digest(
+            row["interaction_contract_sha256"],
+            "Truth policy receipt.contract_sha256",
+        )
+        if row["outcome"] not in {"not_applicable", "not_applicable_recovery"}:
+            raise TruthImportError("Truth policy receipt outcome is invalid")
+        _nonempty_text(row["intent_id"], "Truth policy receipt.intent_id")
+        _nonempty_text(row["actor_ref"], "Truth policy receipt.actor_ref")
+        payload = {
+            "document_id": row["document_id"],
+            "binding_id": row["binding_id"],
+            "interaction_contract_id": row["interaction_contract_id"],
+            "interaction_contract_version": row["interaction_contract_version"],
+            "interaction_contract_sha256": row["interaction_contract_sha256"],
+            "outcome": row["outcome"],
+            "intent_id": row["intent_id"],
+            "actor_ref": row["actor_ref"],
+        }
+        if sha256_bytes(canonical_json(payload).encode("utf-8")) != _digest(
+            row["request_sha256"], "Truth policy receipt.request_sha256"
+        ):
+            raise TruthImportError("Truth policy receipt request digest does not match")
+        _timestamp(row["created_at"], "Truth policy receipt.created_at")
+        return
+
+    if record_type == "document_truth_admission_seal_event":
+        _record_id(row["document_id"], "Truth admission seal.document_id")
+        _nonempty_text(row["intent_id"], "Truth admission seal.intent_id")
+        _positive_int(
+            row["activation_revision"], "Truth admission seal.activation_revision"
+        )
+        if row["state"] not in {"pending", "committed", "aborted"}:
+            raise TruthImportError("Truth admission seal state is invalid")
+        _positive_int(row["seal_revision"], "Truth admission seal.seal_revision")
+        _nonempty_text(
+            row["coordinator_decision_id"], "Truth admission seal.decision_id"
+        )
+        _digest(
+            row["coordinator_decision_sha256"],
+            "Truth admission seal.decision_sha256",
+        )
+        _nonempty_text(row["actor_ref"], "Truth admission seal.actor_ref")
+        payload = {
+            "document_id": row["document_id"],
+            "intent_id": row["intent_id"],
+            "activation_revision": row["activation_revision"],
+            "state": row["state"],
+            "seal_revision": row["seal_revision"],
+            "coordinator_decision_id": row["coordinator_decision_id"],
+            "coordinator_decision_sha256": row["coordinator_decision_sha256"],
+            "actor_ref": row["actor_ref"],
+        }
+        if sha256_bytes(canonical_json(payload).encode("utf-8")) != _digest(
+            row["canonical_sha256"], "Truth admission seal.canonical_sha256"
+        ):
+            raise TruthImportError("Truth admission seal digest does not match")
+        _timestamp(row["created_at"], "Truth admission seal.created_at")
+        return
 
     if record_type == "evidence":
         digest = _digest(row["content_sha256"], "evidence.content_sha256")
@@ -2595,13 +2851,100 @@ def _validate_record_values(item: _DataRecord) -> None:
         return
 
 
-def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
+def _validate_foreign_refs(
+    records: tuple[_DataRecord, ...],
+    *,
+    require_document_policies: bool = False,
+    allow_uncommitted_admission: bool = False,
+) -> None:
     index = {(item.record_type, item.record_key): item.seq for item in records}
     record_by_identity = {
         (item.record_type, item.record_key): item.record for item in records
     }
     cothink_status_by_item: dict[str, str] = {}
     coordination_status_by_job: dict[str, str] = {}
+    contract_definitions: dict[tuple[str, int], Mapping[str, Any]] = {}
+    assignments: dict[str, Mapping[str, Any]] = {}
+    activations: dict[str, tuple[int, str]] = {}
+    policy_receipts: set[str] = set()
+    admission_seals: dict[str, tuple[int, str, Mapping[str, Any]]] = {}
+
+    def activation_ledger_summary(
+        document_id: str,
+        *,
+        before: int,
+    ) -> tuple[bool, int, str]:
+        """Rebuild the document-scoped Truth fence at one ledger position."""
+
+        identities: set[tuple[str, str]] = set()
+        local_claims: set[str] = set()
+        for identity, expression in record_by_identity.items():
+            if identity[0] != "expression" or index[identity] >= before:
+                continue
+            span_id = str(expression["document_span_id"])
+            span_identity = ("document_span", span_id)
+            span = record_by_identity.get(span_identity)
+            if (
+                span is None
+                or index.get(span_identity, before) >= before
+                or str(span["document_id"]) != document_id
+            ):
+                continue
+            identities.add(identity)
+            identities.add(span_identity)
+            if expression["claim_ref_kind"] == "local":
+                local_claims.add(str(expression["claim_ref"]))
+
+        for claim_id in local_claims:
+            claim_identity = ("claim", claim_id)
+            if index.get(claim_identity, before) < before:
+                identities.add(claim_identity)
+
+        for identity, status in record_by_identity.items():
+            if (
+                identity[0] == "claim_status_event"
+                and index[identity] < before
+                and str(status["claim_id"]) in local_claims
+            ):
+                identities.add(identity)
+
+        for identity, link in record_by_identity.items():
+            if (
+                identity[0] != "claim_link"
+                or index[identity] >= before
+                or str(link["from_claim_id"]) not in local_claims
+            ):
+                continue
+            identities.add(identity)
+            target_kind = str(link["to_kind"])
+            target_ref = str(link["to_ref"])
+            if target_kind == "evidence_span":
+                span_identity = ("evidence_span", target_ref)
+                span = record_by_identity.get(span_identity)
+                if span is not None and index.get(span_identity, before) < before:
+                    identities.add(span_identity)
+                    evidence_identity = ("evidence", str(span["evidence_id"]))
+                    if index.get(evidence_identity, before) < before:
+                        identities.add(evidence_identity)
+            elif target_kind == "evidence":
+                evidence_identity = ("evidence", target_ref)
+                if index.get(evidence_identity, before) < before:
+                    identities.add(evidence_identity)
+
+        ordered = [
+            {
+                "record_type": record_type,
+                "record_key": record_key,
+                "seq": int(index.get((record_type, record_key), 0)),
+            }
+            for record_type, record_key in sorted(identities)
+        ]
+        high_water = max((int(item["seq"]) for item in ordered), default=0)
+        return (
+            any(record_type == "expression" for record_type, _key in identities),
+            high_water,
+            sha256_bytes(canonical_json(ordered).encode("utf-8")),
+        )
 
     def require_prior(
         record_type: str,
@@ -2623,7 +2966,168 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
 
     for item in records:
         row = item.record
-        if item.record_type == "evidence_span":
+        if item.record_type == "interaction_contract_definition":
+            identity = (row["contract_id"], int(row["definition_version"]))
+            if identity in contract_definitions:
+                raise TruthImportError("duplicate interaction contract definition")
+            contract_definitions[identity] = row
+        elif item.record_type == "document_interaction_contract_assignment":
+            require_prior(
+                "document", row["document_id"], item.seq, "contract assignment.document_id"
+            )
+            definition = contract_definitions.get(
+                (
+                    row["interaction_contract_id"],
+                    int(row["interaction_contract_version"]),
+                )
+            )
+            if definition is None:
+                raise TruthImportError(
+                    "contract assignment references a missing earlier definition"
+                )
+            if definition["definition_sha256"] != row["interaction_contract_sha256"]:
+                raise TruthImportError("contract assignment definition digest does not match")
+            if row["document_id"] in assignments:
+                raise TruthImportError("document has multiple interaction contracts")
+            assignments[str(row["document_id"])] = row
+        elif item.record_type == "document_truth_activation_transition":
+            document_id = str(row["document_id"])
+            if document_id not in assignments:
+                raise TruthImportError(
+                    "Truth activation references a missing earlier contract assignment"
+                )
+            definition = contract_definitions[
+                (
+                    assignments[document_id]["interaction_contract_id"],
+                    int(assignments[document_id]["interaction_contract_version"]),
+                )
+            ]
+            eligibility = str(json.loads(definition["definition_json"])["truth"]["eligibility"])
+            if eligibility == "unsupported":
+                raise TruthImportError("unsupported contract has a Truth activation")
+            has_ledger, ledger_high_water, ledger_digest = activation_ledger_summary(
+                document_id,
+                before=item.seq,
+            )
+            if (
+                int(row["ledger_high_water_seq"]) != ledger_high_water
+                or row["ledger_digest"] != ledger_digest
+            ):
+                raise TruthImportError(
+                    "Truth activation ledger fence does not match prior document history"
+                )
+            revision = int(row["activation_revision"])
+            previous = activations.get(document_id)
+            if previous is None:
+                if revision != 1 or row["previous_state"] is not None:
+                    raise TruthImportError("initial Truth activation revision is invalid")
+                if eligibility == "required" and row["next_state"] != "enabled":
+                    raise TruthImportError("required Truth contract must start enabled")
+                if eligibility == "allowed" and row["next_state"] not in {
+                    "disabled",
+                    "enabled",
+                }:
+                    raise TruthImportError("allowed Truth contract has invalid initial state")
+            else:
+                prior_revision, prior_state = previous
+                if revision != prior_revision + 1 or row["previous_state"] != prior_state:
+                    raise TruthImportError("Truth activation history is not contiguous")
+                transition = (prior_state, str(row["next_state"]))
+                if eligibility == "required":
+                    valid = transition in {("enabled", "paused"), ("paused", "enabled")}
+                else:
+                    valid = (
+                        transition == ("disabled", "enabled")
+                        or transition == ("paused", "enabled")
+                        or (
+                        transition == ("enabled", "disabled")
+                            and not has_ledger
+                        )
+                        or (
+                            transition == ("enabled", "paused")
+                            and has_ledger
+                        )
+                    )
+                if not valid:
+                    raise TruthImportError("Truth activation transition is forbidden")
+            if ledger_high_water >= item.seq:
+                raise TruthImportError("Truth activation ledger fence is not earlier")
+            activations[document_id] = (revision, str(row["next_state"]))
+        elif item.record_type == "document_truth_policy_receipt":
+            document_id = str(row["document_id"])
+            assignment = assignments.get(document_id)
+            if assignment is None:
+                raise TruthImportError(
+                    "Truth policy receipt references a missing earlier assignment"
+                )
+            definition = contract_definitions[
+                (
+                    assignment["interaction_contract_id"],
+                    int(assignment["interaction_contract_version"]),
+                )
+            ]
+            eligibility = str(json.loads(definition["definition_json"])["truth"]["eligibility"])
+            if eligibility != "unsupported" or row["outcome"] not in {
+                "not_applicable",
+                "not_applicable_recovery",
+            }:
+                raise TruthImportError("Truth policy receipt does not match eligibility")
+            if (
+                row["interaction_contract_id"] != assignment["interaction_contract_id"]
+                or int(row["interaction_contract_version"])
+                != int(assignment["interaction_contract_version"])
+                or row["interaction_contract_sha256"]
+                != assignment["interaction_contract_sha256"]
+                or row["binding_id"] != assignment["binding_id"]
+            ):
+                raise TruthImportError("Truth policy receipt does not match assignment")
+            policy_receipts.add(document_id)
+        elif item.record_type == "document_truth_admission_seal_event":
+            document_id = str(row["document_id"])
+            assignment = assignments.get(document_id)
+            activation = activations.get(document_id)
+            if assignment is None or activation is None:
+                raise TruthImportError(
+                    "Truth admission seal references missing earlier policy state"
+                )
+            if int(row["activation_revision"]) > activation[0]:
+                raise TruthImportError("Truth admission seal activation revision is unavailable")
+            current = admission_seals.get(document_id)
+            revision = int(row["seal_revision"])
+            if current is None:
+                if revision != 1 or row["state"] != "pending":
+                    raise TruthImportError("Truth admission seal must begin pending")
+            else:
+                prior_revision, prior_state, prior = current
+                if revision != prior_revision + 1 or prior_state != "pending":
+                    raise TruthImportError("Truth admission seal history is invalid")
+                state = str(row["state"])
+                if state not in {"pending", "committed", "aborted"}:
+                    raise TruthImportError("Truth admission seal terminal state is invalid")
+                for field in ("intent_id", "activation_revision"):
+                    if row[field] != prior[field]:
+                        raise TruthImportError("Truth admission seal identity changed")
+                if state == "pending":
+                    if prior_revision != 1 or revision != 2 or (
+                        row["coordinator_decision_id"],
+                        row["coordinator_decision_sha256"],
+                    ) == (
+                        prior["coordinator_decision_id"],
+                        prior["coordinator_decision_sha256"],
+                    ):
+                        raise TruthImportError(
+                            "Truth admission pending decision binding is invalid"
+                        )
+                elif any(
+                    row[field] != prior[field]
+                    for field in (
+                        "coordinator_decision_id",
+                        "coordinator_decision_sha256",
+                    )
+                ):
+                    raise TruthImportError("Truth admission seal identity changed")
+            admission_seals[document_id] = (revision, str(row["state"]), row)
+        elif item.record_type == "evidence_span":
             require_prior("evidence", row["evidence_id"], item.seq, "evidence_id")
         elif item.record_type == "evidence_source_resolution":
             evidence = require_prior(
@@ -3776,8 +4280,53 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
             "Co-think item is missing its initial open status event"
         )
 
+    if require_document_policies:
+        document_ids = {
+            item.record_key for item in records if item.record_type == "document"
+        }
+        if document_ids != set(assignments):
+            raise TruthImportError(
+                "every portable Co-work document requires one interaction contract"
+            )
+    for document_id, assignment in assignments.items():
+        definition = contract_definitions[
+            (
+                assignment["interaction_contract_id"],
+                int(assignment["interaction_contract_version"]),
+            )
+        ]
+        eligibility = str(json.loads(definition["definition_json"])["truth"]["eligibility"])
+        if eligibility == "unsupported":
+            if document_id not in policy_receipts or document_id in activations:
+                raise TruthImportError(
+                    "unsupported document requires only a not-applicable Truth receipt"
+                )
+        elif document_id not in activations or document_id not in admission_seals:
+            raise TruthImportError(
+                "Truth-eligible document is missing activation or admission history"
+            )
+        else:
+            _seal_revision, seal_state, _seal = admission_seals[document_id]
+            if seal_state != "committed" and not allow_uncommitted_admission:
+                raise TruthImportError(
+                    "Truth-eligible document requires a committed admission seal"
+                )
+            _activation_revision, activation_state = activations[document_id]
+            has_ledger, _high_water, _digest_value = activation_ledger_summary(
+                document_id,
+                before=max(index.values(), default=0) + 1,
+            )
+            if activation_state == "disabled" and has_ledger:
+                raise TruthImportError(
+                    "disabled Truth activation cannot retain document ledger history"
+                )
 
-def _validate_bundle(bundle: _Bundle) -> StoreProfile:
+
+def _validate_bundle(
+    bundle: _Bundle,
+    *,
+    allow_uncommitted_admission: bool = False,
+) -> StoreProfile:
     profile = _validate_header(bundle)
     previous_seq = 0
     seen_pairs: set[tuple[str, str]] = set()
@@ -3862,7 +4411,11 @@ def _validate_bundle(bundle: _Bundle) -> StoreProfile:
             raise TruthImportError(f"export is missing live blobs: {missing}")
         raise TruthImportError(f"export contains unreferenced blobs: {extra}")
 
-    _validate_foreign_refs(bundle.records)
+    _validate_foreign_refs(
+        bundle.records,
+        require_document_policies=bundle.source_format_version >= 11,
+        allow_uncommitted_admission=allow_uncommitted_admission,
+    )
     return profile
 
 
@@ -3934,6 +4487,95 @@ def _assert_all_rows_are_ordered(
                 )
 
 
+def _assert_policy_projections_match_history(conn: sqlite3.Connection) -> None:
+    """Reject a live store whose mutable policy projections drifted from history."""
+
+    policy_tables = {
+        "document_truth_activation_transitions",
+        "document_truth_activation_current",
+        "document_truth_admission_seal_events",
+        "document_truth_admission_seals_current",
+    }
+    existing_tables = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    present_policy_tables = policy_tables & existing_tables
+    if not present_policy_tables:
+        # Pre-v11 stores do not have document Truth policy history or its
+        # projections. They remain exportable so the migration runner can
+        # preserve and upgrade them.
+        return
+    if present_policy_tables != policy_tables:
+        raise TruthExportError("document Truth policy schema is incomplete")
+
+    expected_activations = {
+        str(row["document_id"]): (
+            int(row["activation_revision"]),
+            str(row["next_state"]),
+            str(row["id"]),
+            str(row["created_at"]),
+        )
+        for row in conn.execute(
+            "SELECT t.* FROM document_truth_activation_transitions t "
+            "JOIN (SELECT document_id, MAX(activation_revision) AS revision "
+            "FROM document_truth_activation_transitions GROUP BY document_id) latest "
+            "ON latest.document_id=t.document_id "
+            "AND latest.revision=t.activation_revision"
+        )
+    }
+    current_activations = {
+        str(row["document_id"]): (
+            int(row["activation_revision"]),
+            str(row["state"]),
+            str(row["transition_id"]),
+            str(row["updated_at"]),
+        )
+        for row in conn.execute("SELECT * FROM document_truth_activation_current")
+    }
+    if current_activations != expected_activations:
+        raise TruthExportError(
+            "document Truth activation projection disagrees with immutable history"
+        )
+
+    expected_seals = {
+        str(row["document_id"]): (
+            str(row["intent_id"]),
+            int(row["activation_revision"]),
+            str(row["state"]),
+            int(row["seal_revision"]),
+            str(row["coordinator_decision_id"]),
+            str(row["coordinator_decision_sha256"]),
+            str(row["id"]),
+            str(row["created_at"]),
+        )
+        for row in conn.execute(
+            "SELECT e.* FROM document_truth_admission_seal_events e "
+            "JOIN (SELECT document_id, MAX(seal_revision) AS revision "
+            "FROM document_truth_admission_seal_events GROUP BY document_id) latest "
+            "ON latest.document_id=e.document_id "
+            "AND latest.revision=e.seal_revision"
+        )
+    }
+    current_seals = {
+        str(row["document_id"]): (
+            str(row["intent_id"]),
+            int(row["activation_revision"]),
+            str(row["state"]),
+            int(row["seal_revision"]),
+            str(row["coordinator_decision_id"]),
+            str(row["coordinator_decision_sha256"]),
+            str(row["event_id"]),
+            str(row["updated_at"]),
+        )
+        for row in conn.execute("SELECT * FROM document_truth_admission_seals_current")
+    }
+    if current_seals != expected_seals:
+        raise TruthExportError(
+            "document Truth admission projection disagrees with immutable history"
+        )
+
+
 def _collect_export_bundle(
     store: TruthStore,
     *,
@@ -3959,6 +4601,7 @@ def _collect_export_bundle(
         if len(info_rows) != 1:
             raise TruthExportError("store_info must contain exactly one row")
         store_info = dict(info_rows[0])
+        _assert_policy_projections_match_history(export_conn)
         records: list[_DataRecord] = []
         ordered_keys: set[tuple[str, str]] = set()
         previous_seq = 0
@@ -4131,7 +4774,7 @@ def _collect_export_bundle(
         ),
     )
     try:
-        _validate_bundle(bundle)
+        _validate_bundle(bundle, allow_uncommitted_admission=True)
     except TruthImportError as exc:
         raise TruthExportError(str(exc)) from exc
     return bundle
@@ -4463,7 +5106,13 @@ def _parse_v1(objects: list[dict[str, Any]]) -> _Bundle:
         records=tuple(_upcast_records(records, 1)),
         blobs=(),
     )
-    _validate_bundle(bundle)
+    # A recovery export may be captured while a cross-store document creation
+    # saga still owns a pending admission seal.  Pending is a durable,
+    # fail-closed state (Truth remains unavailable until the coordinator
+    # resumes it), so import must preserve it rather than making an otherwise
+    # successful backup unrestorable.  All seal history, revision, and foreign
+    # reference checks still run; this relaxes only the terminal-state demand.
+    _validate_bundle(bundle, allow_uncommitted_admission=True)
     return bundle
 
 
@@ -4549,7 +5198,10 @@ def _parse_v2_plus(objects: list[dict[str, Any]], version: int) -> _Bundle:
         records=tuple(_upcast_records(records, version)),
         blobs=tuple(blobs),
     )
-    _validate_bundle(bundle)
+    # Preserve a valid pending admission seal from an in-flight cross-store
+    # saga.  Pending remains fail closed after restore, while its immutable
+    # history and all ordinary foreign-reference checks are still validated.
+    _validate_bundle(bundle, allow_uncommitted_admission=True)
     return bundle
 
 
@@ -4666,6 +5318,22 @@ def _insert_records(store: TruthStore, bundle: _Bundle) -> None:
                 item.record_key,
                 seq=item.seq,
             )
+        from work_buddy.cowork.truth_activation import (
+            backfill_legacy_document_policies,
+            rebuild_policy_projections_locked,
+        )
+
+        if bundle.source_format_version >= 11:
+            rebuild_policy_projections_locked(conn)
+        else:
+            # v1-v10 exports predate explicit per-document policy. Preserve
+            # their full Co-work behavior as an auditable compatibility event.
+            backfill_legacy_document_policies(conn)
+            # A legacy-framed stream can still contain policy records when it
+            # was produced by a newer registry (the framing itself is stable).
+            # Backfill skips those documents, so rebuild every mutable current
+            # row from the imported immutable history before validation.
+            rebuild_policy_projections_locked(conn)
         conn.execute("COMMIT")
     except Exception:
         if conn.in_transaction:
@@ -4743,10 +5411,29 @@ def _build_staged_store(
             expected_store_id=profile.store_id,
             expected_document_ids=document_ids,
         )
-    expected = _serialize_bundle(bundle)
     result = export_store(staged)
-    if result.path.read_bytes() != expected:
-        raise TruthImportError("staged store does not reproduce the validated export")
+    reproduced = result.path.read_bytes()
+    if bundle.source_format_version >= 11:
+        if reproduced != _serialize_bundle(bundle):
+            raise TruthImportError("staged store does not reproduce the validated export")
+    else:
+        # Compatibility policy records are intentionally appended while a
+        # pre-v11 stream is rebuilt. Verify that every validated source record
+        # and blob survived byte-for-byte and that the only additions are the
+        # auditable v11 policy history created by the compatibility backfill.
+        rebuilt = _parse_bundle(reproduced)
+        source_count = len(bundle.records)
+        if (
+            rebuilt.store_info != bundle.store_info
+            or rebuilt.profile != bundle.profile
+            or rebuilt.records[:source_count] != bundle.records
+            or rebuilt.blobs != bundle.blobs
+            or any(
+                item.record_type not in _DOCUMENT_POLICY_RECORD_TYPES
+                for item in rebuilt.records[source_count:]
+            )
+        ):
+            raise TruthImportError("staged store does not reproduce the validated export")
     TruthStore.open(paths.sidecar)
     from work_buddy.cowork.project_store import (
         patch_cowork_manifest,
@@ -4865,7 +5552,7 @@ def import_store(
 
     require_source_foundation_writable("truth.import")
     bundle = _parse_bundle(source)
-    profile = _validate_bundle(bundle)
+    profile = _validate_bundle(bundle, allow_uncommitted_admission=True)
     causality_bundle = _parse_causality_recovery_source(
         causality_source,
         expected_store_id=profile.store_id,

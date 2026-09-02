@@ -1,7 +1,7 @@
 ---
 name: Project Sync
 kind: capability
-description: 'Reconcile project markdown notes (work-buddy/projects/<slug>.md) against the projects SQLite registry: propagate out-of-band note edits into the store, create store rows for new notes. Markdown-canonical; never deletes a project. See architecture/markdown-db.'
+description: 'Legacy pre-seal reconciliation for project Markdown. Once Projects SQLite is authoritative, returns a deterministic disabled result and performs no file reads or writes.'
 capability_name: project_sync
 category: projects
 op: op.wb.project_sync
@@ -19,3 +19,8 @@ aliases:
 parents:
 - projects
 ---
+
+This capability exists only across the migration boundary. It must not be used
+as an export mechanism or a second writable authority. After the SQLite seal,
+project edits go through revisioned domain APIs and rich roles through explicit
+Co-work bindings.

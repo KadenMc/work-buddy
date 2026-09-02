@@ -14,8 +14,8 @@ export const JOURNAL_WIDGET_INSTANCE_IDS = {
   runningNotes: "default:running-notes",
 } as const;
 
-export type JournalWidgetInstanceId =
-  (typeof JOURNAL_WIDGET_INSTANCE_IDS)[keyof typeof JOURNAL_WIDGET_INSTANCE_IDS];
+/** Stable provider-owned instance identity; the three constants are legacy/default aliases. */
+export type JournalWidgetInstanceId = string;
 
 export type IsoDate = string;
 export type IsoDateTime = string;
@@ -114,7 +114,7 @@ export type TimelineRenderMode = "timeline" | "list";
 export type TimelineDensity = "comfortable" | "compact";
 
 export interface JournalTimelineInput {
-  readonly instanceId: typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline;
+  readonly instanceId: JournalWidgetInstanceId;
   readonly revision: JournalRevision;
   readonly day: JournalDayBinding;
   readonly access: JournalAccess;
@@ -124,7 +124,8 @@ export interface JournalTimelineInput {
   readonly items: readonly JournalTimelineItem[];
 }
 
-export type JournalCaptureTargetId = "auto" | "log" | "running_notes";
+/** A destination from the effective day schema, never a client-side closed catalog. */
+export type JournalCaptureTargetId = string;
 export type JournalCaptureMode = "dumb" | "smart";
 
 export interface JournalCaptureTarget {
@@ -172,7 +173,7 @@ export interface JournalCaptureSubmission {
 }
 
 export interface JournalCaptureInput {
-  readonly instanceId: typeof JOURNAL_WIDGET_INSTANCE_IDS.capture;
+  readonly instanceId: JournalWidgetInstanceId;
   readonly revision: JournalRevision;
   readonly dayId: string;
   readonly access: JournalAccess;
@@ -220,6 +221,9 @@ export interface JournalRunningNoteItem {
   readonly groupId?: string;
   readonly threadId?: string;
   readonly version: number;
+  /** Native composition ownership; absent only for retained legacy entries. */
+  readonly moduleInstanceId?: JournalWidgetInstanceId;
+  readonly moduleInstanceVersion?: number;
   readonly followUps?: readonly CaptureFollowUp[];
   readonly document?:
     | {
@@ -253,15 +257,269 @@ export interface JournalRunningNoteTombstone {
 export type RunningNotesDisplayMode = "chronological" | "grouped";
 
 export interface JournalRunningNotesInput {
-  readonly instanceId: typeof JOURNAL_WIDGET_INSTANCE_IDS.runningNotes;
+  readonly instanceId: JournalWidgetInstanceId;
   readonly revision: JournalRevision;
   readonly dayId: string;
   readonly access: JournalAccess;
   readonly displayMode: RunningNotesDisplayMode;
   readonly items: readonly JournalRunningNoteItem[];
+  readonly supplementalItems?: readonly JournalNativeItemInput[];
+  readonly tombstones?: readonly JournalRunningNoteItem[];
 }
 
+export type JournalFieldValueKind =
+  | "short_text"
+  | "long_text"
+  | "number"
+  | "scale"
+  | "boolean"
+  | "single_select"
+  | "multi_select"
+  | "local_time"
+  | "instant"
+  | "date"
+  | "duration"
+  | "reference";
+
+export type JournalFieldValue =
+  | string
+  | number
+  | boolean
+  | readonly string[]
+  | readonly JournalFieldReference[]
+  | null;
+
+export interface JournalFieldReference {
+  readonly kind: string;
+  readonly id: string;
+  readonly revision?: string;
+}
+
+export interface JournalFieldOption {
+  readonly value: string;
+  readonly label: string;
+}
+
+export interface JournalEffectiveFieldInput {
+  readonly valueId?: string;
+  readonly compositionSlotId: string;
+  readonly fieldId: string;
+  readonly definitionVersion: number;
+  readonly promptId?: string;
+  readonly promptVersion?: number;
+  readonly label: string;
+  readonly description?: string;
+  readonly valueKind: JournalFieldValueKind;
+  readonly value: JournalFieldValue;
+  readonly valueRevision?: number;
+  readonly required: boolean;
+  readonly unit?: string;
+  readonly functionId?: string;
+  readonly functionVersion?: number;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly options?: readonly JournalFieldOption[];
+  readonly disposition?: "missing" | "skipped" | "declined";
+  readonly readOnly?: boolean;
+  readonly unavailableReason?: string;
+  readonly authorship?: string;
+  readonly reviewState?: string;
+  readonly sourceRef?: string;
+}
+
+export interface JournalDocumentModuleAvailable {
+  readonly state: "available";
+  readonly role: string;
+  readonly truthEligibility: "allowed";
+  readonly truthStartsDisabled: true;
+}
+
+export interface JournalDocumentModuleCurrent {
+  readonly state: "current";
+  readonly role: string;
+  readonly truthEligibility: "allowed";
+  readonly truthStartsDisabled: true;
+  readonly href: string;
+  readonly storeId: string;
+  readonly documentId: string;
+  readonly bindingId: string;
+  readonly domainEntityId: string;
+  readonly contentAuthorityEpoch: number;
+  readonly canOpenFull: boolean;
+}
+
+export type JournalDocumentModuleState =
+  | JournalDocumentModuleAvailable
+  | JournalDocumentModuleCurrent;
+
+/** Safe generic input for data-defined Journal module instances. */
+export interface JournalGenericModuleInput {
+  readonly instanceId: JournalWidgetInstanceId;
+  readonly revision: JournalRevision;
+  readonly dayId: string;
+  readonly localDate: string;
+  readonly access: JournalAccess;
+  readonly moduleTypeId: string;
+  readonly moduleInstanceVersion: number;
+  readonly moduleDefinitionVersion: number;
+  readonly behaviorId: string | null;
+  readonly behaviorVersion: number | null;
+  readonly aiContribution: "forbidden" | "allowed" | "suggestion_only";
+  readonly label: string;
+  readonly description?: string;
+  readonly fields: readonly JournalEffectiveFieldInput[];
+  readonly items?: readonly JournalNativeItemInput[];
+  readonly promptInteractions?: readonly JournalPromptInteraction[];
+  readonly document?: JournalDocumentModuleState;
+  readonly unavailableReason?: string;
+}
+
+export interface JournalNativeItemInput {
+  readonly itemId: string;
+  readonly itemKind: string;
+  readonly text: string;
+  readonly createdAt: IsoDateTime;
+  readonly updatedAt: IsoDateTime;
+  readonly revision: number;
+  readonly lifecycle: string;
+  readonly authorityKind: string;
+  readonly sourceRef?: string;
+  readonly actions: readonly JournalItemAction[];
+  readonly relations: readonly JournalItemRelation[];
+}
+
+export type JournalItemAction =
+  | "edit"
+  | "correct"
+  | "resolve"
+  | "route"
+  | "tombstone"
+  | "restore";
+
+export interface JournalItemRelation {
+  readonly relationId: string;
+  readonly relationKind: string;
+  readonly targetDomain: string;
+  readonly targetId: string;
+  readonly targetRevision?: string;
+  readonly lifecycle: string;
+  readonly revision: number;
+}
+
+export interface JournalPromptGenerationRequest {
+  readonly requestId: string;
+  readonly status: "pending" | "leased" | "succeeded" | "failed" | "canceled" | "expired";
+  readonly retryable: boolean;
+  readonly attempts: number;
+  readonly providerId?: string;
+  readonly modelId?: string;
+  readonly errorCode?: string;
+  readonly createdAt: IsoDateTime;
+  readonly updatedAt: IsoDateTime;
+  readonly completedAt?: IsoDateTime;
+}
+
+export interface JournalPromptResultVariant {
+  readonly variantId: string;
+  readonly resultText: string;
+  readonly sourceRef?: string;
+  readonly authorship: string;
+  readonly reviewState: string;
+  readonly lifecycle: string;
+  readonly producerId: string;
+  readonly providerId?: string;
+  readonly modelId?: string;
+  readonly createdAt: IsoDateTime;
+}
+
+export interface JournalPromptInteraction {
+  readonly interactionId: string;
+  readonly moduleInstanceId: string;
+  readonly moduleInstanceVersion: number;
+  readonly promptId: string;
+  readonly promptVersion: number;
+  readonly promptWording: string;
+  readonly promptHelp?: string;
+  readonly inputText: string;
+  readonly inputSourceRef?: string;
+  readonly lifecycle: string;
+  readonly currentRevision: number;
+  readonly variants: readonly JournalPromptResultVariant[];
+  readonly generationRequests: readonly JournalPromptGenerationRequest[];
+}
+
+export interface JournalEffectiveModule {
+  readonly slotId: string;
+  readonly ordinal: number;
+  readonly moduleInstanceId: JournalWidgetInstanceId;
+  readonly moduleInstanceVersion: number;
+  readonly moduleTypeId: string;
+  readonly moduleTypeVersion: number;
+  readonly label: string;
+  readonly behaviorId: string | null;
+  readonly behaviorVersion: number | null;
+  readonly aiContribution: "forbidden" | "allowed" | "suggestion_only";
+  readonly semanticMembership: "included" | "excluded_by_schedule" | "unavailable";
+  readonly settings: Readonly<Record<string, unknown>>;
+  readonly scheduleKind: string;
+  readonly scheduleEvidence: unknown;
+  readonly document?: JournalDocumentModuleState;
+  readonly fields: readonly {
+    readonly compositionSlotId: string;
+    readonly ordinal: number;
+    readonly fieldId: string;
+    readonly fieldDefinitionVersion: number;
+    /** Definition metadata is carried by the immutable day composition. */
+    readonly label?: string;
+    readonly description?: string;
+    readonly valueKind?: JournalFieldValueKind;
+    readonly unit?: string | null;
+    readonly functionId?: string | null;
+    readonly functionVersion?: number | null;
+    readonly constraints?: Readonly<Record<string, unknown>>;
+    readonly behaviorId?: string;
+    readonly behaviorVersion?: number;
+    readonly privacyClass?: string;
+    readonly searchMode?: string;
+    readonly promptId: string | null;
+    readonly promptVersion: number | null;
+    readonly promptWording?: string | null;
+    readonly promptHelp?: string | null;
+    readonly promptRequiredness?: string | null;
+  }[];
+}
+
+export interface JournalEffectiveComposition {
+  readonly schemaVersion: 1;
+  readonly persisted: boolean;
+  readonly snapshotId: string | null;
+  readonly snapshotVersion: number | null;
+  readonly compositionDigest: string;
+  readonly searchRecipeVersion: number;
+  readonly activationRevision: number;
+  readonly authorityState:
+    | "legacy_compatibility"
+    | "database_only"
+    | "recovery_fenced";
+  readonly profile: {
+    readonly profileId: string;
+    readonly profileRevision: number;
+    readonly formatVersion: number;
+    readonly name: string;
+    readonly description: string;
+    readonly profileDigest: string;
+  };
+  readonly modules: readonly JournalEffectiveModule[];
+}
+
+export type JournalWidgetInput =
+  | JournalCaptureInput
+  | JournalTimelineInput
+  | JournalRunningNotesInput
+  | JournalGenericModuleInput;
+
 export interface JournalWidgetInputs {
+  readonly [instanceId: string]: JournalWidgetInput;
   readonly [JOURNAL_WIDGET_INSTANCE_IDS.capture]: JournalCaptureInput;
   readonly [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: JournalTimelineInput;
   readonly [JOURNAL_WIDGET_INSTANCE_IDS.runningNotes]: JournalRunningNotesInput;
@@ -275,6 +533,8 @@ export interface JournalViewModel {
   readonly access: JournalAccess;
   readonly quality: JournalDataQuality;
   readonly source: JournalDemoSource;
+  /** Frozen server/domain composition for this logical day, when native authority supplies it. */
+  readonly effectiveComposition?: JournalEffectiveComposition;
   readonly widgetInputs: JournalWidgetInputs;
 }
 
@@ -385,6 +645,84 @@ export interface JournalRunningNoteOpenDocumentIntent
   };
 }
 
+export interface JournalRunningNoteRestoreIntent
+  extends JournalIntentEnvelope<
+    "wb.notes.restore-requested",
+    typeof JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+  > {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly item_id: string;
+    readonly expected_version: number;
+  };
+}
+
+export interface JournalFieldValuePutIntent
+  extends JournalIntentEnvelope<"wb.journal.field-value.put", JournalWidgetInstanceId> {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly local_date: string;
+    readonly module_instance_id: string;
+    readonly module_instance_version: number;
+    readonly composition_slot_id: string;
+    readonly field_id: string;
+    readonly field_definition_version: number;
+    readonly value_id?: string;
+    readonly expected_revision: number;
+    readonly value: JournalFieldValue;
+    readonly disposition?: "missing" | "skipped" | "declined";
+    readonly exact_input: string;
+    readonly stated_at?: IsoDateTime;
+  };
+}
+
+export interface JournalItemActionIntent
+  extends JournalIntentEnvelope<"wb.journal.item-action", JournalWidgetInstanceId> {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly item_id: string;
+    readonly action: JournalItemAction;
+    readonly expected_revision: number;
+    readonly exact_text?: string;
+    readonly target_domain?: string;
+    readonly target_id?: string;
+    readonly target_revision?: string;
+  };
+}
+
+export interface JournalPromptCreateIntent
+  extends JournalIntentEnvelope<"wb.journal.prompt-create", JournalWidgetInstanceId> {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly local_date: string;
+    readonly module_instance_id: string;
+    readonly module_instance_version: number;
+    readonly prompt_id: string;
+    readonly prompt_version: number;
+    readonly exact_input: string;
+  };
+}
+
+export interface JournalPromptGenerateIntent
+  extends JournalIntentEnvelope<"wb.journal.prompt-generate", JournalWidgetInstanceId> {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly interaction_id: string;
+    readonly expected_revision: number;
+  };
+}
+
+export interface JournalPromptDecisionIntent
+  extends JournalIntentEnvelope<"wb.journal.prompt-decision", JournalWidgetInstanceId> {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly interaction_id: string;
+    readonly variant_id: string;
+    readonly expected_revision: number;
+    readonly decision: "accept" | "archive" | "reject";
+  };
+}
+
 export type JournalIntent =
   | JournalCaptureSubmitIntent
   | JournalTimelineOpenItemIntent
@@ -393,8 +731,14 @@ export type JournalIntent =
   | JournalTimelineSetRenderModeIntent
   | JournalRunningNoteEditIntent
   | JournalRunningNoteDeleteIntent
+  | JournalRunningNoteRestoreIntent
   | JournalRunningNoteOpenThreadIntent
-  | JournalRunningNoteOpenDocumentIntent;
+  | JournalRunningNoteOpenDocumentIntent
+  | JournalFieldValuePutIntent
+  | JournalItemActionIntent
+  | JournalPromptCreateIntent
+  | JournalPromptGenerateIntent
+  | JournalPromptDecisionIntent;
 
 export type JournalFixtureLoadStatus = "loading" | "ready" | "stale" | "offline" | "error";
 

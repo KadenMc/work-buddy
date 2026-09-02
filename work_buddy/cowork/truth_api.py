@@ -7,7 +7,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from work_buddy.cowork import lifecycle_lock, truth_surface
+from work_buddy.cowork import lifecycle_lock, truth_activation, truth_surface
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.dashboard.local_identity_api import require_human_authority_request
 from work_buddy.security.local_identity import (
@@ -28,6 +28,7 @@ TRUTH_PROPOSE_ACTION = "cowork.truth.propose_and_connect"
 TRUTH_CONNECT_ACTION = "cowork.truth.connect"
 TRUTH_LIFECYCLE_ACTION = "cowork.truth.claim_decision"
 TRUTH_CHALLENGE_ACTION = "cowork.truth.claim_challenge"
+TRUTH_ACTIVATION_ACTION = "cowork.truth.activation.change"
 
 
 def _error(
@@ -55,6 +56,16 @@ def _error(
 
 
 def _surface_error(exc: truth_surface.TruthSurfaceError):
+    return _error(
+        exc.code,
+        str(exc),
+        status=exc.status,
+        retryable=exc.retryable,
+        details=exc.details,
+    )
+
+
+def _activation_error(exc: truth_activation.TruthActivationError):
     return _error(
         exc.code,
         str(exc),
@@ -229,6 +240,168 @@ def _emit_claim_event(
         subject_kind="claim",
         subject_id=claim_id,
         data=data,
+    )
+
+
+def _digest_field(body: Mapping[str, Any], field: str):
+    value = body.get(field)
+    if not isinstance(value, str):
+        return None, _error("invalid_activation_request", f"{field} is required")
+    normalized = value.strip().lower()
+    if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
+        return None, _error(
+            "invalid_activation_request", f"{field} must be a SHA-256 digest"
+        )
+    return normalized, None
+
+
+@truth_blueprint.get("/api/truth/doc/<document_id>/truth/policy")
+def api_truth_policy(document_id: str):
+    store, document, error = _store_and_document(document_id)
+    if error:
+        return error
+    try:
+        policy, head_sha256 = truth_activation.resolve_document_truth_policy_snapshot(
+            store, document.id
+        )
+    except truth_activation.TruthActivationError as exc:
+        return _activation_error(exc)
+    except InvariantViolation as exc:
+        return _error("truth_policy_unavailable", str(exc), status=409)
+    return jsonify(
+        {
+            "ok": True,
+            "policy": policy.to_dict(),
+            "capability_envelope": policy.capability_envelope(),
+            "document_head_sha256": head_sha256,
+        }
+    )
+
+
+@truth_blueprint.post("/api/truth/doc/<document_id>/truth/activation")
+def api_truth_activation(document_id: str):
+    blocked = _write_blocked()
+    if blocked:
+        return blocked
+    store, document, error = _store_and_document(document_id)
+    if error:
+        return error
+    body, error = _json_body()
+    if error:
+        return error
+    assert body is not None
+
+    next_state = body.get("next_state")
+    intent_id = body.get("intent_id")
+    expected_revision = body.get("expected_activation_revision")
+    reason = body.get("reason")
+    if not isinstance(next_state, str) or not next_state.strip():
+        return _error("invalid_activation_request", "next_state is required")
+    if not isinstance(intent_id, str) or not intent_id.strip():
+        return _error("invalid_activation_request", "intent_id is required")
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision <= 0
+    ):
+        return _error(
+            "invalid_activation_request",
+            "expected_activation_revision must be a positive integer",
+        )
+    if reason is not None and not isinstance(reason, str):
+        return _error(
+            "invalid_activation_request", "reason must be text when supplied"
+        )
+    expected_contract, error = _digest_field(
+        body, "expected_interaction_contract_sha256"
+    )
+    if error:
+        return error
+    expected_head, error = _digest_field(body, "expected_document_head_sha256")
+    if error:
+        return error
+    assert expected_contract is not None and expected_head is not None
+
+    activation_payload = {
+        "next_state": next_state.strip().lower(),
+        "expected_activation_revision": expected_revision,
+        "expected_interaction_contract_sha256": expected_contract,
+        "expected_document_head_sha256": expected_head,
+        "intent_id": intent_id.strip(),
+        "reason": reason,
+    }
+    from work_buddy.consent import user_initiated
+
+    try:
+        authority = require_human_authority_request(
+            action=TRUTH_ACTIVATION_ACTION,
+            subject=truth_mutation_subject(
+                operation="activation",
+                store_id=store.store_id,
+                document_id=document.id,
+            ),
+            context_sha256=truth_mutation_context_sha256(
+                operation="activation",
+                store_id=store.store_id,
+                document_id=document.id,
+                payload=activation_payload,
+            ),
+        )
+        with user_initiated("dashboard.cowork.truth.activation"):
+            policy = truth_activation.transition_document_truth_activation(
+                store,
+                document_id=document.id,
+                next_state=activation_payload["next_state"],
+                expected_activation_revision=expected_revision,
+                expected_interaction_contract_sha256=expected_contract,
+                expected_document_head_sha256=expected_head,
+                actor=_authority_actor(authority),
+                intent_id=activation_payload["intent_id"],
+                reason=reason,
+            )
+    except LocalIdentityError as exc:
+        return _authority_error(exc)
+    except truth_activation.TruthActivationError as exc:
+        return _activation_error(exc)
+    except InvariantViolation as exc:
+        return _error("truth_policy_unavailable", str(exc), status=409)
+    # A same-state request is a no-op and emits nothing. Exact replays use the
+    # original request-derived event identity and payload, even if a later
+    # transition has since advanced the policy, so durable event dedup never
+    # sees one ID paired with two meanings.
+    requested_revision = expected_revision + 1
+    if int(policy.activation_revision or 0) >= requested_revision:
+        event_id = sha256_text(
+            canonical_json(
+                {
+                    "schema": "wb.truth-activation-event-identity/v1",
+                    "store_id": store.store_id,
+                    "document_id": document.id,
+                    "intent_id": activation_payload["intent_id"],
+                }
+            )
+        )
+        emit_truth_event(
+            "truth.doc_activation_changed",
+            store_id=store.store_id,
+            event_id=event_id,
+            subject_kind="document",
+            subject_id=document.id,
+            data={
+                "document_id": document.id,
+                "activation": activation_payload["next_state"],
+                "activation_revision": requested_revision,
+                "eligibility": policy.eligibility,
+                "intent_id": activation_payload["intent_id"],
+            },
+        )
+    return jsonify(
+        {
+            "ok": True,
+            "policy": policy.to_dict(),
+            "capability_envelope": policy.capability_envelope(),
+            "document_head_sha256": expected_head,
+        }
     )
 
 

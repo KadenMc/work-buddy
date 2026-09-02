@@ -25,6 +25,7 @@ import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -114,6 +115,56 @@ _registry_lock = threading.RLock()
 # the persistent RSS. Tuning: shorter = tighter RAM, longer = fewer reloads.
 IDLE_EVICT_SECONDS = 600  # 10 minutes
 IDLE_EVICT_CHECK_SECONDS = 60  # how often the evictor wakes up
+
+
+# SentenceTransformer ultimately enters an OpenMP runtime. On Windows, calling
+# it from Werkzeug's short-lived per-request threads leaves that request
+# thread's native OpenMP team resident after the Python thread exits (roughly
+# seven threads per /embed call on the reference machine). Keep Flask threaded
+# so /health and interactive requests remain responsive while an encode is in
+# flight, but execute the native work on a bounded set of process-lifetime
+# workers instead. The pool size mirrors the broker's local-device concurrency
+# so it does not add serialization beyond the configured admission policy.
+_encode_executor: ThreadPoolExecutor | None = None
+_encode_executor_lock = threading.Lock()
+_encode_worker_count = 1
+
+
+def _configured_encode_workers(cfg: dict | None) -> int:
+    """Return persistent encode workers matching local broker capacity."""
+    profiles = ((cfg or {}).get("inference", {}).get("profiles", {}) or {})
+    profile = profiles.get("local:embedding", {}) or {}
+    if not isinstance(profile, dict):
+        return 1
+    try:
+        return max(1, int(profile.get("max_concurrent", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _configure_encode_executor(cfg: dict | None) -> None:
+    """Configure the lazy process-lifetime executor before serving requests."""
+    global _encode_worker_count
+    workers = _configured_encode_workers(cfg)
+    with _encode_executor_lock:
+        # ``main`` calls this before Flask starts. Retain an already-created
+        # pool defensively (for embedding-service imports in unusual hosts)
+        # rather than replacing workers that may have live futures.
+        if _encode_executor is None:
+            _encode_worker_count = workers
+
+
+def _run_on_encode_worker(fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Run native embedding work on a reusable worker and return its result."""
+    global _encode_executor
+    with _encode_executor_lock:
+        if _encode_executor is None:
+            _encode_executor = ThreadPoolExecutor(
+                max_workers=_encode_worker_count,
+                thread_name_prefix="embedding-encode",
+            )
+        executor = _encode_executor
+    return executor.submit(fn, *args, **kwargs).result()
 
 
 def _resolve_device(device_cfg: str = "auto") -> str:
@@ -452,7 +503,12 @@ def _brokered_encode(model: Any, texts: list[str], *, priority: Any, **encode_kw
 
     prio = parse_priority(priority) if isinstance(priority, str) else priority
     with local_embed_slot(prio):
-        return model.encode(texts, **encode_kwargs)
+        # Werkzeug uses a fresh Python thread for each request. Calling into
+        # OpenMP from that transient thread leaks its native worker team after
+        # the request completes. Broker admission still happens in the caller
+        # so priority and timing semantics are unchanged; only the admitted
+        # native operation moves to a bounded, reusable worker.
+        return _run_on_encode_worker(model.encode, texts, **encode_kwargs)
 
 
 @app.route("/embed", methods=["POST"])
@@ -630,7 +686,13 @@ def _prewarm_search_cache() -> None:
                 cand_texts.append(phrase)
 
         t = time.time()
-        cand_vectors = model.encode(cand_texts, batch_size=32, show_progress_bar=False)
+        cand_vectors = _brokered_encode(
+            model,
+            cand_texts,
+            priority="background",
+            batch_size=32,
+            show_progress_bar=False,
+        )
         fp = _candidate_fingerprint(candidates)
         _candidate_cache[_default_model_key] = (fp, cand_vectors, text_to_name)
 
@@ -1092,6 +1154,7 @@ def main():
 
     # Build model registry from config (cheap — just metadata)
     _init_registry(cfg)
+    _configure_encode_executor(cfg)
 
     # Recover the IR vector store before serving: quarantine any crash-corrupted
     # .npz and clear orphaned write temps, so the first read after boot is clean
@@ -1187,7 +1250,10 @@ def main():
     from work_buddy.web.access_log_filter import install_probe_log_filter
     install_probe_log_filter(["/health"])
     print(f"Embedding service running on http://127.0.0.1:{port}", file=sys.stderr)
-    app.run(host="127.0.0.1", port=port, debug=False)
+    # Keep HTTP handling concurrent so health probes do not queue behind a
+    # long encode. Native model work is bounded onto persistent threads by
+    # ``_run_on_encode_worker`` above.
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":

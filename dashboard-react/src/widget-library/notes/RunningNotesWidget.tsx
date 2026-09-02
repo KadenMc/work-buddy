@@ -37,6 +37,12 @@ export default function RunningNotesWidget({
       }, { clientMutationId }) as RunningNotesIntent,
     );
   };
+  const restoreItem = (item: MarkdownNoteItem) => emit(
+    createWidgetIntent(presentation, "wb.notes.restore-requested", {
+      item_id: item.itemId,
+      expected_version: item.version,
+    }, { clientMutationId: createCorrelationId("notes-restore") }) as RunningNotesIntent,
+  );
   const openThread = (item: MarkdownNoteItem) => {
     if (!item.threadId) return;
     emit(
@@ -62,9 +68,9 @@ export default function RunningNotesWidget({
       {readOnly && input.items.length > 0 && input.access.reason ? (
         <InlineAlert tone="warning">{input.access.reason}</InlineAlert>
       ) : null}
-      {input.items.length === 0 ? (
+      {input.items.length === 0 && (input.supplementalItems?.length ?? 0) === 0 ? (
         <p className="wb-running-notes__empty">No running notes for this collection.</p>
-      ) : (
+      ) : input.items.length > 0 ? (
         <MarkdownItemCollection
           items={input.items}
           displayMode={input.displayMode}
@@ -77,7 +83,30 @@ export default function RunningNotesWidget({
           onOpenDocument={openDocument}
           simulateMutations={presentation.interactionMode === "preview"}
         />
-      )}
+      ) : null}
+      {(input.supplementalItems?.length ?? 0) > 0 ? (
+        <section className="wb-running-notes__supplemental" aria-label="Other entries">
+          {input.supplementalItems!.map((item) => (
+            <article key={item.itemId}>
+              <p>{item.text}</p>
+              <small>{item.itemKind.replace(/_/gu, " ")} · {item.authorityKind.replace(/_/gu, " ")}</small>
+            </article>
+          ))}
+        </section>
+      ) : null}
+      {(input.tombstones?.length ?? 0) > 0 ? (
+        <section className="wb-running-notes__tombstones" aria-label="Recently deleted notes">
+          <h4>Recently deleted</h4>
+          {input.tombstones!.map((item) => (
+            <article key={item.itemId}>
+              <p>{item.markdown}</p>
+              <button type="button" disabled={readOnly} onClick={() => void restoreItem(item)}>
+                Restore
+              </button>
+            </article>
+          ))}
+        </section>
+      ) : null}
     </div>
   );
 }

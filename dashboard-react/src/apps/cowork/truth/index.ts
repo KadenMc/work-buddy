@@ -1,5 +1,6 @@
 export * from "./contracts";
 export * from "./HttpCoworkTruthClient";
+export * from "./TruthActivationControl";
 export * from "./HttpCoworkTruthAnalysisClient";
 export * from "./selectionCapture";
 export * from "./store";

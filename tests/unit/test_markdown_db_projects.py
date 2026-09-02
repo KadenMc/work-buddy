@@ -8,6 +8,10 @@ and the apply_mutation dual-surface write.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -377,3 +381,206 @@ def test_drift_reconcile_records_agent_author(projects_env) -> None:
     pid = env.store.resolve_slug("iota")
     latest = env.store.list_revisions(pid, limit=1)[0]
     assert latest["author"] == "agent"
+
+
+def test_project_operation_lock_is_cross_process(tmp_path: Path) -> None:
+    """The authority lock is an OS lock, not merely an in-process mutex."""
+
+    from work_buddy.projects.operation_lock import exclusive_process_lock
+
+    lock_path = tmp_path / "projects-operation.lock"
+    ready_path = tmp_path / "child-ready"
+    acquired_path = tmp_path / "child-acquired"
+    script = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        "from work_buddy.projects.operation_lock import exclusive_process_lock\n"
+        "Path(sys.argv[2]).write_text('ready', encoding='utf-8')\n"
+        "with exclusive_process_lock(sys.argv[1], timeout_seconds=5):\n"
+        "    Path(sys.argv[3]).write_text('acquired', encoding='utf-8')\n"
+    )
+    with exclusive_process_lock(lock_path):
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(lock_path),
+                str(ready_path),
+                str(acquired_path),
+            ]
+        )
+        deadline = time.monotonic() + 5
+        while not ready_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready_path.read_text(encoding="utf-8") == "ready"
+        time.sleep(0.1)
+        assert child.poll() is None
+        assert not acquired_path.exists()
+
+    assert child.wait(timeout=5) == 0
+    assert acquired_path.read_text(encoding="utf-8") == "acquired"
+
+
+def test_pause_waits_for_complete_project_mutation(projects_env, monkeypatch) -> None:
+    """A pause cannot land between the Markdown and SQLite halves."""
+
+    from work_buddy.markdown_db import WriteProvenance
+    from work_buddy.projects.authority import (
+        ProjectAuthorityError,
+        ProjectImportCoordinator,
+        authority_status,
+    )
+
+    env = projects_env
+    env.store.upsert_project("serialized", description="before")
+    env.markdown_db_mod.materialize_projects(dry_run=False)
+
+    write_started = threading.Event()
+    allow_write_to_finish = threading.Event()
+    pause_finished = threading.Event()
+    failures: list[BaseException] = []
+    original_write = env.db.write_entity_to_markdown
+
+    def slow_write(pk: str, fields: dict[str, Any]) -> None:
+        original_write(pk, fields)
+        write_started.set()
+        if not allow_write_to_finish.wait(timeout=5):
+            raise TimeoutError("test did not release Project Markdown write")
+
+    monkeypatch.setattr(env.db, "write_entity_to_markdown", slow_write)
+
+    def mutate() -> None:
+        try:
+            env.db.apply_mutation(
+                "serialized",
+                {"description": "complete-before-fence"},
+                provenance=WriteProvenance.mutation(
+                    frozenset({"user"}), "dashboard"
+                ),
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    def pause() -> None:
+        try:
+            ProjectImportCoordinator().pause_mutations(
+                cohort_id="projects-operation-lock",
+                inventory_sha256="a" * 64,
+                mutation_id="projects-operation-lock-pause",
+                actor="test-operator",
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+        finally:
+            pause_finished.set()
+
+    mutation_thread = threading.Thread(target=mutate)
+    pause_thread = threading.Thread(target=pause)
+    mutation_thread.start()
+    assert write_started.wait(timeout=5)
+    pause_thread.start()
+    assert not pause_finished.wait(timeout=0.3)
+    assert authority_status()["state"] == "active"
+
+    allow_write_to_finish.set()
+    mutation_thread.join(timeout=5)
+    pause_thread.join(timeout=5)
+    assert not mutation_thread.is_alive()
+    assert not pause_thread.is_alive()
+    assert failures == []
+    assert authority_status()["state"] == "write_fenced"
+    assert env.store.get_project("serialized")["description"] == (
+        "complete-before-fence"
+    )
+
+    monkeypatch.setattr(
+        env.db,
+        "_current_logical_fields",
+        lambda _pk: (_ for _ in ()).throw(
+            AssertionError("fenced mutation reached either legacy surface")
+        ),
+    )
+    with pytest.raises(ProjectAuthorityError, match="frozen legacy"):
+        env.db.apply_mutation(
+            "serialized",
+            {"description": "must-not-start"},
+            provenance=WriteProvenance.mutation(
+                frozenset({"user"}), "dashboard"
+            ),
+        )
+
+
+def test_pause_waits_for_complete_project_reconciliation(
+    projects_env, monkeypatch
+) -> None:
+    """The whole parse/query/drain pass is one admitted legacy unit."""
+
+    from work_buddy.projects.authority import (
+        ProjectAuthorityError,
+        ProjectImportCoordinator,
+        authority_status,
+    )
+
+    env = projects_env
+    env.write_note("reconcile-lock", "Reconcile", "active", "from Markdown")
+    store_query_started = threading.Event()
+    allow_reconcile_to_finish = threading.Event()
+    pause_finished = threading.Event()
+    failures: list[BaseException] = []
+    original_query = env.db._store_query
+
+    def slow_store_query() -> list[dict[str, Any]]:
+        store_query_started.set()
+        if not allow_reconcile_to_finish.wait(timeout=5):
+            raise TimeoutError("test did not release Project reconciliation")
+        return original_query()
+
+    monkeypatch.setattr(env.db, "_store_query", slow_store_query)
+
+    def reconcile() -> None:
+        try:
+            report = env.db.reconcile_drift()
+            assert report.errors == []
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    def pause() -> None:
+        try:
+            ProjectImportCoordinator().pause_mutations(
+                cohort_id="projects-reconcile-lock",
+                inventory_sha256="b" * 64,
+                mutation_id="projects-reconcile-lock-pause",
+                actor="test-operator",
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+        finally:
+            pause_finished.set()
+
+    reconcile_thread = threading.Thread(target=reconcile)
+    pause_thread = threading.Thread(target=pause)
+    reconcile_thread.start()
+    assert store_query_started.wait(timeout=5)
+    pause_thread.start()
+    assert not pause_finished.wait(timeout=0.3)
+    assert authority_status()["state"] == "active"
+
+    allow_reconcile_to_finish.set()
+    reconcile_thread.join(timeout=5)
+    pause_thread.join(timeout=5)
+    assert failures == []
+    assert env.store.get_project("reconcile-lock")["description"] == (
+        "from Markdown"
+    )
+    assert authority_status()["state"] == "write_fenced"
+
+    monkeypatch.setattr(
+        env.db,
+        "parse_all_from_markdown",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("fenced reconcile read the retired archive")
+        ),
+    )
+    with pytest.raises(ProjectAuthorityError, match="frozen legacy"):
+        env.db.reconcile_drift()

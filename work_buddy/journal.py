@@ -45,7 +45,8 @@ def journal_path_for_date(date_str: str | None = None, vault_root: Path | None =
         vault_root = Path(load_config()["vault_root"])
     if date_str is None:
         date_str = current_journal_date().isoformat()
-    return vault_root / "journal" / f"{date_str}.md"
+    journal_dir = load_config().get("obsidian", {}).get("journal_dir", "journal")
+    return vault_root / str(journal_dir or "journal") / f"{date_str}.md"
 
 
 def _journal_content_adapter(vault_root: Path):
@@ -57,7 +58,13 @@ def _journal_content_adapter(vault_root: Path):
 
 
 def _journal_content_adapter_for_path(journal_path: Path):
-    return _journal_content_adapter(journal_path.resolve().parent.parent)
+    journal_dir = Path(
+        str(load_config().get("obsidian", {}).get("journal_dir", "journal") or "journal")
+    )
+    root = journal_path.resolve().parent
+    for _ in journal_dir.parts:
+        root = root.parent
+    return _journal_content_adapter(root)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +98,8 @@ def ensure_journal_exists(
     if date_str is None:
         date_str = current_journal_date().isoformat()
 
-    journal_file = vault_root / "journal" / f"{date_str}.md"
+    journal_dir = load_config().get("obsidian", {}).get("journal_dir", "journal")
+    journal_file = vault_root / str(journal_dir or "journal") / f"{date_str}.md"
     today_str = current_journal_date().isoformat()
 
     if journal_file.exists():

@@ -1,7 +1,7 @@
 ---
 name: Running Notes
 kind: capability
-description: Read the Running Notes section from the user's daily journal. This is the primary stream-of-consciousness capture zone where the user records ideas, observations, and notes throughout the day. Supports filtering by date range, last N days, or same-day only. Call with same_day=true for just today's entries, or days=N for recent history.
+description: Read native Running Note records from the Journal database. Supports a logical day, date range, recent N-day window, or same-day view.
 capability_name: running_notes
 category: journal
 op: op.wb.running_notes
@@ -25,7 +25,7 @@ parameters:
     required: false
   journal_date:
     type: str
-    description: 'Journal file date (YYYY-MM-DD). Default: today.'
+    description: 'Logical Journal date (YYYY-MM-DD). Default: the active Journal day.'
     required: false
 tags:
 - journal
@@ -39,6 +39,9 @@ aliases:
 - journal running notes content
 parents:
 - journal
-requires:
-- obsidian
+requires: []
 ---
+
+Returns only native records whose item kind is `running_note`, in descending
+logical-day order for multi-day queries. It does not enumerate the legacy
+Journal tree or infer notes from Markdown headings.

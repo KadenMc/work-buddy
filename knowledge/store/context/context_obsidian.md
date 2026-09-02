@@ -1,7 +1,7 @@
 ---
 name: Context Obsidian
 kind: capability
-description: 'Obsidian vault summary: journal entries, recently modified notes'
+description: 'Explicit legacy-only Obsidian vault summary for an opted-in compatibility profile; native Journal and domain stores do not use this path.'
 capability_name: context_obsidian
 category: context
 op: op.wb.context_obsidian

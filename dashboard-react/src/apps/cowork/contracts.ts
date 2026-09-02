@@ -17,6 +17,38 @@ export interface CoworkDocumentPermissions {
   readonly retire: boolean;
 }
 
+export type CoworkTruthEligibility = "unsupported" | "allowed" | "required";
+export type CoworkTruthActivation = "disabled" | "enabled" | "paused";
+
+/**
+ * Server-resolved document composition. The immutable interaction contract owns
+ * eligibility; the scoped document activation owns whether Truth is currently
+ * admitted. A present envelope is authoritative and clients must not widen it.
+ */
+export interface CoworkDocumentCapabilityEnvelope {
+  readonly schema: "wb.cowork-document-capabilities/v1";
+  readonly interactionContract: {
+    readonly contractId: string;
+    readonly version: number;
+    readonly digest?: string | null;
+  };
+  readonly modules: {
+    readonly review: boolean;
+    readonly provenance: boolean;
+    readonly chat: boolean;
+    readonly truth: boolean;
+  };
+  readonly truth: {
+    readonly eligibility: CoworkTruthEligibility;
+    /** Unsupported roles have no activation record. */
+    readonly activation: CoworkTruthActivation | null;
+    readonly activationRevision: number | null;
+    readonly policyFingerprint?: string | null;
+    readonly ledgerPresent: boolean;
+    readonly unavailableReason?: string | null;
+  };
+}
+
 export interface CoworkDocumentSummary {
   readonly documentId: string;
   readonly path: string;
@@ -41,6 +73,8 @@ export interface CoworkDocumentSummary {
   readonly updatedAt?: string | null;
   readonly permissions?: CoworkDocumentPermissions;
   readonly disabledReason?: string | null;
+  /** Absent only for legacy servers, whose historical full-workspace behavior is retained. */
+  readonly capabilities?: CoworkDocumentCapabilityEnvelope;
 }
 
 /**

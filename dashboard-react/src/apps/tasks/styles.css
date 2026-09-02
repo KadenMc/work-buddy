@@ -639,6 +639,32 @@
     flex-direction: column;
   }
 
+  .wb-task-note-options {
+    margin: 0;
+    padding: var(--wb-space-3);
+    border: var(--wb-border-width) solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-surface);
+  }
+
+  .wb-task-note-options > label {
+    display: flex;
+    align-items: center;
+    gap: var(--wb-space-2);
+    color: var(--wb-color-text-primary);
+    font-size: var(--wb-font-size-sm);
+  }
+
+  .wb-task-note-options input[type="checkbox"] {
+    width: auto;
+    min-height: auto;
+    padding: 0;
+  }
+
+  .wb-task-note-options > small {
+    color: var(--wb-color-text-muted);
+    font-weight: var(--wb-font-weight-regular);
+  }
+
   @media (max-width: 767px) {
     .wb-tasks-chrome,
     .wb-task-composer__fast-path,

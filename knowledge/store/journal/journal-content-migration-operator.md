@@ -1,43 +1,7 @@
 ---
-name: Journal Content Migration Operator
-kind: capability
-description: Inventory Journal content and run one explicit identity, shadow, parity, Co-work cutover, reconciliation, rollback, or exit-evidence step without exposing prose in the result.
-capability_name: journal_content_migration_operator
-category: journal
-op: op.wb.journal_content_migration_operator
-schema_version: wb-capability/v1
-parameters:
-  action:
-    type: string
-    description: One of inventory, select, shadow_import, cutover, reconcile, rollback, or certify_exit.
-    required: true
-  entity_kind:
-    type: string
-    description: running_note or logical_day_log for an entity-specific action.
-    required: false
-  entity_id:
-    type: string
-    description: Stable Running Note identity or logical-day ID.
-    required: false
-  day_id:
-    type: string
-    description: YYYY-MM-DD Journal day used when selecting an entity.
-    required: false
-  start_line:
-    type: int
-    description: First one-based line of an explicitly reviewed unmarked Running Note selection.
-    required: false
-  end_line:
-    type: int
-    description: Last one-based line of an explicitly reviewed unmarked Running Note selection.
-    required: false
-  rollback_deadline:
-    type: string
-    description: Future ISO-8601 deadline required for Co-work authority cutover.
-    required: false
-mutates_state: true
-retry_policy: manual
-auto_retry: false
+name: Retired Journal Content Migration Operator
+kind: concept
+description: Historical description of the retired Markdown-to-Co-work compatibility migration. The private native Journal importer supersedes this path.
 tags:
 - journal
 - cowork
@@ -59,7 +23,12 @@ high-weight, zero-TTL consent boundary, so selection, source capture, cutover,
 rollback, recovery, and exit certification cannot inherit a workflow grant or
 silently reuse a prior approval.
 
-The deployment gates `journal.content_migration.enabled` and
+The public capability is no longer registered in the MCP capability registry.
+This concept remains in the knowledge store only as historical and recovery
+documentation. Its code is retained to interpret or recover older per-section
+migration receipts; do not use it for the database-only Journal cohort.
+
+Historically, the deployment gates `journal.content_migration.enabled` and
 `journal.content_migration.cutover_enabled` both default to false and cannot be
 changed through this capability. Shadow import records exact file/section
 digests, unknown file-origin authorship, a source-backed document binding, and

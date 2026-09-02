@@ -1,7 +1,7 @@
 ---
 name: Index Rebuild
 kind: capability
-description: Incrementally (re)build the consolidated index (work_buddy/index/) into its separate db. Flag-gated — a no-op while index.enabled is false; when enabled it refreshes the named partition (e.g. 'knowledge'), or all partitions when none is given (one-shot full rebuilds only — recurring freshness uses one per-partition job each, e.g. index-knowledge-refresh). Pass a partition for the per-partition sidecar jobs (it self-skips while any index build is running — the partitions share one single-writer db, so builds serialize on a db-wide writer gate); omit it only for a deliberate dashboard/manual full rebuild.
+description: Incrementally (re)build the consolidated index (work_buddy/index/) into its separate db. Flag-gated — a no-op while index.enabled is false; when enabled it refreshes the named partition (including native journal, projects, contracts, or personal_knowledge), or all partitions when none is given. Database partitions snapshot durable search events, build and verify source/index parity, then acknowledge exactly that snapshot; interruption leaves replayable lag. The result carries wb.search-outbox-delivery/v1 readiness evidence. Pass force:true only for a deliberate partition backfill. The op self-skips while any build holds the shared writer gate.
 capability_name: index_rebuild
 category: context
 op: op.wb.index_rebuild
@@ -13,7 +13,7 @@ parameters:
     required: false
   force:
     type: bool
-    description: Rebuild from scratch (default False = incremental, content-hash diff)
+    description: Full partition backfill using the same build-verify-ack delivery boundary (default False = incremental replay/content diff)
     required: false
 tags:
 - context

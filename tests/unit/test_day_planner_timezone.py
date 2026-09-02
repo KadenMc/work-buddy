@@ -4,7 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from work_buddy import config
-from work_buddy.obsidian.day_planner import planner
+from work_buddy.journal_capture import planner
 
 
 def test_current_local_minutes_uses_configured_work_buddy_timezone(monkeypatch):

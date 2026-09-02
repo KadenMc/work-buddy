@@ -21,6 +21,36 @@ def collect(cfg: dict[str, Any]) -> str:
     Returns a formatted markdown string suitable for context bundles.
     Returns a "not available" message if Obsidian or the plugin is unreachable.
     """
+    from work_buddy.collectors.obsidian_collector import _native_journal_authority
+
+    if _native_journal_authority(cfg):
+        from work_buddy.journal_capture.native_ops import day_planner
+
+        plan = day_planner(action="read")
+        plan = {**plan, "found": True}
+        return _format_plan(
+            plan,
+            str(plan.get("target_date") or datetime.now().date()),
+            source_label="native Journal SQLite",
+        )
+
+    from work_buddy.collectors.obsidian_collector import _legacy_obsidian_enabled
+
+    if not _legacy_obsidian_enabled():
+        return _unavailable_report(
+            "legacy Obsidian Day Planner collection is disabled",
+            include_setup_advice=False,
+        )
+
+    from work_buddy.journal_capture.authority import legacy_markdown_write_guard
+
+    with legacy_markdown_write_guard():
+        return _collect_legacy(cfg)
+
+
+def _collect_legacy(cfg: dict[str, Any]) -> str:
+    """Collect the pre-cutover plugin view under the Journal read barrier."""
+
     from work_buddy.obsidian import bridge
 
     try:
@@ -57,11 +87,18 @@ def collect(cfg: dict[str, Any]) -> str:
         return _unavailable_report(f"Failed to read plan: {e}")
 
 
-def _format_plan(plan: dict, date_str: str) -> str:
+def _format_plan(
+    plan: dict,
+    date_str: str,
+    *,
+    source_label: str | None = None,
+) -> str:
     """Format plan data into a readable markdown summary."""
     lines = ["# Day Planner — Today's Schedule"]
     lines.append("")
     lines.append(f"**Date:** {date_str}")
+    if source_label:
+        lines.append(f"**Source:** {source_label}")
 
     if not plan.get("found"):
         lines.append("")
@@ -103,10 +140,12 @@ def _format_plan(plan: dict, date_str: str) -> str:
     return "\n".join(lines)
 
 
-def _unavailable_report(reason: str) -> str:
+def _unavailable_report(reason: str, *, include_setup_advice: bool = True) -> str:
     """Generate a minimal report when Day Planner data is not available."""
-    return (
+    report = (
         "# Day Planner\n\n"
-        f"Day Planner data not available: {reason}\n\n"
-        "To enable: open Obsidian, ensure the Day Planner plugin is installed."
+        f"Day Planner data not available: {reason}"
     )
+    if include_setup_advice:
+        report += "\n\nTo enable: open Obsidian, ensure the Day Planner plugin is installed."
+    return report

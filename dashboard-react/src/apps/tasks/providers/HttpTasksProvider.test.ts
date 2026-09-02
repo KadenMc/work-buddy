@@ -630,13 +630,21 @@ describe("HttpTasksProvider", () => {
       expect(init?.headers).toMatchObject({ "X-WB-Test-Authority": "yes" });
       expect(JSON.parse(String(init?.body))).toEqual({
         title: "Write migration receipt",
+        requested_note_role: "working_document/v1",
+        initial_note: "Initial context",
+        requested_truth_policy_resolution: "disabled",
         client_mutation_id: "create-1",
       });
       return json({ ok: true, task: { ...task, task_id: "task-2", description: "Write migration receipt", revision: 1 }, collection_revision: 18, receipt: { receipt_id: "r-1" } });
     });
     const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: locationAdapter("").location });
 
-    const result = await provider.dispatch(intent(TASK_INTENTS.create, { title: "Write migration receipt" }, "create-1"));
+    const result = await provider.dispatch(intent(TASK_INTENTS.create, {
+      title: "Write migration receipt",
+      requested_note_role: "working_document/v1",
+      initial_note: "Initial context",
+      requested_truth_policy_resolution: "disabled",
+    }, "create-1"));
 
     expect(result).toMatchObject({
       status: "accepted",

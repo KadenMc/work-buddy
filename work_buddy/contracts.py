@@ -1,10 +1,8 @@
-"""Contract management for work-buddy.
+"""Contract query compatibility API.
 
-Contracts are markdown files with YAML frontmatter stored in the
-Obsidian vault (configured via ``contracts.vault_path`` in
-``config.yaml``, resolved relative to ``vault_root``).  Each contract
-represents a bounded unit of work (paper, deployment, grant, admin
-task) with explicit scope, deadlines, and stop rules.
+Before a reviewed import cohort is sealed this module reads the historical
+Markdown directory. After seal it projects the native Contracts SQLite
+authority into the same public result shapes and never reads the archive.
 """
 
 import re
@@ -14,6 +12,36 @@ from typing import Any
 
 from work_buddy.config import load_config
 from work_buddy.frontmatter import parse_frontmatter, scan_frontmatter, filter_by_status
+
+
+class ContractAuthorityError(RuntimeError):
+    """A caller attempted to use the retired Markdown authority."""
+
+
+def _native_contract_service():
+    """Return the sealed SQLite authority, if one has been published.
+
+    The import is deliberately lazy: legacy-only installations should not
+    create or migrate a contracts database merely because a read capability
+    was imported by the gateway.
+    """
+
+    from work_buddy.contracts_domain.provider import native_service_if_sealed
+
+    return native_service_if_sealed()
+
+
+def _native_contract_for_path(service, file_path: Path) -> dict:
+    """Resolve one historical filename/path through SQLite aliases."""
+
+    from work_buddy.contracts_domain.provider import legacy_projection
+
+    candidates = (file_path.as_posix(), file_path.name, file_path.stem)
+    for reference in candidates:
+        snapshot = service.get(reference)
+        if snapshot is not None:
+            return legacy_projection(snapshot)
+    raise FileNotFoundError(f"contract is not present in SQLite authority: {file_path}")
 
 
 def _configured_contracts_location() -> tuple[Path, Path]:
@@ -137,6 +165,10 @@ def _coerce_date(val: Any) -> date | None:
 
 def get_contracts_dir() -> Path:
     """Return the resolved contracts directory path (public helper)."""
+    if _native_contract_service() is not None:
+        raise ContractAuthorityError(
+            "Contracts now use SQLite authority; the Markdown directory is retired"
+        )
     return _contracts_dir(None)
 
 
@@ -146,6 +178,9 @@ def load_contract(file_path: Path) -> dict:
     Returns a dict containing all frontmatter fields, plus a
     ``sections`` key with parsed body sections, and ``path``.
     """
+    native = _native_contract_service()
+    if native is not None:
+        return _native_contract_for_path(native, file_path)
     fm, body = parse_frontmatter(file_path)
     sections = _parse_body_sections(body)
     return {**fm, "path": file_path, "frontmatter": fm, "sections": sections}
@@ -153,13 +188,22 @@ def load_contract(file_path: Path) -> dict:
 
 def load_all_contracts(contracts_dir: Path | None = None) -> list[dict]:
     """Load all contracts from the contracts/ directory."""
+    native = _native_contract_service()
+    if native is not None:
+        from work_buddy.contracts_domain.provider import list_legacy_shape
+
+        return list_legacy_shape(native)
     d = _contracts_dir(contracts_dir)
     return [load_contract(p) for p in sorted(d.glob("*.md")) if p.is_file()]
 
 
 def active_contracts(contracts_dir: Path | None = None) -> list[dict]:
     """Return contracts with ``status='active'``."""
-    return [c for c in load_all_contracts(contracts_dir) if c.get("status") == "active"]
+    return [
+        c
+        for c in load_all_contracts(contracts_dir)
+        if c.get("status") == "active" and c.get("lifecycle", "current") == "current"
+    ]
 
 
 def contracts_summary(contracts_dir: Path | None = None) -> str:
@@ -191,7 +235,10 @@ def overdue_contracts(contracts_dir: Path | None = None) -> list[dict]:
     today = date.today()
     results: list[dict] = []
     for c in load_all_contracts(contracts_dir):
-        if c.get("status") in ("completed", "abandoned"):
+        if c.get("lifecycle", "current") != "current" or c.get("status") in (
+            "completed",
+            "abandoned",
+        ):
             continue
         dl = _coerce_date(c.get("deadline"))
         if dl is not None and dl < today:
@@ -207,7 +254,10 @@ def stale_contracts(
     today = date.today()
     results: list[dict] = []
     for c in load_all_contracts(contracts_dir):
-        if c.get("status") in ("completed", "abandoned"):
+        if c.get("lifecycle", "current") != "current" or c.get("status") in (
+            "completed",
+            "abandoned",
+        ):
             continue
         reviewed = _coerce_date(c.get("last_reviewed"))
         if reviewed is None or (today - reviewed).days >= stale_days:
@@ -261,6 +311,9 @@ def check_wip_limit(contracts_dir: Path | None = None) -> dict[str, Any]:
         Dict with 'within_limit' (bool), 'active_count', 'limit',
         and 'active_titles' (list of active contract titles).
     """
+    native = _native_contract_service()
+    if native is not None:
+        return native.wip_status()
     active = active_contracts(contracts_dir)
     titles = [c.get("title", c["path"].stem) for c in active]
     return {
@@ -288,10 +341,18 @@ def contract_health_check(contracts_dir: Path | None = None) -> str:
     # ── Status counts ────────────────────────────────────────────────
     status_counts: dict[str, int] = {}
     for c in contracts:
-        s = c.get("status", "unknown")
+        s = (
+            "archived"
+            if c.get("lifecycle", "current") == "archived"
+            else c.get("status", "unknown")
+        )
         status_counts[s] = status_counts.get(s, 0) + 1
 
-    active = [c for c in contracts if c.get("status") == "active"]
+    active = [
+        c
+        for c in contracts
+        if c.get("status") == "active" and c.get("lifecycle", "current") == "current"
+    ]
     overdue = overdue_contracts(contracts_dir)
     stale = stale_contracts(contracts_dir)
 
@@ -307,7 +368,7 @@ def contract_health_check(contracts_dir: Path | None = None) -> str:
     if not wip["within_limit"]:
         lines.append(
             f"\n**WIP VIOLATION:** {wip['active_count']} active contracts "
-            f"(limit: {WIP_LIMIT}). "
+            f"(limit: {wip['limit']}). "
             f"Pause or complete a contract before starting new work. "
             f"Active: {', '.join(wip['active_titles'])}"
         )

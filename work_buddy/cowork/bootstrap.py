@@ -25,6 +25,10 @@ from work_buddy.cowork.paths import (
     resolve_markdown_path,
     resolve_relative_file_path,
 )
+from work_buddy.cowork.truth_activation import (
+    LEGACY_FULL_COWORK_CONTRACT,
+    provision_document_policy,
+)
 from work_buddy.cowork.readiness import classify_document
 from work_buddy.cowork.source_observation import (
     SourceObservationError,
@@ -1190,6 +1194,16 @@ def commit_bootstrap(
                     mode=intent.mode,
                     document_meta=document_meta,
                     document_id=intent.document_id,
+                    conn=conn,
+                )
+                provision_document_policy(
+                    store,
+                    document_id=record.id,
+                    interaction_contract_id=LEGACY_FULL_COWORK_CONTRACT,
+                    initial_activation="enabled",
+                    explicit_truth_acknowledged=True,
+                    actor=actor,
+                    intent_id=f"bootstrap:{intent.id}:truth-policy",
                     conn=conn,
                 )
                 if intent.mode == "import":

@@ -160,6 +160,30 @@ class HumanInputRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentOutputRequest:
+    """Exact durable output submitted by an identified agent run."""
+
+    exact_content: str | bytes
+    client_mutation_id: str
+    input_mode: str = "automation"
+    media_type: str = "text/plain"
+    occurred_at: str | None = None
+    command: DomainCommand | None = None
+
+    def __post_init__(self) -> None:
+        # Reuse the byte, identity, mode, and command validation contract while
+        # retaining a distinct type so callers cannot relabel human ingress.
+        HumanInputRequest(
+            exact_content=self.exact_content,
+            client_mutation_id=self.client_mutation_id,
+            input_mode=self.input_mode,
+            media_type=self.media_type,
+            occurred_at=self.occurred_at,
+            command=self.command,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class HumanInputCommit:
     source_ref: SourceRef
     representation_id: str
@@ -181,6 +205,37 @@ class TrustedIngressService:
         context: TrustedIngressContext,
         request: HumanInputRequest,
     ) -> HumanInputCommit:
+        return self._commit_input(
+            context,
+            request,
+            source_role="human_input",
+            author=None,
+        )
+
+    def commit_agent_output(
+        self,
+        context: TrustedIngressContext,
+        request: AgentOutputRequest,
+    ) -> HumanInputCommit:
+        """Persist an agent output without asserting human authorship."""
+
+        if context.inputter.kind != "agent_run":
+            raise InvalidSourceRequest()
+        return self._commit_input(
+            context,
+            request,
+            source_role="agent_output",
+            author=context.inputter,
+        )
+
+    def _commit_input(
+        self,
+        context: TrustedIngressContext,
+        request: HumanInputRequest | AgentOutputRequest,
+        *,
+        source_role: str,
+        author: ActorRef | None,
+    ) -> HumanInputCommit:
         content, encoding, representation_kind = self.store._normalize_content(
             request.exact_content,
             encoding="utf-8" if isinstance(request.exact_content, str) else None,
@@ -201,8 +256,7 @@ class TrustedIngressService:
                     pass
                 if any(candidate and candidate in serialized_parameters for candidate in candidates):
                     raise InvalidSourceRequest()
-        request_hash = canonical_sha256(
-            {
+        request_identity = {
                 "content_sha256": sha256_bytes(content),
                 "byte_length": len(content),
                 "encoding": encoding,
@@ -222,7 +276,16 @@ class TrustedIngressService:
                 "permitted_purposes": list(context.permitted_purposes),
                 "command": self._semantic_command_payload(request.command),
             }
-        )
+        # Preserve the established human-input hash contract for lost-response
+        # retries created before agent-output ingress existed.
+        if source_role != "human_input":
+            request_identity.update(
+                {
+                    "source_role": source_role,
+                    "author": author.to_dict() if author is not None else None,
+                }
+            )
+        request_hash = canonical_sha256(request_identity)
 
         # Avoid writing a new staged blob for an already committed retry.  The
         # second check inside BEGIN IMMEDIATE closes the concurrent-writer race.
@@ -255,6 +318,26 @@ class TrustedIngressService:
 
             staged = self.store._stage_if_needed(content, conn=conn)
             now = utc_now()
+            author_attribution = (
+                AttributionAssertion(
+                    role="author",
+                    actor=None,
+                    state="unknown",
+                    basis="not_determined",
+                    assurance="unknown",
+                    asserted_by=context.issuer,
+                    observed_at=now,
+                )
+                if author is None
+                else AttributionAssertion(
+                    role="author",
+                    actor=author,
+                    basis="identified_agent_output",
+                    assurance=context.inputter_assurance,
+                    asserted_by=context.issuer,
+                    observed_at=now,
+                )
+            )
             attributions = (
                 AttributionAssertion(
                     role="inputter",
@@ -272,21 +355,13 @@ class TrustedIngressService:
                     asserted_by=context.issuer,
                     observed_at=now,
                 ),
-                AttributionAssertion(
-                    role="author",
-                    actor=None,
-                    state="unknown",
-                    basis="not_determined",
-                    assurance="unknown",
-                    asserted_by=context.issuer,
-                    observed_at=now,
-                ),
+                author_attribution,
             )
             item = self.store._capture_source(
                 conn,
                 content=content,
                 staged_blob=staged,
-                source_role="human_input",
+                source_role=source_role,
                 tenant_scope_id=context.tenant_scope_id,
                 originating_surface=context.surface,
                 media_type=request.media_type,

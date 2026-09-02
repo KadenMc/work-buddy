@@ -1,8 +1,8 @@
 ---
 name: Obsidian Integration
 kind: integration
-description: Obsidian vault integration — bridge, tasks, datacore, vault writer
-summary: work-buddy integrates with Obsidian via an HTTP bridge plugin on port 27125. Subsystems include tasks, datacore, day planner, and vault events.
+description: Explicit legacy compatibility for Obsidian import, export, bridge, and filesystem fallback; native Work Buddy domains do not require the app.
+summary: The retained HTTP bridge and plugin adapters support opted-in legacy workflows and migration/rollback. Obsidian is disabled cleanly by preference and is not authority for native Journal, Tasks, Contracts, Projects, Personal Knowledge, or Calendar.
 tags:
 - obsidian
 - vault
@@ -10,4 +10,11 @@ tags:
 - plugins
 ---
 
-work-buddy integrates with Obsidian via an HTTP bridge plugin on port 27125. The bridge provides eval_js() for executing JavaScript inside Obsidian with access to the app object. Multiple subsystems build on this: Obsidian Tasks (read/write/intelligence), Datacore (structured vault queries), Day Planner (time-block scheduling), and vault events (rolling window file tracking). Vault semantic search runs natively, outside Obsidian — see `architecture/vault-index`.
+This subtree documents retained legacy compatibility. When explicitly enabled,
+the HTTP bridge on port 27125 can support migration, rollback, import/export,
+and old app-only adapters. With the feature opted out, Work Buddy does not
+probe the bridge, retry its operations, bootstrap plugin listeners, or suggest
+setup. Native Journal, Tasks, Contracts, Projects, Personal Knowledge, and
+Calendar use their own database/provider authorities. Filesystem Vault search
+also remains native and independent of the Obsidian app; see
+`architecture/vault-index`.

@@ -88,7 +88,7 @@ def chrome_route_to_tasks(
 ) -> dict[str, Any]:
     """Walk a Chrome-group thread's tabs and create one task per
     tab. The task text uses the tab title; the URL goes into the task's
-    summary-backed knowledge document under native task authority.
+    explicitly requested knowledge document under native task authority.
 
     Returns ``{"created": [...], "failed": [{...}], "thread_id": str}``.
     """
@@ -117,6 +117,9 @@ def chrome_route_to_tasks(
                 urgency=urgency,
                 project=project,
                 summary=summary,
+                requested_note_role=("working_document/v1" if summary else None),
+                initial_note=summary,
+                requested_truth_policy_resolution=("disabled" if summary else None),
                 creation_provenance="agent_inferred_from_chrome",
                 user_involvement="medium",
             )
@@ -201,6 +204,9 @@ def chrome_route_to_umbrella_task(
             urgency=urgency,
             project=project,
             summary=summary,
+            requested_note_role="working_document/v1",
+            initial_note=summary,
+            requested_truth_policy_resolution="disabled",
             creation_provenance="agent_inferred_from_chrome",
             user_involvement="medium",
         )

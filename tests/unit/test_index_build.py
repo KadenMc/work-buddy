@@ -33,6 +33,29 @@ class FakeEncoder:
         return None if self.down else np.ones((len(texts), self.dim), dtype=np.float32)
 
 
+class RecordingEncoder(FakeEncoder):
+    def __init__(self, dim=4, down=False):
+        super().__init__(dim=dim, down=down)
+        self.document_calls: list[list[str]] = []
+
+    def encode_documents(self, texts, kind, model_key=None):
+        self.document_calls.append(list(texts))
+        if self.down:
+            return None
+        return np.asarray(
+            [
+                [
+                    len(text),
+                    sum(map(ord, text)),
+                    text.count(" "),
+                    sum((index + 1) * ord(char) for index, char in enumerate(text)),
+                ]
+                for text in texts
+            ],
+            dtype=np.float32,
+        )
+
+
 class FakePartition:
     name = "fake"
     change_key = "hash"
@@ -136,6 +159,84 @@ class TestBuild:
         assert stats["doc_count"] == 1            # docs indexed
         assert store.vector_count("fake", "content") == 0  # no vectors (service down)
         assert "fake:a" in store.search_lexical("alpha", partition="fake")  # lexical OK
+
+    def test_changed_vectors_are_immediate_by_default(self, store):
+        part = FakePartition({
+            "i1": {"hash": "h1", "docs": [("a", "alpha", "alpha passage")]},
+            "i2": {"hash": "h2", "docs": [("b", "beta", "beta passage")]},
+        })
+        encoder = RecordingEncoder()
+
+        _builder(store, part, encoder=encoder).build()
+
+        assert encoder.document_calls == [["alpha passage"], ["beta passage"]]
+
+    def test_deferred_changed_vectors_use_global_resume_batches(
+        self, tmp_path, monkeypatch,
+    ):
+        items = {
+            f"i{n}": {
+                "hash": f"h{n}",
+                "docs": [(f"d{n}", f"name{n}", f"text {n}")],
+            }
+            for n in range(5)
+        }
+        part = FakePartition(items)
+        default_store = IndexStore(tmp_path / "default.db")
+        deferred_store = IndexStore(tmp_path / "deferred.db")
+        default_encoder = RecordingEncoder()
+        deferred_encoder = RecordingEncoder()
+        callback_observation = {}
+        monkeypatch.setattr(IndexBuilder, "_ENCODE_MISSING_BATCH", 2)
+
+        _builder(default_store, part, encoder=default_encoder).build()
+        _builder(deferred_store, part, encoder=deferred_encoder).build(
+            defer_changed_vectors=True,
+            after_build=lambda stats: callback_observation.update(
+                vector_count=deferred_store.vector_count("fake", "content"),
+                docs_indexed=stats["docs_indexed"],
+            ),
+        )
+
+        assert [len(call) for call in default_encoder.document_calls] == [1] * 5
+        assert [len(call) for call in deferred_encoder.document_calls] == [2, 2, 1]
+        default_vectors = default_store.load_all_vectors("fake", "content")
+        deferred_vectors = deferred_store.load_all_vectors("fake", "content")
+        assert default_vectors is not None and deferred_vectors is not None
+        np.testing.assert_array_equal(default_vectors[0], deferred_vectors[0])
+        assert default_vectors[1] == deferred_vectors[1]
+        assert callback_observation == {"vector_count": 5, "docs_indexed": 5}
+
+    def test_deferred_vector_build_resumes_after_lexical_progress(self, store):
+        class InterruptingPartition(FakePartition):
+            fail_item = "i2"
+
+            def parse(self, item_id):
+                if item_id == self.fail_item:
+                    raise RuntimeError("synthetic parse interruption")
+                return super().parse(item_id)
+
+        part = InterruptingPartition({
+            "i1": {"hash": "h1", "docs": [("a", "alpha", "alpha passage")]},
+            "i2": {"hash": "h2", "docs": [("b", "beta", "beta passage")]},
+        })
+        encoder = RecordingEncoder()
+        builder = _builder(store, part, encoder=encoder)
+
+        with pytest.raises(RuntimeError, match="synthetic parse interruption"):
+            builder.build(defer_changed_vectors=True)
+
+        assert set(store.get_indexed_items("fake")) == {"i1"}
+        assert "fake:a" in store.search_lexical("alpha", partition="fake")
+        assert store.vector_count("fake", "content") == 0
+        assert encoder.document_calls == []
+
+        part.fail_item = ""
+        recovered = builder.build(defer_changed_vectors=True)
+        assert recovered["changed"] == 1
+        assert set(store.get_indexed_items("fake")) == {"i1", "i2"}
+        assert store.vector_count("fake", "content") == 2
+        assert encoder.document_calls == [["alpha passage", "beta passage"]]
 
     def test_pooled_projection_build(self, store):
         class PooledPartition(FakePartition):

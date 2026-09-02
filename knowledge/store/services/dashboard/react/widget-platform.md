@@ -30,6 +30,13 @@ dev_notes: |-
 
   Draft repositories use schema-versioned records, compare-and-swap revisions, retention metadata, and cross-tab signaling. Production uses IndexedDB; tests inject in-memory repositories. Arrange and Preview safety is enforced by the host from declared intent effects, not by inspecting DOM elements or HTTP methods.
 
+  `isOpaqueWidgetInstanceId` is the single contribution, snapshot, and intent
+  grammar boundary. Provider integration tests must pass production-shaped
+  snapshots through `assertViewSnapshot`, rather than testing `loadView` in
+  isolation. When an instance ID appears in an HTTP path, the client must encode
+  it and the server route must preserve the complete decoded value, including
+  valid slash delimiters.
+
   Use `HelpTarget` or a primitive's `help` prop for contextual explanations.
   Tooltip descriptions augment existing `aria-describedby` references, including
   validation errors; they must not replace them.
@@ -59,6 +66,11 @@ Never collapse these identities into one namespace:
 2. **View slot** identifies the purpose a widget serves in one view, such as the Journal capture role.
 3. **Widget instance** identifies one placement, layout record, and local-state owner.
 
+Widget instance IDs are stable and opaque to Dashboard Core. A domain-backed
+provider may reuse its stable catalog identity, including periods or slashes.
+Core validates the bounded syntax but never treats those delimiters as namespace
+or routing instructions.
+
 A required slot may accept a replacement renderer that satisfies the same contract. Requiredness therefore attaches to purpose, not permanently to a default widget type.
 
 ## Placement availability
@@ -79,7 +91,12 @@ Renderers receive typed UI input and emit declared intents. Local presentation s
 
 Dashboard Core owns layout editing, constraint enforcement, collision feedback, reset, undo/redo, and portable personalization patches. The grid library remains an implementation detail rather than part of persisted view state. The Customize view entry control lives in the app shell navbar and activates when the mounted view registers a customize session, so grid views everywhere share one entry point while other surfaces leave it disabled.
 
-Desktop customization uses the grid. Mobile uses document flow and drag-reordering of a canonical sequence. Responsive changes may reflow or scroll content, but they must not silently remove primary controls or hide that a capability exists.
+Desktop customization uses the grid and includes the editor for the canonical
+mobile sequence. Narrow surfaces render that sequence in document flow but do
+not enter layout-edit mode: the shell keeps the shared Customize control mounted
+and disabled while compact-header CSS removes it from the mobile presentation.
+Responsive changes may reflow or scroll widget content, but they must not remove
+the widgets' own primary controls.
 
 `WidgetHost` supplies the renderer's measured content-box width in
 `presentation.width`; the grid estimate is only a fallback before a positive

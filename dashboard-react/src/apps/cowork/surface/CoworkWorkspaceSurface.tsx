@@ -31,10 +31,15 @@ import {
 } from "../../../widget-library/chat";
 import {
   coworkDocumentCanWriteBackSource,
+  type CoworkDocumentCapabilityEnvelope,
   type CoworkDocumentSummary,
   type CoworkDriftState,
   type CoworkViewModel,
 } from "../contracts";
+import {
+  coworkRailTabsForCapabilities,
+  resolveCoworkDocumentCapabilities,
+} from "../capabilities";
 import type {
   CoworkPasteProvenanceRecorder,
   ProvenanceSelectionAction,
@@ -47,10 +52,13 @@ import type {
   CoworkMaterializeReceipt,
 } from "../materialization/contracts";
 import {
-  CoworkBridgeEditor,
-  useCoworkBridge,
   type CoworkProvenanceIdentityState,
 } from "../bridge";
+import {
+  DocumentSessionProvider,
+  useDocumentSession,
+} from "../session/DocumentSession";
+import { DocumentEditorSurface } from "./DocumentEditorSurface";
 import {
   CoworkChatAnnotations,
   CoworkChatTargetingProvider,
@@ -97,6 +105,7 @@ import {
   createPersistedTruthStore,
   HttpCoworkTruthAnalysisClient,
   HttpCoworkTruthClient,
+  TruthActivationControl,
   type TruthEditorIntegration,
   type TruthPassageConnection,
   type TruthPassageNavigationTarget,
@@ -239,18 +248,13 @@ function CoworkPaneTabs({
   active,
   onChange,
   editorTabRef,
+  panes,
 }: {
   readonly active: CoworkWorkspacePane;
   readonly onChange: (pane: CoworkWorkspacePane) => void;
   readonly editorTabRef?: MutableRefObject<HTMLButtonElement | null>;
+  readonly panes: readonly CoworkWorkspacePane[];
 }) {
-  const panes: readonly CoworkWorkspacePane[] = [
-    "editor",
-    "review",
-    "provenance",
-    "truth",
-    "chat",
-  ];
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const select = (index: number): void => {
     const normalized = (index + panes.length) % panes.length;
@@ -607,6 +611,43 @@ export function CoworkLiveWorkspace({
   readonly onTruthPassageNavigationConsumed?: (requestId: string) => void;
 }) {
   const workspaceIdentity = `${storeId}\u0000${documentId}`;
+  const [capabilityOverride, setCapabilityOverride] = useState<{
+    readonly workspaceIdentity: string;
+    readonly envelope: CoworkDocumentCapabilityEnvelope;
+  } | null>(null);
+  const effectiveCapabilityEnvelope = useMemo(() => {
+    if (
+      capabilityOverride === null ||
+      capabilityOverride.workspaceIdentity !== workspaceIdentity
+    ) {
+      return document.capabilities;
+    }
+    const serverRevision = document.capabilities?.truth.activationRevision ?? -1;
+    const overrideRevision =
+      capabilityOverride.envelope.truth.activationRevision ?? -1;
+    return overrideRevision > serverRevision
+      ? capabilityOverride.envelope
+      : document.capabilities;
+  }, [capabilityOverride, document.capabilities, workspaceIdentity]);
+  const effectiveDocument = useMemo(
+    () =>
+      effectiveCapabilityEnvelope === document.capabilities
+        ? document
+        : { ...document, capabilities: effectiveCapabilityEnvelope },
+    [document, effectiveCapabilityEnvelope],
+  );
+  const capabilities = useMemo(
+    () => resolveCoworkDocumentCapabilities(effectiveDocument),
+    [effectiveDocument],
+  );
+  const availableRailTabs = useMemo(
+    () => coworkRailTabsForCapabilities(capabilities),
+    [capabilities],
+  );
+  const availablePanes = useMemo<readonly CoworkWorkspacePane[]>(
+    () => ["editor", ...availableRailTabs],
+    [availableRailTabs],
+  );
   const workspaceIdentityRef = useRef(workspaceIdentity);
   workspaceIdentityRef.current = workspaceIdentity;
   const editorScrollRef = usePersistedScrollPosition({
@@ -646,19 +687,33 @@ export function CoworkLiveWorkspace({
   // seeds from and mirrors back to localStorage, so a reload keeps the Review, Truth, or Chat choice
   // (the onFeedbackCaptured switch to Chat below now persists through the same seam).
   const [railStore] = useState(
-    () =>
-      new RailStore(
+    () => {
+      const retainedTab = loadRailTab(
+        window.localStorage,
+        documentId,
+        storeId,
+      );
+      const defaultTab = availableRailTabs[0] ?? "review";
+      return new RailStore(
         {
           tab:
-            loadRailTab(window.localStorage, documentId, storeId) ?? "review",
+            retainedTab !== null && availableRailTabs.includes(retainedTab)
+              ? retainedTab
+              : defaultTab,
         },
         {
           onTabChange: (tab) =>
             saveRailTab(window.localStorage, documentId, tab, storeId),
         },
-      ),
+      );
+    },
   );
   const activeRailTab = useRailState(railStore, (state) => state.tab);
+  useEffect(() => {
+    if (!availableRailTabs.includes(railStore.getState().tab)) {
+      railStore.setTab(availableRailTabs[0] ?? "review");
+    }
+  }, [availableRailTabs, railStore]);
   const [provenanceSelectionAction, setProvenanceSelectionAction] =
     useState<ProvenanceSelectionAction | null>(null);
   const [inputProvenancePending, setInputProvenancePending] = useState(false);
@@ -690,13 +745,17 @@ export function CoworkLiveWorkspace({
         ? "Provenance identity is reconnecting. Review actions will be available when it is ready."
         : "Open Work Buddy from its launcher to reconnect provenance identity before recording review.";
   const truthStore = useMemo(
-    () => createPersistedTruthStore(window.localStorage, storeId, documentId),
-    [documentId, storeId],
+    () =>
+      capabilities.truth
+        ? createPersistedTruthStore(window.localStorage, storeId, documentId)
+        : null,
+    [capabilities.truth, documentId, storeId],
   );
   const conversation = useDocumentConversationBinding({
     documentId,
     storeId,
     client: conversationBindingClient,
+    enabled: capabilities.chat,
   });
   useEffect(() => {
     annotations.replaceFeedback(conversation.feedback);
@@ -770,13 +829,20 @@ export function CoworkLiveWorkspace({
     () => new HttpCoworkVerifyClient({ documentId, storeId }),
     [documentId, storeId],
   );
-  const truthProvider = useMemo(
+  const truthClient = useMemo(
     () => new HttpCoworkTruthClient({ documentId, storeId }),
     [documentId, storeId],
   );
+  const truthProvider = useMemo(
+    () => (capabilities.truth ? truthClient : null),
+    [capabilities.truth, truthClient],
+  );
   const truthAnalysisProvider = useMemo(
-    () => new HttpCoworkTruthAnalysisClient({ documentId, storeId }),
-    [documentId, storeId],
+    () =>
+      capabilities.truth
+        ? new HttpCoworkTruthAnalysisClient({ documentId, storeId })
+        : null,
+    [capabilities.truth, documentId, storeId],
   );
   const ensureConversation = useCallback(async (): Promise<void> => {
     await conversation.ensure();
@@ -863,6 +929,7 @@ export function CoworkLiveWorkspace({
     useState<VerificationRecheckIntent | null>(null);
   const selectPane = useCallback(
     (pane: CoworkWorkspacePane): void => {
+      if (!availablePanes.includes(pane)) return;
       if (activePane === "review" && pane !== "review") {
         detachReviewScroll();
       }
@@ -883,14 +950,18 @@ export function CoworkLiveWorkspace({
       detachProvenanceScroll,
       prepareChat,
       railStore,
+      availablePanes,
     ],
   );
   useEffect(
     () =>
       railStore.subscribe(() => {
-        if (narrowWorkspace) setActivePane(railStore.getState().tab);
+        const next = railStore.getState().tab;
+        if (narrowWorkspace && availableRailTabs.includes(next)) {
+          setActivePane(next);
+        }
       }),
-    [narrowWorkspace, railStore],
+    [availableRailTabs, narrowWorkspace, railStore],
   );
   useEffect(() => setActivePane("editor"), [documentId]);
   useEffect(() => setProvenanceSelectionAction(null), [documentId, storeId]);
@@ -905,10 +976,11 @@ export function CoworkLiveWorkspace({
       [provenanceClient],
     );
 
-  const bridge = useCoworkBridge({
+  const session = useDocumentSession({
     documentId,
     storeId,
     readOnly,
+    includeTruthProjection: capabilities.includeTruthProjection,
     onSyncStatus,
     currentFileSha256: document.currentFileSha256,
     initialDriftState: document.driftState,
@@ -935,7 +1007,7 @@ export function CoworkLiveWorkspace({
     },
     // The last link of the feedback loop: R9 landed, so record the span-linked message on
     // the Chat tab and switch the rail to Chat so the human sees the feedback land.
-    ...(feedbackCapture
+    ...(feedbackCapture && capabilities.chat
       ? {
           onFeedbackCaptured: (capture: FeedbackCapture) => {
             if (
@@ -960,6 +1032,7 @@ export function CoworkLiveWorkspace({
         }
       : {}),
   });
+  const bridge = session.bridge;
   const handleProvenanceSelectionAction = useCallback(
     (
       action: ProvenanceSelectionAction & {
@@ -998,7 +1071,7 @@ export function CoworkLiveWorkspace({
       bridge.setEditorLens(
         tab === "review"
           ? "review"
-          : tab === "truth"
+          : tab === "truth" && capabilities.truth
             ? "truth"
             : tab === "provenance"
               ? "provenance"
@@ -1007,11 +1080,12 @@ export function CoworkLiveWorkspace({
     };
     applyLens();
     return railStore.subscribe(applyLens);
-  }, [bridge.setEditorLens, railStore]);
+  }, [bridge.setEditorLens, capabilities.truth, railStore]);
   useEffect(() => {
     const pending = pendingTruthPassageNavigation;
     if (
       pending === null ||
+      !capabilities.truth ||
       !bridge.editorReady ||
       pending.storeId !== storeId ||
       pending.documentId !== documentId
@@ -1061,6 +1135,7 @@ export function CoworkLiveWorkspace({
     bridge.reviewAnchors,
     bridge.scrollToSpanAnchor,
     bridge.setEditorLens,
+    capabilities.truth,
     documentId,
     narrowWorkspace,
     onTruthPassageNavigationConsumed,
@@ -1092,8 +1167,10 @@ export function CoworkLiveWorkspace({
     }),
     [bridge.reviewAnchors, narrowWorkspace, selectPane],
   );
-  const truthEditor = useMemo<TruthEditorIntegration>(
-    () => ({
+  const truthEditor = useMemo<TruthEditorIntegration | undefined>(
+    () =>
+      capabilities.truth
+        ? ({
       captureAnalysisTarget: async (target) => {
         const controller = bridge.actionSnapshotController;
         if (controller === null) {
@@ -1208,7 +1285,8 @@ export function CoworkLiveWorkspace({
           reveal();
         });
       },
-    }),
+          } satisfies TruthEditorIntegration)
+        : undefined,
     [
       bridge.actionSnapshotController,
       bridge.focusSpanAnchor,
@@ -1218,6 +1296,7 @@ export function CoworkLiveWorkspace({
       narrowWorkspace,
       onOpenTruthPassage,
       selectPane,
+      capabilities.truth,
     ],
   );
   const resolvedRunVerify = useMemo<CoworkRunVerifyHandler | undefined>(() => {
@@ -1310,8 +1389,8 @@ export function CoworkLiveWorkspace({
       invalidationReason?.startsWith("truth.analysis_") === true
     ) {
       bridge.reviewProvider.invalidate();
-      truthProvider.invalidate();
-      truthAnalysisProvider.invalidate();
+      truthProvider?.invalidate();
+      truthAnalysisProvider?.invalidate();
     }
     // Fire once per new invalidation, keyed by its sequence.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1327,7 +1406,8 @@ export function CoworkLiveWorkspace({
         };
 
   return (
-    <CoworkWorkspaceLayout
+    <DocumentSessionProvider session={session}>
+      <CoworkWorkspaceLayout
       health={health}
       editorHelp={coworkEditorHelp(document)}
       showHealth={showHealth}
@@ -1335,20 +1415,32 @@ export function CoworkLiveWorkspace({
         <CoworkDocumentActionBar controller={bridge.actionSnapshotController} />
       }
       workspaceBottomDock={
-        <CoworkDocumentActionDock
-          storeId={storeId}
-          documentId={documentId}
-          controller={bridge.actionSnapshotController}
-          reviewProvider={bridge.reviewProvider}
-          readOnly={readOnly}
-          onRunVerify={resolvedRunVerify}
-          onAffirmRecheckTarget={resolvedAffirmRecheckTarget}
-          verifySetup={bridge.verifySetup}
-          verifyCapability={bridge.verifyCapability}
-          execution={verifyExecution}
-          armedRecheck={armedVerifyRecheck}
-          onClearArmedRecheck={() => setArmedVerifyRecheck(null)}
-        />
+        <>
+          <CoworkDocumentActionDock
+            storeId={storeId}
+            documentId={documentId}
+            controller={bridge.actionSnapshotController}
+            reviewProvider={bridge.reviewProvider}
+            readOnly={readOnly}
+            onRunVerify={resolvedRunVerify}
+            onAffirmRecheckTarget={resolvedAffirmRecheckTarget}
+            verifySetup={bridge.verifySetup}
+            verifyCapability={bridge.verifyCapability}
+            execution={verifyExecution}
+            armedRecheck={armedVerifyRecheck}
+            onClearArmedRecheck={() => setArmedVerifyRecheck(null)}
+          />
+          {effectiveCapabilityEnvelope !== undefined ? (
+            <TruthActivationControl
+              client={truthClient}
+              envelope={effectiveCapabilityEnvelope}
+              readOnly={readOnly}
+              onChanged={(envelope) =>
+                setCapabilityOverride({ workspaceIdentity, envelope })
+              }
+            />
+          ) : null}
+        </>
       }
       editorScrollRef={editorScrollRef}
       narrow={narrowWorkspace}
@@ -1360,6 +1452,7 @@ export function CoworkLiveWorkspace({
               active={activePane}
               onChange={selectPane}
               editorTabRef={editorPaneTabRef}
+              panes={availablePanes}
             />
           ) : null}
           <p className="wb-visually-hidden" role="status" aria-live="polite">
@@ -1373,18 +1466,16 @@ export function CoworkLiveWorkspace({
         </>
       }
       editor={
-        <CoworkBridgeEditor
-          {...bridge.editorProps}
+        <DocumentEditorSurface
           activeLens={
             activeRailTab === "review"
               ? "review"
-              : activeRailTab === "truth"
+              : activeRailTab === "truth" && capabilities.truth
                 ? "truth"
                 : activeRailTab === "provenance"
                   ? "provenance"
                   : "neutral"
           }
-          provenanceProvider={bridge.provenanceProvider}
           provenanceSelectionActionsActive={coworkProvenanceSelectionActionsActive(
             activeRailTab,
             narrowWorkspace,
@@ -1407,6 +1498,7 @@ export function CoworkLiveWorkspace({
           <CoworkRail
             documentId={documentId}
             storeId={storeId}
+            availableTabs={availableRailTabs}
             reviewScrollRef={reviewScrollRef}
             onReviewScrollWillDetach={detachReviewScroll}
             truthScrollRef={truthScrollRef}
@@ -1425,13 +1517,19 @@ export function CoworkLiveWorkspace({
             chat={chat}
             reviewAnchors={reviewAnchors}
             store={railStore}
-            truth={{
-              provider: truthProvider,
-              analysisProvider: truthAnalysisProvider,
-              store: truthStore,
-              editor: truthEditor,
-              readOnly,
-            }}
+            truth={
+              truthProvider !== null &&
+              truthAnalysisProvider !== null &&
+              truthStore !== null
+                ? {
+                    provider: truthProvider,
+                    analysisProvider: truthAnalysisProvider,
+                    store: truthStore,
+                    editor: truthEditor,
+                    readOnly: readOnly || capabilities.truthReadOnly,
+                  }
+                : undefined
+            }
             shortcutBindings={shortcutBindings}
             chatAnnotations={annotations}
             chatExecution={presentedChatExecution}
@@ -1446,7 +1544,8 @@ export function CoworkLiveWorkspace({
           />
         </CoworkChatTargetingProvider>
       }
-    />
+      />
+    </DocumentSessionProvider>
   );
 }
 

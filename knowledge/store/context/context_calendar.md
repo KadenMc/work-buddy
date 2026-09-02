@@ -1,7 +1,7 @@
 ---
 name: Context Calendar
 kind: capability
-description: Google Calendar schedule for a given date. Also checks plugin readiness.
+description: Provider-neutral Calendar schedule for a given date. With the current configuration it uses native Google OAuth and never calls Obsidian.
 capability_name: context_calendar
 category: context
 op: op.wb.context_calendar
@@ -27,6 +27,5 @@ aliases:
 parents:
 - context
 requires:
-- obsidian
-- google_calendar
+- google_calendar_native
 ---

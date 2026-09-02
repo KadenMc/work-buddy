@@ -190,7 +190,7 @@ def test_workflow_requires_matches_one_hop_union(registry):
 
 
 # ---------------------------------------------------------------------------
-# Invariant 4 — morning-routine's invokes entries cover obsidian + google_calendar
+# Invariant 4 — morning-routine uses native Calendar and no Obsidian dependency
 # ---------------------------------------------------------------------------
 
 def test_morning_routine_requires_includes_core_components(registry):
@@ -201,11 +201,11 @@ def test_morning_routine_requires_includes_core_components(registry):
     """
     wf = registry.get("morning-routine")
     assert wf is not None, "morning-routine workflow must be in the registry"
-    assert "obsidian" in wf.requires, (
-        f"morning-routine.requires lost 'obsidian'. Current: {wf.requires}"
+    assert "obsidian" not in wf.requires, (
+        f"morning-routine.requires regained retired 'obsidian'. Current: {wf.requires}"
     )
-    assert "google_calendar" in wf.requires, (
-        f"morning-routine.requires lost 'google_calendar'. Current: {wf.requires}"
+    assert "google_calendar_native" in wf.requires, (
+        f"morning-routine.requires lost 'google_calendar_native'. Current: {wf.requires}"
     )
 
 

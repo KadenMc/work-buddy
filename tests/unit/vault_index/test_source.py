@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from pathlib import Path
+
+import numpy as np
 
 from work_buddy.vault_index import store as vstore
 from work_buddy.vault_index.chunker import chunk_markdown
@@ -213,3 +216,188 @@ def test_exclude_dirs_overrides_obsidian(tmp_path):
     assert "vault/repos/r.md" in ids             # repos INCLUDED via the override
     assert "vault/keep.md" in ids
     assert "vault/node_modules/n.md" not in ids  # still excluded
+
+
+def test_sealed_authority_roots_are_derived_read_only(tmp_path):
+    from work_buddy.vault_index.authority_exclusions import sealed_legacy_roots
+
+    vault = tmp_path / "vault"
+    data = tmp_path / "data" / "db"
+    data.mkdir(parents=True)
+    cfg = {
+        "vault_root": str(vault),
+        "paths": {"data_root": str(tmp_path / "data")},
+        "obsidian": {"journal_dir": "journal"},
+        "projects": {"markdown_dir": "legacy/projects"},
+        "contracts": {"vault_path": "legacy/contracts"},
+        "personal_knowledge": {"vault_path": "legacy/personal"},
+    }
+
+    declarations = (
+        ("journal_capture.db", "journal_authority_control", "mode", "database_only"),
+        ("projects.db", "project_authority_state", "authority", "sqlite"),
+        ("contracts.db", "contract_authority", "state", "native"),
+        (
+            "personal_knowledge.db",
+            "personal_knowledge_authority",
+            "authority",
+            "sqlite",
+        ),
+    )
+    for filename, table, column, value in declarations:
+        with sqlite3.connect(data / filename) as connection:
+            connection.execute(
+                f"CREATE TABLE {table} (singleton INTEGER PRIMARY KEY, {column} TEXT)"
+            )
+            connection.execute(
+                f"INSERT INTO {table}(singleton,{column}) VALUES(1,?)", (value,)
+            )
+
+    assert set(sealed_legacy_roots(cfg)) == {
+        vault / "journal",
+        vault / "legacy" / "projects",
+        vault / "legacy" / "contracts",
+        vault / "legacy" / "personal",
+    }
+
+
+def test_authority_exclusion_prunes_before_descent_and_fences_direct_parse(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "vault"
+    archive = root / "journal"
+    _write(root / "live.md", "# Live\n\ncurrent searchable text\n")
+    _write(archive / "archived.md", "# Archive\n\nstale private text\n")
+    cfg = _cfg({"vault": {"path": str(root)}})
+    source = FilesystemSource(cfg, authority_exclusions=(archive,))
+
+    real_scandir = os.scandir
+
+    def guarded_scandir(path):
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(
+            os.path.abspath(archive)
+        ):
+            raise AssertionError("sealed archive was enumerated")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    files, _statuses = source.discover()
+    assert _ids(files) == {"vault/live.md"}
+    assert source.parse("vault/journal/archived.md") == []
+    _write(root.parent / "outside.md", "# Outside\n\nnot a vault item\n")
+    assert source.parse("vault/../outside.md") == []
+
+
+def test_partition_revalidates_authority_between_discovery_and_parse(
+    tmp_path,
+    monkeypatch,
+):
+    from work_buddy.vault_index.partition import VaultChunkPartition
+
+    vault = tmp_path / "vault"
+    archive = vault / "projects"
+    note = _write(archive / "archived.md", "# Archive\n\nprivate history\n")
+    data = tmp_path / "data"
+    (data / "db").mkdir(parents=True)
+    database = data / "db" / "projects.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE project_authority_state("
+            "singleton INTEGER PRIMARY KEY,authority TEXT NOT NULL,state TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO project_authority_state VALUES(1,'legacy_markdown','active')"
+        )
+    cfg = {
+        "vault_root": str(vault),
+        "paths": {"data_root": str(data)},
+        "vault_index": {"vaults": {"vault": {"path": str(vault)}}},
+        "obsidian": {"journal_dir": "journal", "exclude_folders": []},
+        "projects": {"markdown_dir": "projects"},
+        "contracts": {"vault_path": "contracts"},
+        "personal_knowledge": {"vault_path": "personal"},
+    }
+    source = FilesystemSource(cfg, authority_exclusions=())
+    partition = VaultChunkPartition(source=source)
+    assert [ref.item_id for ref in partition.discover()] == [
+        "vault/projects/archived.md"
+    ]
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE project_authority_state SET authority='sqlite' WHERE singleton=1"
+        )
+
+    original_read_text = Path.read_text
+    touched = False
+
+    def guarded_read_text(path: Path, *args, **kwargs):
+        nonlocal touched
+        if path == note:
+            touched = True
+            raise AssertionError("sealed archive was opened after discovery")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    assert partition.parse("vault/projects/archived.md") == []
+    assert touched is False
+
+
+def test_first_post_seal_consolidated_refresh_prunes_previously_indexed_archive(
+    tmp_path,
+):
+    from work_buddy.index.build import IndexBuilder
+    from work_buddy.index.config import PartitionConfig
+    from work_buddy.index.partitioned import IndexPartition
+    from work_buddy.index.resident import ResidentCacheRegistry
+    from work_buddy.index.store import IndexStore
+    from work_buddy.vault_index.partition import VaultChunkPartition
+
+    class Encoder:
+        def encode_documents(self, texts, *_args, **_kwargs):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+    root = tmp_path / "vault"
+    archive = root / "journal"
+    _write(root / "live.md", "# Live\n\ncurrent searchable text\n")
+    _write(archive / "archived.md", "# Archive\n\nstale searchable text\n")
+    cfg = _cfg({"vault": {"path": str(root)}})
+    index = IndexStore(tmp_path / "consolidated.db")
+
+    before = VaultChunkPartition(
+        source=FilesystemSource(cfg, authority_exclusions=())
+    )
+    IndexBuilder(
+        index,
+        Encoder(),
+        before,
+        residents=ResidentCacheRegistry(),
+        use_lock=False,
+    ).build()
+    assert set(index.get_indexed_items("vault")) == {
+        "vault/live.md",
+        "vault/journal/archived.md",
+    }
+    assert index.search_lexical("stale", partition="vault")
+
+    after = VaultChunkPartition(
+        source=FilesystemSource(cfg, authority_exclusions=(archive,))
+    )
+    result = IndexPartition(
+        after,
+        index,
+        Encoder(),
+        PartitionConfig(name="vault"),
+        residents=ResidentCacheRegistry(),
+    ).build()
+    assert result["deleted"] == 1
+    assert result["evidence"] == {
+        "schema": "wb.legacy-root-detachment-evidence/v1",
+        "detached_roots": 1,
+        "detachment_active": True,
+        "indexed_excluded_items": 0,
+        "archive_discovery_fenced": True,
+    }
+    assert set(index.get_indexed_items("vault")) == {"vault/live.md"}
+    assert index.search_lexical("stale", partition="vault") == {}

@@ -8,7 +8,7 @@ Two parallel hierarchies share a common base:
   (gitignored).
 
 * **Personal knowledge** — user-authored insights, patterns, feedback,
-  preferences — markdown-backed in the Obsidian vault. Queryable through
+  preferences — backed by the personal-knowledge SQLite authority. Queryable through
   the same search infrastructure.
 
 Agents query via ``knowledge`` (both stores), ``agent_docs`` (system

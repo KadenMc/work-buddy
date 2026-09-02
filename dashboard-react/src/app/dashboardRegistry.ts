@@ -1,7 +1,7 @@
 import { COWORK_APP_CONTRIBUTION } from "../apps/cowork/contribution";
 import { COWORK_VIEW_MODULE } from "../apps/cowork/viewModule";
 import { COWORK_WORKSPACE_WIDGET_MODULE } from "../apps/cowork/widgetModule";
-import { JOURNAL_APP_CONTRIBUTION } from "../apps/journal/contribution";
+import { JOURNAL_APP_CONTRIBUTION, JOURNAL_WIDGET_MODULES } from "../apps/journal/contribution";
 import { JOURNAL_VIEW_MODULE } from "../apps/journal/viewModule";
 import { TASKS_APP_CONTRIBUTION } from "../apps/tasks/contribution";
 import { TASKS_VIEW_MODULE } from "../apps/tasks/viewModule";
@@ -28,7 +28,7 @@ for (const contribution of WIDGET_LIBRARY_CONTRIBUTIONS) {
 // roles and renderers must already exist so registration can validate the composition.
 dashboardRegistry.registerApp(
   JOURNAL_APP_CONTRIBUTION,
-  [],
+  JOURNAL_WIDGET_MODULES,
   [JOURNAL_VIEW_MODULE],
   { trust: "native" },
 );

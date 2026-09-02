@@ -1016,6 +1016,12 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     _DISABLED_REGISTRY.clear()
     bridge_tools = obsidian_backed_tools()
     bridge_down = not is_tool_available("obsidian")
+    try:
+        from work_buddy.health.preferences import is_wanted
+
+        obsidian_opted_out = is_wanted("obsidian") is False
+    except Exception:
+        obsidian_opted_out = False
     for name in list(registry):
         entry = registry[name]
         if isinstance(entry, Capability) and entry.requires:
@@ -1033,7 +1039,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
             # or a non-bridge dep (calendar, hindsight, thunderbird, ...) is
             # absent — keep the hard-disable; a breaker is wrong for a
             # dependency that will not appear within the session.
-            if bridge_down:
+            if bridge_down and not obsidian_opted_out:
                 missing = [t_id for t_id in missing if t_id not in bridge_tools]
             if missing:
                 DISABLED_CAPABILITIES[name] = missing

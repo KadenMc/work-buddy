@@ -22,7 +22,7 @@ from work_buddy.storage.migrations import (
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Redacted spans retain their immutable identity/hash but not their quote or
 # quote context.  Keep the selector valid JSON (and valid for the existing
@@ -2323,6 +2323,185 @@ def _m010_direct_entry_provenance_basis(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _m011_document_truth_activation(conn: sqlite3.Connection) -> None:
+    """Add immutable document interaction contracts and Truth admission history."""
+
+    statements = (
+        """
+        CREATE TABLE interaction_contract_definitions (
+            id                  TEXT PRIMARY KEY,
+            contract_id         TEXT NOT NULL,
+            definition_version  INTEGER NOT NULL CHECK(definition_version > 0),
+            definition_json     TEXT NOT NULL,
+            definition_sha256   TEXT NOT NULL,
+            created_at          TEXT NOT NULL,
+            UNIQUE(contract_id, definition_version)
+        )
+        """,
+        """
+        CREATE TABLE document_interaction_contract_assignments (
+            id                           TEXT PRIMARY KEY,
+            document_id                  TEXT NOT NULL UNIQUE REFERENCES documents(id),
+            binding_id                   TEXT,
+            interaction_contract_id      TEXT NOT NULL,
+            interaction_contract_version INTEGER NOT NULL,
+            interaction_contract_sha256  TEXT NOT NULL,
+            cowork_document_class        TEXT NOT NULL CHECK(
+                cowork_document_class IN ('co_authored', 'generated')
+            ),
+            actor_ref                    TEXT NOT NULL,
+            intent_id                    TEXT NOT NULL,
+            assigned_at                  TEXT NOT NULL,
+            FOREIGN KEY(
+                interaction_contract_id, interaction_contract_version
+            ) REFERENCES interaction_contract_definitions(
+                contract_id, definition_version
+            )
+        )
+        """,
+        """
+        CREATE TABLE document_truth_activation_transitions (
+            id                    TEXT PRIMARY KEY,
+            document_id           TEXT NOT NULL REFERENCES documents(id),
+            activation_revision   INTEGER NOT NULL CHECK(activation_revision > 0),
+            previous_state        TEXT CHECK(
+                previous_state IS NULL OR
+                previous_state IN ('disabled', 'enabled', 'paused')
+            ),
+            next_state            TEXT NOT NULL CHECK(
+                next_state IN ('disabled', 'enabled', 'paused')
+            ),
+            observed_head_sha256  TEXT,
+            ledger_high_water_seq INTEGER NOT NULL CHECK(ledger_high_water_seq >= 0),
+            ledger_digest         TEXT NOT NULL,
+            actor_ref             TEXT NOT NULL,
+            intent_id             TEXT NOT NULL,
+            reason                TEXT,
+            request_sha256        TEXT NOT NULL,
+            created_at            TEXT NOT NULL,
+            UNIQUE(document_id, activation_revision),
+            UNIQUE(document_id, intent_id)
+        )
+        """,
+        """
+        CREATE TABLE document_truth_activation_current (
+            document_id         TEXT PRIMARY KEY REFERENCES documents(id),
+            activation_revision INTEGER NOT NULL CHECK(activation_revision > 0),
+            state               TEXT NOT NULL CHECK(
+                state IN ('disabled', 'enabled', 'paused')
+            ),
+            transition_id       TEXT NOT NULL UNIQUE
+                REFERENCES document_truth_activation_transitions(id),
+            updated_at          TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE document_truth_policy_receipts (
+            id                           TEXT PRIMARY KEY,
+            document_id                  TEXT NOT NULL REFERENCES documents(id),
+            binding_id                   TEXT,
+            interaction_contract_id      TEXT NOT NULL,
+            interaction_contract_version INTEGER NOT NULL,
+            interaction_contract_sha256  TEXT NOT NULL,
+            outcome                      TEXT NOT NULL CHECK(
+                outcome IN ('not_applicable', 'not_applicable_recovery')
+            ),
+            intent_id                    TEXT NOT NULL,
+            actor_ref                    TEXT NOT NULL,
+            request_sha256               TEXT NOT NULL,
+            created_at                   TEXT NOT NULL,
+            UNIQUE(document_id, intent_id),
+            FOREIGN KEY(
+                interaction_contract_id, interaction_contract_version
+            ) REFERENCES interaction_contract_definitions(
+                contract_id, definition_version
+            )
+        )
+        """,
+        """
+        CREATE TABLE document_truth_admission_seal_events (
+            id                          TEXT PRIMARY KEY,
+            document_id                 TEXT NOT NULL REFERENCES documents(id),
+            intent_id                   TEXT NOT NULL,
+            activation_revision         INTEGER NOT NULL CHECK(activation_revision > 0),
+            state                       TEXT NOT NULL CHECK(
+                state IN ('pending', 'committed', 'aborted')
+            ),
+            seal_revision               INTEGER NOT NULL CHECK(seal_revision > 0),
+            coordinator_decision_id      TEXT NOT NULL,
+            coordinator_decision_sha256  TEXT NOT NULL,
+            actor_ref                    TEXT NOT NULL,
+            canonical_sha256             TEXT NOT NULL UNIQUE,
+            created_at                   TEXT NOT NULL,
+            UNIQUE(document_id, seal_revision)
+        )
+        """,
+        """
+        CREATE TABLE document_truth_admission_seals_current (
+            document_id                 TEXT PRIMARY KEY REFERENCES documents(id),
+            intent_id                   TEXT NOT NULL,
+            activation_revision         INTEGER NOT NULL CHECK(activation_revision > 0),
+            state                       TEXT NOT NULL CHECK(
+                state IN ('pending', 'committed', 'aborted')
+            ),
+            seal_revision               INTEGER NOT NULL CHECK(seal_revision > 0),
+            coordinator_decision_id      TEXT NOT NULL,
+            coordinator_decision_sha256  TEXT NOT NULL,
+            event_id                     TEXT NOT NULL UNIQUE
+                REFERENCES document_truth_admission_seal_events(id),
+            updated_at                   TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX idx_document_truth_activation_document
+        ON document_truth_activation_transitions(document_id, activation_revision)
+        """,
+        """
+        CREATE INDEX idx_document_truth_receipts_document
+        ON document_truth_policy_receipts(document_id, created_at, id)
+        """,
+        """
+        CREATE INDEX idx_document_truth_seals_document
+        ON document_truth_admission_seal_events(document_id, seal_revision)
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    append_only = (
+        "interaction_contract_definitions",
+        "document_interaction_contract_assignments",
+        "document_truth_activation_transitions",
+        "document_truth_policy_receipts",
+        "document_truth_admission_seal_events",
+    )
+    for table in append_only:
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_delete
+            BEFORE DELETE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+
+    # Existing Co-work documents had full Truth behavior. Freeze that behavior
+    # explicitly so v11 does not silently remove capabilities after upgrade.
+    from work_buddy.cowork.truth_activation import backfill_legacy_document_policies
+
+    backfill_legacy_document_policies(conn)
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -2448,6 +2627,11 @@ TRUTH_MIGRATIONS = _TruthMigrationRunner(
             10,
             "automatic direct-entry provenance attribution",
             _m010_direct_entry_provenance_basis,
+        ),
+        Migration(
+            11,
+            "per-document interaction contracts and Truth admission",
+            _m011_document_truth_activation,
         ),
     ],
 )

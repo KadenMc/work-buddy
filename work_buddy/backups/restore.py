@@ -153,6 +153,25 @@ def _current_known_max_schema_versions() -> dict[str, int]:
     except Exception as exc:
         logger.warning("restore: cannot read PROJECT_MIGRATIONS: %s", exc)
     try:
+        from work_buddy.contracts_domain.migrations import CONTRACT_MIGRATIONS
+        out["contracts"] = CONTRACT_MIGRATIONS.target_version
+    except Exception as exc:
+        logger.warning("restore: cannot read CONTRACT_MIGRATIONS: %s", exc)
+    try:
+        from work_buddy.knowledge.personal.migrations import (
+            PERSONAL_KNOWLEDGE_MIGRATIONS,
+        )
+        out["personal_knowledge"] = PERSONAL_KNOWLEDGE_MIGRATIONS.target_version
+    except Exception as exc:
+        logger.warning(
+            "restore: cannot read PERSONAL_KNOWLEDGE_MIGRATIONS: %s", exc
+        )
+    try:
+        from work_buddy.installed_authority import LEDGER_SCHEMA_VERSION
+        out["installed_authority"] = LEDGER_SCHEMA_VERSION
+    except Exception as exc:
+        logger.warning("restore: cannot read installed authority schema: %s", exc)
+    try:
         from work_buddy.entities.migrations import ENTITY_MIGRATIONS
         out["entities"] = ENTITY_MIGRATIONS.target_version
     except Exception as exc:
@@ -398,6 +417,7 @@ def restore(
                     "store_id",
                     "backup_status",
                     "profile_member",
+                    "profile_sha256",
                     "export_member",
                     "export_sha256",
                     "causality_member",
@@ -456,6 +476,22 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
     elif db_name == "projects":
         from work_buddy.projects.migrations import PROJECT_MIGRATIONS
         runner = PROJECT_MIGRATIONS
+    elif db_name == "contracts":
+        from work_buddy.contracts_domain.migrations import CONTRACT_MIGRATIONS
+        runner = CONTRACT_MIGRATIONS
+    elif db_name == "personal_knowledge":
+        from work_buddy.knowledge.personal.migrations import (
+            PERSONAL_KNOWLEDGE_MIGRATIONS,
+        )
+        runner = PERSONAL_KNOWLEDGE_MIGRATIONS
+    elif db_name == "installed_authority":
+        from work_buddy.installed_authority import _connect_ledger
+
+        if db_path.is_file() and db_path.stat().st_size == 0:
+            db_path.unlink()
+        connection = _connect_ledger(db_path, create=True)
+        connection.close()
+        return
     elif db_name == "entities":
         from work_buddy.entities.migrations import ENTITY_MIGRATIONS
         runner = ENTITY_MIGRATIONS
@@ -471,6 +507,14 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
     conn = sqlite3.connect(str(db_path))
     try:
         runner.run(conn)
+        if db_name == "contracts":
+            from work_buddy.contracts_domain.store import ContractStore
+
+            ContractStore.validate_connection(conn)
+        elif db_name == "personal_knowledge":
+            from work_buddy.knowledge.personal.store import PersonalKnowledgeStore
+
+            PersonalKnowledgeStore.validate_connection(conn)
     finally:
         conn.close()
 
@@ -541,6 +585,7 @@ def _copy_preserved_source_foundation_state(live_db: Path, staging: Path) -> Non
 
     if not live_db.is_dir():
         return
+    _merge_installed_authority_state(live_db, staging)
     for name in (
         "journal_capture.db",
         "local_identity.db",
@@ -559,6 +604,112 @@ def _copy_preserved_source_foundation_state(live_db: Path, staging: Path) -> Non
         if destination.exists():
             shutil.rmtree(destination)
         _copy_sources_snapshot(sources, destination)
+
+
+def _merge_installed_authority_state(live_db: Path, staging: Path) -> None:
+    """Union irreversible installed seals from live and restored cohorts.
+
+    A backup can predate one domain's cutover while the current installation
+    has already sealed it, or it can contain a seal absent from a fresh live
+    directory.  Replacing either ledger wholesale would erase an irreversible
+    authority fact.  Matching rows are merged conservatively; conflicting
+    cohort/path bindings abort the restore for operator reconciliation.
+    """
+
+    filename = "installed_authority.db"
+    source = live_db / filename
+    destination = staging / filename
+    if not source.is_file():
+        return
+    if not destination.is_file():
+        _copy_sqlite_snapshot(source, destination)
+        return
+    source_conn = sqlite3.connect(
+        f"file:{source.resolve().as_posix()}?mode=ro", uri=True
+    )
+    destination_conn = sqlite3.connect(str(destination))
+    source_conn.row_factory = sqlite3.Row
+    destination_conn.row_factory = sqlite3.Row
+    try:
+        required_table = "installed_domain_authority"
+        for label, connection in (
+            ("live", source_conn),
+            ("restored", destination_conn),
+        ):
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (required_table,),
+            ).fetchone()
+            if table is None:
+                raise RestoreFailed(
+                    f"{label} installed authority ledger is invalid"
+                )
+        destination_conn.execute("BEGIN IMMEDIATE")
+        for row in source_conn.execute(
+            "SELECT * FROM installed_domain_authority ORDER BY domain"
+        ):
+            current = destination_conn.execute(
+                "SELECT * FROM installed_domain_authority WHERE domain=?",
+                (row["domain"],),
+            ).fetchone()
+            if current is None:
+                destination_conn.execute(
+                    "INSERT INTO installed_domain_authority "
+                    "(domain,state,cohort_id,authority_db_path_sha256,revision,"
+                    "sealing_started_at,sealed_at,released_at,recovery_fenced_at,"
+                    "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    tuple(row),
+                )
+                continue
+            if (
+                current["cohort_id"] != row["cohort_id"]
+                or current["authority_db_path_sha256"]
+                != row["authority_db_path_sha256"]
+            ):
+                raise RestoreFailed(
+                    "installed authority restore conflicts with the live "
+                    f"{row['domain']} seal"
+                )
+            states = {str(current["state"]), str(row["state"])}
+            if "sealing" in states:
+                state = "sealing"
+            elif "recovery_fenced" in states:
+                state = "recovery_fenced"
+            elif "released" in states:
+                state = "released"
+            else:
+                state = "sealed"
+
+            def earliest(key: str):
+                values = [value for value in (current[key], row[key]) if value]
+                return min(values) if values else None
+
+            def latest(key: str):
+                values = [value for value in (current[key], row[key]) if value]
+                return max(values) if values else None
+
+            destination_conn.execute(
+                "UPDATE installed_domain_authority SET state=?,revision=?,"
+                "sealing_started_at=?,sealed_at=?,released_at=?,"
+                "recovery_fenced_at=?,updated_at=? WHERE domain=?",
+                (
+                    state,
+                    max(int(current["revision"]), int(row["revision"])),
+                    earliest("sealing_started_at"),
+                    earliest("sealed_at"),
+                    latest("released_at"),
+                    latest("recovery_fenced_at"),
+                    latest("updated_at"),
+                    row["domain"],
+                ),
+            )
+        destination_conn.commit()
+    except BaseException:
+        destination_conn.rollback()
+        raise
+    finally:
+        source_conn.close()
+        destination_conn.close()
 
 
 # Compatibility for tests and internal callers that imported the old helper.

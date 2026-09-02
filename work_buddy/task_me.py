@@ -10,7 +10,7 @@ its auto_run code steps:
   payload to reason against.
 
 * :func:`build_now_plan` — calls the pure scheduling algorithm still housed at
-  ``work_buddy.obsidian.day_planner.planner.generate_plan`` with
+  ``work_buddy.journal_capture.planner.generate_plan`` with
   ``clamp_to_now=True`` so nothing lands in the past.  That module consumes
   caller-supplied task dictionaries and never reads Obsidian task data.
   Returns the proposed timeline (NOT written back; journal write-back is a
@@ -229,7 +229,7 @@ def build_now_plan(
     cfg.setdefault("clamp_to_now", True)
 
     try:
-        from work_buddy.obsidian.day_planner.planner import generate_plan
+        from work_buddy.journal_capture.planner import generate_plan
         plan = generate_plan(
             calendar_events=calendar_events,
             focused_tasks=focused_tasks,

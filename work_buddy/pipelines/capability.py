@@ -3,8 +3,7 @@ point that dispatches to a registered :class:`SourcePipeline` by name.
 
 The single MCP/wb_run entry for triggering any source-pipeline run.
 Slash commands and workflows that used to wire a source-specific
-function call ``run_source_pipeline(source="journal_backlog", ...)``
-or ``run_source_pipeline(source="chrome_triage", ...)``.
+function call ``run_source_pipeline(source="chrome_triage", ...)``.
 
 Adding a new data source (Twitter scrape, email triage backlog,
 voice-memo transcripts, …) means: implement the SourcePipeline,
@@ -19,7 +18,6 @@ from typing import Any
 
 from work_buddy.pipelines.chrome import ChromeTriagePipeline
 from work_buddy.pipelines.email import EmailTriagePipeline
-from work_buddy.pipelines.journal import JournalBacklogPipeline
 from work_buddy.pipelines.protocol import SourcePipeline
 from work_buddy.pipelines.runner import run_pipeline
 from work_buddy.pipelines.types import PipelineRun
@@ -38,7 +36,6 @@ logger = logging.getLogger(__name__)
 PIPELINES: dict[str, type[SourcePipeline]] = {
     "chrome_triage": ChromeTriagePipeline,
     "email_triage": EmailTriagePipeline,
-    "journal_backlog": JournalBacklogPipeline,
 }
 
 
@@ -64,9 +61,7 @@ def run_source_pipeline(
     """Run the named source pipeline end-to-end.
 
     Args:
-        source: Registered pipeline name. One of
-            :data:`PIPELINES`'s keys (``"chrome_triage"``,
-            ``"journal_backlog"``).
+        source: Registered pipeline name. One of :data:`PIPELINES`'s keys.
         **collect_kwargs: Forwarded to the pipeline's
             :meth:`SourcePipeline.collect`. Source-specific
             (e.g. ``journal_date`` for journal,

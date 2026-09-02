@@ -426,6 +426,7 @@ def test_jobstate_default_source_is_system():
     """Old state files written without a source field must still load."""
     js = JobState(name="legacy", schedule="0 9 * * *")
     assert js.source == "system"
+    assert js.enabled is True
 
 
 def test_create_user_job_file_writes_loadable_prompt_job(tmp_path):

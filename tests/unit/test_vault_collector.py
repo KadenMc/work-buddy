@@ -54,6 +54,23 @@ def test_empty_when_no_active_contracts(monkeypatch):
     assert vault_collector.collect({}) == ""
 
 
+def test_authority_aware_contract_load_never_resolves_retired_directory(
+    monkeypatch,
+):
+    _patch(
+        monkeypatch,
+        [_contract(title="Native Contract")],
+        [{"doc_id": "d", "score": 0.8, "metadata": {}}],
+    )
+    monkeypatch.setattr(
+        contracts_mod,
+        "get_contracts_dir",
+        lambda: (_ for _ in ()).throw(AssertionError("retired archive accessed")),
+    )
+
+    assert "Native Contract" in vault_collector.collect({})
+
+
 def test_empty_when_no_search_results(monkeypatch):
     _patch(monkeypatch, [_contract(title="Some Contract Title")], [])
     assert vault_collector.collect({}) == ""

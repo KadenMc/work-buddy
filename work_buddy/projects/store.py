@@ -33,12 +33,16 @@ captures structured identity only.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from work_buddy.config import load_config
+from work_buddy.cutover_maintenance import require_mutations_open
+from work_buddy.installed_authority import require_domain_store_open
 from work_buddy.logging_config import get_logger
 from work_buddy.projects.migrations import PROJECT_MIGRATIONS
 
@@ -78,6 +82,7 @@ def _db_path() -> Path:
 def get_connection() -> sqlite3.Connection:
     """Open (or create) the project database with WAL mode + migrations."""
     path = _db_path()
+    require_domain_store_open("projects", path)
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -97,6 +102,10 @@ def _now() -> str:
     ``CURRENT_TIMESTAMP`` drift trap.
     """
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _require_mutations_open(conn: sqlite3.Connection) -> None:
+    require_mutations_open(conn, domain="projects")
 
 
 def _normalize_slug(name: str) -> str:
@@ -261,7 +270,35 @@ def _row_with_children(
             (pid,),
         )
     ]
+    result["body_roles"] = [
+        dict(r) for r in conn.execute(
+            "SELECT role,body_mode,document_binding_id,"
+            "interaction_contract_id,interaction_contract_version,"
+            "revision_id,privacy_class,updated_at FROM project_body_roles "
+            "WHERE project_id=? ORDER BY role",
+            (pid,),
+        )
+    ]
+    revision = conn.execute(
+        "SELECT MAX(id) AS revision_id FROM project_revisions WHERE project_id=?",
+        (pid,),
+    ).fetchone()
+    result["current_revision_id"] = (
+        int(revision["revision_id"]) if revision and revision["revision_id"] else None
+    )
     return result
+
+
+def _require_plain_description(conn: sqlite3.Connection, project_id: int) -> None:
+    role = conn.execute(
+        "SELECT body_mode FROM project_body_roles "
+        "WHERE project_id=? AND role='description'",
+        (project_id,),
+    ).fetchone()
+    if role is not None and role["body_mode"] != "plain":
+        raise ValueError(
+            "Project description is document-authoritative and cannot be mutated as text"
+        )
 
 
 def list_projects(
@@ -380,6 +417,70 @@ def _write_revision(
             (revision_id, r["alias"], r["alias_norm"]),
         )
 
+    # The description is a plain body role until an explicit document-binding
+    # transition changes it.  Role metadata and the search event are committed
+    # with the same revision; no file watcher is needed to discover the write.
+    conn.execute(
+        "INSERT INTO project_body_roles "
+        "(project_id,role,body_mode,document_binding_id,"
+        " interaction_contract_id,interaction_contract_version,revision_id,"
+        " privacy_class,updated_at) "
+        "VALUES (?,'description','plain',NULL,'project_description/v1',1,?,"
+        " 'private',?) "
+        "ON CONFLICT(project_id,role) DO UPDATE SET "
+        "revision_id=excluded.revision_id,updated_at=excluded.updated_at",
+        (project_id, revision_id, now),
+    )
+    folders = [
+        [str(r["path"]), int(r["archived"])]
+        for r in conn.execute(
+            "SELECT path,archived FROM project_folders WHERE project_id=? "
+            "ORDER BY path",
+            (project_id,),
+        )
+    ]
+    aliases = [
+        [str(r["alias"]), str(r["alias_norm"])]
+        for r in conn.execute(
+            "SELECT alias,alias_norm FROM project_aliases WHERE project_id=? "
+            "ORDER BY alias_norm",
+            (project_id,),
+        )
+    ]
+    content = json.dumps(
+        {
+            "slug": row["slug"],
+            "name": row["name"],
+            "status": row["status"],
+            "description": row["description"],
+            "origin": row["origin"],
+            "folders": folders,
+            "aliases": aliases,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO project_outbox "
+        "(event_id,project_id,revision_id,event_kind,content_sha256,"
+        " privacy_class,committed_at) VALUES (?,?,?,?,?,'private',?)",
+        (
+            f"project:{project_id}:revision:{revision_id}",
+            project_id,
+            revision_id,
+            "project.revised",
+            hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            now,
+        ),
+    )
+    conn.execute(
+        "UPDATE project_authority_state SET "
+        "first_native_write_at=COALESCE(first_native_write_at,?),updated_at=? "
+        "WHERE singleton=1 AND authority='sqlite'",
+        (now, now),
+    )
+
     return revision_id
 
 
@@ -435,6 +536,7 @@ def upsert_project(
     conn = get_connection()
     try:
         conn.execute("BEGIN")
+        _require_mutations_open(conn)
         existing = conn.execute(
             "SELECT id, name, description, status, origin FROM projects "
             "WHERE slug = ?",
@@ -443,6 +545,8 @@ def upsert_project(
 
         if existing:
             project_id = existing["id"]
+            if description is not None:
+                _require_plain_description(conn, project_id)
             resolved_name = name if name is not None else existing["name"]
             desc = (
                 description if description is not None
@@ -503,6 +607,8 @@ def update_project(
     description: str | None | _Sentinel = _NOT_SET,
     author: str = "user",
     change_summary: str | None = None,
+    expected_revision_id: int | None = None,
+    intent_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Update specific fields of a project. Only provided fields change.
 
@@ -524,9 +630,51 @@ def update_project(
         return None
 
     now = _now()
+    requested_fields: dict[str, Any] = {}
+    if not isinstance(name, _Sentinel):
+        requested_fields["name"] = name
+    if not isinstance(status, _Sentinel):
+        requested_fields["status"] = status
+    if not isinstance(description, _Sentinel):
+        requested_fields["description"] = description
+    request_sha = hashlib.sha256(
+        json.dumps(
+            {"slug": slug, "fields": requested_fields},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     conn = get_connection()
     try:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
+        if intent_id:
+            prior = conn.execute(
+                "SELECT request_sha256,result_json FROM project_mutation_receipts "
+                "WHERE intent_id=?",
+                (intent_id,),
+            ).fetchone()
+            if prior is not None:
+                if prior["request_sha256"] != request_sha:
+                    raise ValueError("intent_id was already used for a different mutation")
+                result = json.loads(prior["result_json"])
+                conn.rollback()
+                return result
+        _require_mutations_open(conn)
+        current_revision = conn.execute(
+            "SELECT MAX(id) AS revision_id FROM project_revisions WHERE project_id=?",
+            (pid,),
+        ).fetchone()
+        observed_revision = (
+            int(current_revision["revision_id"])
+            if current_revision and current_revision["revision_id"] is not None
+            else None
+        )
+        if expected_revision_id is not None and expected_revision_id != observed_revision:
+            raise ValueError(
+                f"stale project revision: expected {expected_revision_id}, "
+                f"observed {observed_revision}"
+            )
         updates: list[str] = []
         params: list[Any] = []
         if not isinstance(name, _Sentinel):
@@ -536,6 +684,7 @@ def update_project(
             updates.append("status=?")
             params.append(status)
         if not isinstance(description, _Sentinel):
+            _require_plain_description(conn, pid)
             updates.append("description=?")
             params.append(description)
 
@@ -548,10 +697,33 @@ def update_project(
                 params,
             )
 
-        _write_revision(
+        revision_id = _write_revision(
             conn, pid, author=author, now=now,
             change_summary=change_summary or "update",
         )
+        result = _row_with_children(
+            conn,
+            conn.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone(),
+        )
+        if intent_id:
+            conn.execute(
+                "INSERT INTO project_mutation_receipts "
+                "(intent_id,request_sha256,project_id,revision_id,result_json,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    intent_id,
+                    request_sha,
+                    pid,
+                    revision_id,
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                ),
+            )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -562,7 +734,7 @@ def update_project(
     _publish_project_event("project.updated", {
         "project_id": pid, "slug": slug, "author": author,
     })
-    return get_project_by_id(pid)
+    return result
 
 
 def delete_project(slug: str, *, author: str = "user") -> bool:
@@ -580,6 +752,7 @@ def delete_project(slug: str, *, author: str = "user") -> bool:
     conn = get_connection()
     try:
         conn.execute("BEGIN")
+        _require_mutations_open(conn)
         conn.execute(
             "UPDATE projects SET status='deleted', updated_at=? WHERE id=?",
             (now, pid),
@@ -612,6 +785,8 @@ def touch_project(slug: str) -> None:
         return
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_mutations_open(conn)
         conn.execute(
             "UPDATE projects SET updated_at=? WHERE id=?", (_now(), pid),
         )
@@ -663,6 +838,7 @@ def add_folder(
     conn = get_connection()
     try:
         conn.execute("BEGIN")
+        _require_mutations_open(conn)
         conn.execute(
             "INSERT OR IGNORE INTO project_folders "
             "(project_id, path, archived) VALUES (?, ?, ?)",
@@ -698,6 +874,7 @@ def remove_folder(
     conn = get_connection()
     try:
         conn.execute("BEGIN")
+        _require_mutations_open(conn)
         conn.execute(
             "DELETE FROM project_folders WHERE project_id=? AND path=?",
             (project_id, path),
@@ -733,6 +910,7 @@ def set_folder_archived(
     conn = get_connection()
     try:
         conn.execute("BEGIN")
+        _require_mutations_open(conn)
         cur = conn.execute(
             "UPDATE project_folders SET archived=? WHERE project_id=? AND path=?",
             (archived_int, project_id, path),
@@ -822,6 +1000,7 @@ def add_alias(
                 f"project id={clash['id']}"
             )
         conn.execute("BEGIN")
+        _require_mutations_open(conn)
         conn.execute(
             "INSERT OR IGNORE INTO project_aliases "
             "(project_id, alias, alias_norm) VALUES (?, ?, ?)",
@@ -858,6 +1037,7 @@ def remove_alias(
     conn = get_connection()
     try:
         conn.execute("BEGIN")
+        _require_mutations_open(conn)
         conn.execute(
             "DELETE FROM project_aliases WHERE project_id=? AND alias_norm=?",
             (project_id, alias_norm),
@@ -1046,6 +1226,8 @@ def confirm_description(
     ts = confirmed_at or _now()
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_mutations_open(conn)
         rev = conn.execute(
             "SELECT id FROM project_revisions WHERE project_id = ? "
             "ORDER BY created_at DESC LIMIT 1",

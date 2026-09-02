@@ -207,9 +207,10 @@ def _register() -> None:
     # lazy-import discipline of the registry's capability builders
     # (see architecture/mcp-import-discipline).
     from work_buddy import contracts
-    from work_buddy.projects.markdown_db import reconcile_projects
+    from work_buddy.projects.authority import reconcile_projects_authoritatively
     from work_buddy.obsidian.effects import EffectSpec
     from work_buddy.threads.models import Task
+    from work_buddy.tasks.capabilities import task_creation_reconcile
     from work_buddy.work_item import task_adapter
 
     # Every task read resolves authority on each invocation.  A registry built
@@ -229,6 +230,10 @@ def _register() -> None:
     # compatibility only before cutover. ``task_create`` routes through the
     # ``Task.create`` classmethod; verb ops take a task_id.
     register_op("op.wb.task_create", Task.create)
+    register_op(
+        "op.wb.task_creation_reconcile",
+        task_creation_reconcile,
+    )
     register_op("op.wb.task_set_tags", task_adapter.set_tags)
     register_op("op.wb.task_assign", task_adapter.assign)
     register_op("op.wb.task_toggle", task_adapter.toggle)
@@ -240,7 +245,7 @@ def _register() -> None:
     register_op("op.wb.namespace_lookup", _namespace_lookup)
     register_op("op.wb.task_sync", _compat_task_sync)
     register_op("op.wb.task_scattered", _task_scattered)
-    register_op("op.wb.project_sync", reconcile_projects)
+    register_op("op.wb.project_sync", reconcile_projects_authoritatively)
     register_op("op.wb.session_tasks_get", session_tasks_get)
     register_op("op.wb.contract_constraints", contracts.get_constraints)
     register_op("op.wb.contract_wip_check", contracts.check_wip_limit)

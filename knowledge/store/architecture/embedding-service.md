@@ -25,6 +25,12 @@ parents:
 - architecture
 - architecture
 dev_notes: |-
+  ## Bounded native encode workers
+
+  Werkzeug remains threaded so health probes and interactive HTTP requests stay responsive while an encode is in flight. SentenceTransformer/OpenMP work runs through `_brokered_encode` and the lazy, process-lifetime `_encode_executor`, rather than directly on Werkzeug's short-lived request threads. The worker count comes from `inference.profiles["local:embedding"].max_concurrent` with a minimum of one; local-broker admission still happens in the caller, before work is submitted to the executor. Search-cache prewarming uses the same brokered path.
+
+  Keep this boundary intact on Windows. Calling `model.encode` from a fresh request thread can leave that thread's native OpenMP team resident after the Python thread exits, causing native workers to accumulate across requests. New in-service SentenceTransformer encode paths should go through `_brokered_encode` rather than calling `model.encode` directly.
+
   ## doc_count vs vector_count — read ``dense_eligible_docs``
 
   The IR index status output (``ir_index(action='status')``) exposes three count fields per source. Do **not** treat ``doc_count - vector_count`` as a "backlog" — it usually isn't. The right reading:

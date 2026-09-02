@@ -53,6 +53,26 @@ const execution = (
 });
 
 describe("useDocumentConversationBinding", () => {
+  it("performs no binding request when Chat is absent from the document capabilities", async () => {
+    const client: CoworkDocumentConversationBindingClient = {
+      load: vi.fn(async () => runningBinding("must-not-load")),
+      ensure: vi.fn(async () => runningBinding("must-not-ensure")),
+    };
+    const { result } = renderHook(() =>
+      useDocumentConversationBinding({
+        documentId: "doc-1",
+        storeId: "store-1",
+        client,
+        enabled: false,
+      }),
+    );
+
+    await act(() => result.current.ensure());
+    expect(result.current.phase).toBe("idle");
+    expect(client.load).not.toHaveBeenCalled();
+    expect(client.ensure).not.toHaveBeenCalled();
+  });
+
   it("restores the existing opaque binding on mount without ensuring", async () => {
     const client: CoworkDocumentConversationBindingClient = {
       load: vi.fn(async () => runningBinding("opaque-existing-91")),

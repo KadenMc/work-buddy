@@ -1,9 +1,8 @@
 ---
-name: Vault Recon Directions
+name: Vault Recon Directions (Legacy)
 kind: directions
-description: How to read vault_recon output and identify recurring conventions worth surfacing.
-trigger: user runs /wb-vault-recon, or an agent needs to reason over vault_recon cross-tabs to identify patterns
-command: wb-vault-recon
+description: Read an existing legacy vault_recon snapshot during explicit migration inspection; scheduled collection and the slash command are retired.
+trigger: user explicitly asks to inspect an existing legacy vault_recon snapshot during the migration grace period
 tags:
 - vault
 - recon
@@ -23,17 +22,22 @@ parents:
 - vault
 ---
 
-Read `vault_recon` output to identify recurring conventions in the user's vault. Returns cross-tabs an agent can pivot to spot state machines, tag families, hot regions of work.
+The `/wb-vault-recon` command and scheduled collector are retired. Do not run
+the bridge-backed collector, spawn an investigation job, or recommend Obsidian
+setup. During the migration grace period this unit may be used to interpret an
+already-existing snapshot at `.data/vault_recon/latest.json` when the user
+explicitly requests legacy inspection.
+
+Read existing `vault_recon` output to identify recurring conventions in the user's vault. Returns cross-tabs an agent can pivot to spot state machines, tag families, hot regions of work.
 
 ## When to use
 
-- The user runs `/wb-vault-recon` and wants a diagnostic peek at vault structure.
-- An investigation agent is reasoning over a fresh recon snapshot to draft a proposal.
-- A future vault-health check needs structural ground truth.
+- The user explicitly requests inspection of a retained legacy snapshot.
+- An operator is validating a migration manifest against frozen evidence.
 
 Do NOT use as a substitute for `datacore_schema` for cheap "is anything queryable" probes. `vault_recon` is heavier (full page walk + list-item walk, ~2–3s on a 6k-page / 200k-list-item vault, capped at 90s by bridge timeout). Direct invocation via `wb_run("vault_recon")` may exceed the MCP tool result token limit — prefer reading `.data/vault_recon/latest.json` written by the collector.
 
-## Invocation
+## Legacy invocation (operator-only)
 
 ```
 wb_run("vault_recon")                                       # full vault
@@ -98,7 +102,6 @@ Look at `path_by_type`. If a single path holds multiple pages of one type (e.g. 
 
 This directions unit is for the *reader* of recon output, not for the user-facing slash command response.
 
-- If invoked from `/wb-vault-recon`: present the most striking 3–5 findings in plain English, no auto-action.
-- If invoked from the investigation agent (after a delta has triggered escalation): cross-reference with `vault/investigation-directions` for the proposal protocol.
+- For explicit legacy inspection, present the most striking 3–5 findings in plain English, no auto-action.
 
 Do NOT cement anything from a single recon run. Cementing is the user's call (or a follow-up workflow's). This unit only teaches an agent how to *see*.

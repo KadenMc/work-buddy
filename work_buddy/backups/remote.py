@@ -21,6 +21,7 @@ import json
 import re
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ logger = get_logger(__name__)
 
 
 LAST_RUN_FILENAME = "last_run.json"
+REMOTE_PRIVATE_CONTENT_UPLOAD_OPERATION = "backup.remote_private_content_upload"
 
 
 # ─── Transient-failure handling ─────────────────────────────────────
@@ -84,9 +86,51 @@ def get_backup_repo() -> str | None:
     """
     cfg = load_config()
     backups = cfg.get("backups") or {}
+    if not isinstance(backups, Mapping):
+        return None
     github = backups.get("github") or {}
+    if not isinstance(github, Mapping):
+        return None
     repo = github.get("repo")
     return str(repo) if repo else None
+
+
+def remote_private_content_opted_in() -> bool:
+    """Return whether unencrypted private backup uploads are enabled.
+
+    A configured repository identifies a destination; it is not permission to
+    send the archive there.  The opt-in deliberately accepts only the YAML
+    boolean ``true``.  Truthy strings and integers fail closed so an
+    accidentally quoted or templated value cannot enable unattended uploads.
+    """
+
+    cfg = load_config()
+    backups = cfg.get("backups") or {}
+    if not isinstance(backups, Mapping):
+        return False
+    github = backups.get("github") or {}
+    if not isinstance(github, Mapping):
+        return False
+    return github.get("allow_unencrypted_private_content") is True
+
+
+def _one_shot_private_content_upload_authorized(repo: str) -> bool:
+    """Recognize only the exact consumed per-invocation upload approval."""
+
+    from work_buddy.consent import current_per_invocation_authorization
+
+    authorization = current_per_invocation_authorization()
+    if authorization is None or not authorization.consumed:
+        return False
+    context = authorization.context
+    return (
+        authorization.operation == REMOTE_PRIVATE_CONTENT_UPLOAD_OPERATION
+        and context.get("schema") == "wb.remote-private-backup-consent/v1"
+        and context.get("repo") == repo
+        and context.get("archive_encryption") == "none"
+        and context.get("portable_truth_exports") is True
+        and context.get("remote_retention_sweep") is True
+    )
 
 
 # ─── Push ───────────────────────────────────────────────────────────
@@ -137,6 +181,18 @@ def push_snapshot(
     if not repo:
         return {"status": "unconfigured",
                 "message": "backups.github.repo not set in config.local.yaml"}
+    if not remote_private_content_opted_in() and not (
+        _one_shot_private_content_upload_authorized(repo)
+    ):
+        return {
+            "status": "privacy_blocked",
+            "repo": repo,
+            "error": (
+                "unencrypted private backup upload requires either "
+                "backups.github.allow_unencrypted_private_content=true or "
+                "an exact per-invocation consent authorization"
+            ),
+        }
 
     tarball = snapshot_dir / BACKUP_FILENAME
     if not tarball.exists():

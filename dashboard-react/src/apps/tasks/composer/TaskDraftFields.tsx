@@ -34,5 +34,51 @@ export function TaskDraftFields({ value, options, disabled, idPrefix, errors = {
       ["next_action", "Next action", "next_action_text"], ["definition_of_done", "Definition of done", "definition_of_done"],
     ] as const).map(([key, label, alias]) => <TextAreaField key={key} {...fieldProps?.([key])} disabled={disabled} label={label} value={value[key]} rows={2} aria-invalid={error(key, alias) ? "true" : undefined} description={error(key, alias)} onChange={(next) => update(key, next)} />)}
     <label className="wb-task-field wb-task-field--wide"><span>Dependencies</span><input {...props("dependencies")} value={value.dependencies} placeholder="Comma-separated" onChange={(event) => update("dependencies", event.target.value)} />{hint("dependencies")}</label>
+    <fieldset className="wb-task-field wb-task-field--wide wb-task-note-options">
+      <legend>Task note</legend>
+      <label>
+        <input
+          {...props("create_note", "requested_note_role")}
+          type="checkbox"
+          checked={value.create_note}
+          onChange={(event) => {
+            update("create_note", event.target.checked);
+            if (!event.target.checked) update("enable_truth_tools", false);
+          }}
+        />
+        Create an editable Co-work note
+      </label>
+      <small>
+        The note keeps authorship and human-review provenance for user and AI edits.
+      </small>
+      {value.create_note ? (
+        <>
+          <TextAreaField
+            {...fieldProps?.(["initial_note"])}
+            disabled={disabled}
+            label="Initial note"
+            value={value.initial_note}
+            rows={4}
+            aria-invalid={error("initial_note", "note_markdown") ? "true" : undefined}
+            description={error("initial_note", "note_markdown")}
+            onChange={(next) => update("initial_note", next)}
+          />
+          <label>
+            <input
+              {...props("enable_truth_tools", "requested_truth_policy_resolution")}
+              type="checkbox"
+              checked={value.enable_truth_tools}
+              onChange={(event) => update("enable_truth_tools", event.target.checked)}
+            />
+            Enable Truth tools for this note
+          </label>
+          <small>
+            Truth adds claim and evidence tools. It does not analyze the note automatically.
+          </small>
+        </>
+      ) : null}
+      {hint("create_note", "requested_note_role")}
+      {hint("enable_truth_tools", "requested_truth_policy_resolution")}
+    </fieldset>
   </div>;
 }

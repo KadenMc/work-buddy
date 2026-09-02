@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -31,6 +32,14 @@ from work_buddy.document_kernel.domain_service import DomainContentStoreManager
 from work_buddy.hindsight_projection.store import TruthHindsightProjectionStore
 from work_buddy.hindsight_projection.runtime import run_projection_tick
 from work_buddy.journal_capture.store import JournalCaptureStore
+from work_buddy.installed_authority import (
+    InstalledAuthorityError,
+    confirm_domain_seal,
+    inspect_restore_rebind_plan,
+    installed_authority_status,
+    ledger_path_for,
+    prepare_domain_seal,
+)
 from work_buddy.security.local_identity import LocalIdentityAuthority
 from work_buddy.sources.disclosure import SourcesDisclosureService
 from work_buddy.sources.models import ActorRef
@@ -338,6 +347,155 @@ def test_restore_operator_is_high_consent_and_clears_only_validated_cohort(
     assert result["identityTrust"]["restored_gestures"] is False
     assert Path(result["receiptPath"]).is_file()
     assert not isolated_fence.exists()
+
+
+def test_operator_requires_exact_consent_to_rebind_relocated_domain_latch(
+    isolated_fence: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.mcp_server.ops import source_foundation_restore_ops as restore_ops
+
+    paths, enrollment, enrollment_sha = _cohort(tmp_path / "target")
+    source_db = tmp_path / "source" / "db" / "projects.db"
+    source_db.parent.mkdir(parents=True)
+    cohort_id = "restore-relocation-cohort"
+    conn = sqlite3.connect(source_db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE project_authority_state (
+                singleton INTEGER PRIMARY KEY,
+                authority TEXT NOT NULL,
+                state TEXT NOT NULL,
+                sealed_cohort_id TEXT
+            );
+            CREATE TABLE project_import_cohorts (
+                cohort_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO project_authority_state VALUES (1,'sqlite','active',?)",
+            (cohort_id,),
+        )
+        conn.execute(
+            "INSERT INTO project_import_cohorts VALUES (?,'sealed')",
+            (cohort_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    prepare_domain_seal("projects", source_db, cohort_id=cohort_id)
+    confirm_domain_seal("projects", source_db, cohort_id=cohort_id)
+
+    target_db = paths.journal_capture_db.parent / "projects.db"
+    target_ledger = paths.journal_capture_db.parent / "installed_authority.db"
+    shutil.copy2(source_db, target_db)
+    shutil.copy2(ledger_path_for(source_db), target_ledger)
+    targets = {"projects": target_db}
+
+    def relocation_plan(_paths):
+        return (
+            target_ledger,
+            targets,
+            inspect_restore_rebind_plan(target_ledger, targets),
+        )
+
+    write_restore_fence(
+        {
+            "snapshot_id": "snap-relocated-operator",
+            "truth_stores": [],
+            "identity_enrollment": {
+                "member": enrollment.name,
+                "sha256": enrollment_sha,
+                "trusted": False,
+            },
+            "reconciliation": {"state": "pending", "identity_trust": None},
+        },
+        path=isolated_fence,
+    )
+    monkeypatch.setattr(
+        restore_ops.SourceFoundationPaths,
+        "current",
+        classmethod(lambda _cls: paths),
+    )
+    monkeypatch.setattr(
+        restore_ops,
+        "_installed_authority_rebind_plan",
+        relocation_plan,
+    )
+
+    status = restore_ops.source_foundation_restore_operator("status")
+    assert status["state"] == "blocked"
+    assert status["blockers"][-1]["code"] == (
+        "installed_authority_rebind_required"
+    )
+    with pytest.raises(ValueError, match="requires_explicit_consent"):
+        restore_ops.source_foundation_restore_operator(
+            "reconcile",
+            snapshot_id="snap-relocated-operator",
+            identity_enrollment_path=str(enrollment),
+        )
+    with pytest.raises(InstalledAuthorityError, match="path does not match"):
+        installed_authority_status("projects", target_db)
+
+    monkeypatch.setattr(restore_ops, "_authorize", lambda *_args: None)
+    import work_buddy.installed_authority as installed_authority
+
+    real_rebind = installed_authority.rebind_restored_authority_paths
+
+    def stop_after_ledger_commit(*args, **kwargs):
+        real_rebind(*args, **kwargs)
+        raise RuntimeError("simulated stop before marker receipt")
+
+    monkeypatch.setattr(
+        installed_authority,
+        "rebind_restored_authority_paths",
+        stop_after_ledger_commit,
+    )
+    with pytest.raises(RuntimeError, match="before marker receipt"):
+        restore_ops.source_foundation_restore_operator(
+            "reconcile",
+            snapshot_id="snap-relocated-operator",
+            identity_enrollment_path=str(enrollment),
+            rebind_installed_authority=True,
+        )
+    crash_status = restore_ops.source_foundation_restore_operator("status")
+    assert crash_status["blockers"][-1]["code"] == (
+        "installed_authority_rebind_receipt_pending"
+    )
+    with pytest.raises(ValueError, match="requires_explicit_consent"):
+        restore_ops.source_foundation_restore_operator(
+            "reconcile",
+            snapshot_id="snap-relocated-operator",
+            identity_enrollment_path=str(enrollment),
+        )
+
+    monkeypatch.setattr(
+        installed_authority,
+        "rebind_restored_authority_paths",
+        real_rebind,
+    )
+    result = restore_ops.source_foundation_restore_operator(
+        "reconcile",
+        snapshot_id="snap-relocated-operator",
+        identity_enrollment_path=str(enrollment),
+        rebind_installed_authority=True,
+    )
+
+    assert result["cleared"] is True
+    assert result["installedAuthorityRebind"]["result"] == (
+        "recovered_rebind_receipt"
+    )
+    assert result["installedAuthorityRebind"]["rebound_domains"] == []
+    authority = installed_authority_status("projects", target_db)
+    assert authority is not None and authority.cohort_id == cohort_id
+    receipt_payload = json.loads(Path(result["receiptPath"]).read_text())
+    assert receipt_payload["reconciliation"]["installed_authority_rebind"][
+        "authorized_plan_sha256"
+    ] == result["installedAuthorityRebind"]["authorized_plan_sha256"]
 
 
 def test_ambiguous_disclosure_blocks_clear_and_reconciliation_never_replays(

@@ -1,7 +1,7 @@
 ---
 name: Vault Recon Collect
 kind: capability
-description: 'Periodic vault reconnaissance entry point: snapshot the vault via vault_recon, append to a 60-day rolling ledger at .data/vault_recon/snapshots.json, compute deltas against prior snapshots, apply 5 curated significance rules, and write a one-shot type:prompt investigation job to .data/user_jobs/ on each rule firing (deduplicated per (rule, focus) over a 7-day window). Designed to be fired daily by sidecar_jobs/vault-recon.md.'
+description: Legacy, explicit-only Datacore vault reconnaissance entry point. Its system schedule and automatic investigation escalation are retired; never suggest it when Obsidian is opted out.
 capability_name: vault_recon_collect
 category: context
 op: op.wb.vault_recon_collect

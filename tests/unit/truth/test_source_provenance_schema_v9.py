@@ -239,7 +239,7 @@ def test_v9_records_round_trip_without_promoting_legacy_authorship(tmp_path: Pat
 
     exported = export_store(store)
     header = json.loads(exported.path.read_text(encoding="utf-8").splitlines()[0])
-    assert header["format_version"] == FORMAT_VERSION == 10
+    assert header["format_version"] == FORMAT_VERSION == 11
     target = tmp_path / "target"
     target.mkdir()
     restored = import_store(

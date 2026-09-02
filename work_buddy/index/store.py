@@ -427,6 +427,28 @@ class IndexStore:
         finally:
             conn.close()
 
+    def partition_item_ids(self, partition: str) -> list[str]:
+        """Return every non-empty item ID represented by ledger or documents.
+
+        The union intentionally includes documents whose ledger mark did not land
+        before an interrupted build.  Maintenance that removes a source boundary
+        must not mistake such durable lexical progress for an absent item.
+        """
+
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT item_id FROM indexed_items WHERE partition = ? "
+                "UNION "
+                "SELECT item_id FROM documents "
+                "WHERE partition = ? AND item_id != '' "
+                "ORDER BY item_id",
+                (partition, partition),
+            ).fetchall()
+            return [str(row["item_id"]) for row in rows]
+        finally:
+            conn.close()
+
     @_write_retry
     def mark_item_indexed(
         self, item_id: str, partition: str, *, mtime: float = 0.0,

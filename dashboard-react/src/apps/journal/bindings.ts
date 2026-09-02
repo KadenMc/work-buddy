@@ -2,6 +2,7 @@ import {
   asAppId,
   asViewId,
   asWidgetInstanceId,
+  asWidgetModuleId,
   asWidgetRoleId,
   asWidgetSlotId,
   asWidgetTypeId,
@@ -20,7 +21,6 @@ import {
   type JournalDemoSource,
   type JournalIntent,
   type JournalViewModel,
-  type JournalWidgetInputs,
 } from "./contracts";
 
 export const JOURNAL_APP_ID = asAppId("wb.journal");
@@ -51,6 +51,16 @@ export const JOURNAL_WIDGET_TYPE_IDS = {
   runningNotes: asWidgetTypeId("wb.notes.running"),
 } as const satisfies Readonly<Record<string, WidgetTypeId>>;
 
+export const JOURNAL_GENERIC_ROLE_ID = asWidgetRoleId(
+  "wb.widget-role.journal-module@1",
+);
+export const JOURNAL_GENERIC_WIDGET_TYPE_ID = asWidgetTypeId(
+  "wb.journal.module",
+);
+export const JOURNAL_GENERIC_WIDGET_MODULE_ID = asWidgetModuleId(
+  "wb.journal.module.renderer",
+);
+
 export const JOURNAL_WIDGET_TYPE_BY_INSTANCE: ReadonlyMap<
   WidgetInstanceId,
   WidgetTypeId
@@ -75,7 +85,6 @@ export type JournalBindingValue =
   | JournalDataQuality
   | JournalDemoSource;
 export type JournalViewBindings = Readonly<Record<JournalBindingKey, JournalBindingValue>>;
-export type JournalWidgetInput = JournalWidgetInputs[keyof JournalWidgetInputs];
 
 export function createJournalViewBindings(model: JournalViewModel): JournalViewBindings {
   return {
@@ -99,8 +108,7 @@ export function toDashboardJournalIntent(intent: JournalIntent): WidgetIntent<un
 }
 
 export function isJournalWidgetInstanceId(value: string): value is JournalWidgetInstanceId {
-  return Object.values(JOURNAL_WIDGET_INSTANCE_IDS).some((instanceId) => instanceId === value);
+  return value.trim().length > 0;
 }
 
-export type JournalWidgetInstanceId =
-  (typeof JOURNAL_WIDGET_INSTANCE_IDS)[keyof typeof JOURNAL_WIDGET_INSTANCE_IDS];
+export type JournalWidgetInstanceId = string;

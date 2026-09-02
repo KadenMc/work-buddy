@@ -420,6 +420,37 @@ def test_later_boundary_extends_old_day_instead_of_opening_then_reinterpreting_i
     assert first_new_day["window_end"] == "2026-07-17T07:00:00-04:00"
 
 
+def test_pure_journal_binding_evaluates_due_policy_without_promoting_it() -> None:
+    broker.update_value(
+        JOURNAL_DAY_BOUNDARY_ID,
+        scope="profile",
+        value="07:00",
+        expected_revision="value:0",
+        observed_at=_at(15, 12),
+    )
+
+    def state() -> tuple[int, str | None, int]:
+        with sqlite3.connect(store._db_path()) as conn:
+            row = conn.execute(
+                "SELECT revision,pending_source FROM setting_value_state "
+                "WHERE setting_id=?",
+                (JOURNAL_DAY_BOUNDARY_ID,),
+            ).fetchone()
+            epochs = conn.execute(
+                "SELECT COUNT(*) FROM journal_day_policy_epoch"
+            ).fetchone()[0]
+        return int(row[0]), row[1], int(epochs)
+
+    before = state()
+    binding, event = broker.peek_journal_day_binding(_at(16, 7))
+
+    assert event is None
+    assert binding["local_date"] == "2026-07-16"
+    assert binding["day_boundary_start"] == "07:00"
+    assert binding["window_start"] == "2026-07-16T07:00:00-04:00"
+    assert state() == before == (1, "profile", 1)
+
+
 def test_pending_preview_current_day_matches_later_boundary_bridge() -> None:
     broker.update_value(
         JOURNAL_DAY_BOUNDARY_ID,

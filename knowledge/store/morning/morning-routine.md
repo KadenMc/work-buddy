@@ -146,7 +146,7 @@ parents:
 
 **Procedure:**
 
-0. **Ensure today's journal exists.** Call `mcp__work-buddy__wb_run("journal_state", {"target": "today", "create_on_read": true})` â€” if the result shows `exists: false`, the journal needs creating via Obsidian.
+0. **Freeze today's Journal composition.** Call `mcp__work-buddy__wb_run("journal_state", {"target": "today", "create_on_read": true})`. This persists the native logical-day/profile snapshot without creating a file.
 
 1. Get the configured lookback window: `hours = step_results["load-config"].get("morning", {}).get("context_hours", 24)` (default: 24).
 
@@ -155,7 +155,7 @@ parents:
    mcp__work-buddy__wb_run("context_bundle", {"hours": <hours>})
    ```
 
-3. Read the resulting pack files from the bundle path returned in the result. Priority files: `git_summary.md`, `tasks_summary.md`, `projects_summary.md`, `obsidian_summary.md`, `messages_summary.md`, `agent_session_summary.md` (agent conversations: per-session tldr/topics, commits, PRs), `chat_summary.md` (SpecStory + CLI history; absent when empty), `calendar_summary.md`, `wellness_summary.md`.
+3. Read the resulting pack files from the bundle path returned in the result. Priority files are `git_summary.md`, `tasks_summary.md`, `projects_summary.md`, `messages_summary.md`, `agent_session_summary.md` (agent conversations: per-session tldr/topics, commits, PRs), `chat_summary.md` (absent when empty), and `calendar_summary.md`. Obsidian and legacy wellness packs may be absent by design.
 
 4. Condense into a structured activity digest â€” not the raw pack, but a ~20 line summary of: what repos had activity, what journal entries exist, outstanding tasks, recent conversations, messages.
 
@@ -171,23 +171,23 @@ Agentic step. The agent conducts a conversational check-in and writes responses 
 
 **Procedure:**
 
-1. Read current sign-in state and wellness trends:
+1. Read the target day's profile-defined fields:
    ```
    mcp__work-buddy__wb_run("journal_sign_in")
    ```
-   Returns `{sign_in: {sleep, energy, mood, check_in, motto, all_filled}, wellness: "..."}`.
+   Returns `sign_in.fields` with generic field IDs, labels, prompts, types, constraints, function/behavior contracts, values, and revisions. No particular marker is guaranteed to exist.
 
-2. **If `sign_in.all_filled`**: Return `{"summary": "Sign-in already complete. Sleep: X, Energy: X, Mood: X", "wellness_context": wellness}`.
+2. **If `sign_in.all_filled`**: Summarize the fields that actually exist; do not mention absent fields or invent a fixed wellness schema.
 
-3. **If NOT all filled**: Conduct check-in conversation for missing fields.
+3. **If NOT all filled**: Conduct a concise check-in using the missing fields' labels, prompts, requiredness, and constraints. Optional fields stay optional.
 
 4. Write responses to the journal:
    ```
-   mcp__work-buddy__wb_run("journal_sign_in", {"write_fields": "{\"sleep\": 7, \"energy\": 8, \"mood\": 7, \"check_in\": \"...\", \"motto\": \"...\"}"})
+   mcp__work-buddy__wb_run("journal_sign_in", {"write_fields": "{\"<fieldId>\": {\"value\": <typed value>, \"expected_revision\": 0}}", "client_mutation_id": "<stable retry key>"})
    ```
    This is consent-gated â€” on `consent_required` response, follow the standard consent flow.
 
-5. Return `{"summary": "...", "wellness_context": wellness}` for downstream steps.
+5. Return a field-aware summary plus the generic `wellness`/declared-function payload for downstream steps. Do not run the retired fixed-marker interpreter.
 
 **Result:** Sign-in summary with wellness context.
 
@@ -356,19 +356,19 @@ Agentic step. The agent builds a briefing from all prior step results and presen
 
 1. Compose the briefing markdown from `step_results["synthesize"]["briefing_md"]`, incorporating the MIT list from `step_results["propose-mits"]["mits_created"]`.
 
-2. **Placement:** The briefing callout goes in the **Sign-In section**, after the Motto field and before `# **Tasks & Objectives**`. The `journal_write` capability handles placement automatically. The callout header includes the generation timestamp.
+2. **Placement:** `journal_write` resolves the active profile's generated-artifact-capable module and stores the briefing as a Source-backed, provenance-only Journal item. It does not assume any profile-specific section or field.
    ```
    mcp__work-buddy__wb_run("journal_write", {"mode": "briefing", "briefing_md": "<briefing markdown>"})
    ```
    This is consent-gated -- on `consent_required` response, follow the standard consent flow.
 
-**Result:** `{"persisted": true, "path": "..."}` or `{"persisted": false, "reason": "..."}`
+**Result:** A native Journal item receipt or `{"persisted": false, "reason": "..."}`.
 
 ---
 
 ## day-planner
 
-**Purpose:** Check Day Planner plugin readiness, generate a schedule from calendar events and focused tasks, and write to journal.
+**Purpose:** Generate a provider-neutral schedule from calendar events and focused tasks, then optionally store it as a native Journal artifact.
 
 **Phase gate:** Check `step_results["load-config"]["morning"]["day_planner"]["enabled"]`. If `false`, return `{"generated": false, "skipped_reason": "disabled by config"}`.
 
@@ -378,7 +378,7 @@ Agentic step. The agent builds a briefing from all prior step results and presen
 ```
 status = mcp__work-buddy__wb_run("day_planner", {"action": "status"})
 ```
-If not ready, return `{"generated": false, "skipped_reason": "plugin not ready: <reason>"}`.
+If not ready, return `{"generated": false, "skipped_reason": "native Journal profile is not ready: <reason>"}`.
 
 **Sub-step 2 -- Read existing plan:**
 ```
@@ -412,7 +412,7 @@ If `entry_count > 0`, return `{"generated": false, "skipped_reason": "user alrea
    {"description": "MIT 2: Draft paper contract", "duration": 30, "time_start": "14:00"}]
   ```
 
-- **Calendar duplication guard:** If `hasRemoteCalendars` is `true` in the status from sub-step 1, set `include_calendar_events: false` in config overrides to avoid duplication.
+- **Calendar inclusion:** The native Journal has no remote-calendar projection, so pass the selected Calendar events once. `status.hasRemoteCalendars` is false under native authority.
 
 - **Past-time protection:** `clamp_to_now` is `true` by default — unpinned tasks will not be placed before the current local time. Pinned tasks (`time_start`) bypass this clamp; pin intentionally for retrospective blocks.
 

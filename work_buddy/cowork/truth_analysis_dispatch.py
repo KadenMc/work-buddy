@@ -10,6 +10,11 @@ from typing import Any
 
 from work_buddy.agent_execution.models import AgentExecutionSelection
 from work_buddy.cowork import truth_analysis_runtime
+from work_buddy.cowork.truth_activation import (
+    TruthActivationError,
+    require_truth_access,
+    resolve_document_truth_policy,
+)
 from work_buddy.cowork.truth_analysis_jobs import (
     MAX_TRUTH_ANALYSIS_BUDGET_USD,
     SpawnDetached,
@@ -83,6 +88,7 @@ def _authorization(
         "context_sha256": run.context_sha256,
         "role": "truth_analysis",
         "run_id": run.run_id,
+        "truth_activation_revision": run.activation_revision,
     }
     observed = {
         "action_snapshot_id": receipt.action_snapshot_id,
@@ -91,6 +97,7 @@ def _authorization(
         "context_sha256": receipt.context_sha256,
         "role": boundary.get("role"),
         "run_id": boundary.get("run_id"),
+        "truth_activation_revision": boundary.get("truth_activation_revision"),
     }
     if observed != expected:
         raise TruthAnalysisDispatchError(
@@ -152,6 +159,23 @@ def _mark_unavailable(
         error=error,
         expected_launch_owner=expected_launch_owner,
     )
+
+
+def cancel_truth_analysis_runs_for_activation(
+    *,
+    store_id: str,
+    document_id: str,
+    valid_activation_revision: int | None,
+) -> dict[str, int]:
+    """Persistently fence and best-effort terminate runs from an old policy epoch."""
+
+    invalidated = truth_analysis_runtime.invalidate_active_runs_for_document(
+        store_id,
+        document_id,
+        valid_activation_revision=valid_activation_revision,
+    )
+    terminated = sum(1 for run in invalidated if _terminate_expired_worker(run))
+    return {"invalidated": len(invalidated), "terminated": terminated}
 
 
 def enqueue_truth_analysis_launch(
@@ -283,6 +307,29 @@ def dispatch_truth_analysis_launch(
     existing = _running_or_terminal(run)
     if existing is not None:
         return existing
+    try:
+        if run.activation_revision <= 0:
+            raise TruthActivationError(
+                "truth_activation_changed",
+                "The analysis run has no document Truth activation binding.",
+            )
+        require_truth_access(
+            TruthStoreRegistry().open_store(run.store_id),
+            run.document_id,
+            mutation=True,
+            expected_activation_revision=run.activation_revision,
+        )
+    except TruthActivationError as exc:
+        terminal = _mark_unavailable(
+            run,
+            error_code="truth_activation_changed",
+            error=str(exc),
+        )
+        return {
+            "run_id": terminal.run_id,
+            "status": terminal.status,
+            "error_code": terminal.error_code,
+        }
     now = datetime.now(timezone.utc)
     if _utc(receipt.expires_at) <= now:
         terminal = _mark_unavailable(
@@ -394,9 +441,34 @@ def reconcile_truth_analysis_launches(
         "running": 0,
         "deadline_exceeded": 0,
         "terminated": 0,
+        "activation_changed": 0,
     }
     now = datetime.now(timezone.utc)
     for run in truth_analysis_runtime.reconcilable_runs():
+        store = TruthStoreRegistry().open_store(run.store_id)
+        try:
+            require_truth_access(
+                store,
+                run.document_id,
+                mutation=True,
+                expected_activation_revision=run.activation_revision,
+            )
+        except TruthActivationError:
+            try:
+                policy = resolve_document_truth_policy(store, run.document_id)
+                valid_revision = (
+                    policy.activation_revision if policy.truth_mutable else None
+                )
+            except TruthActivationError:
+                valid_revision = None
+            cancelled = cancel_truth_analysis_runs_for_activation(
+                store_id=run.store_id,
+                document_id=run.document_id,
+                valid_activation_revision=valid_revision,
+            )
+            counts["activation_changed"] += cancelled["invalidated"]
+            counts["terminated"] += cancelled["terminated"]
+            continue
         expired, did_expire = truth_analysis_runtime.expire_run_if_overdue(
             run.run_id
         )

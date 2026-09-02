@@ -898,10 +898,10 @@ class TestRetrySweepReplay:
         from work_buddy.sidecar.retry_sweep import RetrySweep
         from work_buddy.mcp_server.registry import Capability
         sweep = RetrySweep()
-        record, _ = _make_queued_op(sweep_ops_dir, name="task_create")
+        record, _ = _make_queued_op(sweep_ops_dir, name="summary_search")
 
         good_entry = Capability(
-            name="task_create",
+            name="summary_search",
             description="real",
             category="tasks",
             parameters={},
@@ -910,7 +910,7 @@ class TestRetrySweepReplay:
         # Initial registry state: empty. After recheck_disabled_capability
         # runs and returns True (recovery succeeded), the registry has
         # the capability.
-        active_registry_states = [{}, {"task_create": good_entry}]
+        active_registry_states = [{}, {"summary_search": good_entry}]
         recheck_calls: list[str] = []
 
         def _get_registry_side():
@@ -925,13 +925,13 @@ class TestRetrySweepReplay:
         with patch("work_buddy.mcp_server.registry.get_registry",
                    side_effect=_get_registry_side), \
              patch("work_buddy.mcp_server.registry.get_disabled_registry",
-                   return_value={"task_create": good_entry}), \
+                   return_value={"summary_search": good_entry}), \
              patch("work_buddy.recovery.recheck_disabled_capability",
                    side_effect=_recheck_side):
             result = sweep._replay(record)
 
         assert result["success"] is True
-        assert recheck_calls == ["task_create"], (
+        assert recheck_calls == ["summary_search"], (
             "recheck_disabled_capability should have been called once "
             "for the disabled capability"
         )
@@ -947,10 +947,10 @@ class TestRetrySweepReplay:
         from work_buddy.sidecar.retry_sweep import RetrySweep
         from work_buddy.mcp_server.registry import Capability
         sweep = RetrySweep()
-        record, _ = _make_queued_op(sweep_ops_dir, name="task_create")
+        record, _ = _make_queued_op(sweep_ops_dir, name="summary_search")
 
         disabled_entry = Capability(
-            name="task_create",
+            name="summary_search",
             description="disabled placeholder",
             category="tasks",
             parameters={},
@@ -959,7 +959,7 @@ class TestRetrySweepReplay:
 
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={}), \
              patch("work_buddy.mcp_server.registry.get_disabled_registry",
-                   return_value={"task_create": disabled_entry}), \
+                   return_value={"summary_search": disabled_entry}), \
              patch("work_buddy.recovery.recheck_disabled_capability",
                    return_value=False):
             result = sweep._replay(record)

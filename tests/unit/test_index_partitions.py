@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from work_buddy.index.model import ProjectionKind, PoolStrategy
 from work_buddy.index.partitions.ir_source import IRSourcePartition
 from work_buddy.knowledge.model import DirectionsUnit, SystemUnit, VaultUnit
@@ -160,6 +162,15 @@ class _FakeVaultSource:
 
     def discover(self):
         return (self._files, [])
+
+    def parse(self, item_id):
+        from work_buddy.vault_index.chunker import chunk_markdown
+
+        match = next((item for item in self._files if item.item_id == item_id), None)
+        if match is None:
+            return []
+        text = Path(match.abs_path).read_text(encoding="utf-8")
+        return chunk_markdown(text, source_path=match.source_path)
 
 
 class TestVaultChunkPartition:
@@ -329,11 +340,20 @@ class TestConsumerGate:
 
 
 class TestTaskNoteSourceCoverage:
-    """Real-SQLite test of the task_note SOURCE change (the recall fix at the source)."""
+    """Real-SQLite coverage for the frozen legacy task-note source."""
 
     def _setup(self, tmp_path, monkeypatch):
         import sqlite3
         from work_buddy.obsidian.tasks.mutations import TASK_NOTES_DIR
+
+        # This fixture intentionally models the pre-cutover Markdown source.
+        # Select that compatibility branch explicitly so a developer's live
+        # native-authority latch cannot redirect the isolated test to their
+        # installation's Co-work task store.
+        monkeypatch.setattr(
+            "work_buddy.tasks.runtime.native_authority_active",
+            lambda *args, **kwargs: False,
+        )
 
         vault = tmp_path / "vault"
         notes_dir = vault / TASK_NOTES_DIR

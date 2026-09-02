@@ -70,6 +70,8 @@ RESOURCES: dict[str, str] = {
     "db/messages":               "db/messages.db",
     "db/tasks":                  "db/task_metadata.db",
     "db/projects":               "db/projects.db",
+    "db/contracts":              "db/contracts.db",
+    "db/personal-knowledge":     "db/personal_knowledge.db",
     "db/entities":               "db/entities.db",
     "db/truth-registry":         "db/truth_registry.db",
     "db/threads":                "db/threads.db",  # Thread + thread_events
@@ -93,6 +95,9 @@ RESOURCES: dict[str, str] = {
     # The stable Truth store itself lives below this root in .wbuddy/cowork.
     "stores/cowork-tasks":       "cowork/tasks",
     "db/journal-capture":        "db/journal_capture.db",
+    # Content-free, independently durable proof that migrated domain
+    # authorities may never fall back to their retired Markdown stores.
+    "db/installed-authority":    "db/installed_authority.db",
     # Compatibility-migration state for task-note bodies. Journal prose
     # migration lives with Journal captures; the task master list remains in
     # the existing Tasks store/vault file.

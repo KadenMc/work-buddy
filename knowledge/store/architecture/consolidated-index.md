@@ -1,7 +1,7 @@
 ---
 name: Consolidated Index
 kind: system
-description: One unified lexical+dense hybrid search substrate (work_buddy/index/) serving every work-buddy corpus — knowledge units, vault chunks, conversation spans, Chrome tabs, summaries, projects, task notes — from a single SQLite DB. Composable ports (Partition/Encoder/ResidentCache), one shared store keyed by a partition column, builds serialized on a DB-wide writer gate, FTS5⊕dense RRF search with metadata filter pushdown. Flag-gated by index.enabled; each consumer routes via its own index.consumers.<name> gate.
+description: One unified lexical+dense hybrid search substrate (work_buddy/index/) serving every work-buddy corpus — system knowledge, native Journal, Projects, Contracts and Personal Knowledge, vault chunks, conversation spans, Chrome tabs, summaries, and task notes — from a single SQLite DB. Composable ports (Partition/Encoder/ResidentCache), one shared store keyed by a partition column, builds serialized on a DB-wide writer gate, FTS5⊕dense RRF search with metadata filter pushdown. Database partitions use durable build-then-ack outbox delivery; sealed Markdown roots are detached from Vault discovery and stale index rows. Flag-gated by index.enabled; each consumer routes via its own index.consumers.<name> gate.
 tags:
 - index
 - consolidated
@@ -49,6 +49,34 @@ dev_notes: |-
   every batch, short writer holds, resumes from the last batch after an interruption.
   Builds never lose committed progress (per-item + per-batch commits).
 
+  ## Database outboxes and cutover evidence
+  Journal, Projects, Contracts, and Personal Knowledge expose a small optional outbox
+  port. `IndexPartition.build` snapshots a bounded pending batch, completes the locked
+  source reconciliation, verifies source/index parity, and acknowledges exactly that
+  snapshot. A crash before acknowledgement leaves the batch pending; replay is
+  idempotent. `force=true` is the same partition-scoped delivery boundary with a full
+  backfill. Every successful build, including an empty/no-op build, stamps
+  `last_build:<partition>` so an empty native corpus is distinguishable from "never ran."
+
+  `index/cutover_evidence.py::certify_search_cutover` is read-only and emits
+  `wb.search-cutover-evidence/v1` plus `wb.legacy-root-detachment-evidence/v1` from the
+  actual registry, authority rows, source/index ledgers, outbox lag, and Vault exclusions.
+  Certification uses immutable read-only SQLite handles, refuses an uncheckpointed WAL,
+  and reports not-ready if the consolidated writer gate is held or becomes held mid-read.
+  After writers are quiesced, the bounded
+  `index/cutover_checkpoint.py::checkpoint_search_cutover_databases` step checkpoints only
+  the configured native-domain stores and consolidated index (never caller-supplied paths)
+  and emits `wb.search-cutover-checkpoint-evidence/v1`; certification must immediately
+  follow its ready receipt. A racing writer recreates a sidecar and closes the immutable
+  gate. Projects with a zero-document ledger item also fail closed until the correlated
+  canonical document-head search contract exists; the current cutover cohort instead
+  proves that every accepted Project has a nonempty plain body and a native index row.
+  The bounded pre-seal operator in `vault_index/cutover.py` accepts domain names only,
+  resolves their configured roots, and reconciles the Vault partition before authority
+  exposure. After seal, `vault_index/authority_exclusions.py` sustains the same exclusion
+  from SQLite authority state without a live config mutation. The first authority-aware
+  refresh prunes already-indexed archive rows; discovery pruning alone is not sufficient.
+
   ## Object model is inheritance-free (Protocols + injection)
   `Partition`, and the encode/provider seams, are `Protocol`s; `ResidentCache` takes an
   injected loader. Optional partition methods (`projection_schema`, `hydrate`) are read via
@@ -73,9 +101,11 @@ dev_notes: |-
   - `work_buddy/index/build.py` — `IndexBuilder`: diff → per-item parse/upsert/encode →
     prune → version bump; the two-lock `_lock_ctx`; batched resumable backfill.
   - `work_buddy/index/partition.py` — the `Partition` Protocol + lazy registry.
-  - `work_buddy/index/partitions/ir_source.py` — wraps the 5 IR sources as partitions
+  - `work_buddy/index/partitions/ir_source.py` — wraps the 4 remaining IR sources as partitions
     (`coverage` + `lifecycle()` folded into the change-key; `lifecycle_state` metadata).
-  - `work_buddy/index/{search,fusion,recency,resident,encode,model,config,partitioned}.py`.
+  - `work_buddy/index/{search,fusion,recency,resident,encode,model,config,partitioned,outbox,cutover_checkpoint,cutover_evidence}.py`.
+  - `work_buddy/vault_index/{authority_exclusions,cutover}.py` — sustained and bounded
+    prospective root detachment.
   - `work_buddy/index/ab.py` — blind-A/B relevance harness used to validate each partition.
   - `work_buddy/indexing/adapters/index_consolidated.py` — the status/bulk-build seam adapter.
 ---
@@ -95,9 +125,10 @@ and kept fresh without changing live search behavior.
 
 - **Partition** (`partition.py`) — the source PORT (a `Protocol` + lazy factory registry). A
   domain adapter that `discover()`s indexable items (with a change-detection signal) and
-  `parse()`s each into one or more `Document`s. Seven are registered: `knowledge`, `vault`,
-  `conversation`, `projects`, `chrome`, `summary`, `task_note` (knowledge → `KnowledgePartition`,
-  vault → `VaultChunkPartition`, the five IR sources → `IRSourcePartition`).
+  `parse()`s each into one or more `Document`s. Ten are registered: `knowledge`, `journal`,
+  `projects`, `contracts`, `personal_knowledge`, `vault`, `conversation`, `chrome`, `summary`,
+  and `task_note` (the four cut-over domains own SQLite adapters; the remaining generic IR
+  sources use `IRSourcePartition`).
 - **Document** (`model.py`) — `fields` (→ BM25/FTS), `projections` (→ dense; scalar or pooled
   list), `metadata` (JSON, filterable), `display_text`, `content_hash` (change detection),
   `timestamp` (recency).
@@ -123,6 +154,11 @@ its old docs, parse, upsert, encode projections → prune deleted items → bump
 and invalidate the partition's resident matrices. It runs under a DB-wide writer gate + the
 per-partition lock, so concurrent builds (across partitions or processes) serialize safely
 rather than colliding on the shared DB. Default is incremental (`force=false`).
+
+For a database partition, the facade additionally snapshots its transactional search outbox,
+builds and verifies source/index parity, then acknowledges exactly the snapshot. The returned
+`outbox` receipt uses `wb.search-outbox-delivery/v1`; `ready=true` requires zero remaining lag
+and zero parity mismatches. `force=true` is the explicit per-partition restore/backfill path.
 
 ## Search
 
@@ -163,9 +199,10 @@ score-guarded, so a genuinely dominant document with no competitive alternative 
 
 - **`index_rebuild`** (`context/index-rebuild`) — incremental per-partition build; self-skips
   while any index build is running.
-- **Five `index-<partition>-refresh` sidecar crons** keep the active partitions fresh at
-  corpus-matched cadences (knowledge/chrome `*/15`, summary `*/30`, conversation hourly,
-  vault every 6h); one job per partition by design.
+- **Nine `index-<partition>-refresh` sidecar crons** keep the active partitions fresh at
+  corpus-matched cadences, including Journal every five minutes and Projects, Contracts, and
+  Personal Knowledge every fifteen minutes. One job per partition preserves replay and
+  backfill isolation.
 - **Embedding-service endpoints** `/index/search`, `/index/search_many`, `/index/build`, with
   `index_search` / `index_search_many` clients (see `architecture/embedding-service`).
 - **Status/dashboard seam** — registered as the `consolidated` index in `work_buddy/indexing/`
@@ -178,3 +215,9 @@ knowledge store, `IRSourcePartition` over the IR sources, `VaultChunkPartition` 
 chunker. Each consumer is re-pointed onto the consolidated partition behind its own flag and
 validated (blind A/B) before the corresponding legacy index is retired. See
 `architecture/vault-index`, `architecture/knowledge-system`, and `context/index-rebuild`.
+
+Authority-sealed Journal, Projects, Contracts, and Personal Knowledge Markdown roots are never
+ordinary Vault-search inputs. The filesystem source prunes each root before `os.walk` descends,
+rejects direct parse attempts, and the same partition reconciliation deletes any rows indexed
+before the seal. A pre-seal maintenance run uses only the bounded configured-domain operator;
+the authority-derived rule then maintains the fence after exposure.

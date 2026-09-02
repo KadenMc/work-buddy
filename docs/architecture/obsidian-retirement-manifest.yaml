@@ -1,0 +1,559 @@
+schema_version: work-buddy/obsidian-retirement-manifest/v1
+scope: >-
+  Obsidian-dependent product surfaces affected by the database-content
+  cut-away. This is a code-state manifest only: it does not flip a live
+  authority seal, edit config.local.yaml, or delete migration source files.
+decisions:
+  - keep
+  - retarget
+  - disable
+  - remove
+invariants:
+  - "Every item has an owner, prerequisite, status, and repository evidence."
+  - "Opting Obsidian out causes no bridge/plugin probes, retries, notification delivery, or setup advice."
+  - "Native Calendar is owned by google_calendar_native and never inherits the Obsidian plugin dependency."
+  - "work_buddy/obsidian remains explicit compatibility/import/export/filesystem-fallback code; native authority seals guard normal domain mutations."
+  - "No row authorizes a live authority flip or post-seal Markdown write."
+
+items:
+  - id: contracts-active
+    kind: capability
+    asset: knowledge/store/contracts/active_contracts.md
+    decision: retarget
+    status: implemented
+    owner: contracts-sqlite
+    prerequisite: contracts-store-schema-and-provider
+    evidence:
+      - "Capability declaration has no Obsidian requirement and names Contracts SQLite authority."
+  - id: contracts-constraints
+    kind: capability
+    asset: knowledge/store/contracts/contract_constraints.md
+    decision: retarget
+    status: implemented
+    owner: contracts-sqlite
+    prerequisite: contracts-store-schema-and-provider
+    evidence:
+      - "Capability declaration reads structured SQLite constraints and has no Obsidian requirement."
+  - id: contracts-health
+    kind: capability
+    asset: knowledge/store/contracts/contract_health.md
+    decision: retarget
+    status: implemented
+    owner: contracts-sqlite
+    prerequisite: contracts-store-schema-and-provider
+    evidence:
+      - "Capability declaration names Contracts SQLite health and has no Obsidian requirement."
+  - id: contracts-wip
+    kind: capability
+    asset: knowledge/store/contracts/contract_wip_check.md
+    decision: retarget
+    status: implemented
+    owner: contracts-sqlite
+    prerequisite: contracts-store-schema-and-provider
+    evidence:
+      - "Capability declaration reads the SQLite active count and has no Obsidian requirement."
+  - id: contracts-summary
+    kind: capability
+    asset: knowledge/store/contracts/contracts_summary.md
+    decision: retarget
+    status: implemented
+    owner: contracts-sqlite
+    prerequisite: contracts-store-schema-and-provider
+    evidence:
+      - "Capability declaration formats SQLite records rather than claiming Markdown authority."
+  - id: contracts-overdue
+    kind: capability
+    asset: knowledge/store/contracts/overdue_contracts.md
+    decision: retarget
+    status: implemented
+    owner: contracts-sqlite
+    prerequisite: contracts-store-schema-and-provider
+    evidence:
+      - "Capability declaration queries structured deadlines and has no Obsidian requirement."
+  - id: contracts-stale
+    kind: capability
+    asset: knowledge/store/contracts/stale_contracts.md
+    decision: retarget
+    status: implemented
+    owner: contracts-sqlite
+    prerequisite: contracts-store-schema-and-provider
+    evidence:
+      - "Capability declaration queries structured review dates and has no Obsidian requirement."
+
+  - id: datacore-capability-family
+    kind: capability
+    asset: knowledge/store/context/datacore_query.md
+    decision: disable
+    status: implemented-by-preference-gate
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "Datacore declarations require obsidian and datacore; probe_all cascades an Obsidian opt-out without calling child probes."
+      - "Legacy directions remove the slash command and forbid setup advice when opted out."
+  - id: vault-recon-capabilities
+    kind: capability
+    asset: knowledge/store/context/vault_recon_collect.md
+    decision: disable
+    status: implemented-for-normal-path
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-operator-request-during-grace-period
+    evidence:
+      - "The scheduled job is disabled and the capability declaration labels the path legacy explicit-only."
+  - id: inline-todos-workflow
+    kind: workflow
+    asset: knowledge/store/tasks/inline-todos.md
+    decision: remove
+    status: implemented
+    owner: tasks-sqlite
+    prerequisite: native-task-actions
+    evidence:
+      - "The workflow declaration is deleted; retirement directions forbid vault scans and point to native Tasks."
+  - id: inline-capability-family
+    kind: capability
+    asset: knowledge/store/inline/
+    decision: remove
+    status: implemented
+    owner: native-action-surfaces
+    prerequisite: native-selections-tasks-and-threads
+    evidence:
+      - "The seven inline MCP declarations are deleted; retained concept/directions units explicitly mark the Python package as inert compatibility code."
+
+  - id: slash-datacore-query
+    kind: command
+    asset: .claude/commands/wb-datacore-query.md
+    decision: remove
+    status: implemented
+    owner: legacy-obsidian-compatibility
+    prerequisite: native-domain-search
+    evidence:
+      - "Tracked slash launcher is deleted and its directions contain no command field."
+  - id: slash-vault-recon
+    kind: command
+    asset: .claude/commands/wb-vault-recon.md
+    decision: remove
+    status: implemented
+    owner: legacy-obsidian-compatibility
+    prerequisite: migration-evidence-retained
+    evidence:
+      - "Tracked slash launcher is deleted; only explicit reading of existing snapshots remains documented."
+  - id: slash-inline-todos
+    kind: command
+    asset: .claude/commands/wb-inline-todos.md
+    decision: remove
+    status: implemented
+    owner: tasks-sqlite
+    prerequisite: native-task-actions
+    evidence:
+      - "Tracked slash launcher and workflow declaration are deleted."
+  - id: slash-journal-backlog
+    kind: command
+    asset: .claude/commands/wb-journal-backlog.md
+    decision: remove
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: native-running-notes-surface
+    evidence:
+      - "The tracked launcher is deleted; live directions point to native Journal actions."
+  - id: journal-backlog-workflow
+    kind: workflow
+    asset: knowledge/store/daily-journal/process-backlog.md
+    decision: remove
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: native-running-notes-surface
+    evidence:
+      - "The callable workflow declaration is deleted so it cannot read or rewrite daily Markdown through an ordinary user path."
+  - id: journal-backlog-source-pipeline
+    kind: capability-path
+    asset: work_buddy/pipelines/capability.py
+    decision: remove
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: native-running-notes-surface
+    evidence:
+      - "journal_backlog is absent from the live source-pipeline registry and the generic capability schema."
+      - "Archived parser and clustering modules remain inert for migration evidence and old receipt interpretation."
+  - id: journal-content-migration-operator
+    kind: capability
+    asset: knowledge/store/journal/journal-content-migration-operator.md
+    decision: remove
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: private-native-journal-importer
+    evidence:
+      - "The knowledge unit is a non-callable retired concept; the old Markdown-to-Co-work path is not a database-only Journal end state."
+  - id: journal-backlog-actions
+    kind: capability-family
+    asset: knowledge/store/journal/journal_route_to_tasks.md
+    decision: disable
+    status: explicit-legacy-fallback
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in-during-archive-grace-period
+    evidence:
+      - "The remaining archived-thread route/append/rewrite declarations require Obsidian and identify themselves as legacy compatibility actions."
+      - "The normal backlog workflow, slash command, and source pipeline are removed; native Journal item actions do not call this family."
+
+  - id: job-vault-recon
+    kind: scheduled-job
+    asset: sidecar_jobs/vault-recon.md
+    decision: disable
+    status: implemented
+    owner: legacy-obsidian-compatibility
+    prerequisite: none
+    evidence:
+      - "Frontmatter has enabled:false and the body forbids probes and generated investigation jobs."
+  - id: job-inline-sync
+    kind: scheduled-job
+    asset: sidecar_jobs/inline-sync.md
+    decision: disable
+    status: implemented
+    owner: tasks-sqlite
+    prerequisite: native-task-actions
+    evidence:
+      - "Frontmatter has enabled:false and documents that there is no replacement file scanner."
+  - id: job-project-sync
+    kind: scheduled-job
+    asset: sidecar_jobs/project-sync.md
+    decision: disable
+    status: implemented
+    owner: projects-sqlite
+    prerequisite: one-explicit-final-pre-seal-reconciliation
+    evidence:
+      - "project_sync delegates to reconcile_projects_authoritatively and returns zero writes under SQLite authority."
+      - "The recurring job is disabled so it cannot race final cohort hashing, fencing, or sealing."
+  - id: job-journal-triage-scan
+    kind: scheduled-job
+    asset: sidecar_jobs/journal-triage-scan.md
+    decision: disable
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: native-running-notes-surface
+    evidence:
+      - "Frontmatter has enabled:false; native Running Notes are handled by the React Journal."
+      - "The retained legacy pipeline is migration-inspection code and cannot run on a schedule."
+  - id: journal-markdown-write-fence
+    kind: authority-boundary
+    asset: work_buddy/journal_capture/authority.py#require_legacy_markdown_write
+    decision: retarget
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: journal-authority-control
+    evidence:
+      - "The last shared daily-file writer checks the durable authority before bridge probes, file reads, or writes."
+      - "Database-only and recovery-fenced modes reject stale backlog rewrites and warm-registry file actions."
+  - id: jobs-vault-index
+    kind: scheduled-job
+    asset: sidecar_jobs/index-vault-refresh.md
+    decision: keep
+    status: retained-explicit-filesystem-feature
+    owner: vault-index
+    prerequisite: configured-non-archived-roots
+    evidence:
+      - "Vault index reads configured filesystem roots and does not require the Obsidian app or bridge."
+      - "Sealed domain roots are pruned before traversal and direct parsing; the first authority-aware refresh deletes their previously indexed rows."
+  - id: native-search-partitions
+    kind: search-authority
+    asset: work_buddy/index/cutover_evidence.py
+    decision: retarget
+    status: implemented
+    owner: native-domain-search
+    prerequisite: journal-projects-contracts-personal-knowledge-authority-ledgers
+    evidence:
+      - "Journal, Projects, Contracts, and Personal Knowledge register database-backed consolidated-index partitions with per-domain refresh jobs."
+      - "Transactional outbox batches are acknowledged only after a completed build and source/index parity check; force is a replay-safe partition backfill."
+      - "The bounded checkpoint step derives all database paths from configuration, checkpoints the four domain WALs plus the consolidated index, and emits wb.search-cutover-checkpoint-evidence/v1 before immutable certification."
+      - "The read-only certifier derives wb.search-cutover-evidence/v1 from registry, authority, build ledger, native visibility, and pending outbox state."
+      - "A Project source row with no native index document fails closed; the cutover rehearsal proves zero delegated or empty items for the accepted cohort."
+  - id: vault-index-authority-detachment
+    kind: search-authority
+    asset: work_buddy/vault_index/authority_exclusions.py
+    decision: retarget
+    status: implemented
+    owner: vault-index
+    prerequisite: configured-domain-roots-and-authority-seals
+    evidence:
+      - "The bounded pre-seal API accepts known domain names rather than arbitrary paths and purges the configured roots before authority exposure."
+      - "Post-seal read-only authority resolution sustains the exclusions without changing live configuration."
+      - "Machine-derived wb.legacy-root-detachment-evidence/v1 proves traversal fencing and zero indexed items below every effective root."
+
+  - id: health-obsidian
+    kind: health-component
+    asset: work_buddy/health/components.py#obsidian
+    decision: keep
+    status: legacy-optional
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "Component owns only vault-root and bridge-plugin requirements; native domain requirements were detached."
+  - id: health-datacore
+    kind: health-component
+    asset: work_buddy/health/components.py#datacore
+    decision: disable
+    status: implemented-by-parent-opt-out
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "Component is labelled legacy and depends on obsidian; parent opt-out disables it without a plugin probe."
+  - id: health-calendar-legacy
+    kind: health-component
+    asset: work_buddy/health/components.py#google_calendar
+    decision: disable
+    status: implemented-by-parent-opt-out
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "Component is labelled legacy and depends on obsidian."
+  - id: health-calendar-native
+    kind: health-component
+    asset: work_buddy/health/components.py#google_calendar_native
+    decision: keep
+    status: implemented
+    owner: calendar-provider
+    prerequisite: native-google-oauth-configuration
+    evidence:
+      - "Native Calendar component has no Obsidian dependency and the Calendar control domain points to it."
+  - id: health-dashboard
+    kind: health-component
+    asset: work_buddy/health/components.py#dashboard
+    decision: retarget
+    status: implemented
+    owner: dashboard
+    prerequisite: native-domain-providers
+    evidence:
+      - "Dashboard no longer declares Obsidian as a soft dependency."
+  - id: health-domain-requirements
+    kind: health-requirement
+    asset: work_buddy/health/components.py#obsidian-requirements
+    decision: remove
+    status: implemented-from-obsidian-component
+    owner: native-domain-stores
+    prerequisite: journal-tasks-contracts-projects-personal-knowledge-cohorts
+    evidence:
+      - "Daily-note section, Contracts directory, and Personal Knowledge path requirements are absent from the Obsidian component."
+  - id: health-native-authorities
+    kind: health-component
+    asset: work_buddy/health/components.py#native-authorities
+    decision: retarget
+    status: implemented
+    owner: native-domain-stores
+    prerequisite: journal-projects-contracts-personal-knowledge-authority-ledgers
+    evidence:
+      - "Journal, Projects, Contracts, and Personal Knowledge each expose a read-only SQLite authority health component."
+      - "The checks open existing databases read-only and never create, migrate, or fall back to legacy Markdown during diagnosis."
+
+  - id: control-journal
+    kind: control-graph
+    asset: work_buddy/control/graph_static.py#subsystem:daily-notes
+    decision: retarget
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: journal-native-authority
+    evidence:
+      - "Daily Notes has no Obsidian component or template-section requirement edges."
+  - id: control-calendar
+    kind: control-graph
+    asset: work_buddy/control/graph_static.py#domain:calendar
+    decision: retarget
+    status: implemented
+    owner: calendar-provider
+    prerequisite: native-google-provider
+    evidence:
+      - "Calendar domain selects google_calendar_native."
+  - id: control-notifications
+    kind: control-graph
+    asset: work_buddy/control/graph_static.py#domain:notifications
+    decision: retarget
+    status: implemented
+    owner: notifications
+    prerequisite: dashboard-or-telegram
+    evidence:
+      - "Notifications domain no longer presents Obsidian as a native child."
+
+  - id: notification-obsidian
+    kind: notification-surface
+    asset: work_buddy/notifications/surfaces/obsidian.py
+    decision: disable
+    status: implemented-by-dispatch-preference-gate
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "SurfaceDispatcher does not instantiate the surface when Obsidian is opted out, preventing its availability HTTP probe."
+  - id: notification-native
+    kind: notification-surface
+    asset: work_buddy/notifications/surfaces/dashboard.py
+    decision: keep
+    status: implemented
+    owner: notifications
+    prerequisite: dashboard
+    evidence:
+      - "Dashboard registration is independent from the Obsidian preference."
+
+  - id: bridge-process-port
+    kind: port-process
+    asset: "work_buddy/obsidian/bridge.py (port 27125)"
+    decision: keep
+    status: legacy-optional
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "No native domain or Calendar control edge requires the bridge; opt-out fences all automatic probes."
+  - id: dashboard-command-palette
+    kind: collector
+    asset: work_buddy/dashboard/api.py#_obsidian_commands
+    decision: disable
+    status: implemented-by-preference-gate
+    owner: dashboard
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "_obsidian_commands returns before constructing the bridge client when Obsidian is opted out."
+  - id: vault-recon-collector
+    kind: collector
+    asset: work_buddy/collectors/vault_recon_collector.py
+    decision: disable
+    status: implemented-at-scheduler-boundary
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-operator-invocation-during-grace-period
+    evidence:
+      - "Its only system schedule is disabled; knowledge docs prohibit auto-escalation."
+  - id: datacore-context-collector
+    kind: collector
+    asset: work_buddy/collectors/datacore_collector.py
+    decision: disable
+    status: implemented-by-preference-gate
+    owner: context
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "ContextCollector skips Datacore before cache or collector access when Obsidian is opted out."
+      - "The retained collector remains available only to an explicitly opted-in compatibility profile."
+  - id: context-bundle-legacy-sources
+    kind: collector
+    asset: work_buddy/context/collector.py
+    decision: retarget
+    status: implemented
+    owner: context
+    prerequisite: feature-preferences
+    evidence:
+      - "Default and explicit bundles skip Obsidian, Obsidian Tasks/Wellness, Day Planner, and Datacore before cache or collector access when Obsidian is opted out."
+      - "Filesystem Vault and provider-neutral Calendar sources are not tied to the Obsidian preference."
+
+  - id: retry-probe-recovery
+    kind: retry-operation
+    asset: work_buddy/recovery.py
+    decision: retarget
+    status: implemented
+    owner: runtime
+    prerequisite: feature-preferences
+    evidence:
+      - "recheck_tool and recheck_disabled_capability treat opt-out as authoritative even with force=true."
+  - id: retry-sidecar-replay
+    kind: retry-operation
+    asset: work_buddy/sidecar/retry_sweep.py
+    decision: retarget
+    status: implemented
+    owner: runtime
+    prerequisite: feature-preferences
+    evidence:
+      - "Direct and wrapper retries cancel quietly before probing or invoking an opted-out capability."
+
+  - id: setup-diagnostics
+    kind: setup-reference
+    asset: work_buddy/health/diagnostics.py
+    decision: retarget
+    status: implemented
+    owner: health
+    prerequisite: feature-preferences
+    evidence:
+      - "DiagnosticRunner returns disabled with no steps or fix suggestion for an opted-out component or dependency."
+  - id: setup-knowledge
+    kind: knowledge-reference
+    asset: knowledge/store/status/setup_help.md
+    decision: retarget
+    status: implemented
+    owner: health
+    prerequisite: feature-preferences
+    evidence:
+      - "Setup documentation says opt-out suppresses probes, requirement checks, retries, and advice."
+  - id: control-help
+    kind: setup-reference
+    asset: work_buddy/control/help_briefs.py
+    decision: retarget
+    status: implemented
+    owner: control-graph
+    prerequisite: feature-preferences
+    evidence:
+      - "Disabled component, requirement, capability, and grouping briefs explain the preference without diagnostic or fix instructions."
+  - id: vault-investigation-knowledge
+    kind: knowledge-reference
+    asset: knowledge/store/vault/investigation-directions.md
+    decision: disable
+    status: implemented
+    owner: legacy-obsidian-compatibility
+    prerequisite: migration-evidence-retained
+    evidence:
+      - "Directions are historical-only and forbid spawning, probing, and notifications."
+
+  - id: obsidian-package
+    kind: compatibility-code
+    asset: work_buddy/obsidian/
+    decision: keep
+    status: explicit-legacy-fallback
+    owner: legacy-obsidian-compatibility
+    prerequisite: tracked-dependency-inventory-before-later-deletion
+    evidence:
+      - "Bridge, vault_writer, parsers, import/export helpers, and filesystem fallback remain available for explicit migration and rollback use."
+  - id: day-planner-family
+    kind: compatibility-code
+    asset: work_buddy/obsidian/day_planner/
+    decision: disable
+    status: explicit-legacy-fallback
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "The legacy day_planner context source is fenced before collector access when Obsidian is opted out."
+      - "Legacy implementation remains isolated under work_buddy/obsidian for explicit compatibility."
+  - id: hot-files-family
+    kind: capability
+    asset: knowledge/store/journal/hot_files.md
+    decision: disable
+    status: implemented-by-preference-gate
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "The capability requires obsidian and is described as explicit legacy compatibility only."
+  - id: activity-timeline-family
+    kind: capability
+    asset: knowledge/store/journal/activity_timeline.md
+    decision: retarget
+    status: implemented
+    owner: journal-sqlite
+    prerequisite: journal-native-authority
+    evidence:
+      - "The capability has no Obsidian requirement and projects current native Journal revisions after seal."
+      - "Markdown compatibility is confined to the pre-seal authority epoch; cutover-paused reads fail closed."
+  - id: keep-the-rhythm
+    kind: compatibility-code
+    asset: work_buddy/obsidian/ktr/
+    decision: disable
+    status: explicit-legacy-fallback
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "Only the Obsidian-gated hot-files capability consumes KTR; knowledge labels it retired app-only compatibility."
+  - id: tag-wrangler
+    kind: compatibility-code
+    asset: work_buddy/obsidian/tags/
+    decision: disable
+    status: explicit-legacy-fallback
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "The scheduled inline consumer and public inline capability family are removed; knowledge labels Tag Wrangler retired app-only compatibility."
+  - id: vault-event-ledger
+    kind: compatibility-code
+    asset: work_buddy/obsidian/vault_events/
+    decision: disable
+    status: explicit-legacy-fallback
+    owner: legacy-obsidian-compatibility
+    prerequisite: explicit-obsidian-opt-in
+    evidence:
+      - "Only Obsidian-gated activity capabilities retain this implementation; knowledge forbids bootstrap on the opted-out path."

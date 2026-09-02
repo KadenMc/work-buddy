@@ -1,7 +1,7 @@
 ---
 name: Data Backup
 kind: capability
-description: Take a snapshot of work-buddy's vital SQLite DBs (task_metadata, projects, messages, threads). Hot-backup, tar+gzip, write manifest, optionally push to GitHub Releases. Called by the hourly sidecar cron AND by the user via /wb-backup-now.
+description: Take a local snapshot of work-buddy's vital SQLite DBs and portable Truth exports. Remote GitHub upload requires an explicit persistent private-content opt-in or exact one-shot high consent.
 capability_name: data_backup
 category: backups
 op: op.wb.data_backup
@@ -13,7 +13,7 @@ parameters:
     required: false
   push_remote:
     type: bool
-    description: Override auto-detection of remote push. None (default) means push iff backups.github.repo is configured.
+    description: False forces local-only. None (default/scheduled) uploads only when a repo and backups.github.allow_unencrypted_private_content=true are configured. True without that opt-in requires exact high-risk per-invocation consent.
     required: false
 mutates_state: true
 retry_policy: manual

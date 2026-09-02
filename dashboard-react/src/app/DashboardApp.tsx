@@ -89,7 +89,15 @@ function DashboardShell({ routes }: DashboardAppProps) {
         />
       )}
       <Routes>
-        <Route index element={<Navigate replace to={`/${defaultRoute.path}`} />} />
+        <Route
+          index
+          element={
+            <Navigate
+              replace
+              to={`/${defaultRoute.path}${location.search}${location.hash}`}
+            />
+          }
+        />
         {routes.map((route) => {
           const ViewComponent = route.component;
           return (

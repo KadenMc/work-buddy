@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlencode
 
 from work_buddy.document_kernel.causality import (
     DocumentCausalityStore,
@@ -38,6 +39,23 @@ class BoundDocumentChange:
     binding: DomainDocumentBinding
     change: DocumentChangeRecord
     store: TruthStore
+
+
+@dataclass(frozen=True, slots=True)
+class BoundDocumentReference:
+    """A newly native document binding with no legacy source projection."""
+
+    binding: DomainDocumentBinding
+    store: TruthStore
+
+    @property
+    def cowork_href(self) -> str:
+        return "/app/cowork?" + urlencode(
+            {
+                "store_id": self.binding.store_id,
+                "document_id": self.binding.document_id,
+            }
+        )
 
 
 def _newline_style(value: bytes) -> str:
@@ -79,7 +97,17 @@ class DomainContentStoreManager:
             if root is not None
             else data_dir("cowork-domain-content")
         )
-        self.registry = registry or TruthStoreRegistry()
+        # Opening an already-bound domain store does not need the machine
+        # registry. Keep its default lazy so read-only adapters and tests that
+        # redirect unrelated path keys cannot accidentally open a Truth store
+        # database as the registry before ``open_existing`` runs.
+        self._registry = registry
+
+    @property
+    def registry(self) -> TruthStoreRegistry:
+        if self._registry is None:
+            self._registry = TruthStoreRegistry()
+        return self._registry
 
     @staticmethod
     def vault_id(vault_root: str | Path) -> str:
@@ -161,6 +189,7 @@ class RunningNoteDocumentService:
         *,
         entry_id: str,
         domain_kind: str = "running_note",
+        role: str = "running_note",
         document_path: str | None = None,
         title: str = "Running Note",
     ):
@@ -196,28 +225,66 @@ class RunningNoteDocumentService:
         document_id = hashlib.sha256(
             f"journal-running-note-document:{entry_id}".encode()
         ).hexdigest()[:32]
-        record, _version, _created = documents.register_ready_document(
-            store,
-            path=path,
-            title=title,
-            document_class="co_authored",
-            projection_bytes=projection,
-            ydoc_snapshot_sha256=snapshot_sha,
-            structured_head_sha256=head,
-            actor=Actor(kind="system", ref="document-kernel"),
-            mode="create",
-            document_meta={
-                "domain_content": True,
-                "source": {
-                    "kind": "domain_binding",
-                    "writeback_policy": "never",
-                },
-            },
-            document_id=document_id,
-            version_id=hashlib.sha256(
-                f"journal-running-note-version:{entry_id}:initial".encode()
-            ).hexdigest()[:32],
+        binding_id = hashlib.sha256(
+            "\0".join(
+                (
+                    "journal",
+                    domain_kind,
+                    entry_id,
+                    role,
+                    store.store_id,
+                    document_id,
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        actor = Actor(kind="system", ref="document-kernel")
+        # Domain-created documents must never pass through the legacy
+        # registration fallback, which enables Truth for compatibility. Make
+        # the document and its immutable working-document policy visible in
+        # the same Truth transaction. Provenance starts immediately; Truth is
+        # an explicit per-document opt-in.
+        from work_buddy.cowork.truth_activation import (
+            WORKING_DOCUMENT_CONTRACT,
+            provision_document_policy,
         )
+
+        with store.write_transaction() as conn:
+            record, _version, _created = documents.register_ready_document(
+                store,
+                path=path,
+                title=title,
+                document_class="co_authored",
+                projection_bytes=projection,
+                ydoc_snapshot_sha256=snapshot_sha,
+                structured_head_sha256=head,
+                actor=actor,
+                mode="create",
+                document_meta={
+                    "domain_content": True,
+                    "domain_namespace": "journal",
+                    "domain_kind": domain_kind,
+                    "domain_entity_id": entry_id,
+                    "source": {
+                        "kind": "domain_binding",
+                        "writeback_policy": "never",
+                    },
+                },
+                document_id=document_id,
+                version_id=hashlib.sha256(
+                    f"journal-running-note-version:{entry_id}:initial".encode()
+                ).hexdigest()[:32],
+                conn=conn,
+            )
+            provision_document_policy(
+                store,
+                document_id=record.id,
+                interaction_contract_id=WORKING_DOCUMENT_CONTRACT,
+                binding_id=binding_id,
+                initial_activation="disabled",
+                actor=actor,
+                intent_id=f"journal-running-note:{entry_id}:working-document-policy",
+                conn=conn,
+            )
         self.stores.registry.touch(store)
         return record
 
@@ -251,6 +318,7 @@ class RunningNoteDocumentService:
             store,
             entry_id=entry_id,
             domain_kind=domain_kind,
+            role=role,
             document_path=document_path,
             title=title,
         )
@@ -389,6 +457,55 @@ class RunningNoteDocumentService:
             )
         source_store.acknowledge_usage(reserved_source.reservation.usage_id)
         return BoundDocumentChange(binding, record, store)
+
+    def provision_empty(
+        self,
+        *,
+        vault_root: str | Path,
+        entity_id: str,
+        domain_revision: str,
+        role: str,
+        title: str,
+        created_by: str,
+        domain_kind: str = "document_module",
+    ) -> BoundDocumentReference:
+        """Create one Journal-native Co-work document with provenance on, Truth off.
+
+        This boundary is deliberately source-free: the document is the content
+        authority from creation, so no file projection or migration receipt is
+        fabricated. The underlying ready document and its working-document
+        policy are provisioned atomically by ``_ensure_document``.
+        """
+
+        store = self.stores.ensure(vault_root)
+        document = self._ensure_document(
+            store,
+            entry_id=entity_id,
+            domain_kind=domain_kind,
+            role=role,
+            document_path=f"journal/documents/{entity_id}.md",
+            title=title,
+        )
+        causality = DocumentCausalityStore(store.paths.sidecar)
+        binding = causality.ensure_binding(
+            domain_namespace="journal",
+            domain_kind=domain_kind,
+            domain_entity_id=entity_id,
+            domain_revision=domain_revision,
+            store_id=store.store_id,
+            document_id=document.id,
+            role=role,
+            created_by=created_by,
+            projection_path=None,
+            projection_mode="none",
+            migration_origin="journal-native-document/v1",
+        )
+        binding = causality.cutover_to_cowork(
+            binding.binding_id,
+            domain_revision=domain_revision,
+        )
+        self.stores.registry.touch(store)
+        return BoundDocumentReference(binding=binding, store=store)
 
     @staticmethod
     def _commit_or_reconcile(

@@ -1,8 +1,8 @@
 ---
 name: Morning Routine Directions
 kind: directions
-description: How to run the morning routine — sign-in conversation, blindspot scan, synthesis, propose-mits, persist-briefing, day-planner, quality checks
-summary: Start with sign-in (warm, 2-3 messages). Load morning config to check phase enablement. Skip disabled phases. Present 10-15 line briefing. Each MIT traces to a contract constraint.
+description: How to run the morning routine with the active Journal profile, blindspot scan, synthesis, proposed MITs, briefing persistence, day planner, and quality checks
+summary: Resolve the active Journal composition, then run a warm 2-3 message sign-in only when it declares fields or prompts. Skip disabled phases. Present a 10-15 line briefing. Each MIT traces to a contract constraint.
 trigger: user wants to start their morning routine or check in for the day
 command: wb-morning
 workflow: morning/morning-routine
@@ -42,7 +42,7 @@ Runtime overrides:
 
 Steps:
 1. context-snapshot -- Fresh context collection
-2. sign-in -- Morning check-in (sleep, energy, mood, motto)
+2. sign-in -- Active-profile check-in, if the day composition declares one
 3. yesterday-close (optional) -- Close yesterday's Log gaps silently
 4. calendar-today (optional) -- Today's schedule
 5. task-briefing (optional) -- Task status summary
@@ -56,10 +56,12 @@ Steps:
 ## Sign-in conversation
 
 Warm, concise, human. This is a conversation, not a form.
-- 2-3 messages max. Don't lecture or dump data.
-- If sleep/energy/mood missing, ask in one message.
-- If motto missing, propose one based on yesterday's patterns.
-- Use wellness trends to inform tone but don't dump raw data.
+- Resolve `journal_sign_in` first; never assume a fixed field set.
+- If the active composition has no sign-in fields, skip this phase.
+- Ask only for missing fields whose declared prompt/function contract calls for
+  user input, grouping compatible prompts into at most 2-3 messages.
+- Do not invent values or add undeclared prompts. Use declared trends or
+  interpretations to inform tone without dumping raw data.
 
 ## Blindspot scan -- light mode
 
@@ -78,13 +80,14 @@ Return 'None detected' or pattern names with one-line evidence.
 - Each MIT traces to a contract constraint. Max 1 exception for admin/personal.
 - Each MIT is a concrete, completable action.
 - Present proposed MITs for review before creating.
-- Include `#tasker/state/focused` in task_text (interim workaround for Dataview visibility, see t-abe6ea4b).
 - Pass `summary` with a context paragraph for each MIT: what it is, why it is the right focus today, and any handoff notes a future agent will need. A focused task without a note is a continuity gap.
 
 ## Persist-Briefing guidelines
 
 - Gated by `persist_briefing` config flag.
-- Briefing callout goes in Sign-In section, after Motto, before Tasks & Objectives.
+- Persist through the native Journal module/action declared by the effective day
+  composition. If no writable briefing slot exists, return the briefing without
+  silently adding a module or writing legacy Markdown.
 
 ## Day-Planner guidelines
 
@@ -109,4 +112,4 @@ Return 'None detected' or pattern names with one-line evidence.
 - Don't dump raw data during sign-in.
 - Don't force engagement with every section.
 
-<<wb:obsidian/bridge>>
+<<wb:journal/source-backed-capture>>

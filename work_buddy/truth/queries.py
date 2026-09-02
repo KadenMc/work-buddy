@@ -5673,6 +5673,28 @@ def integrity_findings(
         # check does not flag document rows as unknown record types.
         expected_ledger.update(document_ledger)
         expected_ledger.update(_verify_ledger_rows(read_conn))
+        policy_ledger_tables = {
+            "interaction_contract_definition": "interaction_contract_definitions",
+            "document_interaction_contract_assignment": (
+                "document_interaction_contract_assignments"
+            ),
+            "document_truth_activation_transition": (
+                "document_truth_activation_transitions"
+            ),
+            "document_truth_policy_receipt": "document_truth_policy_receipts",
+            "document_truth_admission_seal_event": (
+                "document_truth_admission_seal_events"
+            ),
+        }
+        for record_type, table in policy_ledger_tables.items():
+            if read_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone() is not None:
+                expected_ledger[record_type] = {
+                    str(row["id"])
+                    for row in read_conn.execute(f"SELECT id FROM {table}")
+                }
         actual_ledger: dict[str, set[str]] = defaultdict(set)
         for row in ledger_rows:
             actual_ledger[row["record_type"]].add(row["record_key"])

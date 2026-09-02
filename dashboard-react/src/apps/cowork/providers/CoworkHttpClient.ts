@@ -2,6 +2,7 @@ import { Editor } from "@tiptap/core";
 import * as Y from "yjs";
 
 import type {
+  CoworkDocumentCapabilityEnvelope,
   CoworkDocumentPermissions,
   CoworkDocumentSummary,
   CoworkFolderCandidate,
@@ -40,6 +41,138 @@ const count = (value: unknown, fallback = 0): number =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 const nullableText = (value: unknown): string | null =>
   typeof value === "string" ? value : null;
+
+const capabilityEnabled = (value: unknown, fallback: boolean): boolean => {
+  if (typeof value === "boolean") return value;
+  const source = record(value);
+  return bool(source.enabled ?? source.available, fallback);
+};
+
+const normalizeDocumentCapabilities = (
+  source: JsonRecord,
+): CoworkDocumentCapabilityEnvelope | undefined => {
+  const supplied =
+    source.capability_envelope ??
+    source.capabilityEnvelope ??
+    source.capabilities ??
+    source.truth_policy ??
+    source.truthPolicy;
+  const hasEnvelope =
+    (typeof supplied === "object" && supplied !== null) ||
+    source.interaction_contract !== undefined ||
+    source.interactionContract !== undefined ||
+    source.truth_activation !== undefined ||
+    source.truthActivation !== undefined ||
+    source.surface_capabilities !== undefined ||
+    source.surfaceCapabilities !== undefined ||
+    source.truth_policy !== undefined ||
+    source.truthPolicy !== undefined;
+  if (!hasEnvelope) return undefined;
+
+  const envelope = record(supplied);
+  const policy = record(source.truth_policy ?? source.truthPolicy);
+  const interaction = record(
+    envelope.interaction_contract ??
+      envelope.interactionContract ??
+      source.interaction_contract ??
+      source.interactionContract ??
+      policy.interaction_contract ??
+      policy.interactionContract,
+  );
+  const truth = record(
+    envelope.truth ??
+      envelope.truth_activation ??
+      envelope.truthActivation ??
+      source.truth_activation ??
+      source.truthActivation ??
+      policy,
+  );
+  const modules = record(
+    envelope.modules ??
+      envelope.surface_capabilities ??
+      envelope.surfaceCapabilities ??
+      source.surface_capabilities ??
+      source.surfaceCapabilities ??
+      policy.capabilities,
+  );
+  const rawEligibility =
+    truth.eligibility ?? envelope.truth_eligibility ?? envelope.truthEligibility;
+  const eligibility =
+    rawEligibility === "allowed" || rawEligibility === "required"
+      ? rawEligibility
+      : "unsupported";
+  const activationEnvelope = record(truth.activation);
+  const rawActivation =
+    (typeof truth.activation === "string" ? truth.activation : undefined) ??
+    activationEnvelope.state ??
+    truth.activation_state ??
+    truth.activationState ??
+    truth.state;
+  const activation =
+    eligibility !== "unsupported" &&
+    (rawActivation === "disabled" ||
+      rawActivation === "enabled" ||
+      rawActivation === "paused")
+      ? rawActivation
+      : null;
+  const rawRevision =
+    truth.activation_revision ?? truth.activationRevision ??
+    activationEnvelope.revision ?? truth.revision;
+  const activationRevision =
+    activation !== null &&
+    typeof rawRevision === "number" &&
+    Number.isSafeInteger(rawRevision) &&
+    rawRevision >= 0
+      ? rawRevision
+      : null;
+  const rawContractVersion = interaction.version ?? interaction.contract_version;
+  const contractVersion =
+    typeof rawContractVersion === "number" &&
+    Number.isSafeInteger(rawContractVersion) &&
+    rawContractVersion >= 1
+      ? rawContractVersion
+      : 0;
+  const inferredTruth = activation === "enabled" || activation === "paused";
+  return {
+    schema: "wb.cowork-document-capabilities/v1",
+    interactionContract: {
+      contractId: text(
+        interaction.contract_id ?? interaction.contractId ?? interaction.id,
+        "unknown",
+      ),
+      version: contractVersion,
+      digest: nullableText(
+        interaction.digest ?? interaction.sha256 ?? interaction.contract_sha256 ??
+          interaction.definition_sha256,
+      ),
+    },
+    modules: {
+      review: capabilityEnabled(modules.review, true),
+      provenance: capabilityEnabled(modules.provenance, true),
+      chat: capabilityEnabled(modules.chat, true),
+      truth: capabilityEnabled(
+        modules.truth ?? modules.truth_observe ?? modules.truthObserve,
+        inferredTruth,
+      ),
+    },
+    truth: {
+      eligibility,
+      activation,
+      activationRevision,
+      policyFingerprint: nullableText(
+        truth.policy_fingerprint ?? truth.policyFingerprint,
+      ),
+      ledgerPresent: bool(
+        truth.ledger_present ?? truth.ledgerPresent ?? truth.has_ledger,
+        activation === "paused",
+      ),
+      unavailableReason: nullableText(
+        truth.unavailable_reason ?? truth.unavailableReason ??
+          truth.recovery_reason ?? truth.recoveryReason,
+      ),
+    },
+  };
+};
 
 const normalizeNativePathResult = (
   payload: JsonRecord,
@@ -385,6 +518,7 @@ export const normalizeDocumentSummary = (
     : hasCamelCaseWriteback
       ? source.sourceWriteback
       : undefined;
+  const capabilities = normalizeDocumentCapabilities(source);
   return {
     documentId: text(source.document_id ?? source.documentId),
     path,
@@ -460,6 +594,7 @@ export const normalizeDocumentSummary = (
         source.disabledReason ??
         readiness.disabled_reason,
     ),
+    ...(capabilities === undefined ? {} : { capabilities }),
   };
 };
 

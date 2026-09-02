@@ -6,7 +6,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectNoAccessibilityViolations } from "../../test/setup";
 import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { ThemeProvider } from "../../theme/ThemeProvider";
-import { JOURNAL_WIDGET_TYPE_IDS } from "../../apps/journal/bindings";
+import {
+  JOURNAL_GENERIC_WIDGET_TYPE_ID,
+  JOURNAL_WIDGET_TYPE_IDS,
+} from "../../apps/journal/bindings";
 import { TASKS_WIDGET_TYPE_IDS } from "../../apps/tasks/bindings";
 import { JOBS_WIDGET_ID } from "../../apps/jobs/contribution";
 import WidgetLab from "./WidgetLab";
@@ -55,6 +58,7 @@ describe("WidgetLab", () => {
       JOURNAL_WIDGET_TYPE_IDS.capture,
       JOURNAL_WIDGET_TYPE_IDS.timeline,
       JOURNAL_WIDGET_TYPE_IDS.runningNotes,
+      JOURNAL_GENERIC_WIDGET_TYPE_ID,
       TASKS_WIDGET_TYPE_IDS.quickAdd,
       TASKS_WIDGET_TYPE_IDS.workspace,
       JOBS_WIDGET_ID,

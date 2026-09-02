@@ -132,6 +132,35 @@ def _isolate_task_store_and_vault(tmp_path, monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_journal_authority_fence(tmp_path, monkeypatch):
+    """Keep legacy-writer tests from consulting the live Journal seal.
+
+    The production file boundary now checks the durable Journal authority on
+    every attempted daily-file write. Characterization tests for legacy file
+    helpers must therefore default to a missing, isolated control database;
+    tests of the fence itself pass an explicit temporary database path.
+    """
+
+    import work_buddy.journal_capture.authority as authority
+    from contextlib import contextmanager
+
+    original = authority.existing_authority_mode
+    original_guard = authority.legacy_markdown_write_guard
+    isolated = tmp_path / "journal_authority_fence.db"
+
+    def _existing(path=None):
+        return original(isolated if path is None else path)
+
+    @contextmanager
+    def _guard(path=None):
+        with original_guard(isolated if path is None else path):
+            yield
+
+    monkeypatch.setattr(authority, "existing_authority_mode", _existing)
+    monkeypatch.setattr(authority, "legacy_markdown_write_guard", _guard)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_sidecar_runtime_files(tmp_path, monkeypatch, request):
     """Redirect the sidecar PID and state files to per-test temp paths.
 

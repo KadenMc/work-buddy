@@ -55,6 +55,8 @@ logger = logging.getLogger(__name__)
 def _journal_note_can_clean_up(thread) -> bool:  # type: ignore[no-untyped-def]
     """We can clean up iff the inciting summary has a note_path
     AND a line_text. Without both, we can't find the target."""
+    if not _legacy_journal_cleanup_available():
+        return False
     summary = getattr(thread, "inciting_event_summary", None) or {}
     if summary.get("source") != "journal_note":
         return False
@@ -67,6 +69,31 @@ def _journal_note_can_clean_up(thread) -> bool:  # type: ignore[no-untyped-def]
 
 def _journal_note_cleanup(thread) -> CleanupResult:  # type: ignore[no-untyped-def]
     """Remove the inciting line from the journal note."""
+    from work_buddy.health.preferences import is_wanted
+
+    if is_wanted("obsidian") is False:
+        return CleanupResult(
+            success=False,
+            detail="legacy Journal-note cleanup is retired under native authority",
+        )
+    from work_buddy.journal_capture.authority import (
+        JournalAuthorityStateError,
+        legacy_markdown_write_guard,
+    )
+
+    try:
+        with legacy_markdown_write_guard():
+            return _journal_note_cleanup_locked(thread)
+    except JournalAuthorityStateError:
+        return CleanupResult(
+            success=False,
+            detail="legacy Journal-note cleanup is retired under native authority",
+        )
+
+
+def _journal_note_cleanup_locked(thread) -> CleanupResult:  # type: ignore[no-untyped-def]
+    """Clean a Journal line while the durable compatibility lock is held."""
+
     summary = getattr(thread, "inciting_event_summary", None) or {}
     note_path: str = summary.get("note_path")
     line_text: str = summary.get("line_text")
@@ -141,6 +168,23 @@ def _journal_note_cleanup(thread) -> CleanupResult:  # type: ignore[no-untyped-d
         success=True,
         detail=f"removed line {idx + 1} from {note_path!r}: {target[:60]}",
     )
+
+
+def _legacy_journal_cleanup_available() -> bool:
+    """Check the durable authority before any archive/config inspection."""
+
+    try:
+        from work_buddy.journal_capture.authority import existing_authority_mode
+
+        if existing_authority_mode() != "legacy_compatibility":
+            return False
+        from work_buddy.health.preferences import is_wanted
+
+        return is_wanted("obsidian") is not False
+    except Exception:
+        # An unreadable native authority must never reopen a compatibility
+        # mutator or advertise it in the dashboard.
+        return False
 
 
 JOURNAL_NOTE_ADAPTER = CleanupAdapter(

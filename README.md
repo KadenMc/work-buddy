@@ -31,7 +31,7 @@
 
 ---
 
-**work-buddy** is the AI assistant for knowledge workers — a local-first personal-agent runtime built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Obsidian](https://obsidian.md/) that organizes the work *around* the work: backlogged notes, scattered tasks, open browser tabs, and the projects they belong to. It gives your agent structured multi-step workflows, memory that survives across sessions, deep integration with the tools your work already lives in, and a dashboard that lends visibility and control.
+**work-buddy** is the AI assistant for knowledge workers — a local-first personal-agent runtime built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and MCP that organizes the work *around* the work: journal entries, scattered tasks, open browser tabs, and the projects they belong to. It gives your agent structured multi-step workflows, memory that survives across sessions, deep integration with the tools your work already lives in, and a React dashboard that lends visibility and control.
 
 **Runs on your existing Claude Code subscription** — no separate service fees. The agent you're already paying for does the work; your data stays on your machine.
 
@@ -45,7 +45,7 @@
 
 ## Get Started
 
-You'll need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or Desktop). [Obsidian.md](https://obsidian.md/) is recommended but not required for the core.
+You'll need [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or Desktop). Obsidian is an optional legacy compatibility integration; native Journal, Tasks, Projects, Contracts, Personal Knowledge, Calendar, and Co-work editing do not require it.
 
 1. **Download the installer** from the [latest release](https://github.com/KadenMc/work-buddy/releases/latest) and run it.
    - Bundles its own Python (about 1 GB of dependencies).
@@ -111,7 +111,7 @@ Step 9/9: [code]  Write briefing to journal
 
 ## Stay Sovereign
 
-Automation you can't oversee is automation you can't trust. Sensitive actions (deleting tasks, pruning memory, changing your project files) require your explicit approval before they run, and the request reaches you everywhere at once: your phone (Telegram), your notes (Obsidian), and the web dashboard. Answer on whichever is closest; first response wins. The dashboard is part of the control loop, not just a viewer: live status, persistent conversation threads with your agents, decision prompts, and full session history, remotely accessible if you want it.
+Automation you can't oversee is automation you can't trust. Sensitive actions (deleting tasks, pruning memory, changing project state) require your explicit approval before they run, and the request reaches native surfaces such as Telegram and the web dashboard. Answer on whichever is closest; first response wins. The dashboard is part of the control loop, not just a viewer: live status, persistent conversation threads with your agents, decision prompts, and full session history, remotely accessible if you want it.
 
 Your agents work autonomously when they can, and check in when they should. You set the boundaries.
 
@@ -121,7 +121,7 @@ Your agents work autonomously when they can, and check in when they should. You 
 |---|---|
 | **Memory that survives sessions** | Preferences, project context, and working patterns persist across conversations, with semantic search over the lot. |
 | **Every session, searchable** | work-buddy keeps a durable, searchable record of your Claude Code sessions across every project, so past decisions stay findable. |
-| **Native Obsidian integration** | Plugin-level access to your vault: Tasks, Day Planner, Datacore, calendars (not just file I/O). |
+| **Native local authorities** | SQLite-backed Journal, Tasks, Projects, Contracts, and Personal Knowledge, with Source provenance and Co-work documents where rich editing is useful. |
 | **A phone-sized command center** | Approve requests, answer questions, trigger workflows, and capture notes from Telegram. |
 | **Real work commitments** | Contracts with claims, evidence plans, and stop rules keep projects honest; metacognition checks catch your documented failure patterns. |
 | **Agents that coordinate** | Sessions message each other, hand off tasks, and hold persistent dashboard threads, so multi-session work doesn't need you as the relay. |

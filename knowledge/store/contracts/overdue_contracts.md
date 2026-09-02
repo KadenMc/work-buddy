@@ -1,7 +1,7 @@
 ---
 name: Overdue Contracts
 kind: capability
-description: List contracts past their deadline
+description: List structured Contracts SQLite records past their deadline, without requiring Obsidian.
 capability_name: overdue_contracts
 category: contracts
 op: op.wb.overdue_contracts
@@ -19,6 +19,4 @@ aliases:
 - contracts over deadline
 parents:
 - contracts
-requires:
-- obsidian
 ---

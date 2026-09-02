@@ -121,3 +121,101 @@
     .journal-view-chrome__source { display: none; }
   }
 }
+.journal-generic-module {
+  display: grid;
+  gap: var(--wb-space-3);
+}
+
+.journal-generic-module h3,
+.journal-generic-module p,
+.journal-generic-module dl,
+.journal-generic-module dd {
+  margin: 0;
+}
+
+.journal-generic-module dl {
+  display: grid;
+  gap: var(--wb-space-3);
+}
+
+.journal-generic-module__field {
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+  display: grid;
+  gap: var(--wb-space-1);
+  padding-block-start: var(--wb-space-2);
+}
+
+.journal-generic-module__field dt {
+  font-weight: 600;
+}
+
+.journal-generic-module__meta,
+.journal-generic-module__empty {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-sm);
+}
+
+.journal-generic-module__edit {
+  margin-inline-start: var(--wb-space-2);
+  border: 0;
+  background: transparent;
+  color: var(--wb-color-accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.journal-generic-module__editor,
+.journal-generic-module__actions,
+.journal-generic-module__items {
+  display: grid;
+  gap: var(--wb-space-2);
+}
+
+.journal-generic-module__editor input,
+.journal-generic-module__editor select,
+.journal-generic-module__editor textarea {
+  width: 100%;
+}
+
+.journal-generic-module__actions {
+  grid-template-columns: repeat(2, max-content);
+  justify-content: end;
+}
+
+.journal-generic-module__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.journal-generic-module__item {
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  padding: var(--wb-space-2);
+}
+
+.journal-prompt,
+.journal-prompt__seed,
+.journal-prompt__variant {
+  display: grid;
+  gap: var(--wb-space-2);
+}
+
+.journal-prompt {
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+  padding-block-start: var(--wb-space-2);
+}
+
+.journal-prompt__seed,
+.journal-prompt__variant {
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  padding: var(--wb-space-2);
+}
+
+.journal-prompt__status--failed,
+.journal-prompt__status--expired {
+  color: var(--wb-color-danger, #b42318);
+}

@@ -198,6 +198,17 @@ def _mark_expression_locked(
     span = store._get_document_span_locked(conn, span_ref)
     if span is None:
         raise InvariantViolation(f"document span does not exist: {span_ref}")
+    # An expression is the document-local edge into the Truth ledger. Enforce
+    # policy in the exact transaction that inserts it so capability callers
+    # cannot bypass the Co-work HTTP/analysis admission checks.
+    from work_buddy.cowork.truth_activation import require_truth_access
+
+    require_truth_access(
+        store,
+        span.document_id,
+        mutation=True,
+        conn=conn,
+    )
     if not local_id:
         raise InvariantViolation(
             "expression minting requires a claim resolvable in this store"

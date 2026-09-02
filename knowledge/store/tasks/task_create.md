@@ -29,7 +29,19 @@ parameters:
     required: false
   summary:
     type: str
-    description: If provided, creates a linked Co-work knowledge document with this initial content.
+    description: Optional scalar task summary. This does not create a Co-work document.
+    required: false
+  requested_note_role:
+    type: str
+    description: Set to 'working_document/v1' to explicitly create a linked provenance-aware Co-work task note.
+    required: false
+  initial_note:
+    type: str
+    description: Initial task-note content. Requires requested_note_role='working_document/v1'; an empty note is allowed.
+    required: false
+  requested_truth_policy_resolution:
+    type: str
+    description: For an explicitly requested task note, 'disabled' (default) or 'enabled'. Enabling adds Truth tools but runs no analysis.
     required: false
   tags:
     type: list[str]
@@ -109,4 +121,4 @@ parents:
 requires: []
 ---
 
-The creating agent session is recorded automatically as `created_by_session`; it is not a caller parameter. The result includes the native task ID, task and collection revisions, a durable mutation receipt, and Co-work document metadata when `summary` provisions knowledge. It never returns a Markdown task line or note path. Replaying the same `client_mutation_id` after response loss returns the original semantic result.
+The creating agent session is recorded automatically as `created_by_session`; it is not a caller parameter. The result includes the native task ID, task and collection revisions, a durable mutation receipt, and Co-work document metadata only when `requested_note_role` explicitly provisions a note. `summary` remains a scalar task field. It never returns a Markdown task line or note path. Replaying the same `client_mutation_id` after response loss returns the original semantic result.

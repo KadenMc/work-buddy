@@ -33,3 +33,13 @@ aliases:
 parents:
 - backups
 ---
+
+The installed-authority ledger is restored without rewriting its irreversible
+domain rows. Because those rows bind absolute database-path hashes, a restore
+to a different machine or data root deliberately leaves the affected native
+stores fail closed. Inspect the central Source Foundation restore status, then
+run `source_foundation_restore_operator` with
+`rebind_installed_authority=true` under its exact high-consent approval. That
+operator proves every sealed cohort at its configured target path and archives
+a content-free rebind receipt with the restore fence; ordinary `data_restore`
+never silently relocates authority.

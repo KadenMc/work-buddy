@@ -1,7 +1,7 @@
 ---
 name: Knowledge Personal
 kind: capability
-description: Search personal knowledge from the Obsidian vault. Includes minted insights, patterns, feedback, preferences. Supports filtering by category and severity.
+description: Search personal knowledge from the SQLite authority. Includes versioned insights, patterns, feedback, preferences, aliases, and relationships, with category and severity filters.
 capability_name: knowledge_personal
 category: context
 op: op.wb.knowledge_personal
@@ -51,7 +51,11 @@ aliases:
 - blindspot patterns
 - feedback
 - preferences
-- vault knowledge
+- personal database knowledge
 parents:
 - context
 ---
+
+Exact reads and filters hydrate from the personal-knowledge provider. Search
+indexes are derived and may lag; Markdown files are consulted only by the
+explicit pre-seal compatibility provider or the one-time importer.

@@ -122,6 +122,7 @@ class TruthAnalysisRuntimeRun:
     execution_deadline_at: str
     created_at: str
     updated_at: str
+    activation_revision: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "TruthAnalysisRuntimeRun":
@@ -166,6 +167,11 @@ class TruthAnalysisRuntimeRun:
             ),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            activation_revision=(
+                int(row["activation_revision"])
+                if "activation_revision" in row.keys()
+                else 0
+            ),
         )
 
 
@@ -301,6 +307,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 run_id                    TEXT PRIMARY KEY,
                 store_id                  TEXT NOT NULL,
                 document_id               TEXT NOT NULL,
+                activation_revision       INTEGER NOT NULL DEFAULT 0
+                    CHECK(activation_revision >= 0),
                 action_snapshot_id        TEXT NOT NULL,
                 status                    TEXT NOT NULL CHECK(status IN (
                     'prepared', 'launching', 'running', 'completed',
@@ -420,6 +428,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 "datetime(created_at, '+30 minutes') "
                 "WHERE execution_deadline_at IS NULL"
             )
+        if "activation_revision" not in columns:
+            conn.execute(
+                "ALTER TABLE cowork_truth_analysis_runs "
+                "ADD COLUMN activation_revision INTEGER NOT NULL DEFAULT 0"
+            )
         conn.commit()
 
 
@@ -434,6 +447,7 @@ def create_run(
     context_sha256: str,
     request: Mapping[str, Any],
     session_id: str,
+    activation_revision: int = 0,
     at: str | None = None,
     execution_deadline_at: str | None = None,
 ) -> TruthAnalysisRuntimeRun:
@@ -513,16 +527,18 @@ def create_run(
         conn.execute(
             """
             INSERT INTO cowork_truth_analysis_runs (
-                run_id, store_id, document_id, action_snapshot_id, status,
+                run_id, store_id, document_id, activation_revision,
+                action_snapshot_id, status,
                 selection_json, authorization_receipt_id, context_sha256,
                 request_json, session_id, created_at, updated_at
                 , execution_deadline_at
-            ) VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
                 store_id,
                 document_id,
+                int(activation_revision),
                 action_snapshot_id,
                 canonical_json(dict(selection)),
                 authorization_receipt_id,
@@ -623,6 +639,54 @@ def runs_for_document(
         current = get_run(stored.run_id)
         values.append(stored if current is None else current)
     return tuple(values)
+
+
+def invalidate_active_runs_for_document(
+    store_id: str,
+    document_id: str,
+    *,
+    valid_activation_revision: int | None,
+    at: str | None = None,
+) -> tuple[TruthAnalysisRuntimeRun, ...]:
+    """Fence every operational run no longer admitted by document policy."""
+
+    timestamp = at or utc_now()
+    with _connect() as conn:
+        _ensure_schema(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        params: list[Any] = [store_id, document_id]
+        revision_clause = ""
+        if valid_activation_revision is not None:
+            revision_clause = " AND activation_revision != ?"
+            params.append(int(valid_activation_revision))
+        rows = conn.execute(
+            "SELECT * FROM cowork_truth_analysis_runs "
+            "WHERE store_id = ? AND document_id = ? "
+            "AND status IN ('prepared','launching','running')"
+            + revision_clause
+            + " ORDER BY created_at, run_id",
+            tuple(params),
+        ).fetchall()
+        run_ids = [str(row["run_id"]) for row in rows]
+        if run_ids:
+            marks = ",".join("?" for _ in run_ids)
+            conn.execute(
+                "UPDATE cowork_truth_analysis_runs SET status='unavailable', "
+                "error_code='truth_activation_changed', "
+                "error='Document Truth settings changed while this analysis was running.', "
+                "launch_lease_expires_at=NULL, updated_at=? "
+                f"WHERE run_id IN ({marks}) "
+                "AND status IN ('prepared','launching','running')",
+                (timestamp, *run_ids),
+            )
+            saved = conn.execute(
+                "SELECT * FROM cowork_truth_analysis_runs "
+                f"WHERE run_id IN ({marks}) ORDER BY created_at, run_id",
+                tuple(run_ids),
+            ).fetchall()
+        else:
+            saved = []
+    return tuple(TruthAnalysisRuntimeRun.from_row(row) for row in saved)
 
 
 def reconcilable_runs() -> tuple[TruthAnalysisRuntimeRun, ...]:

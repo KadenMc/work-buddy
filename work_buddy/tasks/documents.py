@@ -9,6 +9,7 @@ root.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -252,6 +253,21 @@ class TaskDocumentService:
         # Hash the task id so caller-controlled text can never become a path.
         return f"tasks/{_stable_id('path', task_id)}.cowork"
 
+    @staticmethod
+    def binding_id(*, task_id: str, store_id: str, document_id: str) -> str:
+        return hashlib.sha256(
+            "\0".join(
+                (
+                    "tasks",
+                    "task_knowledge",
+                    task_id,
+                    "task_knowledge",
+                    store_id,
+                    document_id,
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+
     def create(
         self,
         *,
@@ -262,6 +278,14 @@ class TaskDocumentService:
         migration_origin: str | None = None,
         initial_markdown: str | bytes | None = None,
         document_generation: str | None = None,
+        interaction_contract_id: str | None = None,
+        initial_truth_activation: str | None = None,
+        explicit_truth_acknowledged: bool = False,
+        policy_intent_id: str | None = None,
+        coordinator_decision_id: str | None = None,
+        coordinator_decision_sha256: str | None = None,
+        commit_admission: bool = True,
+        task_admission_kind: str | None = None,
     ) -> TaskKnowledgeDocument:
         task_ref = str(task_id).strip()
         clean_title = str(title).strip()
@@ -269,6 +293,12 @@ class TaskDocumentService:
             raise ValueError("task_id is required")
         if not clean_title:
             raise ValueError("title is required")
+        if task_admission_kind not in {
+            None,
+            "aggregate_creation/v2",
+            "document_attachment/v1",
+        }:
+            raise ValueError("unsupported task admission kind")
         store = self.stores.ensure()
         identity_ref = (
             task_ref
@@ -277,6 +307,25 @@ class TaskDocumentService:
         )
         document_id = self.document_id(identity_ref)
         path = self.document_path(identity_ref)
+        expected_binding_id = self.binding_id(
+            task_id=task_ref,
+            store_id=store.store_id,
+            document_id=document_id,
+        )
+        from work_buddy.cowork.truth_activation import (
+            WORKING_DOCUMENT_CONTRACT,
+            provision_document_policy,
+            resolve_document_truth_policy,
+        )
+
+        contract_id = interaction_contract_id or WORKING_DOCUMENT_CONTRACT
+        activation = (
+            "disabled"
+            if interaction_contract_id is None and initial_truth_activation is None
+            else initial_truth_activation
+        )
+        intent_id = policy_intent_id or _stable_id("policy-intent", identity_ref)
+        created_new = False
         try:
             document = documents.get_document(store, document_id)
         except InvariantViolation:
@@ -322,27 +371,87 @@ class TaskDocumentService:
                 snapshot=outcome.snapshot,
                 expected_sha256=sha256_bytes(outcome.snapshot),
             )
-            document, _version, _created = documents.register_ready_document(
-                store,
-                path=path,
-                title=clean_title,
-                document_class="co_authored",
-                projection_bytes=outcome.projection,
-                ydoc_snapshot_sha256=snapshot_sha,
-                structured_head_sha256=structured_head_sha256(outcome.snapshot),
-                actor=Actor(kind="system", ref=created_by),
-                mode="create",
-                document_meta={
-                    "domain_content": True,
-                    "domain_namespace": "tasks",
-                    "source": {
-                        "kind": "domain_binding",
-                        "writeback_policy": "never",
+            # The v11 portable recovery export requires every visible document
+            # to carry its immutable interaction contract.  Register the
+            # document and stage/commit its policy inside one Truth transaction
+            # so the post-commit export can never observe the invalid gap.
+            with store.write_transaction() as conn:
+                document, _version, _created = documents.register_ready_document(
+                    store,
+                    path=path,
+                    title=clean_title,
+                    document_class="co_authored",
+                    projection_bytes=outcome.projection,
+                    ydoc_snapshot_sha256=snapshot_sha,
+                    structured_head_sha256=structured_head_sha256(outcome.snapshot),
+                    actor=Actor(kind="system", ref=created_by),
+                    mode="create",
+                    document_meta={
+                        "domain_content": True,
+                        "domain_namespace": "tasks",
+                        "domain_entity_id": task_ref,
+                        **(
+                            {}
+                            if task_admission_kind is None
+                            else {
+                                "task_admission": {
+                                    "schema": "wb.task-document-admission/v1",
+                                    "kind": task_admission_kind,
+                                    "task_id": task_ref,
+                                }
+                            }
+                        ),
+                        "source": {
+                            "kind": "domain_binding",
+                            "writeback_policy": "never",
+                        },
                     },
-                },
-                document_id=document_id,
-                version_id=_stable_id("version", identity_ref),
-            )
+                    document_id=document_id,
+                    version_id=_stable_id("version", identity_ref),
+                    conn=conn,
+                )
+                provision_document_policy(
+                    store,
+                    document_id=document.id,
+                    interaction_contract_id=contract_id,
+                    binding_id=expected_binding_id,
+                    initial_activation=activation,
+                    explicit_truth_acknowledged=explicit_truth_acknowledged,
+                    actor=created_by,
+                    intent_id=intent_id,
+                    coordinator_decision_id=coordinator_decision_id,
+                    coordinator_decision_sha256=coordinator_decision_sha256,
+                    commit_admission=commit_admission,
+                    conn=conn,
+                )
+            created_new = True
+        if not created_new:
+            if task_admission_kind is not None:
+                try:
+                    meta = json.loads(document.meta_json or "{}")
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("task_document_admission_metadata_invalid") from exc
+                if not isinstance(meta, dict) or meta.get("task_admission") != {
+                    "schema": "wb.task-document-admission/v1",
+                    "kind": task_admission_kind,
+                    "task_id": task_ref,
+                }:
+                    raise RuntimeError("task_document_admission_metadata_mismatch")
+            policy = resolve_document_truth_policy(store, document.id)
+            if not policy.interaction_contract_id:
+                provision_document_policy(
+                    store,
+                    document_id=document.id,
+                    interaction_contract_id=contract_id,
+                    binding_id=expected_binding_id,
+                    initial_activation=activation,
+                    explicit_truth_acknowledged=explicit_truth_acknowledged,
+                    actor=created_by,
+                    intent_id=intent_id,
+                    coordinator_decision_id=coordinator_decision_id,
+                    coordinator_decision_sha256=coordinator_decision_sha256,
+                    commit_admission=commit_admission,
+                )
         causality = DocumentCausalityStore(store.paths.sidecar)
         binding = causality.ensure_binding(
             domain_namespace="tasks",
@@ -362,6 +471,8 @@ class TaskDocumentService:
                 binding.binding_id,
                 domain_revision=str(domain_revision),
             )
+        if binding.binding_id != expected_binding_id:
+            raise RuntimeError("task_document_binding_identity_mismatch")
         self.stores.registry.touch(store)
         return self._record(task_ref, store, document, binding)
 

@@ -311,7 +311,10 @@ def is_obsidian_running() -> bool:
             )
             return result.returncode == 0
     except Exception:
-        return True  # assume running if we can't check — let HTTP decide
+        # Fail safe.  Treat an inconclusive process probe as unavailable so
+        # bridge-first callers can use their filesystem/native fallback.  The
+        # former True result turned a local probe failure into a blocked write.
+        return False
 
 
 def _check_process_windows(name: str) -> bool:

@@ -197,8 +197,15 @@ def snapshot_dir(tmp_path):
     return d
 
 
+@pytest.fixture
+def remote_upload_opted_in(monkeypatch):
+    """The retry tests exercise transport after privacy authorization."""
+
+    monkeypatch.setattr(remote, "remote_private_content_opted_in", lambda: True)
+
+
 def test_push_snapshot_retries_transient_then_succeeds(
-    monkeypatch, snapshot_dir,
+    monkeypatch, snapshot_dir, remote_upload_opted_in,
 ):
     """A transient gh_network fault is retried; a later attempt lands."""
     monkeypatch.setattr(remote, "_format_release_body", lambda d: "body")
@@ -220,7 +227,7 @@ def test_push_snapshot_retries_transient_then_succeeds(
 
 
 def test_push_snapshot_does_not_retry_permanent_failure(
-    monkeypatch, snapshot_dir,
+    monkeypatch, snapshot_dir, remote_upload_opted_in,
 ):
     """An unauthenticated failure exits immediately — no wasted retries."""
     monkeypatch.setattr(remote, "_format_release_body", lambda d: "body")
@@ -239,7 +246,7 @@ def test_push_snapshot_does_not_retry_permanent_failure(
 
 
 def test_push_snapshot_exhausts_retries_on_persistent_fault(
-    monkeypatch, snapshot_dir,
+    monkeypatch, snapshot_dir, remote_upload_opted_in,
 ):
     """A persistent network fault exhausts retries and reports honestly."""
     monkeypatch.setattr(remote, "_format_release_body", lambda d: "body")
@@ -259,7 +266,7 @@ def test_push_snapshot_exhausts_retries_on_persistent_fault(
 
 
 def test_push_snapshot_falls_back_to_upload_when_release_exists(
-    monkeypatch, snapshot_dir,
+    monkeypatch, snapshot_dir, remote_upload_opted_in,
 ):
     """When the release already exists (a prior attempt created it but
     its asset upload failed), the push falls back to upload --clobber so

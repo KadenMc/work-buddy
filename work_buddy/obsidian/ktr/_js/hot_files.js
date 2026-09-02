@@ -2,6 +2,7 @@
 // __SINCE_DATE__ = "YYYY-MM-DD" (inclusive)
 // __UNTIL_DATE__ = "YYYY-MM-DD" (inclusive)
 // __LIMIT__ = max files to return
+// __EXCLUDE_FOLDERS__ = JSON array of vault-relative roots to ignore
 return (async () => {
     const plugin = app.plugins.plugins["keep-the-rhythm"];
     if (!plugin) return {error: "Plugin not found"};
@@ -12,10 +13,21 @@ return (async () => {
     const sinceDate = "__SINCE_DATE__";
     const untilDate = "__UNTIL_DATE__";
     const limit = __LIMIT__;
+    const excludeFolders = __EXCLUDE_FOLDERS__;
+    const isExcluded = (path) => {
+        const normalized = String(path || "").replace(/\\/g, "/");
+        return excludeFolders.some(raw => {
+            const folder = String(raw || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            return folder === "" || normalized === folder ||
+                normalized.startsWith(folder + "/") ||
+                normalized.includes("/" + folder + "/");
+        });
+    };
 
-    // Filter to window
+    // Filter roots before aggregation so excluded activity never enters the
+    // result computation returned across the bridge.
     const inWindow = activities.filter(a =>
-        a.date >= sinceDate && a.date <= untilDate
+        a.date >= sinceDate && a.date <= untilDate && !isExcluded(a.filePath)
     );
 
     // Aggregate per file

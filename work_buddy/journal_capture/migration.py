@@ -72,15 +72,15 @@ JOURNAL_CONTENT_CALLSITES = (
     "work_buddy/journal_capture/service.py:_materialize",
     "work_buddy/journal_backlog/extract.py:extract_running_notes",
     "work_buddy/journal_backlog/rewrite.py:rewrite_running_notes",
-    "work_buddy/journal_backlog/route.py:_append_to_note_impl",
+    "work_buddy/journal_backlog/route.py:_append_to_note_locked",
     "work_buddy/obsidian/day_planner/env.py:get_todays_plan",
     "work_buddy/obsidian/day_planner/env.py:write_plan",
     "work_buddy/health/fixers.py:_append_section",
-    "work_buddy/threads/cleanup_adapters.py:_journal_note_cleanup",
+    "work_buddy/threads/cleanup_adapters.py:_journal_note_cleanup_locked",
     "work_buddy/collectors/obsidian_collector.py:_get_journal_entries",
     "work_buddy/collectors/obsidian_collector.py:_get_journal_stats",
     "work_buddy/collectors/obsidian_collector.py:_parse_wellness",
-    "work_buddy/activity.py:infer_activity",
+    "work_buddy/activity.py:_legacy_journal_entries",
     "work_buddy/obsidian/vault_writer.py:vault_write",
 )
 CALLSITE_INVENTORY_SHA256 = canonical_sha256(JOURNAL_CONTENT_CALLSITES)

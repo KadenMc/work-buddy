@@ -1,0 +1,74 @@
+.wb-truth-activation {
+  flex: 0 0 auto;
+  border-block-start: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-subtle);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-truth-activation > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  min-block-size: 2.5rem;
+  padding: var(--wb-space-2) var(--wb-space-4);
+  cursor: pointer;
+  color: var(--wb-color-text-primary);
+}
+
+.wb-truth-activation > summary strong {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  text-transform: uppercase;
+}
+
+.wb-truth-activation__panel {
+  display: grid;
+  gap: var(--wb-space-3);
+  padding: 0 var(--wb-space-4) var(--wb-space-4);
+  border-block-start: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-truth-activation__panel p {
+  margin: var(--wb-space-3) 0 0;
+}
+
+.wb-truth-activation__reason {
+  display: grid;
+  gap: var(--wb-space-1);
+  color: var(--wb-color-text-primary);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-truth-activation__reason span {
+  color: var(--wb-color-text-muted);
+  font-weight: var(--wb-font-weight-regular);
+}
+
+.wb-truth-activation__reason input {
+  min-block-size: 2.25rem;
+  padding: 0 var(--wb-space-2);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+}
+
+.wb-truth-activation__confirm,
+.wb-truth-activation__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+}
+
+.wb-truth-activation__status {
+  min-block-size: 1.25rem;
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-truth-activation__status[role="alert"],
+.wb-truth-activation__panel [role="alert"] {
+  color: var(--wb-color-text-danger);
+}

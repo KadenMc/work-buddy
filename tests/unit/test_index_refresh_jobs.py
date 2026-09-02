@@ -12,7 +12,17 @@ from work_buddy.sidecar.scheduler.cron import parse_cron_field
 
 _REPO = Path(__file__).resolve().parents[2]
 _JOBS_DIR = _REPO / "sidecar_jobs"
-_PARTITIONS = ["knowledge", "chrome", "summary", "conversation", "vault"]
+_PARTITION_JOBS = {
+    "knowledge": "index-knowledge-refresh",
+    "chrome": "index-chrome-refresh",
+    "summary": "index-summary-refresh",
+    "conversation": "index-conversation-refresh",
+    "vault": "index-vault-refresh",
+    "journal": "index-journal-refresh",
+    "projects": "index-projects-refresh",
+    "contracts": "index-contracts-refresh",
+    "personal_knowledge": "index-personal-knowledge-refresh",
+}
 _RANGES = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]  # min hour dom mon dow
 
 
@@ -21,10 +31,11 @@ def jobs_by_name():
     return {j.name: j for j in load_jobs(_JOBS_DIR, source="system")}
 
 
-@pytest.mark.parametrize("partition", _PARTITIONS)
+@pytest.mark.parametrize("partition", _PARTITION_JOBS)
 def test_index_refresh_job_well_formed(jobs_by_name, partition):
-    job = jobs_by_name.get(f"index-{partition}-refresh")
-    assert job is not None, f"missing sidecar_jobs/index-{partition}-refresh.md"
+    job_name = _PARTITION_JOBS[partition]
+    job = jobs_by_name.get(job_name)
+    assert job is not None, f"missing sidecar job {job_name}"
     assert job.job_type == "capability"
     assert job.capability == "index_rebuild"
     assert job.params.get("partition") == partition
@@ -37,7 +48,7 @@ def test_index_refresh_job_well_formed(jobs_by_name, partition):
 
 
 def test_refresh_job_jitters_distinct(jobs_by_name):
-    jits = [jobs_by_name[f"index-{p}-refresh"].jitter_seconds for p in _PARTITIONS]
+    jits = [jobs_by_name[name].jitter_seconds for name in _PARTITION_JOBS.values()]
     assert len(set(jits)) == len(jits), f"jitter collision among index-refresh jobs: {jits}"
 
 

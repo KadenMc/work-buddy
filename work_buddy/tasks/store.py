@@ -59,6 +59,30 @@ class TaskStore:
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
+    def connect_readonly(self) -> sqlite3.Connection:
+        """Open the existing authority without initializing or migrating it.
+
+        Cross-store admission checks use this seam while holding a scoped-store
+        transaction.  Making that verification query-only avoids lock inversion
+        and ensures an absent or stale TaskStore fails closed instead of being
+        silently created as a side effect of a Truth request.
+        """
+
+        path = self.path.expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        conn = sqlite3.connect(
+            path.as_uri() + "?mode=ro",
+            uri=True,
+            timeout=self.timeout,
+            isolation_level=None,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 10000")
+        return conn
+
     def initialize(self) -> None:
         conn = self.connect()
         conn.close()

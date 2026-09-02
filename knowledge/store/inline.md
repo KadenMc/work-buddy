@@ -1,8 +1,8 @@
 ---
 name: Inline Commands
 kind: system
-description: 'Framework for triggering agent actions from inside Obsidian via right-click menu or #wb/cmd/* tags'
-summary: 'Two activation surfaces — right-click editor menu and #wb/cmd/* tags — funnel into one dispatcher. Handlers register via @inline_command decorator declaring surfaces, consume mode, persistence, and context scope.'
+description: Retired Obsidian right-click and #wb/cmd/* command framework retained as compatibility code only.
+summary: 'The slash workflow, MCP capability declarations, and scheduled tag reconciliation are removed or disabled. Native selections, Tasks, Threads, and explicit actions are the supported path.'
 tags:
 - inline
 - obsidian

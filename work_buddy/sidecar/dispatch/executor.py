@@ -55,6 +55,28 @@ AGENT_SPAWN_CONSENT_OP = "sidecar:agent_spawn"
 # Phase C (routing) uses this to distinguish daemon agents from user sessions.
 DAEMON_SESSION_PREFIX = "daemon:"
 
+
+def _runtime_admission_error(entry: Any) -> dict[str, Any] | None:
+    """Return a stable sidecar denial payload for a stale registry entry."""
+
+    from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
+
+    admission = evaluate_runtime_admission(entry)
+    if not admission.preference_available:
+        return {
+            "status": "error",
+            "error": "Feature preferences could not be verified.",
+            "error_code": "feature_preference_unavailable",
+        }
+    if admission.opted_out:
+        return {
+            "status": "error",
+            "error": "Execution is disabled by current feature preferences.",
+            "error_code": "feature_opted_out",
+            "opted_out": list(admission.opted_out),
+        }
+    return None
+
 # Detached Co-work drivers are terminated only through the exact ``Popen``
 # handle that created them. A persisted PID alone is not sufficient proof of
 # ownership because operating systems can reuse PIDs after a process exits.
@@ -115,6 +137,10 @@ def _execute_capability(name: str, params: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(entry, Capability):
             return {"status": "error", "error": f"'{name}' is a workflow, not a capability. Use job_type='workflow'."}
 
+        denied = _runtime_admission_error(entry)
+        if denied is not None:
+            return denied
+
         logger.debug("Executing capability: %s(%s)", name, params)
         result = entry.callable(**params)
         return {"status": "ok", "result": result}
@@ -157,6 +183,10 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
 
         if not isinstance(entry, WorkflowDefinition):
             return {"status": "error", "error": f"'{name}' is a capability, not a workflow. Use job_type='capability'."}
+
+        denied = _runtime_admission_error(entry)
+        if denied is not None:
+            return denied
 
         if not entry.steps:
             return {"status": "error", "error": f"Workflow '{name}' has no steps defined."}
@@ -282,6 +312,9 @@ def _execute_code_step(step_id: str, step_name: str) -> Any:
         entry = registry.get(step_id)
 
         if entry is not None and isinstance(entry, Capability):
+            denied = _runtime_admission_error(entry)
+            if denied is not None:
+                return denied
             logger.info("Code step '%s' → capability '%s'", step_name, step_id)
             return entry.callable()
 

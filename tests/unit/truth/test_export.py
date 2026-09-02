@@ -12,11 +12,16 @@ from typing import Any
 
 import pytest
 
+from work_buddy.cowork.truth_activation import (
+    WORKING_DOCUMENT_CONTRACT,
+    provision_document_policy,
+    resolve_document_truth_policy,
+)
 from work_buddy.cowork.verify import (
     instruction_model_check_defaults,
     terminology_exact_match_defaults,
 )
-from work_buddy.truth import export as truth_export
+from work_buddy.truth import documents, export as truth_export
 from work_buddy.truth import migrations as truth_migrations
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
@@ -484,6 +489,168 @@ def test_empty_store_round_trip_and_existing_empty_sidecar(tmp_path: Path) -> No
     assert "cowork:" in manifest
     again = export_store(result.store, tmp_path / "again.jsonl")
     assert again.path.read_bytes() == exported.path.read_bytes()
+
+
+def test_document_truth_policy_history_round_trips_and_rebuilds_projection(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "policy-source")
+    document = documents.register_document(
+        source,
+        path="docs/policy.md",
+        title="Policy",
+        document_class="co_authored",
+        content_sha256=sha256_bytes(b"policy"),
+        actor=HUMAN,
+        at=NOW,
+    )
+    before = resolve_document_truth_policy(source, document.id)
+    assert before.truth_mutable is True
+
+    exported = export_store(source)
+    objects = _objects(exported.path.read_bytes())
+    record_types = {
+        item["record_type"]
+        for item in objects
+        if item["record_type"] not in {"header", "blob", "end"}
+    }
+    assert {
+        "interaction_contract_definition",
+        "document_interaction_contract_assignment",
+        "document_truth_activation_transition",
+        "document_truth_admission_seal_event",
+    } <= record_types
+
+    target = tmp_path / "policy-target"
+    target.mkdir()
+    restored = import_store(
+        exported.path,
+        target,
+        registry=FakeRegistry(),
+    ).store
+    after = resolve_document_truth_policy(restored, document.id)
+    assert after.to_dict() == before.to_dict()
+    with restored.connect() as conn:
+        assert conn.execute(
+            "SELECT state FROM document_truth_activation_current "
+            "WHERE document_id = ?",
+            (document.id,),
+        ).fetchone()[0] == "enabled"
+        assert conn.execute(
+            "SELECT state FROM document_truth_admission_seals_current "
+            "WHERE document_id = ?",
+            (document.id,),
+        ).fetchone()[0] == "committed"
+
+
+def test_pending_document_admission_export_round_trips_fail_closed(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "pending-policy-source")
+    with source.write_transaction() as conn:
+        document = documents.register_document(
+            source,
+            path="docs/pending-policy.md",
+            title="Pending policy",
+            document_class="co_authored",
+            content_sha256=sha256_bytes(b"pending policy"),
+            actor=HUMAN,
+            at=NOW,
+            conn=conn,
+        )
+        before = provision_document_policy(
+            source,
+            document_id=document.id,
+            interaction_contract_id=WORKING_DOCUMENT_CONTRACT,
+            initial_activation="disabled",
+            actor=HUMAN,
+            intent_id="pending-policy:create",
+            coordinator_decision_id="pending-policy:provisional-decision",
+            coordinator_decision_sha256="a" * 64,
+            commit_admission=False,
+            conn=conn,
+        )
+    assert before.admission_state == "pending"
+    assert before.truth_mutable is False
+
+    exported = export_store(source)
+    target = tmp_path / "pending-policy-target"
+    target.mkdir()
+    restored = import_store(
+        exported.path,
+        target,
+        registry=FakeRegistry(),
+    ).store
+
+    after = resolve_document_truth_policy(restored, document.id)
+    assert after.to_dict() == before.to_dict()
+    assert after.admission_state == "pending"
+    assert after.truth_mutable is False
+    reproduced = export_store(restored, tmp_path / "pending-policy-again.jsonl")
+    assert reproduced.path.read_bytes() == exported.path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("table", "error"),
+    (
+        (
+            "document_truth_activation_current",
+            "activation projection disagrees",
+        ),
+        (
+            "document_truth_admission_seals_current",
+            "admission projection disagrees",
+        ),
+    ),
+)
+def test_export_rejects_truth_policy_projection_history_disagreement(
+    tmp_path: Path,
+    table: str,
+    error: str,
+) -> None:
+    source = _create_store(tmp_path / f"projection-drift-{table}")
+    documents.register_document(
+        source,
+        path="docs/projection-integrity.md",
+        title="Projection integrity",
+        document_class="co_authored",
+        content_sha256=sha256_bytes(b"projection integrity"),
+        actor=HUMAN,
+        at=NOW,
+    )
+    with source.connect() as conn:
+        conn.execute(f"UPDATE {table} SET updated_at = ?", (LATER,))
+
+    with pytest.raises(TruthExportError, match=error):
+        export_store(source)
+
+
+def test_import_recomputes_truth_activation_document_ledger_fence(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "activation-fence-source")
+    documents.register_document(
+        source,
+        path="docs/activation-fence.md",
+        title="Activation fence",
+        document_class="co_authored",
+        content_sha256=sha256_bytes(b"activation fence"),
+        actor=HUMAN,
+        at=NOW,
+    )
+    objects = _objects(export_store(source).path.read_bytes())
+    transition = next(
+        item
+        for item in objects
+        if item["record_type"] == "document_truth_activation_transition"
+    )
+    transition["record"]["ledger_high_water_seq"] = 1
+    transition["record"]["ledger_digest"] = "f" * 64
+    target = tmp_path / "activation-fence-target"
+    target.mkdir()
+
+    with pytest.raises(TruthImportError, match="ledger fence does not match"):
+        import_store(_v2_payload(objects), target, registry=FakeRegistry())
 
 
 def test_import_upcasts_frozen_v1_inline_format(tmp_path: Path) -> None:

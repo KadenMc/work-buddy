@@ -19,6 +19,7 @@ FOUNDATION_RESOURCES = {
     "db/agent-execution",
     "db/cowork-conversation-source-dependencies",
     "db/task-note-migration",
+    "db/installed-authority",
     "db/local-identity",
     "db/journal-capture",
     "stores/sources",
@@ -34,6 +35,7 @@ def test_every_source_foundation_store_has_an_explicit_backup_class() -> None:
         "db/cowork-conversation-source-dependencies"
     )
     assert VITAL_DBS["task_note_migration"] == "db/task-note-migration"
+    assert VITAL_DBS["installed_authority"] == "db/installed-authority"
     assert "db/local-identity" not in VITAL_DBS.values()
     assert "db/journal-capture" not in VITAL_DBS.values()
     assert "stores/sources" not in VITAL_DBS.values()

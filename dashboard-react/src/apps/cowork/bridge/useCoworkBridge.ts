@@ -120,6 +120,8 @@ export interface UseCoworkBridgeOptions {
   readonly feedbackTransport?: CoworkFeedbackTransport;
   /** Persists exact-span provenance for editor paste transactions. */
   readonly pasteProvenanceRecorder?: CoworkPasteProvenanceRecorder;
+  /** Excludes claim/expression projection for provenance-only documents. */
+  readonly includeTruthProjection?: boolean;
 }
 
 export interface CoworkBridgeEditorMountProps {
@@ -226,6 +228,7 @@ export const useCoworkBridge = (
     onFeedbackCaptured,
     feedbackTransport,
     pasteProvenanceRecorder,
+    includeTruthProjection = true,
   } = options;
 
   const editorRef = useRef<Editor | null>(null);
@@ -272,7 +275,12 @@ export const useCoworkBridge = (
     });
 
     const resolvedDocClient =
-      docClient ?? new HttpCoworkDocClient({ documentId, storeId });
+      docClient ??
+      new HttpCoworkDocClient({
+        documentId,
+        storeId,
+        includeTruthProjection,
+      });
     const resolvedYdocTransport =
       ydocTransport ?? new HttpCoworkYdocTransport({ documentId, storeId });
     const resolvedSittingTransport =
@@ -314,7 +322,7 @@ export const useCoworkBridge = (
     // The transports and clients are stable per (documentId, storeId). A test passes fresh
     // doubles for a fresh document, which is exactly when the whole bridge should rebuild.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, storeId]);
+  }, [documentId, includeTruthProjection, storeId]);
 
   // Drive the view-only editor projection, sitting catalog, and health strip
   // from the provider's single authoritative pull.

@@ -24,11 +24,14 @@ def collect(cfg: dict[str, Any]) -> str:
     Returns an empty string when there are no active contracts or the index
     yields nothing — the bundle pipeline skips empty sections.
     """
-    from work_buddy.contracts import active_contracts, get_contracts_dir
+    from work_buddy.contracts import active_contracts
     from work_buddy.vault_index.search import search
 
     try:
-        contracts = active_contracts(get_contracts_dir())
+        # ``active_contracts(None)`` selects the authority-aware provider.
+        # Resolving the retired Markdown directory is itself forbidden after
+        # native Contracts publication.
+        contracts = active_contracts()
     except Exception as exc:
         logger.debug("vault_collector: loading contracts failed: %s", exc)
         return ""

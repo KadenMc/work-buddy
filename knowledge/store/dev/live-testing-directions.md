@@ -46,6 +46,17 @@ A good live test:
 
 When the change is in the consent / notification layer, the **handoff task creation** is often the perfect test driver: it requires moderate-risk consent (`tasks.create_task`, `obsidian.write_file`), it's a real piece of work the user wants saved, and it exercises the full consent prompt → response → grant → execution flow.
 
+### Data-bearing dashboard surfaces
+
+Treat the user's live dashboard database as production data. Before testing,
+record authoritative counts or revisions from the backing API. Exercise persisted
+create, edit, delete, activation, and save paths only with an explicit demo
+provider or an isolated temporary SQLite root. Against the live dashboard, limit
+the run to reads, local presentation state, cancellation paths, and endpoints
+whose contract explicitly guarantees a pure preview. Afterward, re-read the
+authoritative counts and inspect browser errors and warnings. A rendered screen
+alone does not prove that the live data stayed unchanged.
+
 ## When the test is verifying a bug fix
 
 A live test can have one of two motivations: **validate new behavior** (a feature being added) or **verify a bug fix** (something that was broken now works). These differ in what counts as success, and confusing them is how fix verifications quietly turn into feature smoke-tests that pass for the wrong reason.

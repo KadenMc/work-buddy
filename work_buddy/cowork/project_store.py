@@ -44,11 +44,25 @@ from work_buddy.truth.store import TruthStore
 
 MANIFEST_FORMAT = "wbuddy-folder/v1"
 CANONICAL_LAYOUT = "wbuddy_cowork_v1"
+# Written into every managed sidecar. The sidecar mixes machine-local working
+# state (SQLite stores plus their WAL/SHM sidecars, pre-migration snapshots,
+# atomic-write temporaries, locks, runtime scratch, content blobs) with a small
+# durable surface meant to travel with the folder. Naming the machine-local
+# files individually rots: the list has to grow every time a component writes
+# beside the store, and whatever it misses is committed silently. Ignore the
+# directory and re-include the committed surface instead, so a new sidecar file
+# fails closed rather than leaking into history.
 COMPONENT_GITIGNORE_LINES = (
-    "/store.db",
-    "/store.db-*",
-    "/runtime/",
-    "/blobs/",
+    "# Work Buddy Co-work component state.",
+    "# Everything beside the store is machine-local and stays uncommitted.",
+    "# Only the durable surface re-included below travels with the folder:",
+    "# this file, the store identity in store.yaml, and the deterministic",
+    "# export under export/. A new file here is ignored by default; add a",
+    "# re-include line for it only when it is deterministic and shareable.",
+    "/*",
+    "!/.gitignore",
+    "!/store.yaml",
+    "!/export/",
 )
 DEFAULT_SCAN_BUDGET = 2_000
 DEFAULT_SCAN_HARD_LIMIT = 50_000

@@ -189,6 +189,14 @@ def _insert_document(
             (DE_MAT_ID, DOC_ID, NOW, CONTENT_SHA, ydoc_snapshot_sha256),
         )
         store._insert_ledger_record_locked(conn, "doc_event", DE_MAT_ID)
+        # The helper intentionally inserts raw portable rows. Complete the
+        # v11 compatibility policy in the same transaction, as the public
+        # registration seam does for an uncoordinated legacy document.
+        from work_buddy.cowork.truth_activation import (
+            backfill_legacy_document_policies,
+        )
+
+        assert backfill_legacy_document_policies(conn) == 1
 
 
 def _objects(payload: bytes) -> list[dict[str, Any]]:
@@ -224,7 +232,7 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
 
     exported = export_store(source)
     objects = _objects(exported.path.read_bytes())
-    assert objects[0]["format_version"] == FORMAT_VERSION == 10
+    assert objects[0]["format_version"] == FORMAT_VERSION == 11
 
     record_types = {
         item["record_type"]

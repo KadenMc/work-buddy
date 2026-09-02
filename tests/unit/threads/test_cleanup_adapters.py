@@ -53,6 +53,14 @@ def _clean(tmp_path, monkeypatch):
         lambda: {"vault_root": str(vault), "obsidian": {"journal_dir": "Daily"}},
     )
     monkeypatch.setattr("work_buddy.obsidian.bridge.is_available", lambda: False)
+    monkeypatch.setattr(
+        "work_buddy.journal_capture.authority.existing_authority_mode",
+        lambda *_args, **_kwargs: "legacy_compatibility",
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.preferences.is_wanted",
+        lambda _component_id: None,
+    )
     monkeypatch.setattr(store, "_db_path", lambda: db)
     bootstrap.teardown_threads()
     yield paths
@@ -97,6 +105,34 @@ class TestJournalNoteCanCleanUp:
             "note_path": "x.md",
         })
         assert adapter.can_clean_up(t) is False
+
+    def test_native_authority_hides_cleanup_without_archive_or_config_access(
+        self, monkeypatch
+    ):
+        adapter = cleanup_adapters.JOURNAL_NOTE_ADAPTER
+        thread = Thread(
+            inciting_event_summary={
+                "source": "journal_note",
+                "note_path": "Daily/2026-05-02.md",
+                "line_text": "- [ ] Buy gift",
+            }
+        )
+        monkeypatch.setattr(
+            "work_buddy.journal_capture.authority.existing_authority_mode",
+            lambda *_args, **_kwargs: "database_only",
+        )
+        with patch(
+            "work_buddy.config.load_config",
+            side_effect=AssertionError("legacy vault config read"),
+        ), patch(
+            "work_buddy.journal_capture.content_adapter.JournalContentAdapter",
+            side_effect=AssertionError("retired archive adapter constructed"),
+        ):
+            assert adapter.can_clean_up(thread) is False
+            result = adapter.cleanup(thread)
+
+        assert result.success is False
+        assert "retired" in result.detail
 
 
 class TestJournalNoteCleanup:
@@ -177,6 +213,50 @@ class TestJournalNoteCleanup:
         assert r.success is True
         # Exactly one match left
         assert captured["content"].count("Buy gift for Sarah") == 1
+
+    def test_authority_guard_spans_archive_read_and_write(self, monkeypatch):
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        state = {"held": False}
+
+        @contextmanager
+        def guard(*_args, **_kwargs):
+            assert state["held"] is False
+            state["held"] = True
+            try:
+                yield
+            finally:
+                state["held"] = False
+
+        def snapshot(_adapter, _day):
+            assert state["held"] is True
+            return SimpleNamespace(
+                content="- [ ] Buy gift for Sarah\n",
+                file_sha256="a" * 64,
+            )
+
+        def write(_adapter, _day, **_kwargs):
+            assert state["held"] is True
+            return True
+
+        monkeypatch.setattr(
+            "work_buddy.journal_capture.authority.legacy_markdown_write_guard",
+            guard,
+        )
+        monkeypatch.setattr(
+            "work_buddy.journal_capture.content_adapter.JournalContentAdapter.snapshot",
+            snapshot,
+        )
+        monkeypatch.setattr(
+            "work_buddy.journal_capture.content_adapter.JournalContentAdapter.write_day_cas",
+            write,
+        )
+
+        result = cleanup_adapters._journal_note_cleanup(self._thread())
+
+        assert result.success is True
+        assert state["held"] is False
 
 
 # ---------------------------------------------------------------------------

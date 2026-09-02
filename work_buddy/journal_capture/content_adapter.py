@@ -743,8 +743,12 @@ class JournalContentAdapter:
         write_mode: str = "insert",
         journal_owned_write: bool = False,
     ) -> None:
+        from work_buddy.journal_capture.authority import (
+            require_legacy_markdown_write,
+        )
         from work_buddy.obsidian.vault_writer import vault_write
 
+        require_legacy_markdown_write(self.journal_store_path)
         try:
             values = {
                 "write_mode": write_mode,

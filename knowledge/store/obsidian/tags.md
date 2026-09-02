@@ -1,7 +1,7 @@
 ---
 name: Tag Wrangler Integration
 kind: integration
-description: Tag operations via Tag Wrangler plugin (v0.6.4) + metadataCache -- read, rename, merge, tag pages
+description: Retired app-only Tag Wrangler integration retained for explicit Obsidian compatibility; never part of the opted-out normal path.
 tags:
 - obsidian
 - tags
@@ -19,7 +19,10 @@ parents:
 - obsidian
 ---
 
-Tag operations via Tag Wrangler plugin (v0.6.4) + Obsidian metadataCache.
+Historical compatibility reference for Tag Wrangler plugin (v0.6.4) and
+Obsidian `metadataCache`. The integration is disabled with the Obsidian feature
+and must not trigger a bridge probe, retry, or setup recommendation in that
+state.
 
 ## Two Paths
 

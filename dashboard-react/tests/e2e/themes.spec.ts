@@ -10,7 +10,13 @@ test("the inline bootstrap resolves an explicit light scheme before React execut
   page,
 }) => {
   await installThemePreference(page, "light");
-  await page.route("**/src/main.tsx", (route) => route.abort());
+  await page.route("**/*", async (route) => {
+    if (route.request().resourceType() === "script") {
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
   await page.goto("/app/journal", { waitUntil: "domcontentloaded" });
 
   await expect(page.locator("html")).toHaveAttribute("data-wb-scheme", "light");

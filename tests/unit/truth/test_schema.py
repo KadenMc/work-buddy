@@ -722,6 +722,41 @@ EXPECTED_COLUMNS = {
         "basis", "canonical_sha256", "granted_at", "expires_at",
         "revoked_at",
     },
+    "interaction_contract_definitions": {
+        "id", "contract_id", "definition_version", "definition_json",
+        "definition_sha256", "created_at",
+    },
+    "document_interaction_contract_assignments": {
+        "id", "document_id", "binding_id", "interaction_contract_id",
+        "interaction_contract_version", "interaction_contract_sha256",
+        "cowork_document_class", "actor_ref", "intent_id", "assigned_at",
+    },
+    "document_truth_activation_transitions": {
+        "id", "document_id", "activation_revision", "previous_state",
+        "next_state", "observed_head_sha256", "ledger_high_water_seq",
+        "ledger_digest", "actor_ref", "intent_id", "reason",
+        "request_sha256", "created_at",
+    },
+    "document_truth_activation_current": {
+        "document_id", "activation_revision", "state", "transition_id",
+        "updated_at",
+    },
+    "document_truth_policy_receipts": {
+        "id", "document_id", "binding_id", "interaction_contract_id",
+        "interaction_contract_version", "interaction_contract_sha256",
+        "outcome", "intent_id", "actor_ref", "request_sha256", "created_at",
+    },
+    "document_truth_admission_seal_events": {
+        "id", "document_id", "intent_id", "activation_revision", "state",
+        "seal_revision", "coordinator_decision_id",
+        "coordinator_decision_sha256", "actor_ref", "canonical_sha256",
+        "created_at",
+    },
+    "document_truth_admission_seals_current": {
+        "document_id", "intent_id", "activation_revision", "state",
+        "seal_revision", "coordinator_decision_id",
+        "coordinator_decision_sha256", "event_id", "updated_at",
+    },
 }
 
 
@@ -805,6 +840,9 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         "idx_cowork_review_applications_document",
         "idx_truth_hindsight_projection_ready",
         "idx_truth_hindsight_projection_usage",
+        "idx_document_truth_activation_document",
+        "idx_document_truth_receipts_document",
+        "idx_document_truth_seals_document",
     } <= set(indexes)
     assert "WHERE status = 'confirmed'" in indexes["uq_claim_status_confirm_gesture"]
 
@@ -812,7 +850,7 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         row["name"]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     }
-    assert len(triggers) == 97
+    assert len(triggers) == 107
     verify_tables = {
         "criterion_definition_versions",
         "check_definition_versions",
@@ -840,6 +878,11 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         "document_content_redactions",
         "document_content_redaction_targets",
         "document_content_redaction_status_events",
+        "interaction_contract_definitions",
+        "document_interaction_contract_assignments",
+        "document_truth_activation_transitions",
+        "document_truth_policy_receipts",
+        "document_truth_admission_seal_events",
     }
     assert {
         f"{table}_append_only_{operation}"
@@ -868,7 +911,7 @@ def test_reopening_is_idempotent(tmp_path: Path):
         conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ).fetchone()[0]
-        == 97
+        == 107
     )
     conn.close()
 

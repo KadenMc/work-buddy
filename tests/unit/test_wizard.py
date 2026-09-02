@@ -211,18 +211,17 @@ class TestWizardPreferences:
         result = wizard.preferences()
         by_id = {c["id"]: c for c in result["components"]}
 
-        # obsidian lives under domain:notifications and also as a dep
-        # of subsystems in domain:journal — control-graph-wise its
-        # grouping_parents includes domain:notifications only (subsystems
-        # are not domains).
+        # Obsidian remains an optional compatibility component, but the
+        # cut-away removes it from native domain ownership.
         obsidian = by_id.get("obsidian")
         assert obsidian is not None
         assert "domains" in obsidian
         assert isinstance(obsidian["domains"], list)
-        # obsidian is listed as a direct child of domain:notifications
-        # (per graph_static.py:children_components). So that domain must
-        # appear here.
-        assert "domain:notifications" in obsidian["domains"]
+        assert obsidian["domains"] == []
+
+        projects = by_id.get("projects_native")
+        assert projects is not None
+        assert "domain:knowledge" in projects["domains"]
 
         # sidecar is the sole entry in domain:system
         sidecar = by_id.get("sidecar")

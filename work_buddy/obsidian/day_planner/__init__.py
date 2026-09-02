@@ -22,6 +22,6 @@ from work_buddy.obsidian.day_planner.env import (  # noqa: F401
 )
 
 # Plan generation (pure logic, no side effects)
-from work_buddy.obsidian.day_planner.planner import (  # noqa: F401
+from work_buddy.journal_capture.planner import (  # noqa: F401
     generate_plan,
 )

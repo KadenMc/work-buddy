@@ -1,7 +1,7 @@
 ---
 name: Journal Write
 kind: capability
-description: 'Append log entries or persist a briefing to the journal. For log entries: pass time/description tuples. For briefing: pass markdown to wrap in a callout.'
+description: 'Create Source-backed native Journal records or a generated briefing artifact, with AI provenance and no automatic Truth analysis.'
 capability_name: journal_write
 category: journal
 op: op.wb.journal_write
@@ -21,7 +21,11 @@ parameters:
     required: false
   briefing_md:
     type: str
-    description: 'For briefing mode: markdown string'
+    description: 'For briefing mode: exact generated artifact text.'
+    required: false
+  client_mutation_id:
+    type: str
+    description: Stable idempotency key. Reuse it only when retrying the exact same write.
     required: false
 mutates_state: true
 retry_policy: verify_first
@@ -42,6 +46,12 @@ aliases:
 - update log
 parents:
 - journal
-requires:
-- obsidian
+requires: []
 ---
+
+Each complete rendered record or briefing is committed to Sources before the
+Journal row is created. The Journal entry retains the Source dependency,
+attributed agent run, `ai` authorship, and `unreviewed` review state. The
+default interaction behavior is provenance-only; writing does not enable Truth
+or run analysis. The active profile chooses the destination module, and no
+Markdown file or Obsidian projection is written.

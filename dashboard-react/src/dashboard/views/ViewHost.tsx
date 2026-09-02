@@ -129,6 +129,21 @@ const sizeModeFor = (
 const keepsLiveWidget = (definition: WidgetDefinition): boolean =>
   definition.durable === true || (definition.assistableDrafts?.length ?? 0) > 0;
 
+export const definitionWithEffectiveComposition = (
+  definition: ViewDefinition,
+  snapshot: Pick<ViewSnapshot, "effectiveComposition"> | undefined,
+): ViewDefinition => {
+  const composition = snapshot?.effectiveComposition;
+  return composition === undefined
+    ? definition
+    : {
+        ...definition,
+        defaultSlots: composition.defaultSlots,
+        readingOrder: composition.readingOrder,
+        mobileOrder: composition.mobileOrder,
+      };
+};
+
 function StandardGridViewHost({
   registry,
   definition,
@@ -138,6 +153,10 @@ function StandardGridViewHost({
   providerLabel,
 }: ViewHostProps) {
   const session = useViewSession({ provider, viewId: definition.viewId });
+  const effectiveDefinition = useMemo(
+    () => definitionWithEffectiveComposition(definition, session.snapshot),
+    [definition, session.snapshot?.effectiveComposition],
+  );
   const { announce } = useDashboardAnnouncer();
   const { notify, confirm } = useInteractionSurfaces();
   const isMobile = useMediaQuery("(max-width: 767px)");
@@ -152,15 +171,15 @@ function StandardGridViewHost({
     [registry],
   );
   const defaults = useMemo(
-    () => resolveViewPersonalization(definition, definitions),
-    [definition, definitions],
+    () => resolveViewPersonalization(effectiveDefinition, definitions),
+    [effectiveDefinition, definitions],
   );
   const [storedPatch, setStoredPatch] = useState<ViewPersonalizationPatch | undefined>();
   const [personalizationLoaded, setPersonalizationLoaded] = useState(false);
   const [personalizationError, setPersonalizationError] = useState<string>();
   const resolved = useMemo(
-    () => resolveViewPersonalization(definition, definitions, storedPatch),
-    [definition, definitions, storedPatch],
+    () => resolveViewPersonalization(effectiveDefinition, definitions, storedPatch),
+    [effectiveDefinition, definitions, storedPatch],
   );
   const [editState, setEditState] = useState<ViewEditSessionState>(() =>
     beginViewEditSession(defaults),
@@ -351,7 +370,7 @@ function StandardGridViewHost({
   const saveCustomize = async () => {
     const atCurrentDefaults = JSON.stringify(editState.present) === JSON.stringify(defaults);
     const patch = createPersonalizationPatch(
-      definition,
+      effectiveDefinition,
       definitions,
       editState.present,
       resetPatchRequested && atCurrentDefaults ? undefined : storedPatch,
@@ -531,7 +550,7 @@ function StandardGridViewHost({
           </WidgetFrame>
         );
       }
-      const slot = definition.defaultSlots.find(
+      const slot = effectiveDefinition.defaultSlots.find(
         (candidate) => candidate.slotId === instance.slotId,
       );
       const widgetSnapshot = widgetSnapshots.get(instance.instanceId);
@@ -597,6 +616,7 @@ function StandardGridViewHost({
           }
           presence={instance.presence === "personal" ? undefined : instance.presence}
           lockedReason={slot?.lockedReason}
+          hideLabel={slot?.semanticComposition === "provider_owned" ? "Hide on this device" : undefined}
           onRetry={() => void session.reload("refresh")}
           onHide={
             !durable && customizing
@@ -604,7 +624,7 @@ function StandardGridViewHost({
               : undefined
           }
           onRemove={
-            !durable && customizing
+            !durable && customizing && slot?.semanticComposition !== "provider_owned"
               ? () => act({ type: "remove", instanceId: instance.instanceId })
               : undefined
           }
@@ -614,6 +634,7 @@ function StandardGridViewHost({
     [
       registry,
       definition,
+      effectiveDefinition,
       widgetSnapshots,
       widgetSnapshotErrors,
       isMobile,

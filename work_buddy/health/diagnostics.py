@@ -33,7 +33,7 @@ class DiagnosticResult:
     """Result of running diagnostics on a component (and its dependencies)."""
 
     component_id: str
-    status: str  # "passed", "failed", "error"
+    status: str  # "passed", "failed", "error", "disabled"
     steps_run: list[StepResult] = field(default_factory=list)
     root_cause: str | None = None
     fix_suggestion: str | None = None
@@ -78,8 +78,32 @@ class DiagnosticRunner:
                 root_cause=f"Unknown component: '{component_id}'",
             )
 
+        from work_buddy.health.preferences import is_wanted
+
+        # An opt-out is an instruction not to touch the integration.  Return a
+        # terminal, advice-free diagnostic before importing or calling any
+        # check function.  Check the requested component first so its own
+        # preference is the reason surfaced when both it and a parent are off.
+        if is_wanted(component_id) is False:
+            return DiagnosticResult(
+                component_id=component_id,
+                status="disabled",
+                root_cause=f"{comp.display_name} is opted out.",
+            )
+
         # Build dependency chain (depth-first)
         chain = self._resolve_chain(component_id)
+        for chain_comp_id in chain:
+            if chain_comp_id == component_id:
+                continue
+            if is_wanted(chain_comp_id) is False:
+                dependency = COMPONENT_CATALOG.get(chain_comp_id)
+                label = dependency.display_name if dependency else chain_comp_id
+                return DiagnosticResult(
+                    component_id=component_id,
+                    status="disabled",
+                    root_cause=f"Dependency {label} is opted out.",
+                )
 
         steps_run: list[StepResult] = []
         for chain_comp_id in chain:

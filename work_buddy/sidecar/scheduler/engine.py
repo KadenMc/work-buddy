@@ -449,7 +449,7 @@ class Scheduler:
         job_states = []
         for job in self.jobs:
             next_at = 0.0
-            if job.schedule:
+            if job.enabled and job.schedule:
                 nxt = next_cron_match(job.schedule, now, self._timezone)
                 if nxt:
                     next_at = nxt.timestamp()
@@ -471,6 +471,7 @@ class Scheduler:
                 last_result=job.last_result,
                 last_error=job.last_error,
                 source=job.source,
+                enabled=job.enabled,
                 jitter_seconds=job.jitter_seconds,
                 effective_at=effective_at,
             ))

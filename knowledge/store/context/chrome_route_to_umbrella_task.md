@@ -41,6 +41,5 @@ aliases:
 - single task for tab group
 parents:
 - context
-requires:
-- obsidian
+requires: []
 ---

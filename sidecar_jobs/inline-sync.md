@@ -5,7 +5,9 @@ jitter_seconds: 180  # spread 10-minute pile-ups (especially at :00 / :30)
 type: capability
 capability: inline_sync
 params: {}
+enabled: false
 ---
-Reconcile vault persistent #wb/cmd/* tags against the inline watcher store.
-Adds watchers for newly-detected persistent tags, removes watchers whose tag
-has disappeared from the vault, and surfaces watchers due to run.
+Retired with Obsidian inline `#wb/cmd/*` scanning. Native selections, task
+records, and explicit actions replace file-tag discovery; there is no
+replacement background scanner. The legacy implementation remains importable
+for migration inspection but this system job must stay inert.

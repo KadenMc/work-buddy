@@ -1,8 +1,10 @@
 import { dashboardRegistry } from "../../app/dashboardRegistry";
 import {
+  JOURNAL_GENERIC_WIDGET_TYPE_ID,
   JOURNAL_INSTANCE_IDS,
   JOURNAL_WIDGET_TYPE_IDS,
 } from "../../apps/journal/bindings";
+import type { JournalGenericModuleInput } from "../../apps/journal/contracts";
 import { JULY11_INITIAL_MODEL } from "../../apps/journal/fixtures/july11";
 import {
   JOURNAL_EMPTY_FIXTURE,
@@ -76,6 +78,35 @@ const inputForType = (
   }
   if (widgetTypeId === JOURNAL_WIDGET_TYPE_IDS.runningNotes) {
     return inputs[JOURNAL_INSTANCE_IDS.runningNotes];
+  }
+  if (widgetTypeId === JOURNAL_GENERIC_WIDGET_TYPE_ID) {
+    return {
+      instanceId: "lab:journal-module",
+      revision: "lab:1",
+      dayId: model.day.dayId,
+      localDate: model.day.localDate,
+      access: status === "read-only"
+        ? { mode: "read_only", reason: "Widget Lab read-only fixture." }
+        : { mode: "read_write" },
+      moduleTypeId: "field_group",
+      moduleInstanceVersion: 1,
+      moduleDefinitionVersion: 1,
+      behaviorId: "human_value",
+      behaviorVersion: 1,
+      aiContribution: "forbidden",
+      label: "Journal section",
+      description: "A deterministic data-defined Journal module preview.",
+      fields: [{
+        compositionSlotId: "lab:journal-module:reflection",
+        fieldId: "reflection",
+        definitionVersion: 1,
+        label: "Reflection",
+        valueKind: "short_text",
+        value: "A sample Journal field value.",
+        required: false,
+        readOnly: status === "read-only",
+      }],
+    } satisfies JournalGenericModuleInput;
   }
   const taskInputs = tasksWidgetLabInputs(status === "read-only");
   if (widgetTypeId === TASKS_WIDGET_TYPE_IDS.quickAdd) {

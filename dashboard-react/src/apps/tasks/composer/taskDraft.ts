@@ -25,6 +25,12 @@ export interface TaskCreateDraft {
   readonly next_action: string;
   readonly definition_of_done: string;
   readonly dependencies: string;
+  /** Request a durable Co-work document as the task's editable note body. */
+  readonly create_note: boolean;
+  /** Exact initial document text; an empty string intentionally creates a blank note. */
+  readonly initial_note: string;
+  /** Explicit opt-in; provenance is retained for every requested note regardless. */
+  readonly enable_truth_tools: boolean;
   readonly batch_lines: readonly string[];
   /** Host-only linkage; never an assistable field or a second proposal authority. */
   readonly proposal_ref?: {
@@ -47,7 +53,8 @@ export interface TaskCreateDraft {
 export const EMPTY_TASK_CREATE_DRAFT: TaskCreateDraft = {
   title: "", attention_state: "inbox", urgency: "medium", due_date: "", deadline_date: "",
   project: "", namespaces: "", summary: "", desired_outcome: "", next_action: "",
-  definition_of_done: "", dependencies: "", batch_lines: [],
+  definition_of_done: "", dependencies: "", create_note: false, initial_note: "",
+  enable_truth_tools: false, batch_lines: [],
 };
 
 export const isTaskCreateDraftPristine = (value: TaskCreateDraft): boolean =>
@@ -64,6 +71,11 @@ export const taskDraftFields = (value: TaskCreateDraft): Readonly<Record<string,
   summary: optional(value.summary), desired_outcome: optional(value.desired_outcome),
   next_action: optional(value.next_action), definition_of_done: optional(value.definition_of_done),
   dependencies: taskDraftCsv(value.dependencies),
+  requested_note_role: value.create_note ? "working_document/v1" : null,
+  initial_note: value.create_note ? value.initial_note : null,
+  requested_truth_policy_resolution: value.create_note
+    ? value.enable_truth_tools ? "enabled" : "disabled"
+    : null,
 });
 
 export const taskProposalParameters = (value: TaskCreateDraft): Readonly<Record<string, JsonValue>> => {
@@ -127,6 +139,11 @@ export function draftFromTaskProposal(proposal: TaskProposal): TaskCreateDraft {
     due_date: text("due_date"), deadline_date: text("deadline_date"), project: text("project"),
     namespaces: csv("tags") || csv("namespaces"), summary: text("summary"), desired_outcome: text("outcome_text", text("desired_outcome")),
     next_action: text("next_action_text", text("next_action")), definition_of_done: text("definition_of_done"), dependencies: csv("dependencies"),
+    create_note: fields.requested_note_role === "working_document/v1" || fields.note_role === "working_document/v1",
+    initial_note: text("initial_note", text("note_markdown")),
+    enable_truth_tools:
+      fields.requested_truth_policy_resolution === "enabled" ||
+      fields.truth_policy_resolution === "enabled",
   };
 }
 

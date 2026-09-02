@@ -70,6 +70,90 @@ def _url(seeded, suffix: str = "", **query: str) -> str:
     return f"/api/truth/doc/{document_id}/truth{suffix}?{encoded}"
 
 
+def _activation_body(policy_payload, head_sha256: str, **overrides):
+    policy = policy_payload["policy"]
+    value = {
+        "next_state": "disabled",
+        "expected_activation_revision": policy["activation"]["revision"],
+        "expected_interaction_contract_sha256": policy["interaction_contract"][
+            "definition_sha256"
+        ],
+        "expected_document_head_sha256": head_sha256,
+        "intent_id": "truth-api-activation:disable",
+        "reason": "Explicit settings change in a throwaway test.",
+    }
+    value.update(overrides)
+    return value
+
+
+def test_truth_activation_route_is_explicit_cas_bound_and_idempotent(
+    client,
+    seeded,
+    _authenticated_truth_authority,
+    monkeypatch,
+):
+    emitted = []
+    monkeypatch.setattr(
+        truth_api,
+        "emit_truth_event",
+        lambda event_type, **kwargs: emitted.append((event_type, kwargs)),
+    )
+    policy_url = _url(seeded, "/policy")
+    activation_url = _url(seeded, "/activation")
+    observed = client.get(policy_url)
+
+    assert observed.status_code == 200
+    observed_payload = observed.get_json()
+    assert observed_payload["document_head_sha256"]
+    assert observed_payload["policy"]["activation"] == {
+        "revision": 1,
+        "state": "enabled",
+    }
+    body = _activation_body(
+        observed_payload, observed_payload["document_head_sha256"]
+    )
+
+    changed = client.post(activation_url, json=body)
+    replay = client.post(activation_url, json=body)
+    no_op = client.post(
+        activation_url,
+        json={
+            **body,
+            "expected_activation_revision": 2,
+            "intent_id": "truth-api-activation:already-disabled",
+        },
+    )
+    stale = client.post(
+        activation_url,
+        json={**body, "intent_id": "truth-api-activation:stale"},
+    )
+
+    assert changed.status_code == 200
+    assert changed.get_json()["policy"]["activation"] == {
+        "revision": 2,
+        "state": "disabled",
+    }
+    assert replay.status_code == 200
+    assert replay.get_json()["policy"]["activation"]["revision"] == 2
+    assert no_op.status_code == 200
+    assert no_op.get_json()["policy"]["activation"]["revision"] == 2
+    assert stale.status_code == 409
+    assert stale.get_json()["error"]["code"] == "activation_revision_conflict"
+    assert _authenticated_truth_authority[0][0] == truth_api.TRUTH_ACTIVATION_ACTION
+    assert [event_type for event_type, _ in emitted] == [
+        "truth.doc_activation_changed",
+        "truth.doc_activation_changed",
+    ]
+    assert emitted[0][1]["data"] == {
+        "document_id": seeded["document"].id,
+        "activation": "disabled",
+        "activation_revision": 2,
+        "eligibility": "allowed",
+        "intent_id": "truth-api-activation:disable",
+    }
+    assert emitted[0][1]["event_id"] == emitted[1][1]["event_id"]
+
+
 def _connectable_projection(seeded) -> tuple[str, str]:
     """Publish an exact Markdown checkpoint for selection-bound writes."""
 

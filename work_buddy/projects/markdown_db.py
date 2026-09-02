@@ -52,13 +52,14 @@ from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.markdown_db import FieldSpec, MarkdownDB, WriteProvenance
 from work_buddy.markdown_db.storage_helpers import atomic_write_text
-from work_buddy.markdown_db.types import ParsedFileRow
+from work_buddy.markdown_db.types import ParsedFileRow, ReconcileReport
 from work_buddy.projects import store as project_store
 from work_buddy.projects.note_format import (
     ProjectNoteParseError,
     parse_project_note,
     render_project_note,
 )
+from work_buddy.projects.operation_lock import legacy_project_operation
 
 logger = get_logger(__name__)
 
@@ -122,6 +123,28 @@ class ProjectMarkdownDB(MarkdownDB):
     def __init__(self, store: Any = project_store, **kw: Any) -> None:
         super().__init__(store, **kw)
 
+    # A Project legacy operation spans two independently locked surfaces.
+    # Hold the cross-process authority lock around the complete bounded unit;
+    # the narrower file locks in MarkdownDB still prevent per-note RMW races.
+
+    def apply_mutation(
+        self,
+        pk: str,
+        fields: dict[str, Any],
+        *,
+        provenance: WriteProvenance,
+    ) -> None:
+        with legacy_project_operation():
+            super().apply_mutation(pk, fields, provenance=provenance)
+
+    def reconcile_drift(self) -> ReconcileReport:
+        with legacy_project_operation():
+            return super().reconcile_drift()
+
+    def materialize_from_store(self, *, dry_run: bool = True) -> dict[str, Any]:
+        with legacy_project_operation():
+            return super().materialize_from_store(dry_run=dry_run)
+
     # ── Markdown surface ────────────────────────────────────────────
 
     def _projects_root(self) -> Path:
@@ -138,46 +161,50 @@ class ProjectMarkdownDB(MarkdownDB):
         slug not matching the filename) are skipped with a warning
         rather than failing the whole pass.
         """
-        root = self._projects_root()
-        out: dict[str, ParsedFileRow] = {}
-        if not root.is_dir():
+        # The same fence protects reads: once SQLite is sealed, a stale file
+        # must not re-enter search or reconciliation as a shadow authority.
+        with legacy_project_operation():
+            root = self._projects_root()
+            out: dict[str, ParsedFileRow] = {}
+            if not root.is_dir():
+                return out
+            for note in sorted(root.glob("*.md")):
+                if not note.is_file():
+                    continue
+                try:
+                    parsed = parse_project_note(note.read_text(encoding="utf-8"))
+                except (ProjectNoteParseError, OSError) as exc:
+                    logger.warning(
+                        "ProjectMarkdownDB: skipping %s — %s", note, exc,
+                    )
+                    continue
+                if parsed.slug != note.stem:
+                    logger.warning(
+                        "ProjectMarkdownDB: skipping %s — frontmatter slug %r "
+                        "does not match filename", note, parsed.slug,
+                    )
+                    continue
+                out[parsed.slug] = ParsedFileRow(
+                    pk=parsed.slug,
+                    fields={
+                        "name": parsed.name,
+                        "status": parsed.status,
+                        "description": parsed.description,
+                    },
+                )
             return out
-        for note in sorted(root.glob("*.md")):
-            if not note.is_file():
-                continue
-            try:
-                parsed = parse_project_note(note.read_text(encoding="utf-8"))
-            except (ProjectNoteParseError, OSError) as exc:
-                logger.warning(
-                    "ProjectMarkdownDB: skipping %s — %s", note, exc,
-                )
-                continue
-            if parsed.slug != note.stem:
-                logger.warning(
-                    "ProjectMarkdownDB: skipping %s — frontmatter slug %r "
-                    "does not match filename", note, parsed.slug,
-                )
-                continue
-            out[parsed.slug] = ParsedFileRow(
-                pk=parsed.slug,
-                fields={
-                    "name": parsed.name,
-                    "status": parsed.status,
-                    "description": parsed.description,
-                },
-            )
-        return out
 
     def write_entity_to_markdown(self, pk: str, fields: dict[str, Any]) -> None:
         """Render and atomically write ``pk``'s project note."""
-        path = self.markdown_path_for(pk)
-        content = render_project_note(
-            slug=pk,
-            name=fields.get("name"),
-            status=fields.get("status") or "active",
-            description=fields.get("description"),
-        )
-        atomic_write_text(path, content)
+        with legacy_project_operation():
+            path = self.markdown_path_for(pk)
+            content = render_project_note(
+                slug=pk,
+                name=fields.get("name"),
+                status=fields.get("status") or "active",
+                description=fields.get("description"),
+            )
+            atomic_write_text(path, content)
 
     # ── Store adapters ──────────────────────────────────────────────
 
@@ -230,6 +257,14 @@ class ProjectMarkdownDB(MarkdownDB):
 
 def reconcile_projects() -> dict[str, Any]:
     """Run a project drift reconciliation via :class:`ProjectMarkdownDB`."""
+    from work_buddy.projects.authority import sqlite_authority_active
+
+    if sqlite_authority_active():
+        return {
+            "status": "disabled",
+            "reason": "projects_sqlite_authority",
+            "writes": 0,
+        }
     return ProjectMarkdownDB().reconcile_drift().to_dict()
 
 
@@ -240,4 +275,12 @@ def materialize_projects(*, dry_run: bool = True) -> dict[str, Any]:
     Defaults to a dry run — pass ``dry_run=False`` to actually write
     files. Never overwrites an existing project note.
     """
+    from work_buddy.projects.authority import sqlite_authority_active
+
+    if sqlite_authority_active():
+        return {
+            "status": "disabled",
+            "reason": "projects_sqlite_authority",
+            "writes": 0,
+        }
     return ProjectMarkdownDB().materialize_from_store(dry_run=dry_run)

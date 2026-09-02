@@ -17,17 +17,25 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from telegram import Update
-from telegram.ext import ContextTypes
+from work_buddy.journal_capture.ingress import JournalIngressQueued
 
 if TYPE_CHECKING:
+    from telegram import Update
+    from telegram.ext import ContextTypes
+
     from work_buddy.telegram.bot import BotState
+else:
+    # ``python-telegram-bot`` is an optional extra.  The handler module uses
+    # these names only in postponed annotations, so importing it for native
+    # Journal helpers must not require the Telegram runtime.
+    Update = Any
+
+    class ContextTypes:
+        DEFAULT_TYPE = Any
 
 logger = logging.getLogger(__name__)
-
-_TRUNC = 40  # Max chars for log truncation
 
 
 def _cmd_display(name: str) -> str:
@@ -48,16 +56,41 @@ def _cmd_normalize(text: str) -> str:
     return re.sub(r"[-_]", "-", text.lower())
 
 
+def _capture_command_payload(raw: str) -> str:
+    """Remove only the command token and one delimiter from ``/capture``.
+
+    Additional leading whitespace and all following newlines remain part of
+    the exact submitted payload.
+    """
+
+    match = re.match(r"^\S+", raw)
+    if match is None or match.end() == len(raw):
+        return ""
+    start = match.end()
+    if raw[start : start + 2] == "\r\n":
+        start += 2
+    else:
+        start += 1
+    return raw[start:]
+
+
 def _log_inbound(update: Update) -> None:
-    """Log an incoming Telegram message (truncated)."""
-    text = (update.message.text or "")[:_TRUNC]
+    """Log content-free metadata for an incoming Telegram message."""
+    message = update.effective_message
+    text = message.text if message is not None and message.text is not None else ""
     chat = update.effective_chat.id
-    logger.info("TG IN  [%s]: %s", chat, text)
+    logger.info(
+        "TG IN chat=%s update=%s message=%s chars=%s",
+        chat,
+        update.update_id,
+        getattr(message, "message_id", None),
+        len(text),
+    )
 
 
 async def _reply(update: Update, text: str, **kwargs) -> None:
-    """Reply and log outbound (truncated)."""
-    logger.info("TG OUT [%s]: %s", update.effective_chat.id, text[:_TRUNC])
+    """Reply while keeping message prose out of service logs."""
+    logger.info("TG OUT chat=%s chars=%s", update.effective_chat.id, len(text))
     await update.message.reply_text(text, **kwargs)
 
 
@@ -362,7 +395,7 @@ async def cmd_slash(
 async def cmd_capture(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Handle /capture — append text to vault location."""
+    """Handle /capture — save exact text to Journal Running Notes."""
     _log_inbound(update)
     state: BotState = context.bot_data["state"]
     if not _is_authorized(update, state):
@@ -371,7 +404,7 @@ async def cmd_capture(
 
     # Get raw text after the /capture command, preserving newlines
     raw = update.message.text or ""
-    text = raw.split(None, 1)[1] if len(raw.split(None, 1)) > 1 else ""
+    text = _capture_command_payload(raw)
     if not text:
         await _reply(update, "Usage: /capture <text to capture>")
         return
@@ -380,123 +413,78 @@ async def cmd_capture(
 
 
 async def _do_capture(update: Update, text: str, state: "BotState") -> None:
-    """Perform the vault capture operation.
+    """Persist one allowlisted Telegram message through native Journal ingress.
 
-    Telegram messages are direct user intent — auto-grant write consent
-    so the user doesn't hit a consent wall from their phone.
-
-    Formats as a fenced capture block:
-        ---
-        > #wb/capture/mobile from Name (@handle) at YYYY-MM-DD HH:MM
-
-        <content>
-
-        ---
+    The message body is retained exactly as submitted.  Transport identity is
+    stored as content-free ingress provenance; no Markdown wrapper or message
+    prose is written to logs.
     """
+    del state  # Authorization was checked by the caller; capture config is legacy.
     try:
-        from work_buddy.consent import grant_consent
-        grant_consent("obsidian.write_file", mode="always")
-
-        from work_buddy.obsidian.vault_writer import write_at_location
-        from work_buddy.journal import user_now
-
-        # Build sender info from Telegram user
-        user = update.effective_user
-        display_name = user.full_name if user else "Unknown"
-        handle = f"@{user.username}" if user and user.username else ""
-        sender = f"{display_name} ({handle})" if handle else display_name
-
-        now = user_now()
-        timestamp = now.strftime("%Y-%m-%d %H:%M")
-
-        # Format the capture block
-        block = (
-            f"---\n"
-            f"> #wb/capture/mobile from {sender} at {timestamp}\n"
-            f"\n"
-            f"{text}\n"
-            f"\n"
-            f"---"
+        from work_buddy.dashboard import local_identity_api
+        from work_buddy.journal_capture.api import _services
+        from work_buddy.journal_capture.ingress import (
+            JournalCaptureIngress,
+            telegram_ingress_identity,
+            telegram_message_time,
         )
+        from work_buddy.journal_capture.models import CaptureMode, CaptureTarget
+        from work_buddy.journal_capture.projection import current_day
 
-        cfg = state.capture_config
-        note = cfg.get("note", "latest_journal")
-        section = cfg.get("section", "Running Notes")
-        position = cfg.get("position", "top")
-        logger.info("Capture: note=%s section=%s position=%s text=%s",
-                     note, section, position, text[:40])
-
-        try:
-            result = write_at_location(
-                content=block,
-                note=note,
-                section=section,
-                position=position,
-                source=None,  # tag is already in the block header
-            )
-        except Exception as exc:
-            # A transient bridge failure — a busy editor (409 editor_dirty), a
-            # startup race, a timeout — must not drop the capture. Enqueue it
-            # for the sidecar retry sweep, which replays vault_write_at_location
-            # on backoff and lands it once the bridge frees up. Anything
-            # non-transient falls through to the outer handler below.
-            from work_buddy.errors import classify_error
-            if classify_error(exc) != "transient":
-                raise
-            from work_buddy.mcp_server.tools.gateway import (
-                enqueue_capability_for_retry,
-            )
-            op_id = enqueue_capability_for_retry(
-                "vault_write_at_location",
-                {
-                    "content": block,
-                    "note": note,
-                    "section": section,
-                    "position": position,
-                    "source": None,
-                },
-                error=str(exc),
-                error_kind=getattr(exc, "error_kind", None),
-            )
-            # Lead the reply with the resolved note path (parallel to the
-            # success "Captured to <note>" line) for scannability. The typed
-            # ObsidianError carries the resolved vault-relative path; fall back
-            # to the resolver token if it doesn't.
-            target = getattr(exc, "path", None) or note
-            if op_id:
-                logger.info("Capture enqueued for retry (op=%s): %s", op_id, exc)
-                await _reply(
-                    update,
-                    f"Attempted capture to {target} — queued (Obsidian busy "
-                    "with unsaved edits). It'll land automatically once the "
-                    "note is free; no need to resend.",
-                )
-            else:
-                logger.error("Capture enqueue failed: %s", exc, exc_info=True)
-                await _reply(
-                    update,
-                    f"Attempted capture to {target} — couldn't queue it "
-                    f"({exc}). Reopen the note in Obsidian (or start today's), "
-                    "then resend.",
-                )
-            return
-
-        logger.info("Capture result: status=%s note=%s",
-                     result.get("status"), result.get("note"))
-
-        if result["status"] == "ok":
-            await _reply(update, f"Captured to {result['note']}")
-        elif result["status"] == "consent_required":
-            op = result.get("operation", "obsidian.write_file")
-            await _reply(update,
-                f"Capture requires consent for '{op}'.\n"
-                "Grant consent via Obsidian or the MCP gateway, then retry."
-            )
-        else:
-            await _reply(update, f"Capture failed: {result.get('error', 'unknown')}")
+        message = update.effective_message
+        if message is None:
+            raise ValueError("telegram_message_unavailable")
+        user = update.effective_user
+        identity = telegram_ingress_identity(
+            enrolled_actor=local_identity_api._authority().enrolled_actor(),
+            chat_id=update.effective_chat.id,
+            message_id=message.message_id,
+            update_id=update.update_id,
+            user_id=None if user is None else user.id,
+        )
+        sources, _store, service = _services()
+        receipt = JournalCaptureIngress(
+            sources,
+            service,
+            service_principal=identity.service_principal,
+            worker_id="journal-telegram",
+        ).submit(
+            trusted=identity.trusted,
+            exact_text=text,
+            client_mutation_id=identity.client_mutation_id,
+            day_id=current_day()["dayId"],
+            target=CaptureTarget.RUNNING_NOTES,
+            mode=CaptureMode.DUMB,
+            input_mode="direct_entry",
+            stated_at=telegram_message_time(message.date),
+        )
+        logger.info(
+            "Journal capture accepted chat=%s update=%s capture=%s deduplicated=%s",
+            update.effective_chat.id,
+            update.update_id,
+            receipt.capture.capture_id,
+            receipt.commit.deduplicated,
+        )
+        await _reply(update, "Captured to Journal Running Notes.")
+    except JournalIngressQueued as exc:
+        logger.info(
+            "Journal capture queued for cutover chat=%s update=%s deduplicated=%s",
+            update.effective_chat.id,
+            update.update_id,
+            exc.commit.deduplicated,
+        )
+        await _reply(
+            update,
+            "Saved and queued for Journal while maintenance finishes.",
+        )
     except Exception as exc:
-        logger.error("Capture failed: %s", exc, exc_info=True)
-        await _reply(update, f"Capture error: {exc}")
+        logger.error(
+            "Journal capture failed chat=%s update=%s code=%s",
+            update.effective_chat.id,
+            update.update_id,
+            getattr(exc, "code", type(exc).__name__),
+        )
+        await _reply(update, "Journal capture failed. Please retry from the dashboard.")
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +671,7 @@ async def _search_and_show_sessions(
     markup = InlineKeyboardMarkup(buttons)
 
     text = "\n".join(lines)
-    logger.info("TG OUT [%s]: %s", update.effective_chat.id, text[:_TRUNC])
+    logger.info("TG OUT chat=%s chars=%s", update.effective_chat.id, len(text))
     await update.message.reply_text(text, reply_markup=markup)
 
 
@@ -703,13 +691,17 @@ async def cmd_status(
 
     lines = ["Work Buddy Status", ""]
 
-    # Check Obsidian bridge
-    try:
-        from work_buddy.obsidian.bridge import is_available
-        obs_ok = is_available()
-        lines.append(f"Obsidian bridge: {'online' if obs_ok else 'offline'}")
-    except Exception:
-        lines.append("Obsidian bridge: unknown")
+    # Never probe a retired/opted-out bridge merely to render status.
+    if not _obsidian_command_execution_enabled():
+        lines.append("Obsidian bridge: disabled")
+    else:
+        try:
+            from work_buddy.obsidian.bridge import is_available
+
+            obs_ok = is_available()
+            lines.append(f"Obsidian bridge: {'online' if obs_ok else 'offline'}")
+        except Exception:
+            lines.append("Obsidian bridge: unknown")
 
     # Check messaging service
     try:
@@ -762,6 +754,20 @@ async def cmd_dashboard(
 # /obs <query>
 # ---------------------------------------------------------------------------
 
+
+def _obsidian_command_execution_enabled() -> bool:
+    """Fail closed when Obsidian preference cannot be verified."""
+
+    try:
+        from work_buddy.health.preferences import is_wanted
+
+        return is_wanted("obsidian") is not False
+    except Exception:
+        logger.exception(
+            "Refusing Telegram Obsidian command because preference lookup failed"
+        )
+        return False
+
 async def cmd_obs(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -775,6 +781,9 @@ async def cmd_obs(
     query = " ".join(context.args) if context.args else ""
     if not query:
         await _reply(update, "Usage: /obs <command name or search query>")
+        return
+    if not _obsidian_command_execution_enabled():
+        await _reply(update, "Obsidian commands are disabled.")
         return
 
     try:
@@ -821,7 +830,7 @@ async def cmd_obs(
             buttons.append([InlineKeyboardButton("Cancel", callback_data="obs:_cancel")])
             markup = InlineKeyboardMarkup(buttons)
             text = "Did you mean:"
-            logger.info("TG OUT [%s]: %s", update.effective_chat.id, text[:_TRUNC])
+            logger.info("TG OUT chat=%s chars=%s", update.effective_chat.id, len(text))
             await update.message.reply_text(text, reply_markup=markup)
         else:
             await _reply(update, f"No Obsidian commands matching: {query}")
@@ -1044,13 +1053,21 @@ async def on_button(
 
     state: BotState = context.bot_data["state"]
     data = query.data or ""
-    logger.info("TG BTN [%s]: %s", update.effective_chat.id, data[:_TRUNC])
+    logger.info(
+        "TG BTN chat=%s kind=%s chars=%s",
+        update.effective_chat.id,
+        data.split(":", 1)[0],
+        len(data),
+    )
 
     # --- Obsidian command buttons ---
     if data.startswith("obs:"):
         cmd_id = data[4:]
         if cmd_id == "_cancel":
             await query.edit_message_text("Cancelled.")
+            return
+        if not _obsidian_command_execution_enabled():
+            await query.edit_message_text("Obsidian commands are disabled.")
             return
         try:
             from work_buddy.obsidian.commands import ObsidianCommands
@@ -1064,7 +1081,11 @@ async def on_button(
             if match:
                 client.execute(cmd_id)
                 name = match[0].get("name", cmd_id)
-                logger.info("TG OUT [%s]: Executed: %s", update.effective_chat.id, name[:_TRUNC])
+                logger.info(
+                    "TG OUT chat=%s executed_chars=%s",
+                    update.effective_chat.id,
+                    len(name),
+                )
                 await query.edit_message_text(f"Executed: {name}")
             else:
                 await query.edit_message_text(f"Command not found: {cmd_id}")
@@ -1091,7 +1112,11 @@ async def on_button(
             result = begin_session(session_id=full_sid)
             if result.get("status") == "ok":
                 msg = result.get("message", "Session resumed.")
-                logger.info("TG OUT [%s]: %s", update.effective_chat.id, msg[:_TRUNC])
+                logger.info(
+                    "TG OUT chat=%s chars=%s",
+                    update.effective_chat.id,
+                    len(msg),
+                )
                 await query.edit_message_text(msg)
             else:
                 error = result.get("error", "Unknown error")
@@ -1156,7 +1181,11 @@ async def on_button(
         short_id = notification.short_id or ""
         id_tag = f" [#{short_id}]" if short_id else ""
         reply_text = f"Answered: {choice_key}{id_tag}\n(Notification: {notification_id})"
-        logger.info("TG OUT [%s]: %s", update.effective_chat.id, reply_text[:_TRUNC])
+        logger.info(
+            "TG OUT chat=%s chars=%s",
+            update.effective_chat.id,
+            len(reply_text),
+        )
         await query.edit_message_text(reply_text)
 
         # Clean up pending entry

@@ -23,6 +23,7 @@ from work_buddy.document_kernel.journal_projection import (
 )
 from work_buddy.document_kernel.runtime_service import shared_document_kernel
 from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+from work_buddy.journal_capture.authority import JournalAuthorityCoordinator
 from work_buddy.journal_capture.models import JournalDocumentBinding
 from work_buddy.journal_capture.models import JournalMigrationState
 from work_buddy.journal_capture.store import JournalCaptureStore
@@ -51,6 +52,16 @@ class BoundDirectPush:
     change: DocumentChangeRecord
     next_offset: str
     projection: ProjectionCursor | ProjectionOutcome | None
+
+
+def _journal_legacy_projection_enabled(journal: JournalCaptureStore) -> bool:
+    """Fail closed once Journal capture/file authority is paused or retired."""
+
+    state = JournalAuthorityCoordinator(journal).state()
+    return (
+        state.mode == "legacy_compatibility"
+        and state.cutover_gate_state == "open"
+    )
 
 
 def current_domain_binding(
@@ -154,6 +165,8 @@ def reconcile_document_source_dependency(
     ):
         return None
     journal = journal_store or JournalCaptureStore()
+    if not _journal_legacy_projection_enabled(journal):
+        return None
     mirror = journal.get_document_binding(binding.domain_entity_id)
     if mirror is None or mirror.state == "retired":
         return mirror
@@ -345,6 +358,8 @@ def project_bound_document(
     ):
         return None
     journal = journal_store or JournalCaptureStore()
+    if not _journal_legacy_projection_enabled(journal):
+        return None
     migration = next(
         (
             item
@@ -501,6 +516,8 @@ def reconcile_journal_documents(
 ) -> tuple[ProjectionCursor, ...]:
     """Missed-event-safe sweep over every Journal-owned Co-work binding."""
 
+    if not _journal_legacy_projection_enabled(journal_store):
+        return ()
     stores = sorted(
         {item.store_id for item in journal_store.list_document_bindings()}
         | {

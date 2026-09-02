@@ -67,7 +67,11 @@ def _default_exclude_folders() -> list[str]:
 
 
 @reduces_risk_for("obsidian.eval_js", "low")
-def bootstrap(window_days: int | None = None) -> dict[str, Any]:
+def bootstrap(
+    window_days: int | None = None,
+    *,
+    exclude_folders: list[str] | None = None,
+) -> dict[str, Any]:
     """Register vault event listeners and initialize the ledger.
 
     Idempotent — safe to call multiple times. On first call, registers
@@ -77,6 +81,8 @@ def bootstrap(window_days: int | None = None) -> dict[str, Any]:
     Args:
         window_days: Rolling window in days (default 7). Events older
             than this are pruned on bootstrap.
+        exclude_folders: Vault-relative roots that must not be reconciled,
+            retained in the ledger, or observed by event listeners.
 
     Returns a dict with:
     - status: "bootstrapped" or "already_active"
@@ -90,9 +96,13 @@ def bootstrap(window_days: int | None = None) -> dict[str, Any]:
         window_days = cfg.get("obsidian", {}).get(
             "vault_events_window_days", _DEFAULT_WINDOW_DAYS
         )
+    if exclude_folders is None:
+        exclude_folders = _default_exclude_folders()
 
+    import json
     return _run_js("bootstrap.js", {
         "__WINDOW_DAYS__": str(window_days),
+        "__EXCLUDE_FOLDERS__": json.dumps(exclude_folders),
     }, timeout=30)
 
 

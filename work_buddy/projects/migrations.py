@@ -12,6 +12,7 @@ DB through the relational temporal redesign:
        initial revision rows)
   v6 → fold ecg-cred into ecg-inquiry
   v7 → lww_meta append-only write-provenance sidecar (MarkdownDB)
+  v8 → database authority, body-role, outbox, and import-cohort state
 
 Migration 1 reproduces the legacy schema verbatim so that existing
 DBs at ``user_version=0`` baseline-stamp cleanly at v1, then run
@@ -672,6 +673,267 @@ def _m007_lww_meta(conn: sqlite3.Connection) -> None:
     """)
 
 
+# ─── Migration 8 — SQLite authority and cutover receipts ───────────
+
+
+def _m008_database_authority(conn: sqlite3.Connection) -> None:
+    """Add the durable state needed to retire Markdown authority safely.
+
+    Existing installations start in ``legacy_markdown``.  Merely opening an
+    older database must never perform an authority cutover; the explicit
+    project import coordinator stages and verifies a cohort before changing
+    the singleton row to ``sqlite``.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS project_authority_state (
+            singleton              INTEGER PRIMARY KEY CHECK(singleton = 1),
+            authority              TEXT NOT NULL CHECK(authority IN
+                                      ('legacy_markdown','sqlite')),
+            authority_epoch        INTEGER NOT NULL CHECK(authority_epoch >= 1),
+            state                  TEXT NOT NULL CHECK(state IN
+                                      ('active','write_fenced','recovery')),
+            sealed_cohort_id       TEXT,
+            sealed_at              TEXT,
+            first_native_write_at  TEXT,
+            updated_at             TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_body_roles (
+            project_id                    INTEGER NOT NULL,
+            role                          TEXT NOT NULL,
+            body_mode                     TEXT NOT NULL CHECK(body_mode IN
+                                              ('plain','document')),
+            document_binding_id           TEXT,
+            interaction_contract_id       TEXT NOT NULL,
+            interaction_contract_version  INTEGER NOT NULL,
+            revision_id                   INTEGER NOT NULL,
+            privacy_class                 TEXT NOT NULL DEFAULT 'private'
+                                             CHECK(privacy_class IN
+                                               ('private','restricted','public')),
+            updated_at                    TEXT NOT NULL,
+            PRIMARY KEY(project_id, role),
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            CHECK(
+              (body_mode = 'plain' AND document_binding_id IS NULL) OR
+              (body_mode = 'document' AND document_binding_id IS NOT NULL)
+            )
+        );
+
+        CREATE TABLE IF NOT EXISTS project_mutation_receipts (
+            intent_id        TEXT PRIMARY KEY,
+            request_sha256   TEXT NOT NULL,
+            project_id       INTEGER NOT NULL,
+            revision_id      INTEGER NOT NULL,
+            result_json      TEXT NOT NULL,
+            created_at       TEXT NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS project_outbox (
+            event_id         TEXT PRIMARY KEY,
+            project_id       INTEGER NOT NULL,
+            revision_id      INTEGER NOT NULL,
+            event_kind       TEXT NOT NULL,
+            content_sha256   TEXT NOT NULL,
+            privacy_class    TEXT NOT NULL,
+            committed_at     TEXT NOT NULL,
+            delivered_at     TEXT,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_outbox_pending
+            ON project_outbox(delivered_at, committed_at);
+
+        CREATE TABLE IF NOT EXISTS project_import_cohorts (
+            cohort_id             TEXT PRIMARY KEY,
+            request_sha256        TEXT NOT NULL,
+            inventory_sha256      TEXT NOT NULL,
+            source_root           TEXT NOT NULL,
+            state                 TEXT NOT NULL CHECK(state IN
+                                     ('prepared','verified','sealed','aborted')),
+            file_count            INTEGER NOT NULL,
+            quarantined_count     INTEGER NOT NULL,
+            prepared_at           TEXT NOT NULL,
+            verified_at           TEXT,
+            sealed_at             TEXT,
+            aborted_at            TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS project_import_items (
+            cohort_id          TEXT NOT NULL,
+            relative_path      TEXT NOT NULL,
+            source_sha256      TEXT NOT NULL,
+            byte_length        INTEGER NOT NULL,
+            mtime_ns           INTEGER NOT NULL,
+            slug               TEXT,
+            payload_json       TEXT,
+            disposition        TEXT NOT NULL CHECK(disposition IN
+                                  ('staged','quarantined')),
+            reason_code        TEXT,
+            source_ref         TEXT,
+            PRIMARY KEY(cohort_id, relative_path),
+            FOREIGN KEY(cohort_id) REFERENCES project_import_cohorts(cohort_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS project_legacy_import_map (
+            cohort_id          TEXT NOT NULL,
+            relative_path      TEXT NOT NULL,
+            source_sha256      TEXT NOT NULL,
+            project_id         INTEGER NOT NULL,
+            revision_id        INTEGER NOT NULL,
+            source_ref         TEXT,
+            parity_status      TEXT NOT NULL CHECK(parity_status IN
+                                  ('exact','normalized')),
+            sealed_at          TEXT NOT NULL,
+            PRIMARY KEY(cohort_id, relative_path),
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        """
+    )
+    now = _now_ms()
+    conn.execute(
+        "INSERT OR IGNORE INTO project_authority_state "
+        "(singleton,authority,authority_epoch,state,updated_at) "
+        "VALUES (1,'legacy_markdown',1,'active',?)",
+        (now,),
+    )
+    rows = conn.execute(
+        "SELECT p.id,MAX(r.id) AS revision_id,p.updated_at "
+        "FROM projects p JOIN project_revisions r ON r.project_id=p.id "
+        "GROUP BY p.id,p.updated_at"
+    ).fetchall()
+    for project_id, revision_id, updated_at in rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO project_body_roles "
+            "(project_id,role,body_mode,document_binding_id,"
+            " interaction_contract_id,interaction_contract_version,"
+            " revision_id,privacy_class,updated_at) "
+            "VALUES (?,'description','plain',NULL,"
+            " 'project_description/v1',1,?,'private',?)",
+            (project_id, revision_id, updated_at or now),
+        )
+
+
+def _m009_exact_import_sources(conn: sqlite3.Connection) -> None:
+    """Persist the recoverable half of every cross-database Source binding."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS project_import_source_dependencies (
+            cohort_id                  TEXT NOT NULL,
+            relative_path              TEXT NOT NULL,
+            ingress_client_mutation_id TEXT NOT NULL,
+            source_usage_consumer_id   TEXT NOT NULL,
+            source_ref                 TEXT,
+            representation_id          TEXT,
+            submission_id              TEXT,
+            source_usage_id            TEXT,
+            source_usage_state         TEXT NOT NULL DEFAULT 'unreserved'
+                CHECK(source_usage_state IN
+                    ('unreserved','reserved','acknowledged','released')),
+            retained_at                TEXT,
+            acknowledged_at            TEXT,
+            released_at                TEXT,
+            PRIMARY KEY(cohort_id, relative_path),
+            UNIQUE(source_usage_consumer_id),
+            FOREIGN KEY(cohort_id, relative_path)
+                REFERENCES project_import_items(cohort_id, relative_path),
+            CHECK(
+                (source_usage_state = 'unreserved'
+                    AND source_ref IS NULL AND representation_id IS NULL
+                    AND submission_id IS NULL AND source_usage_id IS NULL)
+                OR
+                (source_usage_state IN ('reserved','acknowledged','released')
+                    AND source_ref IS NOT NULL AND representation_id IS NOT NULL
+                    AND source_usage_id IS NOT NULL)
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_import_source_state
+            ON project_import_source_dependencies(
+                cohort_id, source_usage_state, relative_path
+            );
+        CREATE TRIGGER IF NOT EXISTS project_import_source_identity_immutable
+        BEFORE UPDATE ON project_import_source_dependencies
+        WHEN NEW.cohort_id != OLD.cohort_id
+          OR NEW.relative_path != OLD.relative_path
+          OR NEW.ingress_client_mutation_id != OLD.ingress_client_mutation_id
+          OR NEW.source_usage_consumer_id != OLD.source_usage_consumer_id
+          OR (
+            OLD.source_ref IS NOT NULL AND (
+              COALESCE(NEW.source_ref,'') != OLD.source_ref
+              OR COALESCE(NEW.representation_id,'') != OLD.representation_id
+              OR COALESCE(NEW.submission_id,'') != COALESCE(OLD.submission_id,'')
+              OR COALESCE(NEW.source_usage_id,'') != OLD.source_usage_id
+            )
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'project_import_source_identity_is_immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS project_import_source_no_delete
+        BEFORE DELETE ON project_import_source_dependencies
+        BEGIN
+            SELECT RAISE(ABORT, 'project_import_source_is_append_only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS project_import_source_state_forward_only
+        BEFORE UPDATE ON project_import_source_dependencies
+        WHEN NOT (
+          (OLD.source_usage_state='unreserved'
+            AND NEW.source_usage_state IN ('unreserved','reserved'))
+          OR (OLD.source_usage_state='reserved'
+            AND NEW.source_usage_state IN ('reserved','acknowledged','released'))
+          OR (OLD.source_usage_state='acknowledged'
+            AND NEW.source_usage_state IN ('acknowledged','released'))
+          OR (OLD.source_usage_state='released'
+            AND NEW.source_usage_state='released')
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'project_import_source_state_is_forward_only');
+        END;
+        """
+    )
+
+
+def _m010_cutover_maintenance(conn: sqlite3.Connection) -> None:
+    """Keep Projects fenced until post-seal search certification is durable."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cutover_maintenance (
+            singleton                    INTEGER PRIMARY KEY CHECK(singleton=1),
+            domain                       TEXT NOT NULL CHECK(domain='projects'),
+            state                        TEXT NOT NULL CHECK(state IN
+                                           ('open','preseal_fenced','postseal_pending','recovery')),
+            cohort_id                    TEXT,
+            inventory_sha256             TEXT,
+            fence_id                     TEXT,
+            pause_request_sha256          TEXT,
+            paused_at                    TEXT,
+            postseal_evidence_sha256      TEXT,
+            released_at                  TEXT,
+            updated_at                   TEXT NOT NULL,
+            CHECK(
+              (state='open') OR
+              (cohort_id IS NOT NULL AND inventory_sha256 IS NOT NULL
+               AND fence_id IS NOT NULL AND pause_request_sha256 IS NOT NULL
+               AND paused_at IS NOT NULL)
+            )
+        );
+        INSERT OR IGNORE INTO cutover_maintenance
+          (singleton,domain,state,updated_at)
+        VALUES (1,'projects','open','1970-01-01T00:00:00.000+00:00');
+
+        CREATE TABLE IF NOT EXISTS cutover_maintenance_receipts (
+            mutation_id          TEXT PRIMARY KEY,
+            operation            TEXT NOT NULL,
+            request_sha256       TEXT NOT NULL,
+            result_json          TEXT NOT NULL,
+            result_sha256        TEXT NOT NULL,
+            created_at           TEXT NOT NULL
+        );
+        """
+    )
+
+
 # ─── Runner instance ────────────────────────────────────────────────
 
 
@@ -692,5 +954,11 @@ PROJECT_MIGRATIONS = _ProjectsMigrationRunner(
                   _m006_fold_ecg_cred_into_ecg_inquiry),
         Migration(7, "lww_meta write-provenance sidecar",
                   _m007_lww_meta),
+        Migration(8, "database authority and import cohort receipts",
+                  _m008_database_authority),
+        Migration(9, "exact Source-backed project imports",
+                  _m009_exact_import_sources),
+        Migration(10, "durable cutover maintenance fence",
+                  _m010_cutover_maintenance),
     ],
 )

@@ -1,7 +1,7 @@
 ---
 name: Active Contracts
 kind: capability
-description: List all contracts with status=active
+description: List active contracts from the Contracts SQLite authority; before the authority seal only, the provider may use its read-only legacy import fallback.
 capability_name: active_contracts
 category: contracts
 op: op.wb.active_contracts
@@ -19,6 +19,4 @@ aliases:
 - live contracts
 parents:
 - contracts
-requires:
-- obsidian
 ---

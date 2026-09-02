@@ -52,11 +52,24 @@ from work_buddy.sources.export import (
     source_export_status,
 )
 from work_buddy.sources.ingress import (
+    AgentOutputRequest,
     DomainCommand,
     HumanInputCommit,
     HumanInputRequest,
     TrustedIngressContext,
     TrustedIngressService,
+)
+from work_buddy.sources.cutover import (
+    CUTOVER_IMPORT_PURPOSES,
+    CutoverSourceAuthorization,
+    CutoverSourceDependencyError,
+    CutoverSourceDependencyParity,
+    verify_cutover_source_dependencies,
+)
+from work_buddy.sources.import_dependency import (
+    ExactImportSourceBinding,
+    ExactImportSourceError,
+    ExactImportSourceService,
 )
 from work_buddy.sources.models import (
     AccessBinding,
@@ -94,14 +107,22 @@ from work_buddy.sources.store import SourceStore, SourcesPaths
 
 __all__ = [
     "AccessBinding",
+    "AgentOutputRequest",
     "ActorRef",
     "AttributionAssertion",
     "CapturedDisclosureSource",
+    "CUTOVER_IMPORT_PURPOSES",
     "COWORK_DOCUMENT_PROVIDER_ID",
     "ConversationMessageProvider",
     "CoworkActionSnapshotProvider",
+    "CutoverSourceAuthorization",
+    "CutoverSourceDependencyError",
+    "CutoverSourceDependencyParity",
     "DomainCommand",
     "EffectReceipt",
+    "ExactImportSourceBinding",
+    "ExactImportSourceError",
+    "ExactImportSourceService",
     "ExportAuthorization",
     "ExportResult",
     "HumanInputCommit",
@@ -163,4 +184,5 @@ __all__ = [
     "resolve_and_reserve_source",
     "resolve_source",
     "source_capture_from_origin",
+    "verify_cutover_source_dependencies",
 ]

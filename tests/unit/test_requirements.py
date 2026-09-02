@@ -135,13 +135,23 @@ class TestRequirementChecker:
         for r in results:
             assert r.id.startswith("core/"), f"Bootstrap returned non-core: {r.id}"
 
-    def test_check_bootstrap_count(self):
+    def test_check_bootstrap_count(self, monkeypatch):
+        import work_buddy.health.preferences as pmod
+
+        monkeypatch.setattr(pmod, "is_wanted", lambda _cid: None)
         checker = RequirementChecker()
         results = checker.check_bootstrap()
-        core_count = sum(1 for r in REQUIREMENT_REGISTRY if r.startswith("core/"))
+        core_count = sum(
+            1
+            for requirement in REQUIREMENT_REGISTRY.values()
+            if requirement.id.startswith("core/") and checker.is_applicable(requirement)
+        )
         assert len(results) == core_count
 
-    def test_check_component_filters(self):
+    def test_check_component_filters(self, monkeypatch):
+        import work_buddy.health.preferences as pmod
+
+        monkeypatch.setattr(pmod, "is_wanted", lambda _cid: None)
         checker = RequirementChecker()
         results = checker.check_component("obsidian")
         for r in results:
@@ -153,13 +163,37 @@ class TestRequirementChecker:
         results = checker.check_component("nonexistent_component")
         assert results == []
 
-    def test_check_group(self):
+    def test_check_group(self, monkeypatch):
+        import work_buddy.health.preferences as pmod
+
+        monkeypatch.setattr(pmod, "is_wanted", lambda _cid: None)
         checker = RequirementChecker()
         results = checker.check_group("journal")
         assert len(results) > 0
         for r in results:
             req = REQUIREMENT_REGISTRY[r.id]
             assert req.setup_group == "journal"
+
+    def test_opted_out_component_is_never_checked_directly_or_by_group(
+        self, monkeypatch
+    ):
+        import work_buddy.health.preferences as pmod
+
+        monkeypatch.setattr(
+            pmod, "is_wanted", lambda cid: False if cid == "obsidian" else None
+        )
+        checker = RequirementChecker()
+        assert checker.check_component("obsidian") == []
+        assert [
+            result
+            for result in checker.check_group("journal")
+            if result.component == "obsidian"
+        ] == []
+        assert [
+            result
+            for result in checker.check_bootstrap()
+            if result.component == "obsidian"
+        ] == []
 
     def test_check_all_excludes_unwanted(self, monkeypatch):
         """If hindsight is unwanted, its requirements should be skipped."""
@@ -502,6 +536,10 @@ class TestCheckFunctions:
 
     def test_check_tasks_plugin_pass(self, monkeypatch, tmp_path):
         """Both installed (folder+manifest) AND enabled (in cp-json) → ok."""
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+            lambda: True,
+        )
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
@@ -520,6 +558,10 @@ class TestCheckFunctions:
     def test_check_tasks_plugin_not_installed(self, monkeypatch, tmp_path):
         """No plugin folder at all → distinct 'not installed' message
         that points the user at Community Plugins → Browse."""
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+            lambda: True,
+        )
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
@@ -543,6 +585,10 @@ class TestCheckFunctions:
         → distinct 'installed but not enabled' message that tells the
         user to just toggle it on. This was the hidden case the
         previous check conflated with 'not installed'."""
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+            lambda: True,
+        )
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
@@ -562,6 +608,10 @@ class TestCheckFunctions:
     def test_check_tasks_plugin_missing(self, monkeypatch, tmp_path):
         """Backwards-compat alias for the old test — equivalent to
         the new 'not installed' case."""
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+            lambda: True,
+        )
         vault = tmp_path / "vault"
         obs = vault / ".obsidian"
         obs.mkdir(parents=True)
@@ -583,6 +633,10 @@ class TestCheckFunctions:
         A vault whose Obsidian config is in .obsidian-work should NOT
         be reported as broken when the plugin is installed+enabled
         there, even though .obsidian/ doesn't exist."""
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+            lambda: True,
+        )
         vault = tmp_path / "vault"
         override = vault / ".obsidian-work"
         plugin_dir = override / "plugins" / "obsidian-tasks-plugin"
@@ -625,6 +679,10 @@ class TestCheckFunctions:
         assert resolve_config_dir(vault).name == ".obsidian"
 
     def test_check_master_task_list_pass(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+            lambda: True,
+        )
         vault = tmp_path / "vault"
         (vault / "tasks").mkdir(parents=True)
         (vault / "tasks" / "master-task-list.md").write_text("# Tasks\n", encoding="utf-8")
@@ -637,6 +695,10 @@ class TestCheckFunctions:
         assert result["ok"] is True
 
     def test_check_master_task_list_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "work_buddy.health.requirement_checks.frozen_task_compatibility_required",
+            lambda: True,
+        )
         vault = tmp_path / "vault"
         vault.mkdir()
         monkeypatch.setattr(

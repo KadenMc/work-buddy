@@ -1,7 +1,7 @@
 ---
 name: Contract Health
 kind: capability
-description: 'Health check report: status counts, overdue, stale, missing fields'
+description: 'Contracts SQLite health report: status counts, overdue, stale, missing structured fields; no Obsidian dependency.'
 capability_name: contract_health
 category: contracts
 op: op.wb.contract_health
@@ -22,6 +22,4 @@ aliases:
 - check project health
 parents:
 - contracts
-requires:
-- obsidian
 ---

@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from work_buddy.threads import engine, store
-from work_buddy.threads.action_proposals import ActionProposalService, ProposalError
+from work_buddy.threads.action_proposals import (
+    ActionProposalService,
+    ProposalError,
+    validate_task_parameters,
+)
 from work_buddy.threads.events import (
     KIND_ACTION_EXECUTION_INTENT,
     KIND_ACTION_INFERRED,
@@ -454,7 +458,7 @@ def test_concurrent_bounded_sweeps_atomically_rotate_selected_intents(stack):
     assert len(stack.tasks.list()) == 2
 
 
-@pytest.mark.parametrize("summary", [None, "A summary whose document must also replay"])
+@pytest.mark.parametrize("summary", [None, "A scalar summary that must also replay"])
 def test_cross_process_recovery_retains_original_approver_not_current_session(
     stack, monkeypatch, summary
 ):
@@ -519,7 +523,7 @@ def test_uncertain_exception_is_safe_retry_not_editable_failure(stack):
     assert len(stack.tasks.list()) == 1
 
 
-def test_rich_task_fields_and_summary_attachment_replay(stack):
+def test_rich_task_fields_and_scalar_summary_replay(stack):
     from work_buddy.work_item import task_adapter
 
     parameters = {
@@ -539,8 +543,8 @@ def test_rich_task_fields_and_summary_attachment_replay(stack):
     }
     proposal = create(stack, **parameters)
     first = accept(stack, proposal)
-    # Replay the standard action with its original approver, including the
-    # summary-document step; callers may not relabel another actor's receipt.
+    # Replay the standard action with its original approver. A summary remains
+    # a scalar unless the reviewed proposal explicitly requests a note role.
     with task_adapter.task_creation_attribution(actor="user:owner"):
         replay = task_adapter.create(
             **parameters, client_mutation_id=f"task-proposal:{proposal['thread_id']}"
@@ -559,7 +563,23 @@ def test_rich_task_fields_and_summary_attachment_replay(stack):
     assert task.due_date == parameters["due_date"]
     assert task.deadline_date == parameters["deadline_date"]
     assert set(task.namespace_tags) == {"systems/tasks", "projects/work-buddy"}
-    assert task.revision == 2
+    assert task.revision == 1
+    assert task.note_uuid is None
+
+
+def test_explicit_task_note_parameters_preserve_exact_reviewed_content():
+    initial_note = "  Exact leading whitespace\n\nAnd trailing whitespace.  \n"
+
+    parameters = validate_task_parameters(
+        {
+            "task_text": "Keep exact task-note provenance",
+            "requested_note_role": "working_document/v1",
+            "initial_note": initial_note,
+        }
+    )
+
+    assert parameters["initial_note"] == initial_note
+    assert parameters.get("requested_truth_policy_resolution") is None
 
 
 @pytest.mark.parametrize(

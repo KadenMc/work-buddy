@@ -1,0 +1,24 @@
+.journal-profile-configurator { border-top: 1px solid var(--border-subtle); margin-top: 2rem; padding-top: 2rem; }
+.journal-profile-picker { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+.journal-profile-picker article, .journal-profile-module, .journal-profile-preview article { background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: .75rem; padding: 1rem; }
+.journal-profile-picker article { display: grid; gap: .6rem; }
+.journal-profile-picker-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; }
+.journal-profile-editor, .journal-profile-module { display: grid; gap: 1rem; }
+.journal-profile-module > header { align-items: flex-start; display: flex; gap: 1rem; justify-content: space-between; }
+.journal-profile-module > header div:first-child { display: grid; gap: .25rem; }
+.journal-profile-module > header span, .journal-profile-preview article > span { color: var(--text-muted); font-size: .8rem; text-transform: capitalize; }
+.journal-profile-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+.journal-profile-actions button { background: transparent; border: 1px solid var(--border-subtle); border-radius: .35rem; color: inherit; padding: .3rem .5rem; }
+.journal-profile-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+.journal-profile-grid label, .journal-profile-add label, .journal-profile-preview-controls label, .journal-profile-activation label { display: grid; gap: .35rem; }
+.journal-profile-grid input, .journal-profile-grid select, .journal-profile-add input, .journal-profile-preview-controls input, .journal-profile-activation input, .journal-profile-field input, .journal-profile-field select { background: var(--surface-base); border: 1px solid var(--border-subtle); border-radius: .4rem; color: inherit; min-height: 2.25rem; padding: .45rem .6rem; }
+.journal-profile-weekdays { display: flex; flex-wrap: wrap; gap: .7rem; }
+.journal-profile-weekdays label, .journal-profile-checkbox { align-items: center; display: flex; gap: .35rem; }
+.journal-profile-field { border: 1px solid var(--border-subtle); border-radius: .6rem; display: grid; gap: .65rem; padding: .85rem; }
+.journal-profile-field > label, .journal-profile-prompt > label { display: grid; gap: .3rem; }
+.journal-profile-prompt { border-left: 3px solid var(--accent); display: grid; gap: .65rem; padding-left: .8rem; }
+.journal-profile-add, .journal-profile-preview-controls, .journal-profile-commit, .journal-profile-activation { align-items: end; display: flex; flex-wrap: wrap; gap: .75rem; }
+.journal-profile-preview { display: grid; gap: .6rem; }
+.journal-profile-preview article { display: grid; gap: .3rem; }
+.journal-profile-preview article[data-membership="excluded_by_schedule"] { opacity: .6; }
+@media (max-width: 700px) { .journal-profile-module > header { display: grid; } }

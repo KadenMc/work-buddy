@@ -34,7 +34,6 @@ import {
   type JournalDataQuality,
   type JournalDayBinding,
   type JournalDemoSource,
-  type JournalWidgetInstanceId,
 } from "../contracts";
 
 export const LEGACY_TODAY_ENDPOINT = "/api/automation/today" as const;
@@ -226,7 +225,7 @@ export interface LegacyJournalViewModel {
   readonly access: JournalAccess;
   readonly quality: JournalDataQuality;
   readonly source: Extract<JournalDemoSource, { readonly kind: "live" }>;
-  readonly widgetInputs: Readonly<Partial<Record<JournalWidgetInstanceId, DayTimelineInput>>>;
+  readonly widgetInputs: Readonly<Record<string, DayTimelineInput>>;
   readonly legacy: LegacyJournalMetadata;
 }
 

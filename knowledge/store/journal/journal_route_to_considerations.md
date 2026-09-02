@@ -1,7 +1,7 @@
 ---
 name: Journal Route To Considerations
 kind: capability
-description: Walk a journal-group thread's context items and create one consideration note per item. Each item's label becomes the title; raw text becomes the body.
+description: Explicit legacy compatibility action that routes an archived journal-group thread into vault consideration notes. Disabled when Obsidian is opted out; not part of native Journal.
 capability_name: journal_route_to_considerations
 category: journal
 op: op.wb.journal_route_to_considerations

@@ -61,6 +61,13 @@ export interface RunningNotesInput {
   readonly access: WidgetAccess;
   readonly displayMode: NotesDisplayMode;
   readonly items: readonly MarkdownNoteItem[];
+  readonly supplementalItems?: readonly {
+    readonly itemId: string;
+    readonly itemKind: string;
+    readonly text: string;
+    readonly authorityKind: string;
+  }[];
+  readonly tombstones?: readonly MarkdownNoteItem[];
 }
 
 export interface NoteEditRequestedIntent
@@ -79,6 +86,15 @@ export interface NoteDeleteRequestedIntent
     readonly expected_version: number;
   }> {
   readonly intent_type: "wb.notes.delete-requested";
+  readonly client_mutation_id: string;
+}
+
+export interface NoteRestoreRequestedIntent
+  extends WidgetIntent<{
+    readonly item_id: string;
+    readonly expected_version: number;
+  }> {
+  readonly intent_type: "wb.notes.restore-requested";
   readonly client_mutation_id: string;
 }
 
@@ -102,5 +118,6 @@ export interface NoteOpenDocumentRequestedIntent
 export type RunningNotesIntent =
   | NoteEditRequestedIntent
   | NoteDeleteRequestedIntent
+  | NoteRestoreRequestedIntent
   | NoteOpenThreadRequestedIntent
   | NoteOpenDocumentRequestedIntent;

@@ -21,6 +21,7 @@ DOC_EVENT_TYPES = (
     "truth.doc_expression_marked",
     "truth.doc_feedback_captured",
     "truth.doc_provenance_attested",
+    "truth.doc_activation_changed",
     "truth.doc_verify_run_started",
     "truth.doc_verify_job_completed",
     "truth.doc_verify_configuration_changed",

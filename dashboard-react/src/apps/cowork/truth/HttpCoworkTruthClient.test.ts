@@ -82,6 +82,84 @@ const authenticatedFetch = (
 describe("HttpCoworkTruthClient", () => {
   beforeEach(() => resetLocalIdentityForTests());
 
+  it("loads and explicitly transitions a provenance-first Truth policy", async () => {
+    const capabilityEnvelope = (
+      activation: "disabled" | "enabled",
+      revision: number,
+    ) => ({
+      schema: "wb.cowork-document-capabilities/v1",
+      interaction_contract: {
+        contract_id: "work-buddy.working-document",
+        version: 1,
+        digest: "a".repeat(64),
+      },
+      modules: {
+        review: true,
+        provenance: true,
+        chat: true,
+        truth: activation === "enabled",
+      },
+      truth: {
+        eligibility: "allowed",
+        activation,
+        activation_revision: revision,
+        policy_fingerprint: `policy-${revision}`,
+        ledger_present: false,
+        unavailable_reason: null,
+      },
+    });
+    const fetchImpl = authenticatedFetch(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/policy?")) {
+        return jsonResponse({
+          ok: true,
+          capability_envelope: capabilityEnvelope("disabled", 1),
+          document_head_sha256: "b".repeat(64),
+        });
+      }
+      expect(url).toContain("/activation?store_id=store-1");
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        next_state: "enabled",
+        expected_activation_revision: 1,
+        expected_interaction_contract_sha256: "a".repeat(64),
+        expected_document_head_sha256: "b".repeat(64),
+        intent_id: "intent-enable",
+        reason: "Enable for this working document.",
+      });
+      return jsonResponse({
+        ok: true,
+        capability_envelope: capabilityEnvelope("enabled", 2),
+        document_head_sha256: "b".repeat(64),
+      });
+    });
+    const client = new HttpCoworkTruthClient({
+      storeId: "store-1",
+      documentId: "doc-1",
+      fetchImpl,
+    });
+
+    const observed = await client.loadActivationPolicy();
+    expect(observed.capabilityEnvelope.truth.activation).toBe("disabled");
+    const changed = await client.transitionTruthActivation({
+      nextState: "enabled",
+      expectedActivationRevision: 1,
+      expectedInteractionContractSha256: "a".repeat(64),
+      expectedDocumentHeadSha256: "b".repeat(64),
+      intentId: "intent-enable",
+      reason: "Enable for this working document.",
+    });
+
+    expect(changed.capabilityEnvelope.truth.activation).toBe("enabled");
+    const gestureRequest = fetchImpl.mock.calls.find(
+      ([input]) => String(input) === "/api/local-identity/gestures",
+    );
+    expect(JSON.parse(String(gestureRequest?.[1]?.body))).toMatchObject({
+      action: "cowork.truth.activation.change",
+      subject: "cowork-truth:activation:store-1:doc-1",
+    });
+  });
+
   it("loads every page and never overrides an authoritative non-fact classification", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       const offset = new URL(String(input), "https://work-buddy.test").searchParams.get("offset");

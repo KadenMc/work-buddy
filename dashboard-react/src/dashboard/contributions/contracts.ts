@@ -39,6 +39,22 @@ export type ViewModuleId = DashboardId<"view-module">;
 /** Stable identity resolved by the host-owned Settings registry, never a route. */
 export type SettingsPageId = DashboardId<"settings-page">;
 
+/**
+ * Runtime grammar for a stable widget placement identity.
+ *
+ * Instance IDs are opaque to Dashboard Core, but domain-backed providers may use
+ * their own stable catalog identity directly (for example `simple.capture`). Keep
+ * whitespace and control characters out while accepting the delimiter set used
+ * by domain catalogs. Delimiters remain atomic data; Dashboard Core never treats
+ * a slash as a route or a period as a namespace boundary.
+ */
+const WIDGET_INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+
+export const isOpaqueWidgetInstanceId = (
+  value: unknown,
+): value is WidgetInstanceId =>
+  typeof value === "string" && WIDGET_INSTANCE_ID.test(value);
+
 export const asAppId = (value: string): AppId => value as AppId;
 export const asViewId = (value: string): ViewId => value as ViewId;
 export const asWidgetTypeId = (value: string): WidgetTypeId => value as WidgetTypeId;
@@ -191,6 +207,8 @@ export interface DefaultWidgetSlot {
   readonly defaultLayout: WidgetLayoutPlacement;
   readonly allowedSubstitution?: RoleCompatibilityRule;
   readonly lockedReason?: string;
+  /** Domain/provider membership is semantic; Dashboard customization may only hide it locally. */
+  readonly semanticComposition?: "provider_owned";
 }
 
 /**
@@ -307,6 +325,19 @@ export interface SnapshotQuality {
   readonly message?: string;
 }
 
+/**
+ * A provider-resolved, immutable semantic composition for one view snapshot.
+ * The provider maps server/domain module definitions onto registered widget types;
+ * the host applies only device-local presentation personalization on top.
+ */
+export interface EffectiveViewComposition {
+  readonly compositionId: string;
+  readonly revision: string | number;
+  readonly defaultSlots: readonly DefaultWidgetSlot[];
+  readonly readingOrder: readonly WidgetSlotId[];
+  readonly mobileOrder: readonly WidgetSlotId[];
+}
+
 export interface ViewSnapshot<
   Model = unknown,
   Binding = unknown,
@@ -317,6 +348,7 @@ export interface ViewSnapshot<
   readonly observedAt: string;
   readonly status: SnapshotStatus;
   readonly quality: SnapshotQuality;
+  readonly effectiveComposition?: EffectiveViewComposition;
   readonly model: Model;
   readonly bindings: Readonly<Record<string, Binding>>;
   /** Keyed by opaque instance ID, never by type ID. */

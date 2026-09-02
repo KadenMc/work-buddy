@@ -5,7 +5,8 @@ export const PERSONALIZATION_KEY =
 export const THEME_KEY = "wb.theme.preference.v1";
 
 export async function openJournal(page: Page): Promise<void> {
-  await page.goto("/app/journal", { waitUntil: "domcontentloaded" });
+  // Journal interaction specs must never mutate a developer's live SQLite store.
+  await page.goto("/app/journal?provider=demo", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "Journal", level: 1 })).toBeVisible();
   await expect(page.getByRole("region", { name: "Quick Capture", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Day Timeline", exact: true })).toBeVisible();

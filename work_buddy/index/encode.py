@@ -19,6 +19,7 @@ live search on the shared GPU.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Protocol, runtime_checkable
 
 from work_buddy.index.model import PoolStrategy, ProjectionKind
@@ -31,6 +32,10 @@ logger = get_logger(__name__)
 # knowledge/index.py::_CONTENT_COLD_LOAD_TIMEOUT_S).
 _COLD_LOAD_TIMEOUT_S = 120
 _BATCH_SIZE = 32
+# A failed LM Studio request should not be retried for every document batch.  Keep
+# the breaker router-local so a new build gets a fresh attempt, while a long-running
+# router will probe again after a short cooldown in case the peer recovers.
+_LMSTUDIO_RETRY_COOLDOWN_S = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +198,9 @@ class EmbeddingProvider(Protocol):
 class LocalProvider:
     """In-process sentence-transformers (in-service) or HTTP client (out-of-service).
 
-    Reuses the shipped X1 primitive: in-service encodes are admitted through the
-    ``local:embedding`` broker profile via ``local_embed_slot(priority)``.
+    Reuses the embedding service's brokered persistent-worker path in-service;
+    this preserves priority admission without creating native OpenMP worker teams
+    on transient request threads.
     """
 
     name = "local"
@@ -215,14 +221,14 @@ class LocalProvider:
 
         if in_service:
             try:
-                from work_buddy.embedding.service import _get_model
-                from work_buddy.inference.local_slot import local_embed_slot
+                from work_buddy.embedding.service import _brokered_encode, _get_model
                 model = _get_model(model_id)
                 kwargs: dict[str, Any] = {"show_progress_bar": False}
                 if prompt_name:
                     kwargs["prompt_name"] = prompt_name
-                with local_embed_slot(priority):
-                    vecs = model.encode(list(texts), **kwargs)
+                vecs = _brokered_encode(
+                    model, list(texts), priority=priority, **kwargs,
+                )
                 return np.asarray(vecs, dtype=np.float32)
             except Exception as exc:  # in-service encode failed → signal unavailable
                 logger.warning("LocalProvider in-service encode failed: %s", exc)
@@ -331,7 +337,13 @@ class SentenceTransformerProvider:
 
 
 class ProviderRouter:
-    """(model_id) → provider, with on-error fallback to local."""
+    """Route a registry model to its backend, with safe local fallback.
+
+    LM Studio receives its configured external model alias, while the local
+    fallback always receives the original registry key.  A failed LM Studio
+    route is cooled down briefly so bulk batches do not hammer an unavailable
+    peer.
+    """
 
     def __init__(
         self,
@@ -346,32 +358,81 @@ class ProviderRouter:
         if "local" not in self._providers:
             self._providers["local"] = LocalProvider()
         self._cfg = cfg
+        self._unavailable_until: dict[tuple[str, str], float] = {}
+        self._warned_missing_lmstudio_aliases: set[str] = set()
 
-    def _provider_name_for(self, model_id: str) -> str:
+    def _model_config_for(self, model_id: str) -> dict[str, Any]:
         try:
             cfg = self._cfg
             if cfg is None:
                 from work_buddy.config import load_config
                 cfg = load_config()
             models = (cfg or {}).get("embedding", {}).get("models", {}) or {}
-            return (models.get(model_id, {}) or {}).get("provider", "local")
+            entry = models.get(model_id, {}) or {}
+            return entry if isinstance(entry, dict) else {}
         except Exception:
-            return "local"
+            return {}
+
+    def _encode_local(
+        self, texts: list[str], *, model_id: str, prompt_name: str | None,
+        priority: Priority,
+    ) -> "Any | None":
+        return self._providers["local"].encode(
+            texts, model_id=model_id, prompt_name=prompt_name, priority=priority,
+        )
 
     def encode(
         self, texts: list[str], *, model_id: str, prompt_name: str | None = None,
         priority: Priority = Priority.BACKGROUND,
     ) -> "Any | None":
-        name = self._provider_name_for(model_id)
+        model_cfg = self._model_config_for(model_id)
+        name = model_cfg.get("provider", "local")
+        if not isinstance(name, str):
+            name = "local"
         provider = self._providers.get(name, self._providers["local"])
+
+        # The registry key identifies the local sentence-transformers model; LM
+        # Studio exposes its own model id.  Never send the registry key to the
+        # remote endpoint as an implicit fallback: a missing alias is a local-
+        # fallback condition, and the local provider must still receive model_id.
+        provider_model_id = model_id
+        breaker_key: tuple[str, str] | None = None
+        if name == "lmstudio" and provider is not self._providers["local"]:
+            alias = model_cfg.get("lmstudio_model")
+            if not isinstance(alias, str) or not alias.strip():
+                if model_id not in self._warned_missing_lmstudio_aliases:
+                    logger.warning(
+                        "embedding.models.%s.provider is 'lmstudio' but "
+                        "lmstudio_model is not set; falling back to local",
+                        model_id,
+                    )
+                    self._warned_missing_lmstudio_aliases.add(model_id)
+                return self._encode_local(
+                    texts, model_id=model_id, prompt_name=prompt_name,
+                    priority=priority,
+                )
+            provider_model_id = alias.strip()
+            breaker_key = (name, provider_model_id)
+            if monotonic() < self._unavailable_until.get(breaker_key, 0.0):
+                return self._encode_local(
+                    texts, model_id=model_id, prompt_name=prompt_name,
+                    priority=priority,
+                )
+
         out = provider.encode(
-            texts, model_id=model_id, prompt_name=prompt_name, priority=priority,
+            texts, model_id=provider_model_id, prompt_name=prompt_name, priority=priority,
         )
         if out is not None:
+            if breaker_key is not None:
+                self._unavailable_until.pop(breaker_key, None)
             return out
         if provider.name != "local":  # on_error fallback to local
+            if breaker_key is not None:
+                self._unavailable_until[breaker_key] = (
+                    monotonic() + _LMSTUDIO_RETRY_COOLDOWN_S
+                )
             logger.info("provider %r unavailable for %s; falling back to local", name, model_id)
-            return self._providers["local"].encode(
+            return self._encode_local(
                 texts, model_id=model_id, prompt_name=prompt_name, priority=priority,
             )
         return None

@@ -19,7 +19,6 @@ import {
   JOURNAL_WIDGET_TYPE_BY_INSTANCE,
   createJournalViewBindings,
   type JournalBindingValue,
-  type JournalWidgetInput,
 } from "../bindings";
 import {
   JOURNAL_WIDGET_INSTANCE_IDS,
@@ -31,6 +30,7 @@ import {
   type JournalRunningNoteTombstone,
   type JournalTimelineItem,
   type JournalViewModel,
+  type JournalWidgetInput,
 } from "../contracts";
 import {
   JULY11_DUMB_CAPTURE_INTENT,

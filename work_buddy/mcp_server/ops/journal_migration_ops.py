@@ -83,7 +83,25 @@ def journal_content_migration_operator(
     end_line: int | None = None,
     rollback_deadline: str | None = None,
 ) -> dict[str, Any]:
-    """Run one explicit, content-minimized Journal migration action."""
+    """Run one explicit, content-minimized legacy migration action.
+
+    The callable may remain in a warm MCP process after its knowledge
+    declaration is retired.  Check the durable authority before consent,
+    configuration, vault discovery, or store construction so that no stale
+    caller can revive the Markdown/compatibility projection after cutover.
+    """
+
+    from work_buddy.journal_capture.authority import (
+        JournalAuthorityStateError,
+        existing_authority_mode,
+    )
+
+    authority_mode = existing_authority_mode()
+    if authority_mode != "legacy_compatibility":
+        raise JournalAuthorityStateError(
+            "The retired Journal content migration operator is fenced while "
+            f"authority is {authority_mode}."
+        )
 
     authorizers = {
         "select": _authorize_select,
@@ -108,6 +126,7 @@ def journal_content_migration_operator(
         JournalMigrationService,
         build_journal_content_inventory,
     )
+    from work_buddy.journal_capture.authority import require_legacy_markdown_write
     from work_buddy.journal_capture.operator import JournalMigrationOperator
     from work_buddy.journal_capture.store import JournalCaptureStore
     from work_buddy.paths import resolve
@@ -126,8 +145,8 @@ def journal_content_migration_operator(
         and migration_cfg.get("enabled") is True
         and migration_cfg.get("cutover_enabled") is True
     )
+    journal_path = resolve("db/journal-capture")
     if action == "inventory":
-        journal_path = resolve("db/journal-capture")
         journal = (
             JournalCaptureStore(journal_path, read_only=True)
             if journal_path.is_file()
@@ -138,6 +157,9 @@ def journal_content_migration_operator(
             journal_store=journal,
             cutover_enabled=cutover_enabled,
         )
+    # This compatibility operator reads and writes the retired Markdown/Co-work
+    # bridge.  Consent cannot override the durable database-authority seal.
+    require_legacy_markdown_write(journal_path)
     enrolled = local_identity_api._authority().enrolled_actor()
     principal = ActorRef(
         issuer_authority_id=enrolled.issuer_authority_id,
@@ -147,7 +169,7 @@ def journal_content_migration_operator(
     )
     with JournalMigrationService(
         vault_root=vault_root,
-        journal_store=JournalCaptureStore(resolve("db/journal-capture")),
+        journal_store=JournalCaptureStore(journal_path),
         source_store=SourceStore.create(resolve("stores/sources")),
         principal=principal,
         cutover_enabled=cutover_enabled,

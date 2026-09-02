@@ -1,11 +1,96 @@
 """Collect Obsidian vault context: journal entries, recent files, and tasks."""
 
 import re
+import sqlite3
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from work_buddy.timefmt import format_local, to_local_naive
+
+
+_TASK_LEGACY_READ_GUARD_HELD: ContextVar[bool] = ContextVar(
+    "task_legacy_context_read_guard_held",
+    default=False,
+)
+
+
+def _sealed_legacy_roots(cfg: dict[str, Any]) -> tuple[Path, ...]:
+    """Resolve detached roots without ever creating an authority store."""
+
+    from work_buddy.vault_index.authority_exclusions import sealed_legacy_roots
+
+    return sealed_legacy_roots(cfg, allow_default_data_root=True)
+
+
+def _native_journal_authority(cfg: dict[str, Any]) -> bool:
+    from work_buddy.vault_index.authority_exclusions import legacy_authority_states
+
+    state = legacy_authority_states(
+        cfg,
+        allow_default_data_root=True,
+    ).get("journal")
+    return bool(state and state.sealed)
+
+
+def _legacy_obsidian_enabled() -> bool:
+    """Return whether the user still permits legacy vault/bridge branches."""
+
+    try:
+        from work_buddy.health.preferences import is_wanted
+
+        return is_wanted("obsidian") is not False
+    except Exception:
+        return True
+
+
+@contextmanager
+def legacy_task_read_guard():
+    """Serialize one complete legacy task snapshot against native activation."""
+
+    from work_buddy.tasks.errors import TaskAuthorityUnavailable
+    from work_buddy.tasks.runtime import native_authority_active
+    from work_buddy.tasks.store import default_task_db_path
+
+    if _TASK_LEGACY_READ_GUARD_HELD.get() or native_authority_active():
+        yield
+        return
+    target = default_task_db_path().expanduser().resolve()
+    connection: sqlite3.Connection | None = None
+    token = _TASK_LEGACY_READ_GUARD_HELD.set(True)
+    try:
+        if target.is_file():
+            connection = sqlite3.connect(
+                f"file:{target.as_posix()}?mode=rw",
+                uri=True,
+                timeout=10.0,
+            )
+            connection.execute("PRAGMA busy_timeout = 10000")
+            connection.execute("BEGIN IMMEDIATE")
+            # Activation may have won while this reader waited for the lock.
+            if native_authority_active():
+                raise TaskAuthorityUnavailable()
+        yield
+        # This revalidation covers the no-database edge.  ContextCollector
+        # removes a cache published inside the guard if this raises.
+        if connection is None and native_authority_active():
+            raise TaskAuthorityUnavailable()
+        if connection is not None:
+            connection.commit()
+    except sqlite3.Error as exc:
+        if connection is not None and connection.in_transaction:
+            connection.rollback()
+        raise TaskAuthorityUnavailable() from exc
+    except BaseException:
+        if connection is not None and connection.in_transaction:
+            connection.rollback()
+        raise
+    finally:
+        _TASK_LEGACY_READ_GUARD_HELD.reset(token)
+        if connection is not None:
+            connection.close()
 
 
 # Sections we want to extract from daily journal files
@@ -157,7 +242,73 @@ def _get_journal_entries(
     return entries
 
 
-def _walk_vault(vault_root: Path, exclude_set: set[str]):
+def _get_native_journal_entries(
+    days: int,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read Journal context from SQLite after the Markdown authority seal."""
+
+    from work_buddy.journal_capture.native_ops import journal_state
+
+    today = datetime.now().date()
+    start_date = (
+        datetime.fromisoformat(since).date()
+        if since
+        else today - timedelta(days=days - 1)
+    )
+    end_date = datetime.fromisoformat(until).date() if until else today
+    entries: list[dict[str, Any]] = []
+    current = end_date
+    while current >= start_date:
+        state = journal_state(target=current.isoformat(), create_on_read=False)
+        sections: dict[str, str] = {}
+        fields = [
+            item
+            for item in state.get("fields", [])
+            if item.get("value") is not None and item.get("disposition") is None
+        ]
+        if fields:
+            sections["Sign-In"] = "\n".join(
+                f"- **{item.get('field_id', 'field')}:** {item['value']}"
+                for item in fields
+            )
+        grouped: dict[str, list[str]] = {}
+        labels = {
+            "record": "Log",
+            "log": "Log",
+            "running_note": "Running Notes / Considerations",
+            "generated_artifact": "Generated Artifacts",
+        }
+        for item in state.get("items", []):
+            value = item.get("value")
+            if not value:
+                continue
+            label = labels.get(
+                str(item.get("item_kind") or "record"),
+                str(item.get("item_kind") or "Record").replace("_", " ").title(),
+            )
+            grouped.setdefault(label, []).append(str(value))
+        for label, values in grouped.items():
+            sections[label] = "\n".join(values)
+        if sections:
+            weekday = current.strftime("%A")
+            entries.append({
+                "date": current.isoformat(),
+                "weekday": weekday,
+                "header": f"Journal for {current.isoformat()} ({weekday})",
+                "sections": sections,
+            })
+        current -= timedelta(days=1)
+    return entries
+
+
+def _walk_vault(
+    vault_root: Path,
+    exclude_set: set[str],
+    authority_exclusions: tuple[Path, ...] = (),
+):
     """Walk the vault, skipping excluded directories entirely.
 
     Yields Path objects for .md files. Uses os.walk instead of rglob
@@ -165,11 +316,20 @@ def _walk_vault(vault_root: Path, exclude_set: set[str]):
     """
     import os
 
+    from work_buddy.vault_index.authority_exclusions import is_within
+
     for dirpath, dirnames, filenames in os.walk(vault_root):
+        if any(is_within(dirpath, root, real=True) for root in authority_exclusions):
+            dirnames[:] = []
+            continue
         # Prune excluded directories in-place so os.walk skips them
         dirnames[:] = [
             d for d in dirnames
             if d.lower() not in exclude_set
+            and not any(
+                is_within(Path(dirpath) / d, root, real=True)
+                for root in authority_exclusions
+            )
         ]
         for fname in filenames:
             if fname.endswith(".md"):
@@ -182,6 +342,7 @@ def _get_recent_files(
     exclude_folders: list[str],
     since: str | None = None,
     until: str | None = None,
+    authority_exclusions: tuple[Path, ...] = (),
 ) -> list[dict]:
     """Find recently modified .md files across the vault.
 
@@ -192,7 +353,7 @@ def _get_recent_files(
     exclude_set = {f.lower() for f in exclude_folders}
     results = []
 
-    for md_file in _walk_vault(vault_root, exclude_set):
+    for md_file in _walk_vault(vault_root, exclude_set, authority_exclusions):
         try:
             mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=timezone.utc)
         except OSError:
@@ -303,7 +464,35 @@ def _get_journal_stats(vault_root: Path, journal_dir: str) -> dict[str, Any] | N
     return stats
 
 
-def _get_tasks(vault_root: Path) -> str:
+def _get_native_journal_stats() -> dict[str, Any] | None:
+    """Return today's Journal counts from SQLite without archive inspection."""
+
+    from work_buddy.journal_capture.native_ops import journal_state
+
+    state = journal_state(create_on_read=False)
+    items = state.get("items", [])
+    records = [
+        item for item in items if item.get("item_kind") in {"record", "log"}
+    ]
+    running = [
+        str(item.get("value") or "")
+        for item in items
+        if item.get("item_kind") == "running_note" and item.get("value")
+    ]
+    if not state.get("exists") and not records and not running:
+        return None
+    last = max((str(item.get("updated_at") or "") for item in records), default="")
+    return {
+        "date": state.get("target_date"),
+        "log_entry_count": len(records),
+        "log_last_entry_time": format_local(last, "%H:%M", fallback=None) if last else None,
+        "running_notes_lines": sum(len(value.splitlines()) for value in running),
+        "running_notes_carried_dates": 0,
+        "running_notes_oldest_date": None,
+    }
+
+
+def _get_tasks(vault_root: Path | None) -> str:
     """Extract incomplete tasks from the active authority."""
     from work_buddy.tasks.runtime import native_authority_active
 
@@ -322,6 +511,8 @@ def _get_tasks(vault_root: Path) -> str:
         )
         return "\n".join(f"- [ ] {task.description}" for task in tasks)
 
+    if vault_root is None:
+        return ""
     task_file = vault_root / "tasks" / "master-task-list.md"
     if not task_file.exists():
         return ""
@@ -390,14 +581,29 @@ def _trend_direction(recent: list[float], prior: list[float], threshold: float =
 
 
 def collect_wellness(cfg: dict[str, Any]) -> str:
+    """Collect native Journal fields or the admitted legacy wellness view."""
+
+    wellness_days = cfg.get("obsidian", {}).get("wellness_days", 14)
+    if _native_journal_authority(cfg):
+        return _collect_native_fields(wellness_days)
+    if not _legacy_obsidian_enabled():
+        return "# Journal Fields\n\n*Legacy Obsidian field collection is disabled.*\n"
+    from work_buddy.journal_capture.authority import legacy_markdown_write_guard
+
+    with legacy_markdown_write_guard():
+        return _collect_legacy_wellness(cfg)
+
+
+def _collect_legacy_wellness(cfg: dict[str, Any]) -> str:
     """Collect wellness sign-in metrics and trends.
 
     Returns a compact markdown summary with a table and trend indicators.
     """
-    vault_root = Path(cfg["vault_root"])
     obs_cfg = cfg.get("obsidian", {})
-    journal_dir = obs_cfg.get("journal_dir", "journal")
     wellness_days = obs_cfg.get("wellness_days", 14)
+
+    vault_root = Path(cfg["vault_root"])
+    journal_dir = obs_cfg.get("journal_dir", "journal")
 
     journal_path = vault_root / journal_dir
     if not journal_path.is_dir():
@@ -460,9 +666,175 @@ def collect_wellness(cfg: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _collect_native_fields(days: int) -> str:
+    """Render configurable numeric Journal fields without fixed marker names."""
+
+    from work_buddy.journal_capture.native_ops import journal_state
+
+    rows: list[tuple[str, dict[str, Any]]] = []
+    field_ids: list[str] = []
+    today = datetime.now().date()
+    for offset in range(days):
+        local_date = (today - timedelta(days=offset)).isoformat()
+        state = journal_state(target=local_date, create_on_read=False)
+        values = {
+            str(item.get("field_id")): item.get("value")
+            for item in state.get("fields", [])
+            if item.get("value") is not None and item.get("disposition") is None
+        }
+        for field_id in values:
+            if field_id not in field_ids:
+                field_ids.append(field_id)
+        rows.append((local_date, values))
+
+    if not field_ids:
+        return "# Journal Fields\n\n*No configured Journal field values found.*\n"
+    lines = [
+        "# Journal Fields",
+        "",
+        f"*Last {days} days from the active configurable Journal profile*",
+        "",
+        "| Date | " + " | ".join(field_ids) + " |",
+        "|---|" + "---|" * len(field_ids),
+    ]
+    for local_date, values in rows:
+        lines.append(
+            f"| {local_date} | "
+            + " | ".join(str(values.get(field_id, "—")) for field_id in field_ids)
+            + " |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _get_task_events(
+    cfg: dict[str, Any],
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Read events from the active Task authority without cross-fallback."""
+
+    from work_buddy.tasks.runtime import native_authority_active
+
+    range_since = cfg.get("since")
+    range_until = cfg.get("until")
+    event_lookback_hours = cfg.get("tasks", {}).get("event_lookback_hours", 48)
+    if range_since or range_until:
+        since_str = range_since or "1970-01-01T00:00:00"
+        until_str = range_until or "9999-12-31T23:59:59"
+    else:
+        since_str = (now - timedelta(hours=event_lookback_hours)).isoformat()
+        until_str = now.isoformat()
+    task_native = native_authority_active()
+    if not task_native and not _legacy_obsidian_enabled():
+        return []
+    from work_buddy.tasks.store import TaskStore
+
+    try:
+        connection = TaskStore().connect_readonly()
+        try:
+            rows = connection.execute(
+                "SELECT task_id,old_state,new_state,changed_at,reason "
+                "FROM task_state_history WHERE changed_at>=? AND changed_at<? "
+                "ORDER BY changed_at,id",
+                (since_str, until_str),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error):
+        return []
+
+
+def collect_tasks(cfg: dict[str, Any]) -> str:
+    """Render Tasks without invoking the Journal or vault collectors."""
+
+    with legacy_task_read_guard():
+        return _collect_tasks_admitted(cfg)
+
+
+def _collect_tasks_admitted(cfg: dict[str, Any]) -> str:
+    """Render Tasks after the legacy/native authority decision is serialized."""
+
+    now = datetime.now(timezone.utc)
+    from work_buddy.tasks.runtime import native_authority_active
+
+    task_native = native_authority_active()
+    legacy_enabled = _legacy_obsidian_enabled()
+    vault_value = cfg.get("vault_root")
+    vault_root = Path(str(vault_value)) if vault_value else None
+    tasks_md = _get_tasks(vault_root) if task_native or legacy_enabled else ""
+    task_events = _get_task_events(cfg, now=now)
+    range_since = cfg.get("since")
+    range_until = cfg.get("until")
+    event_lookback_hours = cfg.get("tasks", {}).get("event_lookback_hours", 48)
+
+    task_source = (
+        "native task store"
+        if task_native
+        else "`tasks/master-task-list.md` (pre-cutover)"
+    )
+    lines = [
+        "# Tasks Summary",
+        "",
+        f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
+        f"*Source: {task_source}*",
+        "",
+    ]
+    if tasks_md:
+        lines.extend(["## Incomplete Tasks", "", tasks_md, ""])
+    else:
+        lines.extend(["*No incomplete tasks found.*", ""])
+    if task_events:
+        lines.append(
+            "## Task Events (in collection window)"
+            if range_since or range_until
+            else f"## Recent Task Events (last {event_lookback_hours}h)"
+        )
+        lines.append("")
+        for event in task_events:
+            timestamp = event["changed_at"]
+            rendered = format_local(
+                timestamp,
+                "%H:%M",
+                fallback=timestamp[:16] if timestamp else "??:??",
+            )
+            reason = f" — {event['reason']}" if event.get("reason") else ""
+            lines.append(
+                f"- {rendered} — {event['task_id']} "
+                f"({event.get('old_state') or 'new'} → {event['new_state']}){reason}"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def collect(cfg: dict[str, Any]) -> tuple[str, str]:
     """Collect Obsidian context. Returns (obsidian_summary_md, tasks_summary_md)."""
-    vault_root = Path(cfg["vault_root"])
+    journal_native = _native_journal_authority(cfg)
+    legacy_enabled = _legacy_obsidian_enabled()
+    guard = nullcontext()
+    if not journal_native and legacy_enabled:
+        from work_buddy.journal_capture.authority import legacy_markdown_write_guard
+
+        guard = legacy_markdown_write_guard()
+    with guard:
+        return _collect_admitted(
+            cfg,
+            journal_native=journal_native,
+            legacy_obsidian_enabled=legacy_enabled,
+        )
+
+
+def _collect_admitted(
+    cfg: dict[str, Any],
+    *,
+    journal_native: bool,
+    legacy_obsidian_enabled: bool,
+) -> tuple[str, str]:
+    """Collect after the Journal authority/opt-out decision is admitted."""
+
+    vault_value = cfg.get("vault_root")
+    vault_root = Path(str(vault_value)) if vault_value else None
     obs_cfg = cfg.get("obsidian", {})
 
     journal_dir = obs_cfg.get("journal_dir", "journal")
@@ -475,46 +847,86 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
     range_until = cfg.get("until")
 
     now = datetime.now(timezone.utc)
-
-    # Journal entries (since/until override journal_days when provided)
-    journal_entries = _get_journal_entries(
-        vault_root, journal_dir, journal_days,
-        since=range_since, until=range_until,
+    authority_exclusions = (
+        _sealed_legacy_roots(cfg) if legacy_obsidian_enabled else ()
     )
 
+    # Journal entries (since/until override journal_days when provided)
+    if journal_native:
+        journal_entries = _get_native_journal_entries(
+            journal_days,
+            since=range_since,
+            until=range_until,
+        )
+    elif legacy_obsidian_enabled and vault_root is not None:
+        journal_entries = _get_journal_entries(
+            vault_root,
+            journal_dir,
+            journal_days,
+            since=range_since,
+            until=range_until,
+        )
+    else:
+        journal_entries = []
+
     # Recently modified files
-    recent_files = _get_recent_files(vault_root, recent_days, exclude_folders, since=range_since, until=range_until)
+    recent_files = (
+        _get_recent_files(
+            vault_root,
+            recent_days,
+            exclude_folders,
+            since=range_since,
+            until=range_until,
+            authority_exclusions=authority_exclusions,
+        )
+        if legacy_obsidian_enabled and vault_root is not None
+        else []
+    )
 
     # Tasks
-    tasks_md = _get_tasks(vault_root)
+    from work_buddy.tasks.runtime import native_authority_active
 
-    # Task events (state changes within the collection window)
-    task_events = []
+    with legacy_task_read_guard():
+        task_native = native_authority_active()
+        tasks_md = (
+            _get_tasks(vault_root)
+            if task_native or legacy_obsidian_enabled
+            else ""
+        )
+
+        # Task events (state changes within the collection window)
+        task_events = _get_task_events(cfg, now=now)
     event_lookback_hours = cfg.get("tasks", {}).get("event_lookback_hours", 48)
-    try:
-        from work_buddy.obsidian.tasks.store import get_events_in_range
-        if range_since or range_until:
-            since_str = range_since or "1970-01-01T00:00:00"
-            until_str = range_until or "9999-12-31T23:59:59"
-        else:
-            since_dt = now - timedelta(hours=event_lookback_hours)
-            since_str = since_dt.isoformat()
-            until_str = now.isoformat()
-        task_events = get_events_in_range(since_str, until_str)
-    except Exception:
-        pass  # store may not be initialized
 
     # Journal stats (today only — Log entries + Running Notes backlog)
-    journal_stats = _get_journal_stats(vault_root, journal_dir)
+    journal_stats = (
+        _get_native_journal_stats()
+        if journal_native
+        else (
+            _get_journal_stats(vault_root, journal_dir)
+            if legacy_obsidian_enabled and vault_root is not None
+            else None
+        )
+    )
 
-    # Build obsidian summary
-    lines = [
-        "# Obsidian Summary",
-        "",
-        f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
-        f"*Vault: `{vault_root}`*",
-        "",
-    ]
+    # A native Journal summary carries no operator filesystem path.  The old
+    # vault label remains only on the explicitly admitted pre-cutover view.
+    if journal_native:
+        lines = [
+            "# Journal Summary",
+            "",
+            f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
+            "*Source: native Journal SQLite*",
+            "",
+        ]
+    else:
+        lines = [
+            "# Obsidian Summary",
+            "",
+            f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
+            f"*Vault: `{vault_root}`*" if vault_root is not None else "*Vault unavailable*",
+            "",
+        ]
 
     if journal_stats:
         lines.append("## Today's Journal Status")
@@ -531,8 +943,10 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
                      + (f", carried over from {rn_dates} dates"
                         f" (oldest: {rn_oldest})" if rn_dates else ""))
         if rn_lines > 50:
-            lines.append(f"- **Backlog alert:** Running Notes has {rn_lines} lines"
-                         " — consider `/wb-journal-backlog`")
+            lines.append(
+                f"- **Legacy backlog:** Running Notes has {rn_lines} lines; "
+                "review the migrated records in the native React Journal"
+            )
         lines.append("")
 
     if journal_entries:
@@ -572,11 +986,9 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
     obsidian_md = "\n".join(lines)
 
     # Build tasks summary
-    from work_buddy.tasks.runtime import native_authority_active
-
     task_source = (
         "native task store"
-        if native_authority_active()
+        if task_native
         else "`tasks/master-task-list.md` (pre-cutover)"
     )
     task_lines = [

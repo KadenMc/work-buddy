@@ -10,6 +10,7 @@ export interface WidgetMenuProps {
   readonly lockedReason?: string;
   readonly onHide?: () => void;
   readonly onRemove?: () => void;
+  readonly hideLabel?: string;
 }
 
 export function WidgetMenu({
@@ -18,13 +19,14 @@ export function WidgetMenu({
   lockedReason,
   onHide,
   onRemove,
+  hideLabel = "Hide",
 }: WidgetMenuProps) {
   if (!onHide && !onRemove) return null;
   const required = presence === "required";
   const sections: ActionMenuSectionDefinition[] = [];
   const visibility = [
     ...(onHide
-      ? [{ id: "hide", label: "Hide", icon: <EyeSlash />, disabled: required, onAction: onHide }]
+      ? [{ id: "hide", label: hideLabel, icon: <EyeSlash />, disabled: required, onAction: onHide }]
       : []),
     ...(onRemove
       ? [{ id: "remove", label: "Remove", icon: <Trash />, disabled: required, tone: "danger" as const, onAction: onRemove }]

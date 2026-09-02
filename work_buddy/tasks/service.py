@@ -7,10 +7,11 @@ import json
 import re
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from .creation import FieldDerivation, TaskCreationCoordinator
 from .errors import (
     TaskAuthorityUnavailable,
     TaskDeletedError,
@@ -56,6 +57,16 @@ class _Change:
     changed: bool
     details: dict[str, Any]
     reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedCreate:
+    fields: dict[str, Any]
+    dependencies: tuple[str, ...]
+    tags: tuple[Tag, ...]
+    effective_task_id: str
+    derivations: tuple[FieldDerivation, ...]
+    request: dict[str, Any]
 
 
 class TaskApplicationService:
@@ -149,65 +160,78 @@ class TaskApplicationService:
         user_required_contexts: Sequence[str] = (),
         required_contexts_source: str | None = None,
         legacy_import_receipt_id: str | None = None,
+        creation_intent_id: str | None = None,
+        initial_document: TaskDocumentLink | None = None,
+        field_derivations: Sequence[FieldDerivation] = (),
     ) -> MutationResult:
-        fields = self._validate_create_fields(
+        prepared = self._prepare_create(
             description=description,
+            client_mutation_id=client_mutation_id,
+            actor=actor,
+            session_id=session_id,
+            task_id=task_id,
             state=state,
             urgency=urgency,
+            tags=tags,
             complexity=complexity,
+            contract=contract,
             due_date=due_date,
             deadline_date=deadline_date,
             task_kind=task_kind,
             density=density,
-            creation_effort=creation_effort,
-            user_involvement=user_involvement,
-            required_contexts_source=required_contexts_source,
+            summary_text=summary_text,
             outcome_text=outcome_text,
             next_action_text=next_action_text,
             definition_of_done=definition_of_done,
-            summary_text=summary_text,
+            creation_effort=creation_effort,
+            user_involvement=user_involvement,
+            creation_provenance=creation_provenance,
+            has_dependency=has_dependency,
+            dependencies=dependencies,
+            dependency_hint=dependency_hint,
+            risk_profile_json=risk_profile_json,
+            automation_tier_achievable=automation_tier_achievable,
+            agent_required_contexts=agent_required_contexts,
+            user_required_contexts=user_required_contexts,
+            required_contexts_source=required_contexts_source,
+            legacy_import_receipt_id=legacy_import_receipt_id,
+            creation_intent_id=creation_intent_id,
+            initial_document=initial_document,
+            field_derivations=field_derivations,
         )
+        fields = prepared.fields
         summary_text = fields["summary_text"]
         outcome_text = fields["outcome_text"]
         next_action_text = fields["next_action_text"]
         definition_of_done = fields["definition_of_done"]
-        try:
-            normalized_dependencies = tuple(
-                json.loads(self._json_array(dependencies))
-            )
-        except (TypeError, ValueError) as exc:
-            raise TaskValidationError(
-                {"dependencies": "Dependencies must be a list of non-empty strings."}
-            ) from exc
-        normalized_tags = self._normalize_tags(tags)
-        requested_task_id = task_id
-        effective_task_id = task_id or self._id_factory()
-        self._validate_task_id(effective_task_id)
-        request = {
-            "requested_task_id": requested_task_id,
-            **fields,
-            "tags": [tag.to_dict() for tag in normalized_tags],
-            "contract": contract,
-            "outcome_text": outcome_text,
-            "summary_text": summary_text,
-            "next_action_text": next_action_text,
-            "definition_of_done": definition_of_done,
-            "creation_provenance": creation_provenance,
-            "has_dependency": bool(has_dependency),
-            "dependencies": list(normalized_dependencies),
-            "dependency_hint": dependency_hint,
-            "risk_profile_json": risk_profile_json,
-            "automation_tier_achievable": automation_tier_achievable,
-            "agent_required_contexts": list(agent_required_contexts),
-            "user_required_contexts": list(user_required_contexts),
-            "legacy_import_receipt_id": legacy_import_receipt_id,
-        }
+        normalized_dependencies = prepared.dependencies
+        normalized_tags = prepared.tags
+        effective_task_id = prepared.effective_task_id
+        normalized_derivations = prepared.derivations
+        request = prepared.request
 
         def operation(conn: sqlite3.Connection, now: str) -> _Change:
             if conn.execute(
                 "SELECT 1 FROM task_metadata WHERE task_id = ?", (effective_task_id,)
             ).fetchone():
                 raise TaskValidationError({"task_id": "That task ID already exists."})
+            # The coordinator reserves task IDs in this same SQLite authority.
+            # Only the participant carrying that exact intent may consume one.
+            reservation = conn.execute(
+                "SELECT intent_id FROM task_creation_intents "
+                "WHERE task_id=? AND status!='aborted'",
+                (effective_task_id,),
+            ).fetchone()
+            if reservation is not None and str(reservation["intent_id"]) != str(
+                creation_intent_id or ""
+            ):
+                raise TaskValidationError(
+                    {
+                        "task_id": (
+                            "That task ID is reserved by an aggregate creation."
+                        )
+                    }
+                )
             self._insert_task_record(
                 conn,
                 task_id=effective_task_id,
@@ -232,13 +256,46 @@ class TaskApplicationService:
                 required_contexts_source=required_contexts_source,
                 legacy_import_receipt_id=legacy_import_receipt_id,
             )
+            if initial_document is not None:
+                self.store.upsert_task_document_link(
+                    initial_document,
+                    connection=conn,
+                )
+                conn.execute(
+                    "UPDATE task_metadata SET note_uuid=? WHERE task_id=?",
+                    (initial_document.note_uuid, effective_task_id),
+                )
             return _Change(
                 task_id=effective_task_id,
                 old_state=None,
                 new_state=fields["state"],
                 changed=True,
-                details={"created": True, "tags": [tag.to_dict() for tag in normalized_tags]},
+                details={
+                    "created": True,
+                    "tags": [tag.to_dict() for tag in normalized_tags],
+                    "document": initial_document.to_dict() if initial_document else None,
+                    "creation_intent_id": creation_intent_id,
+                },
                 reason="created",
+            )
+
+        def finalize(
+            conn: sqlite3.Connection,
+            now: str,
+            receipt_id: str,
+            _change: _Change,
+        ) -> None:
+            if creation_intent_id is None:
+                return
+            TaskCreationCoordinator.publish_in_connection(
+                conn,
+                intent_id=creation_intent_id,
+                task_id=effective_task_id,
+                actor=actor,
+                task_receipt_id=receipt_id,
+                document=initial_document,
+                field_derivations=normalized_derivations,
+                now=now,
             )
 
         return self._execute(
@@ -249,6 +306,164 @@ class TaskApplicationService:
             task_id=effective_task_id,
             request=request,
             operation=operation,
+            finalize=finalize,
+        )
+
+    def validate_create(self, **values: Any) -> None:
+        """Validate a create request without reserving or publishing any state.
+
+        Aggregate writers use this before opening their cross-store intent.  It
+        deliberately shares the exact preparation path used by :meth:`create`,
+        so a request that cannot become a task cannot leave a document saga to
+        recover later.  An existing task is accepted only when this client
+        mutation already owns an aggregate intent; the coordinator immediately
+        following this check remains the authority for replay versus conflict.
+        """
+
+        prepared = self._prepare_create(**values)
+        client_mutation_id = str(values["client_mutation_id"])
+        conn = self.store.connect()
+        try:
+            task_exists = conn.execute(
+                "SELECT 1 FROM task_metadata WHERE task_id=?",
+                (prepared.effective_task_id,),
+            ).fetchone()
+            if task_exists is None:
+                return
+            aggregate_replay = conn.execute(
+                "SELECT 1 FROM task_creation_intents WHERE client_mutation_id=?",
+                (client_mutation_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if aggregate_replay is None:
+            raise TaskValidationError({"task_id": "That task ID already exists."})
+
+    def _prepare_create(
+        self,
+        *,
+        description: str,
+        client_mutation_id: str,
+        actor: str,
+        session_id: str | None = None,
+        task_id: str | None = None,
+        state: str = "inbox",
+        urgency: str = "medium",
+        tags: Iterable[str | Tag | tuple[str, bool]] = (),
+        complexity: str | None = None,
+        contract: str | None = None,
+        due_date: str | None = None,
+        deadline_date: str | None = None,
+        task_kind: str = "task",
+        density: str = "sparse",
+        summary_text: str | None = None,
+        outcome_text: str | None = None,
+        next_action_text: str | None = None,
+        definition_of_done: str | None = None,
+        creation_effort: str = "developed",
+        user_involvement: str = "high",
+        creation_provenance: str = "manual",
+        has_dependency: bool = False,
+        dependencies: Sequence[str] = (),
+        dependency_hint: str | None = None,
+        risk_profile_json: str | None = None,
+        automation_tier_achievable: int | None = None,
+        agent_required_contexts: Sequence[str] = (),
+        user_required_contexts: Sequence[str] = (),
+        required_contexts_source: str | None = None,
+        legacy_import_receipt_id: str | None = None,
+        creation_intent_id: str | None = None,
+        initial_document: TaskDocumentLink | None = None,
+        field_derivations: Sequence[FieldDerivation] = (),
+    ) -> _PreparedCreate:
+        fields = self._validate_create_fields(
+            description=description,
+            state=state,
+            urgency=urgency,
+            complexity=complexity,
+            due_date=due_date,
+            deadline_date=deadline_date,
+            task_kind=task_kind,
+            density=density,
+            creation_effort=creation_effort,
+            user_involvement=user_involvement,
+            required_contexts_source=required_contexts_source,
+            outcome_text=outcome_text,
+            next_action_text=next_action_text,
+            definition_of_done=definition_of_done,
+            summary_text=summary_text,
+        )
+        try:
+            normalized_dependencies = tuple(
+                json.loads(self._json_array(dependencies))
+            )
+        except (TypeError, ValueError) as exc:
+            raise TaskValidationError(
+                {"dependencies": "Dependencies must be a list of non-empty strings."}
+            ) from exc
+        for field_name, contexts in (
+            ("agent_required_contexts", agent_required_contexts),
+            ("user_required_contexts", user_required_contexts),
+        ):
+            try:
+                self._json_array(contexts)
+            except (TypeError, ValueError) as exc:
+                raise TaskValidationError(
+                    {field_name: "Contexts must be a list of non-empty strings."}
+                ) from exc
+        normalized_tags = self._normalize_tags(tags)
+        if initial_document is not None and initial_document.task_id != (
+            task_id or initial_document.task_id
+        ):
+            raise TaskValidationError(
+                {"initial_document": "The document link belongs to another task."}
+            )
+        if creation_intent_id is None and field_derivations:
+            raise TaskValidationError(
+                {"field_derivations": "Field derivations require a creation intent."}
+            )
+        requested_task_id = task_id
+        effective_task_id = task_id or self._id_factory()
+        self._validate_task_id(effective_task_id)
+        if initial_document is not None and initial_document.task_id != effective_task_id:
+            raise TaskValidationError(
+                {"initial_document": "The document link belongs to another task."}
+            )
+        normalized_derivations = tuple(field_derivations)
+        for derivation in normalized_derivations:
+            derivation.validate()
+        self._validate_authority(client_mutation_id, actor)
+        request = {
+            "requested_task_id": requested_task_id,
+            **fields,
+            "tags": [tag.to_dict() for tag in normalized_tags],
+            "contract": contract,
+            "outcome_text": fields["outcome_text"],
+            "summary_text": fields["summary_text"],
+            "next_action_text": fields["next_action_text"],
+            "definition_of_done": fields["definition_of_done"],
+            "creation_provenance": creation_provenance,
+            "has_dependency": bool(has_dependency),
+            "dependencies": list(normalized_dependencies),
+            "dependency_hint": dependency_hint,
+            "risk_profile_json": risk_profile_json,
+            "automation_tier_achievable": automation_tier_achievable,
+            "agent_required_contexts": list(agent_required_contexts),
+            "user_required_contexts": list(user_required_contexts),
+            "legacy_import_receipt_id": legacy_import_receipt_id,
+            "creation_intent_id": creation_intent_id,
+            "initial_document": initial_document.to_dict() if initial_document else None,
+            "field_derivations": [
+                asdict(derivation) for derivation in normalized_derivations
+            ],
+        }
+        return _PreparedCreate(
+            fields=fields,
+            dependencies=normalized_dependencies,
+            tags=normalized_tags,
+            effective_task_id=effective_task_id,
+            derivations=normalized_derivations,
+            request=request,
         )
 
     def batch_create(
@@ -303,6 +518,21 @@ class TaskApplicationService:
                 ).fetchone():
                     raise TaskValidationError(
                         {"items": f"Task ID {task_id!r} already exists."}
+                    )
+                if conn.execute(
+                    "SELECT 1 FROM task_creation_intents "
+                    "WHERE task_id=? AND status!='aborted'",
+                    (task_id,),
+                ).fetchone():
+                    # Batch items never carry aggregate participant authority;
+                    # the whole transaction must yield to the live reservation.
+                    raise TaskValidationError(
+                        {
+                            "items": (
+                                f"Task ID {task_id!r} is reserved by an "
+                                "aggregate creation."
+                            )
+                        }
                     )
                 self._insert_task_record(
                     conn,
@@ -1241,6 +1471,7 @@ class TaskApplicationService:
         task_id: str,
         request: Mapping[str, Any],
         operation: Callable[[sqlite3.Connection, str], _Change],
+        finalize: Callable[[sqlite3.Connection, str, str, _Change], None] | None = None,
     ) -> MutationResult:
         self._validate_authority(client_mutation_id, actor)
         request_hash = self._request_hash(mutation, request)
@@ -1280,6 +1511,8 @@ class TaskApplicationService:
                 ),
             )
             change = operation(conn, now)
+            if finalize is not None:
+                finalize(conn, now, receipt_id, change)
             if change.changed:
                 collection_revision = self._next_collection_revision(conn, now)
                 task = self.store.get_in_connection(conn, change.task_id, include_deleted=True)

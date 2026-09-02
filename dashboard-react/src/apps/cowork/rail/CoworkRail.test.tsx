@@ -127,6 +127,27 @@ const chatExecution = (
 });
 
 describe("CoworkRail", () => {
+  it("does not mount a Truth surface for a provenance-only document", () => {
+    const storage = new MemoryStorage();
+    saveRailTab(storage, "demo-doc", "truth");
+    const { container } = render(
+      <CoworkRail
+        documentId="demo-doc"
+        availableTabs={["review", "provenance", "chat"]}
+        reviewProvider={new InMemoryReviewProvider()}
+        chat={{ kind: "idle", draftStorageId: "conv-1" }}
+        storage={storage}
+      />,
+    );
+
+    expect(screen.queryByRole("tab", { name: "Truth" })).not.toBeInTheDocument();
+    expect(container.querySelector("#wb-cowork-rail-panel-truth")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
   it("keeps the rail chrome fixed while panel-owned content scrolls", () => {
     const railShell = railStyles.match(
       /\.wb-cowork-rail\s*\{(?<body>[^}]*)\}/u,

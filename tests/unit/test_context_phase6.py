@@ -92,7 +92,7 @@ class TestMarkdownWrapper:
 
 class TestObsidianSources:
     def test_obsidian_and_tasks_indexes_split_tuple(self):
-        """``obsidian`` → index 0, ``obsidian_tasks`` → index 1."""
+        """Journal and Tasks use independent collectors after cutover."""
         from work_buddy.context.sources.obsidian import (
             ObsidianSource, ObsidianTasksSource,
         )
@@ -100,6 +100,9 @@ class TestObsidianSources:
         with patch(
             "work_buddy.collectors.obsidian_collector.collect",
             return_value=("JOURNAL_MD", "TASKS_MD"),
+        ), patch(
+            "work_buddy.collectors.obsidian_collector.collect_tasks",
+            return_value="TASKS_MD",
         ):
             journal_section = ObsidianSource().collect(ContextRequest())
             tasks_section = ObsidianTasksSource().collect(ContextRequest())
@@ -191,11 +194,16 @@ class TestCollectCLI:
         assert (bundle / "git_summary.md").exists()
         assert (bundle / "git_summary.md").read_text(encoding="utf-8").strip().startswith("# Git")
 
-    def test_only_obsidian_expands_to_three_sources(
-        self, session_cache_roots, clean_registry,
+    def test_only_obsidian_skips_three_retired_sources_after_opt_out(
+        self, session_cache_roots, clean_registry, monkeypatch,
     ):
-        """Legacy ``--only obsidian`` writes all three obsidian files."""
+        """Legacy ``--only obsidian`` cannot reopen retired sources."""
         from work_buddy.collect import run_collection
+
+        monkeypatch.setattr(
+            "work_buddy.context.collector._obsidian_is_opted_out",
+            lambda: True,
+        )
 
         registry.register(_StubSource("obsidian", "# Journal"))
         registry.register(_StubSource("obsidian_tasks", "# Tasks"))
@@ -204,9 +212,9 @@ class TestCollectCLI:
         cfg = {"vault_root": "/vault", "repos_root": "/repos"}
         bundle = run_collection(cfg, only="obsidian")
         assert bundle is not None
-        assert (bundle / "obsidian_summary.md").exists()
-        assert (bundle / "tasks_summary.md").exists()
-        assert (bundle / "wellness_summary.md").exists()
+        assert not (bundle / "obsidian_summary.md").exists()
+        assert not (bundle / "tasks_summary.md").exists()
+        assert not (bundle / "wellness_summary.md").exists()
 
     def test_empty_section_does_not_write_file(
         self, session_cache_roots, clean_registry,

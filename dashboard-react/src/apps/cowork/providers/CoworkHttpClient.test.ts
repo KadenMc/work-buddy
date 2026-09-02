@@ -416,6 +416,83 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
     ).toBe("My Working Note.MD");
   });
 
+  it("normalizes the server-resolved interaction and Truth activation envelope", () => {
+    expect(
+      normalizeDocumentSummary({
+        document_id: "doc-1",
+        path: "task-note",
+        capability_envelope: {
+          interaction_contract: {
+            contract_id: "working_document/v1",
+            version: 3,
+            digest: "contract-sha",
+          },
+          modules: {
+            review: true,
+            provenance: true,
+            chat: true,
+            truth: true,
+          },
+          truth: {
+            eligibility: "allowed",
+            activation: "disabled",
+            activation_revision: 1,
+            policy_fingerprint: "policy-sha",
+            ledger_present: false,
+          },
+        },
+      }).capabilities,
+    ).toEqual({
+      schema: "wb.cowork-document-capabilities/v1",
+      interactionContract: {
+        contractId: "working_document/v1",
+        version: 3,
+        digest: "contract-sha",
+      },
+      modules: {
+        review: true,
+        provenance: true,
+        chat: true,
+        truth: true,
+      },
+      truth: {
+        eligibility: "allowed",
+        activation: "disabled",
+        activationRevision: 1,
+        policyFingerprint: "policy-sha",
+        ledgerPresent: false,
+        unavailableReason: null,
+      },
+    });
+  });
+
+  it("accepts the document policy projection used by the live document API", () => {
+    expect(normalizeDocumentSummary({
+      document_id: "doc-1",
+      path: "task-note",
+      truth_policy: {
+        interaction_contract: {
+          id: "working_document",
+          version: 1,
+          definition_sha256: "contract-sha",
+        },
+        eligibility: "allowed",
+        activation: { state: "disabled", revision: 2 },
+        policy_fingerprint: "policy-sha",
+        capabilities: {
+          provenance: true,
+          truth_observe: false,
+          truth_mutate: false,
+          truth_analysis: false,
+        },
+      },
+    }).capabilities).toMatchObject({
+      interactionContract: { contractId: "working_document", version: 1 },
+      modules: { provenance: true, truth: false },
+      truth: { eligibility: "allowed", activation: "disabled", activationRevision: 2 },
+    });
+  });
+
   it("preserves detached import source identity and the currently observed source hash", () => {
     expect(
       normalizeDocumentSummary({

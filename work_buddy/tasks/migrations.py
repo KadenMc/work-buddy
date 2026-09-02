@@ -707,6 +707,171 @@ def _m019_document_stage_replay_integrity(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m020_aggregate_creation_intents(conn: sqlite3.Connection) -> None:
+    """Add the hidden coordinator ledger for task-plus-document creation.
+
+    A rich task may span TaskStore and one scoped Co-work store.  The intent
+    row is visible only to recovery code; ordinary task readers continue to
+    see a task only after its scalar row, document link, derivation receipts,
+    and coordinator acknowledgements can be committed together.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_creation_intents (
+            intent_id TEXT PRIMARY KEY,
+            client_mutation_id TEXT NOT NULL UNIQUE,
+            task_id TEXT NOT NULL UNIQUE,
+            actor TEXT NOT NULL,
+            session_id TEXT,
+            request_hash TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN (
+                'prepared', 'document_prepared', 'decision_committed',
+                'document_admitted', 'published', 'aborted', 'recovery_required'
+            )),
+            document_requested INTEGER NOT NULL CHECK (document_requested IN (0, 1)),
+            truth_requested INTEGER NOT NULL CHECK (truth_requested IN (0, 1)),
+            store_id TEXT,
+            document_id TEXT,
+            binding_id TEXT,
+            interaction_contract_id TEXT,
+            interaction_contract_revision INTEGER,
+            interaction_contract_digest TEXT,
+            activation_state TEXT,
+            activation_revision INTEGER,
+            coordinator_decision_id TEXT UNIQUE,
+            admission_receipt_id TEXT,
+            task_receipt_id TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            decided_at TEXT,
+            admitted_at TEXT,
+            published_at TEXT,
+            aborted_at TEXT,
+            CHECK (NOT truth_requested OR document_requested),
+            CHECK (activation_state IS NULL OR activation_state IN (
+                'not_applicable', 'disabled', 'enabled', 'paused',
+                'not_applicable_recovery'
+            ))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_creation_intents_recovery "
+        "ON task_creation_intents(status, updated_at, intent_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_field_derivation_receipts (
+            receipt_id TEXT PRIMARY KEY,
+            intent_id TEXT NOT NULL REFERENCES task_creation_intents(intent_id),
+            task_id TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            value_sha256 TEXT NOT NULL,
+            authorship TEXT NOT NULL,
+            review_state TEXT NOT NULL,
+            source_ref TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE (intent_id, field_name, value_sha256)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_field_derivations_task "
+        "ON task_field_derivation_receipts(task_id, field_name, created_at)"
+    )
+
+
+def _m021_aggregate_creation_decision_receipts(conn: sqlite3.Connection) -> None:
+    """Bind aggregate decisions to every prepared participant receipt.
+
+    Version 20 deliberately kept pending aggregates outside ordinary task
+    reads, but its decision digest covered only coordinator identity.  These
+    columns freeze the task participant, document head/provenance participant,
+    and the canonical decision payload so recovery can prove that it is rolling
+    forward the exact request that was originally prepared.
+    """
+
+    columns = _columns(conn, "task_creation_intents")
+    additions = {
+        "task_prepare_receipt_id": "TEXT",
+        "document_content_sha256": "TEXT",
+        "document_head_sha256": "TEXT",
+        "document_provenance_sha256": "TEXT",
+        "document_prepare_receipt_id": "TEXT",
+        "document_admission_prepare_receipt_id": "TEXT",
+        "decision_payload_json": "TEXT",
+        "coordinator_decision_sha256": "TEXT",
+        "recovery_attempts": "INTEGER NOT NULL DEFAULT 0",
+        "last_recovery_at": "TEXT",
+    }
+    for name, sql_type in additions.items():
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE task_creation_intents ADD COLUMN {name} {sql_type}"
+            )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_creation_decision_digest "
+        "ON task_creation_intents(coordinator_decision_sha256) "
+        "WHERE coordinator_decision_sha256 IS NOT NULL"
+    )
+
+
+def _m022_document_attachment_intents(conn: sqlite3.Connection) -> None:
+    """Persist existing-task document attachment before scoped-store writes."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_document_attachment_intents (
+            intent_id TEXT PRIMARY KEY,
+            client_mutation_id TEXT NOT NULL UNIQUE,
+            task_id TEXT NOT NULL REFERENCES task_metadata(task_id),
+            expected_task_revision INTEGER NOT NULL
+                CHECK (expected_task_revision >= 1),
+            actor TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN (
+                'prepared', 'document_prepared', 'linked', 'admitted',
+                'aborted', 'recovery_required'
+            )),
+            title TEXT NOT NULL,
+            domain_revision TEXT NOT NULL,
+            generation TEXT NOT NULL,
+            store_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            binding_id TEXT NOT NULL,
+            note_uuid TEXT NOT NULL,
+            link_created_at TEXT NOT NULL,
+            coordinator_decision_id TEXT NOT NULL UNIQUE,
+            coordinator_decision_sha256 TEXT NOT NULL UNIQUE,
+            task_receipt_id TEXT,
+            recovery_attempts INTEGER NOT NULL DEFAULT 0,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            document_prepared_at TEXT,
+            linked_at TEXT,
+            admitted_at TEXT,
+            aborted_at TEXT,
+            last_recovery_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_document_attachment_recovery "
+        "ON task_document_attachment_intents(status,updated_at,intent_id)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_document_attachment_active "
+        "ON task_document_attachment_intents(task_id) WHERE status IN "
+        "('prepared','document_prepared','linked','recovery_required')"
+    )
+
+
 class NativeTaskMigrationRunner(MigrationRunner):
     """Migration runner that treats versions 1..11 as an immutable baseline."""
 
@@ -763,6 +928,10 @@ class NativeTaskMigrationRunner(MigrationRunner):
                 not in _columns(conn, "task_migration_document_stage")
             ):
                 return 18
+            if "task_creation_intents" not in tables:
+                return 19
+            if "task_document_attachment_intents" not in tables:
+                return 21
             return self.target_version
         return LEGACY_SCHEMA_VERSION
 
@@ -783,6 +952,9 @@ TASK_MIGRATIONS = NativeTaskMigrationRunner(
         Migration(17, "summary and dependency authoring fields", _m017_authoring_fields),
         Migration(18, "legacy task import and cutover cohort ledger", _m018_legacy_cutover_ledger),
         Migration(19, "document-stage replay integrity", _m019_document_stage_replay_integrity),
+        Migration(20, "aggregate task and document creation intents", _m020_aggregate_creation_intents),
+        Migration(21, "aggregate creation participant receipts", _m021_aggregate_creation_decision_receipts),
+        Migration(22, "existing-task document attachment intents", _m022_document_attachment_intents),
     ],
 )
 

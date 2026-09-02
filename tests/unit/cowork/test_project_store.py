@@ -295,6 +295,71 @@ def test_explicit_setup_creates_only_canonical_integrated_store(tmp_path: Path) 
     assert replay.store_id == store.store_id
 
 
+def test_shipped_ignore_keeps_machine_local_sidecar_state_out_of_git(
+    tmp_path: Path,
+) -> None:
+    """Ask git itself what the shipped template would stage.
+
+    Asserting the lines are present says nothing about what they match. The
+    previous denylist listed ``/store.db-*``, which does not match a
+    ``store.pre-vN.db`` migration snapshot, so multi-megabyte snapshots were
+    staged by ``git add .wbuddy``. This checks the outcome instead.
+    """
+
+    if shutil.which("git") is None:
+        pytest.skip("git is unavailable")
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    sidecar = tmp_path / ".wbuddy" / "cowork"
+    (sidecar / "blobs").mkdir(parents=True)
+    (sidecar / "runtime" / "locks").mkdir(parents=True)
+    (sidecar / "export").mkdir()
+    (sidecar / ".gitignore").write_text(
+        "\n".join(COMPONENT_GITIGNORE_LINES) + "\n", encoding="utf-8"
+    )
+    (tmp_path / ".wbuddy" / "manifest.yaml").write_text(
+        "format: wbuddy-folder/v1\n", encoding="utf-8"
+    )
+    machine_local = (
+        "store.db",
+        "store.db-wal",
+        "store.db-shm",
+        "store.pre-v4.db",
+        "store.pre-v11.db",
+        "document-causality.db",
+        "document-causality.db-wal",
+        "document-causality.db-shm",
+        ".store.pre-v4.db.abcd1234.tmp",
+        "blobs/" + "0" * 64,
+        "runtime/locks/writer.lock",
+    )
+    committed = ("store.yaml", "export/claims.jsonl")
+    for name in machine_local + committed:
+        (sidecar / name).write_bytes(b"x")
+
+    staged = {
+        line.split(" ", 1)[1].strip("'\"")
+        for line in subprocess.run(
+            ["git", "add", "-An", ".wbuddy"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        if line.startswith("add ")
+    }
+
+    assert staged == {
+        ".wbuddy/manifest.yaml",
+        ".wbuddy/cowork/.gitignore",
+        ".wbuddy/cowork/store.yaml",
+        ".wbuddy/cowork/export/claims.jsonl",
+    }
+    for name in machine_local:
+        assert f".wbuddy/cowork/{name}" not in staged
+
+
 def test_setup_preserves_unrelated_manifest_component(tmp_path: Path) -> None:
     folder = tmp_path / "with-component"
     manifest = folder / ".wbuddy" / "manifest.yaml"

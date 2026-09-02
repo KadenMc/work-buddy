@@ -12,23 +12,37 @@ from work_buddy.mcp_server.op_registry import register_op
 
 
 def _register() -> None:
-    from work_buddy import journal
-    from work_buddy.journal_backlog import read_running_notes
+    from work_buddy.journal_capture.native_ops import (
+        day_planner,
+        journal_sign_in,
+        journal_state,
+        journal_write,
+        running_notes,
+    )
+    from work_buddy.journal_capture.prompt_worker import (
+        journal_prompt_generation_complete,
+        journal_prompt_generation_context,
+    )
     from work_buddy.mcp_server.context_wrappers import (
         activity_timeline,
-        day_planner,
         hot_files,
-        journal_sign_in,
-        journal_write,
     )
 
-    register_op("op.wb.journal_state", journal.read_journal_state)
+    register_op("op.wb.journal_state", journal_state)
     register_op("op.wb.activity_timeline", activity_timeline)
     register_op("op.wb.hot_files", hot_files)
-    register_op("op.wb.running_notes", read_running_notes)
+    register_op("op.wb.running_notes", running_notes)
     register_op("op.wb.journal_sign_in", journal_sign_in)
     register_op("op.wb.journal_write", journal_write)
     register_op("op.wb.day_planner", day_planner)
+    register_op(
+        "op.wb.journal_prompt_generation_context",
+        journal_prompt_generation_context,
+    )
+    register_op(
+        "op.wb.journal_prompt_generation_complete",
+        journal_prompt_generation_complete,
+    )
     register_op("op.wb.vault_write_at_location", lambda **kw: __import__('work_buddy.obsidian.vault_writer', fromlist=['write_at_location']).write_at_location(**kw))
     register_op("op.wb.obsidian_retry", lambda **kw: __import__('work_buddy.obsidian.retry', fromlist=['obsidian_retry']).obsidian_retry(**kw))
     register_op("op.wb.journal_route_to_tasks", lambda **kw: __import__('work_buddy.journal_backlog.thread_actions', fromlist=['journal_route_to_tasks']).journal_route_to_tasks(**kw))

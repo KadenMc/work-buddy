@@ -43,3 +43,48 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           fail_ci_if_error: false
+
+  dashboard-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: dashboard-react
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard-react/package-lock.json
+
+      - name: Install dashboard dependencies
+        run: npm ci
+
+      - name: Run dashboard unit tests
+        run: npm test -- --maxWorkers=4
+
+      - name: Install dashboard browsers
+        run: npx playwright install --with-deps chromium firefox
+
+      - name: Run Journal dashboard browser tests
+        run: >-
+          npx playwright test
+          tests/e2e/dashboard-layout-contract.spec.ts
+          tests/e2e/journal-calendar.spec.ts
+          tests/e2e/journal-context-settings.spec.ts
+          tests/e2e/journal-customize.spec.ts
+          tests/e2e/journal-drafts.spec.ts
+          tests/e2e/journal-help.spec.ts
+          tests/e2e/journal-running-notes.spec.ts
+          tests/e2e/mobile-accessibility.spec.ts
+          tests/e2e/settings-accessibility.spec.ts
+          tests/e2e/shell-routing.spec.ts
+          tests/e2e/themes.spec.ts
+          --workers=2
+
+      - name: Build dashboard production assets
+        run: npm run build

@@ -34,7 +34,7 @@ The service hosts two distinct frontends during incremental migration:
 - `/` is the Python-generated root dashboard documented at `services/dashboard/frontend`.
 - `/app` is the React dashboard documented at `services/dashboard/react`.
 
-The React surface is the primary desktop entry point, but it does not imply that every root-dashboard tab or mutation has moved. Tasks is an explicit completed migration: `/app/tasks` owns the UI, the old root task route redirects there, and same-origin `/api/tasks` uses native TaskStore authority. Both frontends use the same Flask process and same-origin API authority; neither browser may call sibling localhost service ports directly.
+The React surface is the primary desktop entry point, but it does not imply that every root-dashboard tab or mutation has moved. Tasks and Journal are explicit completed migrations. `/app/tasks` owns the task UI, the old root task route redirects there, and same-origin `/api/tasks` uses native `TaskStore` authority. `/app/journal` uses the live `HttpJournalProvider` and same-origin `/api/journal/*` routes backed by the native SQLite Journal; the older root Today surface and the React legacy provider remain review-only compatibility views. Both frontends use the same Flask process and same-origin API authority; neither browser may call sibling localhost service ports directly.
 
 ## Tabs
 
@@ -57,7 +57,7 @@ The Settings panel also has **Embeddings** and **Inference** sub-views. Settings
 * **Frame boundary:** Every response sets ``Content-Security-Policy: frame-ancestors 'none'`` and ``X-Frame-Options: DENY`` so another site cannot embed dashboard controls.
 * **Read-only mode:** ``dashboard.read_only: true`` in ``config.yaml`` gates every mutating HTTP method (403) and hides or disables mutation controls in both frontends.
 
-The React dashboard's standardized widget runtime, appearance contract, calendar presentation, and native Tasks view are documented under `services/dashboard/react`. Registry-driven configuration authority is documented at `settings`.
+The React dashboard's standardized widget runtime, appearance contract, calendar presentation, and native Journal and Tasks views are documented under `services/dashboard/react`. Registry-driven configuration authority is documented at `settings`.
 
 ## Card registry (feature cards)
 
@@ -122,7 +122,7 @@ Tasks Quick Add, Journal Quick Capture, and Jobs authoring reuse widget-native d
 
 ## Triage flow (no separate dashboard endpoints)
 
-Triage runs through the unified source pipeline (``run_source_pipeline`` capability, dispatching to ``EmailTriagePipeline`` / ``ChromeTriagePipeline`` / ``JournalBacklogPipeline`` / inline-capture). Spawned Threads land on the **Threads tab** for the user to approve/reject/defer per child. There is no separate Review-tab surface or Resolution-Surface endpoints — those were retired in the clarify → Threads migration. Per-cluster actions resolve via the standard Threads action-chip dispatch path.
+Triage runs through the unified source pipeline (the ``run_source_pipeline`` capability, currently dispatching to the registered ``EmailTriagePipeline`` and ``ChromeTriagePipeline``). Native Journal capture and task proposals use the Journal API and proposal path described above; the retired Markdown ``JournalBacklogPipeline`` and inline-capture adapters are not registered source pipelines. Spawned Threads land on the **Threads tab** for the user to approve/reject/defer per child. There is no separate Review-tab surface or Resolution-Surface endpoints — those were retired in the clarify → Threads migration. Per-cluster actions resolve via the standard Threads action-chip dispatch path.
 
 ## CRITICAL for all agents modifying dashboard code
 

@@ -3,7 +3,7 @@
 Three query surfaces:
 
 * ``knowledge`` — unified search across system docs + personal knowledge
-* ``knowledge_personal`` — personal vault knowledge only
+* ``knowledge_personal`` — personal database knowledge only
 * ``agent_docs`` — system documentation only (canonical name)
 
 Plus the original ``agent_docs`` which is unchanged for backward compat.
@@ -76,7 +76,7 @@ def knowledge_personal(
     top_n: int = 8,
     dev: bool = False,
 ) -> dict[str, Any]:
-    """Search personal knowledge from the Obsidian vault only.
+    """Search personal knowledge from the SQLite authority only.
 
     Args:
         query: Natural language search.

@@ -45,6 +45,7 @@ class JobState:
     last_result: str = ""  # ok | error | skipped
     last_error: str = ""  # human-readable error reason
     source: str = "system"  # "system" (sidecar_jobs/) | "user" (<data_root>/user_jobs/)
+    enabled: bool = True
     # Jitter observability: 0 means no jitter applied. ``effective_at`` is
     # the timestamp the scheduler will actually fire at — equal to
     # ``next_at + stable_offset`` for non-pending jobs, or to the queued

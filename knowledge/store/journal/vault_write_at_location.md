@@ -1,7 +1,7 @@
 ---
 name: Vault Write At Location
 kind: capability
-description: Insert content at a specific section in a vault note. Configurable note (path or resolver like 'latest_journal', 'today'), section (header text), and position ('top' or 'bottom' of section). Used by Telegram capture and general-purpose vault writing.
+description: Legacy compatibility insert into a section of a vault note. Disabled with the Obsidian feature; never used by native Journal or Telegram capture.
 capability_name: vault_write_at_location
 category: journal
 op: op.wb.vault_write_at_location
@@ -47,3 +47,8 @@ parents:
 requires:
 - obsidian
 ---
+
+This capability is retained only for explicit legacy-file work during the
+archive grace period. `latest_journal` and `today` are compatibility resolvers,
+not native Journal targets. Normal capture commits an exact Source and a
+Journal database record.

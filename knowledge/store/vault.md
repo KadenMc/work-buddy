@@ -1,7 +1,7 @@
 ---
 name: Vault Health Namespace
 kind: integration
-description: 'Cross-cutting concerns about the vault as a whole — reconnaissance, drift detection, hygiene checks, schema validation. First member: vault_recon (diagnostic) and the vault-recon collector (periodic discovery loop).'
+description: Legacy vault reconnaissance documentation retained for migration evidence; automatic Datacore collection and investigation are retired.
 tags:
 - vault
 - vault-health
@@ -25,4 +25,7 @@ Future siblings (not built yet):
 - vault/hygiene-directions — orphan pages, broken links, frontmatter schema violations.
 - vault/schema-directions — tag case drift, status enum compliance.
 
-The collector layer (`vault_recon_collector`) runs on cron, persists snapshots to `.data/vault_recon/`, computes deltas, and escalates significant changes to an investigation agent via a one-shot `type: prompt` job. The user is in the loop only at the proposal-acceptance step (via `request_send`); auto-cementing is not in scope for this round.
+The `vault_recon_collector` cron and its one-shot investigation escalation are
+disabled. Existing snapshots may be inspected explicitly during the migration
+grace period, but no native content domain depends on this Obsidian/Datacore
+surface and setup must not recommend re-enabling it.

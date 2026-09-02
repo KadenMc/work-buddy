@@ -1771,6 +1771,7 @@ def _validate_capture(
     selection: AgentExecutionSelection | None,
     purpose: str = "verify_execution",
     authority_context: Mapping[str, Any] | None = None,
+    truth_activation_revision: int | None = None,
 ) -> ActionSnapshot:
     if purpose not in {
         "verify_execution",
@@ -1924,6 +1925,7 @@ def _validate_capture(
                 }
             ),
             actor=actor,
+            truth_activation_revision=truth_activation_revision,
             at=server_captured_at,
         )
     except VerifyOrchestrationError:

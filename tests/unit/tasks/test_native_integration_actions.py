@@ -103,13 +103,18 @@ def test_chrome_native_task_actions_return_receipts_and_document_metadata(
         label="Useful reference",
         payload={"title": "Useful reference", "url": "https://example.test"},
     )
-    with patch.object(models.Task, "create", return_value=native_result):
+    with patch.object(models.Task, "create", return_value=native_result) as create:
         per_item = chrome_route_to_tasks(thread.thread_id)
         umbrella = chrome_route_to_umbrella_task(thread.thread_id)
 
     _assert_native_creation(per_item["created"][0])
     _assert_native_creation(umbrella["created"])
     assert umbrella["created"]["tab_count"] == 1
+    assert len(create.call_args_list) == 2
+    for call in create.call_args_list:
+        assert call.kwargs["requested_note_role"] == "working_document/v1"
+        assert call.kwargs["requested_truth_policy_resolution"] == "disabled"
+        assert call.kwargs["initial_note"] == call.kwargs["summary"]
 
 
 def test_email_native_task_actions_return_receipts_and_document_metadata(
@@ -122,13 +127,18 @@ def test_email_native_task_actions_return_receipts_and_document_metadata(
         label="Please review",
         payload={"subject": "Please review", "sender": "sender@example.test"},
     )
-    with patch.object(models.Task, "create", return_value=native_result):
+    with patch.object(models.Task, "create", return_value=native_result) as create:
         per_item = email_create_tasks(thread.thread_id)
         umbrella = email_create_umbrella_task(thread.thread_id)
 
     _assert_native_creation(per_item["created"][0])
     _assert_native_creation(umbrella["created"])
     assert umbrella["created"]["email_count"] == 1
+    assert len(create.call_args_list) == 2
+    for call in create.call_args_list:
+        assert call.kwargs["requested_note_role"] == "working_document/v1"
+        assert call.kwargs["requested_truth_policy_resolution"] == "disabled"
+        assert call.kwargs["initial_note"] == call.kwargs["summary"]
 
 
 def test_email_native_document_append_returns_task_revision_and_document(

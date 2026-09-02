@@ -37,6 +37,5 @@ aliases:
 - spin out tabs as tasks
 parents:
 - context
-requires:
-- obsidian
+requires: []
 ---

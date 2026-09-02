@@ -1,8 +1,8 @@
 ---
 name: Obsidian Bridge
 kind: integration
-description: HTTP bridge to Obsidian — eval_js, latency handling, timeout retry rules
-summary: HTTP bridge on 27125 exposing bridge.eval_js; intermittent ~4s latency spikes; on failure retry per 60/60/60 protocol (or obsidian_retry), then admit failure. NEVER bypass to direct vault writes or REST.
+description: Optional legacy HTTP bridge to Obsidian for explicitly enabled compatibility workflows.
+summary: 'Optional compatibility bridge on port 27125 exposing eval_js. Typed failures use @bridge_retry with up to three jittered attempts. The bridge is never authority or fallback for native Journal, Tasks, Contracts, Projects, Personal Knowledge, or native Calendar.'
 ports:
 - 27125
 entry_points:
@@ -51,10 +51,17 @@ dev_notes: |-
 
   ## Substring vs sha256 witness trade-off
 
-  For concurrently-modified files (master task list, archive, journals), substring witness is robust to unrelated changes. sha256 verify gives false negatives any time anything else touches the file between PUT and verify — trips spurious retry-exhausted notifications. Reach for substring whenever the inserted content has a unique-by-construction marker (task_id, timestamp, header line).
+  For concurrently modified, admitted legacy files (compatibility task lists, archives, or journals), a substring witness is robust to unrelated changes. sha256 verification gives false negatives any time anything else touches the file between PUT and verify, which trips spurious retry-exhausted notifications. Reach for a substring whenever the inserted content has a unique-by-construction marker (task_id, timestamp, header line).
 ---
 
-HTTP bridge on 27125 exposing bridge.eval_js; intermittent ~4s latency spikes; on failure the framework's `RetryStrategy` retries via `@bridge_retry` (max 3 attempts, jittered backoff with `base≈60s`, capped at `max(wait, 30s)`) — or `obsidian_retry` does the same explicitly — then admit failure. NEVER bypass to direct vault writes or REST.
+This bridge is an opt-in compatibility surface after native-domain cutover.
+Runtime admission must skip bridge-backed capabilities and health/plugin probes
+when Obsidian is opted out, and bridge availability must never re-enable a
+sealed native domain. Native Journal, Tasks, Contracts, Projects, Personal
+Knowledge, and the default Calendar provider use their own database or provider
+authorities.
+
+HTTP bridge on 27125 exposing `bridge.eval_js`; intermittent ~4s latency spikes; on failure the framework's `RetryStrategy` retries via `@bridge_retry` (max 3 attempts, jittered backoff with `base≈60s`, capped at `max(wait, 30s)`) — or `obsidian_retry` does the same explicitly — then admits failure. The bridge itself never bypasses to direct vault writes or REST; a caller that owns a separately documented safe fallback decides that outside this layer.
 
 ## Typed exception hierarchy (post-CP1–CP9)
 
@@ -99,11 +106,11 @@ A client-side timeout AFTER a PUT body has been sent is ambiguous: the plugin ma
 
 For capabilities that produce multiple external effects (declared via `Capability.effects`), the recovery path uses `verify_post_write_effects` which walks every declared effect and can return `partial` (some landed, some not). See `architecture/retry-queue` for the recovery semantics and `work_buddy.obsidian.effects.EffectSpec` for the schema.
 
-Wired in three places: `tools/gateway.py` wb_run dispatch, `tools/gateway.py` retry_workflow_step, `sidecar/retry_sweep.py::_replay`. All write paths benefit.
+Wired in three places: `tools/gateway.py` wb_run dispatch, `tools/gateway.py` retry_workflow_step, `sidecar/retry_sweep.py::_replay`. All admitted bridge write paths benefit.
 
 ## Race-safe line mutations
 
-For master-task-list and other concurrently-edited files, prefer the atomic helpers over `bridge.read_file` + `bridge.write_file`:
+For admitted legacy compatibility files that can still be edited concurrently, prefer the atomic helpers over `bridge.read_file` + `bridge.write_file`:
 
 - `bridge.atomic_replace_line_by_task_id(file_path, task_id, expected_old_line, new_line)` — atomically rewrites the line containing `🆔 {task_id}` via Obsidian's `app.vault.process()`. Returns `{found, conflict, replaced, line_number, old_line, new_line}`. Sets `conflict=True` (without writing) when the in-vault line content differs from `expected_old_line` — caller decides whether to retry, escalate, or accept.
 - `bridge.atomic_delete_line_by_task_id(file_path, task_id)` — same shape with `removed` instead of `replaced`.
@@ -114,11 +121,11 @@ For master-task-list and other concurrently-edited files, prefer the atomic help
 The read side mirrors the write side's soft/typed split (cf. `obsidian/vault-write-decision`).
 
 - `bridge.read_file(path) -> str | None` — **best-effort**. Returns `None` for BOTH a genuinely-absent file AND a transient bridge failure (timeout / latency spike / startup race), via the legacy soft `_request`. Use only where a transient empty is harmless and self-heals next run: display, logging, context collectors.
-- `bridge.read_file_raw(path) -> str | None` — **typed** (the read-side analogue of `write_file_raw`). Routes through `_request_with_status`: returns content on 2xx, returns `None` ONLY on a genuine 404, and RAISES the typed `ObsidianError` on any transient/structural failure (so a `@bridge_retry`-wrapped caller or the gateway retries/classifies it exactly like a write). Use this in any consumer where a transient `None` would drive a wrong "absent / empty / not-found" decision — skipping a write, reporting "no plan"/"no note", returning "0 tasks", or marking a store row an orphan. Consequential consumers (`day_planner`, `archive_completed`, `task_match`, the tasks context source, calendar reads, `vault_writer`'s note read) use `read_file_raw`, so a transient propagates as a typed error rather than a false empty.
+- `bridge.read_file_raw(path) -> str | None` — **typed** (the read-side analogue of `write_file_raw`). Routes through `_request_with_status`: returns content on 2xx, returns `None` ONLY on a genuine 404, and RAISES the typed `ObsidianError` on any transient/structural failure (so a `@bridge_retry`-wrapped caller or the gateway retries/classifies it exactly like a write). Use this in any consumer where a transient `None` would drive a wrong "absent / empty / not-found" decision — skipping a write, reporting "no plan"/"no note", returning "0 tasks", or marking a store row an orphan. Admitted legacy branches of consequential consumers (`day_planner`, `archive_completed`, `task_match`, task context, calendar bridge reads, and `vault_writer` note reads) use `read_file_raw`, so a transient propagates as a typed error rather than a false empty. Their native database/provider routes do not invoke the bridge.
 
 ## Diagnostic helpers
 
-Classification is cheap: `get_last_bridge_state()` reads module-level counters set by `_request_with_status`, consults `is_obsidian_running()` (process check) and `get_work_buddy_plugin_state()` (filesystem check on `.obsidian/plugins/obsidian-work-buddy/manifest.json` + `community-plugins.json`). On Windows, closed TCP ports often surface as socket timeouts rather than ECONNREFUSED; `_probe_port_open()` disambiguates via a direct TCP probe so timeouts on closed ports reclassify as `unreachable`. The `unreachable` disambiguation (not-running / plugin-missing / plugin-disabled / startup-race) lives in one place — `_classify_unreachable()` — which `get_last_bridge_state` (string + detail), `_refine_unreachable_kind` (typed exception), and `require_available()` (the precondition guard — it raises the precise typed `ObsidianUnreachable` subclass rather than a generic `RuntimeError`, so a precondition failure classifies identically to a request-time failure) all derive from.
+Classification is cheap: `get_last_bridge_state()` reads module-level counters set by `_request_with_status`, consults `is_obsidian_running()` (process check) and `get_work_buddy_plugin_state()` (filesystem check on `.obsidian/plugins/obsidian-work-buddy/manifest.json` + `community-plugins.json`). If the OS process probe itself raises, `is_obsidian_running()` returns `False` rather than assuming Obsidian is running, allowing the caller's documented fallback path. On Windows, closed TCP ports often surface as socket timeouts rather than ECONNREFUSED; `_probe_port_open()` disambiguates via a direct TCP probe so timeouts on closed ports reclassify as `unreachable`. The `unreachable` disambiguation (not-running / plugin-missing / plugin-disabled / startup-race) lives in one place — `_classify_unreachable()` — which `get_last_bridge_state` (string + detail), `_refine_unreachable_kind` (typed exception), and `require_available()` (the precondition guard — it raises the precise typed `ObsidianUnreachable` subclass rather than a generic `RuntimeError`, so a precondition failure classifies identically to a request-time failure) all derive from.
 
 Entry points: `work_buddy.obsidian.errors` (typed hierarchy), `work_buddy.obsidian.bridge.get_last_bridge_state`, `work_buddy.obsidian.bridge._request_with_status`, `work_buddy.obsidian.bridge.write_file_raw`, `work_buddy.obsidian.bridge.atomic_replace_line_by_task_id`, `work_buddy.obsidian.bridge.atomic_delete_line_by_task_id`, `work_buddy.obsidian.post_write_verify.verify_post_write`, `work_buddy.obsidian.post_write_verify.verify_post_write_effects`, `work_buddy.obsidian.effects.EffectSpec`, `work_buddy.obsidian.retry.bridge_failure` (auto-enriches), `work_buddy.obsidian.retry.bridge_retry` (decorator — a thin shim that runs `RetryStrategy → _BridgeHealthGate → call` via `guarded_call_sync`; see `architecture/resilience`), `work_buddy.obsidian.retry.obsidian_retry` (capability), `work_buddy.health.requirement_checks.get_work_buddy_plugin_state`.
 

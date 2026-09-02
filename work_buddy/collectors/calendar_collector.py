@@ -240,6 +240,5 @@ def _unavailable_report(reason: str) -> str:
     return (
         "# Calendar\n\n"
         f"Calendar data not available: {reason}\n\n"
-        "To enable: open Obsidian, ensure the Google Calendar plugin is "
-        "installed and authenticated."
+        "Check the selected Calendar provider in Work Buddy settings."
     )
