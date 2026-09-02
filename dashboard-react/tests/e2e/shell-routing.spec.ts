@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 test("the app root resolves to the default registered view", async ({ page }) => {
-  await page.goto("/app/", { waitUntil: "domcontentloaded" });
+  await page.goto("/app/?provider=demo", { waitUntil: "domcontentloaded" });
 
-  await expect(page).toHaveURL(/\/app\/journal$/);
+  await expect(page).toHaveURL(/\/app\/journal\?provider=demo$/);
   await expect(
     page.getByRole("link", { name: "Journal", exact: true }),
   ).toHaveAttribute("aria-current", "page");
@@ -12,12 +12,12 @@ test("the app root resolves to the default registered view", async ({ page }) =>
 });
 
 test("the Journal view supports direct navigation and refresh", async ({ page }) => {
-  await page.goto("/app/journal", { waitUntil: "domcontentloaded" });
+  await page.goto("/app/journal?provider=demo", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("region", { name: "Day Timeline", exact: true })).toBeVisible();
 
   await page.reload({ waitUntil: "domcontentloaded" });
 
-  await expect(page).toHaveURL(/\/app\/journal$/);
+  await expect(page).toHaveURL(/\/app\/journal\?provider=demo$/);
   await expect(page.getByRole("region", { name: "Running Notes", exact: true })).toBeVisible();
 });
 
