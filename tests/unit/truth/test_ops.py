@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import importlib
 import json
 from pathlib import Path
@@ -9,6 +10,11 @@ import pytest
 from work_buddy.consent import (
     ConsentRequired,
     per_invocation_authorization,
+)
+from work_buddy.cowork import project_store
+from work_buddy.cowork.project_store import (
+    FolderLifecycleError,
+    ProjectStoreManager,
 )
 from work_buddy.mcp_server.op_registry import load_builtin_ops
 from work_buddy.truth.contracts import InvariantViolation
@@ -218,15 +224,158 @@ def test_generic_store_create_rejects_partial_cowork_directory(
     sentinel = partial_canonical / "interrupted-setup"
     sentinel.write_text("preserve", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="no longer available"):
+    # The folder is a collision, and the refusal says so: it holds Work Buddy
+    # data that does not form a complete Co-work folder.
+    with pytest.raises(FolderLifecycleError) as failure:
         truth_ops.truth_store_create.__wrapped__(
             str(root),
             _profile("3" * 32),
         )
 
+    assert failure.value.code == "folder_layout_incomplete"
+    assert "does not form a complete Co-work folder" in str(failure.value)
     assert sentinel.read_text(encoding="utf-8") == "preserve"
     assert not (partial_canonical / "store.db").exists()
     assert not (partial_canonical / "store.yaml").exists()
+
+
+def test_store_create_walks_the_folder_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup pays for one descendant walk, not two.
+
+    The walk that authorizes the write runs inside the folder operation locks
+    and re-classifies the folder from the filesystem. A second walk ahead of
+    it would prove nothing the locked one does not re-prove, and on a large
+    folder it is the dominant cost of the operation.
+    """
+
+    registry = TruthStoreRegistry(tmp_path / "truth-registry.db")
+    monkeypatch.setattr(truth_ops, "_registry", lambda: registry)
+    monkeypatch.setattr(
+        truth_ops,
+        "emit_truth_event",
+        lambda *args, **kwargs: TruthEventEmission("event-create", True),
+    )
+    root = tmp_path / "walked-once"
+    (root / "nested" / "deeper").mkdir(parents=True)
+    (root / "nested" / "note.txt").write_text("content", encoding="utf-8")
+    walks: list[Path] = []
+    real_scan = ProjectStoreManager._scan_descendants
+
+    def record(self: ProjectStoreManager, scanned: Path, **kwargs: object):
+        walks.append(scanned)
+        return real_scan(self, scanned, **kwargs)
+
+    monkeypatch.setattr(ProjectStoreManager, "_scan_descendants", record)
+
+    created = truth_ops.truth_store_create.__wrapped__(
+        str(root),
+        _profile("4" * 32),
+    )
+
+    assert created["store"]["store_id"] == "4" * 32
+    assert [item.resolve() for item in walks] == [root.resolve()]
+
+
+def test_store_create_refuses_an_oversized_folder_with_an_actionable_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversized folder is named as oversized, not as a race.
+
+    Setup here holds no earlier observation of the folder, so the refusal
+    carries the classification's own code and prose. The agent reads the
+    exception text and nothing else, so that text names both the folder's
+    state and the action that answers it.
+    """
+
+    registry = TruthStoreRegistry(tmp_path / "truth-registry.db")
+    monkeypatch.setattr(truth_ops, "_registry", lambda: registry)
+    monkeypatch.setattr(
+        truth_ops,
+        "emit_truth_event",
+        lambda *args, **kwargs: TruthEventEmission("event-create", True),
+    )
+    # The manager is built inside the operation with no scan arguments, and it
+    # resolves the module defaults in its body, so lowering the threshold here
+    # reaches it. A refusal proves the threshold moved: at the shipped value
+    # this folder sets up cleanly.
+    monkeypatch.setattr(
+        project_store,
+        "DEFAULT_SCAN_WORK_LIMIT",
+        project_store._SCAN_DIRECTORY_WEIGHT,
+    )
+    root = tmp_path / "too-wide"
+    root.mkdir()
+    for index in range(4):
+        (root / f"item-{index}").write_text("x", encoding="utf-8")
+
+    with pytest.raises(FolderLifecycleError) as failure:
+        truth_ops.truth_store_create.__wrapped__(
+            str(root),
+            _profile("5" * 32),
+        )
+
+    assert failure.value.code == "folder_too_large_for_safe_setup"
+    message = str(failure.value)
+    assert "too many items" in message
+    assert "narrower folder" in message
+    assert not (root / ".wbuddy").exists()
+    assert registry.list_stores(refresh=False) == ()
+
+
+def test_store_create_hands_back_an_unread_folder_as_worth_retrying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A folder Co-work could not read is refused as unread, not as damaged.
+
+    The agent surface renders the exception type and its text and nothing
+    else, so a healthy folder whose manifest another process held open for a
+    moment has to come back saying exactly that. Reporting it as incomplete
+    Work Buddy data would send an autonomous caller to repair a store the very
+    next call would have read without trouble.
+    """
+
+    registry = TruthStoreRegistry(tmp_path / "truth-registry.db")
+    monkeypatch.setattr(truth_ops, "_registry", lambda: registry)
+    monkeypatch.setattr(
+        truth_ops,
+        "emit_truth_event",
+        lambda *args, **kwargs: TruthEventEmission("event-create", True),
+    )
+    root = tmp_path / "held-open"
+    (root / ".wbuddy").mkdir(parents=True)
+    (root / ".wbuddy" / "manifest.yaml").write_text(
+        "format: wbuddy-folder/v1\ncomponents:\n  cowork: {path: cowork}\n",
+        encoding="utf-8",
+    )
+    real_read_bytes = Path.read_bytes
+
+    def refuse_the_manifest(self: Path) -> bytes:
+        if self.name == "manifest.yaml":
+            raise OSError(errno.EACCES, "held open by another process")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_the_manifest)
+
+    with pytest.raises(FolderLifecycleError) as failure:
+        truth_ops.truth_store_create.__wrapped__(
+            str(root),
+            _profile("6" * 32),
+        )
+
+    assert failure.value.code == "folder_unreachable"
+    assert failure.value.retryable is True
+    assert failure.value.status == 503
+    message = str(failure.value)
+    assert "temporarily unavailable" in message
+    assert "again in a moment" in message
+    assert "Repair" not in message
+    assert not (root / ".wbuddy" / "cowork").exists()
+    assert registry.list_stores(refresh=False) == ()
 
 
 def test_agent_capture_validates_locator_and_forces_producer_identity(

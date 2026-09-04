@@ -161,7 +161,8 @@ export type CoworkFolderAction =
   | "retry"
   | "inspect"
   | "open_owner"
-  | "choose_another";
+  | "choose_another"
+  | "choose_narrower_folder";
 
 export type CoworkFolderSelection =
   | { readonly kind: "none" }
@@ -205,6 +206,7 @@ export type CoworkFolderSelection =
       readonly candidate: CoworkFolderCandidate | null;
       readonly reasonCode: CoworkFolderUnavailableCode;
       readonly retryable: boolean;
+      readonly availableActions: readonly CoworkFolderAction[];
     };
 
 export type CoworkCatalogStatus =

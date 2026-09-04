@@ -691,6 +691,11 @@ export default function CoworkWorkspaceWidget({
         }
       }}
       onCancelInspection={() => runFolderAction("cancel")}
+      onChooseFolder={() => {
+        setLocalNotice(null);
+        setPendingTruthPassageNavigation(null);
+        runFolderAction("choose");
+      }}
       onInitialize={() => runFolderAction("initialize")}
       onOpenFolder={(storeId) => {
         setLocalNotice(null);

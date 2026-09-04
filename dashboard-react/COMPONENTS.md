@@ -12,6 +12,14 @@ Reusable components and component families in the React dashboard, one entry per
 | Running Notes | `src/widget-library/notes/` | `wb.notes.running` widget type, `wb.widget-role.running-notes@1` |
 | Shared widget primitives | `src/widget-library/shared/` | Cross-publisher presentation helpers consumed by the library widgets |
 
+## Shared UI primitives: busy states
+
+Foundation-consuming presentation components in `src/ui/`, imported through the barrel. They are the compatibility boundary between built-in and contributed UI, so views compose them rather than restyling host markup, and their styles live in `src/theme/components.css` under `@layer wb.components`. Knowledge unit: `services/dashboard/react/appearance`. The rows below cover the busy-state primitives; the rest of `src/ui/` is not yet inventoried here.
+
+| Component | Location | Contract |
+|---|---|---|
+| ActivityStatus | `src/ui/ActivityStatus.tsx` | Busy state with an optional running quantity. `role="status"` scopes the announcement to `label`; `detail` is a secondary line for work whose total is unknown, rendered as a sibling outside that region and `aria-hidden`, so a rising count stays a sighted-user signal rather than re-announcing through the implicit polite live region. Indeterminate by construction, so no `role="progressbar"`. Callers mark the surrounding region `aria-busy` |
+
 ## Chat primitives (library components, not registered widget types)
 
 Reusable conversational surface for any view that mounts a house conversation. Knowledge unit: `services/dashboard/react/chat-primitives`.
