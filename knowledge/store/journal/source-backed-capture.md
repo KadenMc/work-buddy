@@ -7,6 +7,7 @@ entry_points:
 - work_buddy.journal_capture.api
 - work_buddy.journal_capture.service
 - work_buddy.journal_capture.smart
+- work_buddy.journal_capture.smart_worker
 - work_buddy.journal_capture.dispatch
 - work_buddy.journal_capture.store
 - work_buddy.journal_capture.domain
@@ -59,15 +60,39 @@ the exact-text save acknowledgement remains independent of delayed outbox receip
 Direct Log and Running Note captures need no model. `auto` routing and optional
 smart annotation are separate effects. The production Smart processor is
 disabled by default. The canonical `wb.journal.smart-processing` setting bootstraps
-from `journal.smart_processing.enabled` and then owns the explicit opt-in; when enabled,
-it uses the configured concrete frontier tier, displays the provider/model
-boundary through the Journal capability description, and records a content-free
-Agent Execution disclosure manifest before the exact retained capture reaches
-the model. The model boundary is capped at 32 KiB and never silently truncates;
-larger captures remain saved while optional processing fails visibly. It has no
-tools or web access, never rewrites the saved text, disables
-model-response caching, and binds its structured result back to the Journal
-capture. A settled result is never automatically sent again. Typed availability
+from `journal.smart_processing.enabled` and then owns the explicit opt-in.
+
+`wb.journal.smart-execution` owns which of two execution paths an enabled Smart
+capture uses. Both satisfy the same Journal contract, and the choice is the
+user's because they trade differently. `subscription_agent`, the default,
+launches a detached least-authority worker on the account the user already
+signs in to. It follows `wb.dashboard.chat-execution-default`, adds no separate
+model charge, and settles a capture more slowly. `api_model` calls one API
+endpoint in process for the shortest wait and bills that API account for each
+capture. It keeps the concrete model bound to `journal.smart_processing.tier`,
+because the chat default names an agent runtime rather than an API endpoint.
+Each path preflights its own concrete provider and model before any capture
+text moves, projects that pair through typed availability, and states its own
+disclosure line. Neither path substitutes for the other when its provider is
+unavailable.
+
+Whichever path is active, Smart displays the provider/model boundary through
+the Journal capability description and records a content-free Agent Execution
+disclosure manifest before the exact retained capture reaches the model. The
+model boundary is capped at 32 KiB and never silently truncates;
+larger captures remain saved while optional processing fails visibly. Neither
+path has web access, rewrites the saved text, or reuses a cached model
+response, and both bind one validated structured result back to the Journal
+capture. The in-process path carries no tools at all. The detached worker holds
+exactly two lease-bound capabilities, `journal_smart_processing_context` and
+`journal_smart_processing_complete`, which its session ACL pins to one request
+and refuses for every other session. Its brief carries only an opaque request
+ID and a lease secret, never capture text, and one spawn is bounded far below
+the general agent allowance because a capture is a single bounded
+classification. Context resolves the retained Source under a Journal service
+principal and records the input manifest before returning the saved text.
+Complete validates the same structured shape the in-process path validates.
+A settled result is never automatically sent again. Typed availability
 distinguishes `disabled_by_policy`, `provider_unavailable`, and `ready`, with a
 visible Settings link or setup retry. Idle explanations use shared hover/focus
 help. While Smart is on and ready, a compact provider/model/input-limit line
@@ -117,6 +142,16 @@ tombstones. A role whose immutable interaction contract declares a document
 can bind to Co-work from creation. Contextual and full-workspace editors open
 the same session; navigation does not create a document or change Truth state.
 Database-only Journal items have no Markdown projection.
+
+A capture may state when it happened rather than when it was typed. The stated
+instant becomes the record's occurrence time, so a Log entry written after the
+fact takes its real position in the day's ordering instead of the moment of
+capture. Leaving it unstated files the capture at its submission time.
+
+A stated instant must be unambiguous and must fall inside the window of the day
+the capture names, which is not necessarily today. Both facts are enforced where
+the day is known rather than only in the browser, so a request that reaches the
+server directly is bounded the same way.
 
 Legacy Journal Markdown is accepted only through the private staged history
 import. Every input byte receives a deterministic disposition and exact Source

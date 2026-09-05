@@ -47,6 +47,12 @@ export interface CalendarSurfaceItemCapabilities {
   readonly move: boolean;
   readonly resize: boolean;
   readonly remove: boolean;
+  /**
+   * The owning source authors this item's content and accepts a correction to
+   * it. Independent of move and resize, which reposition an item rather than
+   * change what it says.
+   */
+  readonly edit?: boolean;
 }
 
 export interface CalendarSurfaceItem {

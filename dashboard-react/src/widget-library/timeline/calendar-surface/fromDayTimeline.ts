@@ -19,6 +19,25 @@ const SOURCE_BY_KIND = {
   Record<TimelineItemKind, CalendarSurfaceSource>
 >;
 
+/** The one authoring mode whose records accept a text and time correction here. */
+const CONTENT_AUTHORED_BY_PROVIDER = "native_plain";
+
+/**
+ * Records reach one Journal day from more than one authority, and only the
+ * provider's own are correctable. Deriving the offer from the authoring mode
+ * keeps the surface from advertising a change the owning store would refuse.
+ */
+export function timelineItemAcceptsContentEdits(item: DayTimelineItem): boolean {
+  return (
+    item.kind === "record" &&
+    item.authorityKind === CONTENT_AUTHORED_BY_PROVIDER &&
+    typeof item.text === "string" &&
+    typeof item.version === "number" &&
+    Number.isSafeInteger(item.version) &&
+    item.version > 0
+  );
+}
+
 const placementFor = (item: DayTimelineItem): CalendarPlacement =>
   item.shape === "point"
     ? { shape: "point", at: item.at }
@@ -28,6 +47,12 @@ const toneFor = (kind: TimelineItemKind): CalendarSurfaceTone =>
   SOURCE_BY_KIND[kind].tone;
 
 const policyFor = (item: DayTimelineItem): CalendarSurfaceItem["policy"] => {
+  if (timelineItemAcceptsContentEdits(item)) {
+    return {
+      label: "editable",
+      description: "This record's text and time change in place rather than by dragging.",
+    };
+  }
   if (item.mutability === "past_protected") {
     return {
       label: "past — protected",
@@ -48,6 +73,7 @@ export function toCalendarSurfaceItem(
   revision: string,
 ): CalendarSurfaceItem {
   const source = SOURCE_BY_KIND[item.kind];
+  const correctable = timelineItemAcceptsContentEdits(item);
   return {
     id: item.itemId,
     revision,
@@ -60,11 +86,12 @@ export function toCalendarSurfaceItem(
     provenance: item.provenance,
     capabilities: {
       open: true,
-      // Journal Wave 1 promotes the proven renderer and inspector without claiming
-      // provider mutations that the current Timeline intent contract cannot fulfill.
+      // A day's items are corrected in place, never repositioned by the pointer:
+      // dragging and resizing would rewrite observed history as a side effect.
       move: false,
       resize: false,
-      remove: false,
+      remove: correctable,
+      edit: correctable,
     },
     policy: policyFor(item),
     ...(item.navigation === undefined ? {} : { navigation: item.navigation }),

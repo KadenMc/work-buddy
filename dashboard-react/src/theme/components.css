@@ -287,6 +287,17 @@
     cursor: not-allowed;
   }
 
+  /*
+   * An automatic option names a decision the system makes rather than a
+   * destination the reader can point at, so it is set apart from its literal
+   * siblings in the closed trigger and in the open list alike. The list is
+   * portalled out of the field, so both need their own rule.
+   */
+  .wb-select-field--automatic .wb-select-field__trigger,
+  .wb-listbox__item--automatic .wb-listbox__copy > span:first-child {
+    font-style: italic;
+  }
+
   .wb-listbox__check,
   .wb-action-menu__icon {
     display: grid;
@@ -618,18 +629,39 @@
     background: var(--wb-color-status-success-surface);
   }
 
+  .wb-spinner-host {
+    display: inline-flex;
+    align-items: center;
+  }
+
   .wb-spinner {
+    display: inline-block;
     width: 1.125rem;
     height: 1.125rem;
+    flex: 0 0 auto;
     border: 2px solid var(--wb-color-border-default);
     border-top-color: var(--wb-color-action-primary);
     border-radius: 50%;
-    animation: wb-spin var(--wb-motion-duration-standard) linear infinite;
+    animation: wb-spin var(--wb-motion-duration-loop) linear infinite;
+    vertical-align: middle;
   }
 
   @keyframes wb-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  /*
+   * Reduced motion stops the rotation, which would otherwise leave a ring
+   * frozen mid-turn and reading as a stalled control. A uniform ring is an
+   * honest resting state; the accompanying visually hidden label carries the
+   * progress meaning.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    .wb-spinner {
+      border-color: var(--wb-color-action-primary);
+      opacity: 0.55;
     }
   }
 

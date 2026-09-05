@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 
-import type { DashboardIntent } from "../../../dashboard/contributions/contracts";
+import type {
+  AppInvalidation,
+  DashboardIntent,
+} from "../../../dashboard/contributions/contracts";
 import { asWidgetInstanceId } from "../../../dashboard/contributions/contracts";
 import {
   assertDashboardIntent,
@@ -1279,5 +1282,296 @@ describe("HttpJournalProvider", () => {
     expect(navigate).toHaveBeenCalledWith(
       "/app/cowork?store_id=store-one&document_id=doc-one",
     );
+  });
+});
+
+describe("HttpJournalProvider day selection", () => {
+  function locationAdapter(initial: string) {
+    const listeners = new Set<(search: string) => void>();
+    let search = initial;
+    const publish = (next: string) => {
+      search = next;
+      for (const listener of [...listeners]) listener(next);
+    };
+    return {
+      getSearch: () => search,
+      pushSearch: publish,
+      replaceSearch: publish,
+      subscribe(listener: (search: string) => void) {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+      listenerCount: () => listeners.size,
+    };
+  }
+
+  function viewFetch(onView?: (url: string) => void) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/local-identity/session/csrf") {
+        return json({ ok: true, authenticated: true, principal: principal(), csrf_token: "csrf" });
+      }
+      if (url === LEGACY_TODAY_ENDPOINT) return json(legacy);
+      if (url.startsWith(JOURNAL_VIEW_ENDPOINT)) {
+        onView?.(url);
+        return json(native);
+      }
+      throw new Error(`Unexpected ${url}`);
+    });
+  }
+
+  it("asks the Journal for the day the URL names", async () => {
+    const views: string[] = [];
+    const provider = new HttpJournalProvider({
+      fetchImpl: viewFetch((url) => views.push(url)),
+      location: locationAdapter("?provider=live&day=2026-08-08"),
+    });
+
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+    expect(views).toEqual([`${JOURNAL_VIEW_ENDPOINT}?day=2026-08-08`]);
+  });
+
+  it("asks for today when the URL names a day the Journal cannot open", async () => {
+    for (const search of ["?day=", "?day=2026-08", "?day=2026-02-30"]) {
+      const views: string[] = [];
+      const provider = new HttpJournalProvider({
+        fetchImpl: viewFetch((url) => views.push(url)),
+        location: locationAdapter(search),
+      });
+
+      await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+      expect(views).toEqual([JOURNAL_VIEW_ENDPOINT]);
+      resetLocalIdentityForTests();
+    }
+  });
+
+  it("watches the URL only while the view is listening", () => {
+    const location = locationAdapter("");
+    const provider = new HttpJournalProvider({ fetchImpl: viewFetch(), location });
+    const seen: AppInvalidation[] = [];
+
+    expect(location.listenerCount()).toBe(0);
+
+    const unsubscribe = provider.subscribeInvalidations((invalidation) => seen.push(invalidation));
+    expect(location.listenerCount()).toBe(1);
+
+    location.pushSearch("?day=2026-08-08");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      viewIds: [JOURNAL_VIEW_DEFINITION_ID],
+      reason: "journal_day_selection_changed",
+    });
+
+    location.pushSearch("?day=2026-08-08&provider=live");
+    expect(seen).toHaveLength(1);
+
+    location.pushSearch("?day=2026-08-07");
+    expect(seen).toHaveLength(2);
+
+    unsubscribe();
+    expect(location.listenerCount()).toBe(0);
+    location.pushSearch("");
+    expect(seen).toHaveLength(2);
+  });
+
+  it("releases the URL watch when the provider is disposed", () => {
+    const location = locationAdapter("");
+    const provider = new HttpJournalProvider({ fetchImpl: viewFetch(), location });
+    const seen: AppInvalidation[] = [];
+    provider.subscribeInvalidations((invalidation) => seen.push(invalidation));
+
+    provider.dispose();
+
+    expect(location.listenerCount()).toBe(0);
+    location.pushSearch("?day=2026-08-08");
+    expect(seen).toHaveLength(0);
+  });
+
+  it("abandons a snapshot composed for a day the reader has already left", async () => {
+    const location = locationAdapter("?day=2026-08-08");
+    const views: string[] = [];
+    const fetchImpl = viewFetch((url) => {
+      views.push(url);
+      if (views.length === 1) location.pushSearch("?day=2026-08-07");
+    });
+    const provider = new HttpJournalProvider({ fetchImpl, location });
+
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+    expect(views).toEqual([
+      `${JOURNAL_VIEW_ENDPOINT}?day=2026-08-08`,
+      `${JOURNAL_VIEW_ENDPOINT}?day=2026-08-07`,
+    ]);
+    const widget = await provider.loadWidget(JOURNAL_WIDGET_TYPE_IDS.capture, {
+      viewId: JOURNAL_VIEW_DEFINITION_ID,
+      instanceId: JOURNAL_INSTANCE_IDS.capture,
+    });
+    expect(widget.revision).toBe(snapshot.revision);
+    expect(views).toHaveLength(2);
+  });
+});
+
+describe("HttpJournalProvider timeline record changes", () => {
+  const streamFixture = {
+    ...native,
+    view: {
+      ...native.view,
+      runningNotes: { ...native.view.runningNotes, access: { mode: "read_write" } },
+      effectiveComposition: {
+        schemaVersion: 1, persisted: true, snapshotId: "snapshot-stream",
+        snapshotVersion: 1, compositionDigest: "stream-composition",
+        searchRecipeVersion: 1, activationRevision: 1,
+        authorityState: "database_only",
+        profile: {
+          profileId: "simple", profileRevision: 1, formatVersion: 1,
+          name: "Simple Journal", description: "", profileDigest: "profile-stream",
+        },
+        modules: [{
+          slotId: "slot.simple.stream", ordinal: 0,
+          moduleInstanceId: "simple.stream", moduleInstanceVersion: 1,
+          moduleTypeId: "day_stream", moduleTypeVersion: 1, label: "Day stream",
+          semanticMembership: "included", settings: {},
+          scheduleKind: "always", scheduleEvidence: null, fields: [],
+        }],
+      },
+      logEntries: [{
+        itemId: "log-1", itemKind: "record", markdown: "first wording",
+        text: "first wording", createdAt: day.now, updatedAt: day.now,
+        revision: 1, lifecycle: "active", authorityKind: "human",
+        sourceRef: "wb-source://journal/log-1", moduleInstanceId: "simple.stream",
+        moduleInstanceVersion: 1,
+      }],
+      fieldValues: [], nativeItems: [], promptInteractions: [],
+    },
+  };
+
+  function timelineIntent(
+    intentType: string,
+    intentId: string,
+    payload: Record<string, unknown>,
+  ): DashboardIntent {
+    return {
+      intent_type: intentType,
+      schema_version: 1,
+      intent_id: intentId,
+      client_mutation_id: intentId,
+      view_id: JOURNAL_VIEW_DEFINITION_ID,
+      instance_id: asWidgetInstanceId("simple.stream"),
+      payload,
+    };
+  }
+
+  function itemFetch(bodies: Record<string, unknown>[]) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/local-identity/session/csrf") {
+        return json({ ok: true, authenticated: true, principal: principal(), csrf_token: "csrf" });
+      }
+      if (url === JOURNAL_VIEW_ENDPOINT) return json(streamFixture);
+      if (url === "/api/local-identity/gestures") {
+        const gesture = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({ ok: true, gesture: {
+          token: "timeline-gesture", action: gesture.action,
+          subject_sha256: "c".repeat(64), context_sha256: gesture.context_sha256,
+          expires_at: Date.now() / 1000 + 30,
+        } });
+      }
+      const action = /\/log-1\/(edit|tombstone)$/u.exec(url);
+      if (url.startsWith(JOURNAL_ITEMS_ENDPOINT) && action !== null) {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return json({ ok: true, item: {
+          ...streamFixture.view.logEntries[0], revision: 2,
+          lifecycle: action[1] === "edit" ? "active" : "tombstoned",
+        } });
+      }
+      throw new Error(`Unexpected ${url}`);
+    });
+  }
+
+  it("saves an edited timeline record with the time the writer stated", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const provider = new HttpJournalProvider({ fetchImpl: itemFetch(bodies) });
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+    const result = await provider.dispatch(timelineIntent(
+      "wb.timeline.item-edit-requested",
+      "timeline-edit-one",
+      {
+        item_id: "log-1",
+        expected_version: 1,
+        text: "second wording",
+        stated_at: "2026-08-09T14:00:00-04:00",
+      },
+    ));
+
+    expect(result.status).toBe("accepted");
+    expect(bodies).toEqual([{
+      clientMutationId: "timeline-edit-one",
+      expectedRevision: 1,
+      exactText: "second wording",
+      statedAt: "2026-08-09T14:00:00-04:00",
+    }]);
+  });
+
+  it("removes a timeline record without asking for text", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const provider = new HttpJournalProvider({ fetchImpl: itemFetch(bodies) });
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+    const result = await provider.dispatch(timelineIntent(
+      "wb.timeline.item-delete-requested",
+      "timeline-delete-one",
+      { item_id: "log-1", expected_version: 1 },
+    ));
+
+    expect(result.status).toBe("accepted");
+    expect(bodies).toEqual([{
+      clientMutationId: "timeline-delete-one",
+      expectedRevision: 1,
+    }]);
+  });
+
+  it("rejects an edit that carries no wording", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const provider = new HttpJournalProvider({ fetchImpl: itemFetch(bodies) });
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+    const result = await provider.dispatch(timelineIntent(
+      "wb.timeline.item-edit-requested",
+      "timeline-edit-empty",
+      { item_id: "log-1", expected_version: 1, text: "" },
+    ));
+
+    expect(result).toMatchObject({
+      status: "rejected",
+      message: "Enter the Journal text to save.",
+    });
+    expect(bodies).toEqual([]);
+  });
+
+  it("still reads a Running Note edit from its own wording", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const provider = new HttpJournalProvider({ fetchImpl: itemFetch(bodies) });
+    await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+    const result = await provider.dispatch({
+      ...timelineIntent("wb.notes.edit-requested", "note-edit-one", {
+        item_id: "log-1",
+        expected_version: 1,
+        markdown: "note wording",
+      }),
+      instance_id: JOURNAL_INSTANCE_IDS.runningNotes,
+    });
+
+    expect(result.status).toBe("accepted");
+    expect(bodies).toEqual([{
+      clientMutationId: "note-edit-one",
+      expectedRevision: 1,
+      exactText: "note wording",
+    }]);
   });
 });

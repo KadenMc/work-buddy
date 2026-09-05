@@ -1,5 +1,84 @@
 import { expect, test } from "@playwright/test";
 
+test("Dashboard AI aligns the execution-profile picker with its setting content", async ({
+  page,
+}) => {
+  await page.route("**/api/settings/**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === "/api/settings/registry") {
+      await route.fulfill({ status: 404 });
+      return;
+    }
+    if (pathname === "/api/settings/values") {
+      await route.fulfill({
+        json: {
+          schema_version: 1,
+          registry_revision: "settings-registry:e2e",
+          observed_at: "2026-09-02T12:00:00Z",
+          read_only: false,
+          values: [
+            {
+              setting_id: "wb.dashboard.assistance",
+              scope: { kind: "profile" },
+              effective_value: "disabled",
+              source: "default",
+              is_modified: false,
+              revision: "value:0",
+            },
+            {
+              setting_id: "wb.dashboard.chat-execution-default",
+              scope: { kind: "profile" },
+              effective_value: {
+                provider_id: "claude-code",
+                model_id: "sonnet",
+              },
+              source: "default",
+              is_modified: false,
+              revision: "value:0",
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (pathname === "/api/settings/execution-catalog") {
+      await route.fulfill({
+        json: {
+          providers: [{
+            id: "claude-code",
+            label: "Claude Code",
+            available: true,
+            models: [{ id: "sonnet", label: "Sonnet", available: true }],
+          }],
+        },
+      });
+      return;
+    }
+    await route.fulfill({ status: 404 });
+  });
+
+  await page.goto("/app/settings/system/dashboard-ai");
+  const heading = page.getByRole("heading", { name: "Default chat model" });
+  const picker = page.getByRole("button", {
+    name: "Run with Claude Code · Sonnet",
+  });
+  await expect(picker).toBeVisible();
+  const expectAligned = async () => {
+    const [headingBox, pickerBox] = await Promise.all([
+      heading.boundingBox(),
+      picker.boundingBox(),
+    ]);
+    expect(headingBox).not.toBeNull();
+    expect(pickerBox).not.toBeNull();
+    expect(Math.abs(pickerBox!.x - headingBox!.x)).toBeLessThanOrEqual(1);
+  };
+  await expectAligned();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectAligned();
+});
+
 test("system accessibility settings scale and persist dashboard typography", async ({
   page,
 }) => {

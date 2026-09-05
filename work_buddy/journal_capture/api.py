@@ -69,11 +69,15 @@ from work_buddy.journal_capture.prompt_worker import (
     JournalPromptGenerationRunner,
     journal_service_principal,
 )
-from work_buddy.journal_capture.service import JournalCaptureService
+from work_buddy.journal_capture.service import (
+    JournalCaptureService,
+    validate_stated_at,
+)
 from work_buddy.journal_capture.smart import configured_journal_smart_processing
 from work_buddy.journal_capture.store import JournalCaptureStore
 from work_buddy.paths import resolve
 from work_buddy.security.local_identity import LocalIdentityError
+from work_buddy.settings import peek_journal_day_window
 from work_buddy.sources.errors import SourceError, public_error
 from work_buddy.sources.ingress import (
     HumanInputRequest,
@@ -549,6 +553,16 @@ def journal_view():
             return _error("journal_day_invalid", "That Journal day is invalid.", 400)
         if parsed_day.isoformat() != local_date:
             return _error("journal_day_invalid", "That Journal day is invalid.", 400)
+        # A Journal day is reachable once it has begun.  Days that have not
+        # started carry no window a person can file into, so the surface never
+        # opens one.  Earlier days stay reachable: the Journal keeps whatever
+        # history it holds and imposes no floor on how far back it reads.
+        if parsed_day > date.fromisoformat(current_day()["localDate"]):
+            return _error(
+                "journal_day_unavailable",
+                "That Journal day has not started yet.",
+                400,
+            )
     return jsonify(
         {
             "ok": True,
@@ -827,6 +841,7 @@ def put_journal_field_value():
             )
         domain = JournalDomainService(store)
         day = current_day(local_date)
+        validate_stated_at(stated_at, window=peek_journal_day_window(local_date))
         composition = domain.resolve_day(
             local_date=local_date,
             timezone=day["timezone"],
@@ -1011,6 +1026,16 @@ def act_on_journal_item(item_id: str, operation: str):
                 raise JournalCaptureValidationError(
                     "Enter the Journal text to save."
                 )
+            if stated_at is not None:
+                # A corrected time is checked against the day the entry is
+                # filed under, not against whichever day is current, and it is
+                # checked before any retained Source is committed for it.
+                validate_stated_at(
+                    stated_at,
+                    window=peek_journal_day_window(
+                        domain.get_native_item(item_id).local_date
+                    ),
+                )
             trusted = _action_trusted_context(
                 authority,
                 context_sha256=context_sha,
@@ -1037,6 +1062,7 @@ def act_on_journal_item(item_id: str, operation: str):
                 plain_value=exact_text,
                 client_mutation_id=mutation_id,
                 actor=actor,
+                stated_at=stated_at,
             )
         elif operation == "route":
             target_domain = body.get("targetDomain")
@@ -1163,6 +1189,7 @@ def create_journal_prompt_interaction():
         _require_database_authority(store)
         domain = JournalDomainService(store)
         day = current_day(local_date)
+        validate_stated_at(stated_at, window=peek_journal_day_window(local_date))
         composition = domain.resolve_day(
             local_date=local_date,
             timezone=day["timezone"],

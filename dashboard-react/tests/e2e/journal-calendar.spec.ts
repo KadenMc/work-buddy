@@ -39,7 +39,9 @@ test("Journal uses the calendar surface and Log capture creates a point record",
   const inspector = page.getByRole("dialog");
   await expect(inspector).toContainText(exactText);
   await expect(inspector).toContainText("12:18 PM");
-  await expect(inspector).toContainText(
-    "Records describe observed work and are not rescheduled from the calendar.",
-  );
+  // A record the reader just wrote is natively authored on a writable day, so
+  // it offers the two actions that actually resolve, and no explanatory note.
+  await expect(inspector.getByRole("button", { name: "Edit" })).toBeVisible();
+  await expect(inspector.getByRole("button", { name: "Delete" })).toBeVisible();
+  await expect(inspector).not.toContainText("authored elsewhere");
 });

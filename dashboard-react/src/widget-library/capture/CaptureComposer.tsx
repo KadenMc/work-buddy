@@ -28,6 +28,7 @@ import type {
 } from "./contracts";
 import { FollowUpLinks, safeCaptureAppHref } from "./FollowUpLinks";
 import { captureSmartDisclosureSha256 } from "./smartDisclosure";
+import { journalInstantAtLocalTime } from "../shared/journalDayTime";
 import "./styles.css";
 
 export interface CaptureComposerProps {
@@ -42,6 +43,7 @@ interface CaptureComposerDraft {
   readonly text: string;
   readonly targetId: string;
   readonly mode: CaptureSubmitMode;
+  readonly localTime?: string;
   /** Additive recovery metadata in the existing host draft, never a second source copy. */
   readonly pendingSubmission?: {
     readonly envelopeVersion?: 2;
@@ -50,6 +52,12 @@ interface CaptureComposerDraft {
     readonly smartDisclosureSha256?: string;
   };
 }
+
+/**
+ * The destination that stands for a routing decision instead of a place. It
+ * is presented apart from the literal destinations beside it.
+ */
+const AUTOMATIC_TARGET_ID = "auto";
 
 const statusTone = (status: string) => {
   if (status === "failed") return "danger" as const;
@@ -71,6 +79,7 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
       text: "",
       targetId: firstTarget?.targetId ?? "",
       mode: (firstTarget?.defaultMode ?? "dumb") as CaptureSubmitMode,
+      localTime: "",
     }),
     [firstTarget?.defaultMode, firstTarget?.targetId],
   );
@@ -82,6 +91,7 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
   const flushDraft = draftState.flush;
   const getDraftSnapshot = draftState.getSnapshot;
   const { text: draft, targetId, mode } = draftState.value;
+  const localTime = draftState.value.localTime ?? "";
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const target = useMemo(
     () => input.targets.find((candidate) => candidate.targetId === targetId),
@@ -109,6 +119,9 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
   };
   const smartAction = smartAvailability?.action;
   const smartSetupHref = smartAction?.kind === "app_link" ? safeCaptureAppHref(smartAction.href) : undefined;
+  const retrospectiveTime = input.retrospectiveTime?.targetIds.includes(targetId)
+    ? input.retrospectiveTime
+    : undefined;
 
   useEffect(() => {
     if (target?.enabled) return;
@@ -175,11 +188,18 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
     setSubmitError(undefined);
     let dispatched = false;
     try {
+      const selectedRetrospectiveTime = input.retrospectiveTime?.targetIds.includes(
+        selectedTarget.targetId,
+      ) ? input.retrospectiveTime : undefined;
+      const statedAt = selectedRetrospectiveTime && snapshot.value.localTime
+        ? journalInstantAtLocalTime(selectedRetrospectiveTime, snapshot.value.localTime)
+        : undefined;
       const request = {
         dayId: input.dayId,
         targetId: selectedTarget.targetId,
         mode: selectedMode,
         exactText: snapshot.value.text,
+        ...(statedAt ? { statedAt } : {}),
         ...(secondary ? { followUpActionId: secondary.actionId } : {}),
       };
       const disclosure = selectedMode === "smart" ? input.smartAvailability?.disclosure : undefined;
@@ -227,10 +247,12 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
       } else if (result !== undefined) {
         setSubmitError(`${result.message ?? "The capture could not finish."} Your draft remains here; retrying it unchanged checks the same save.`);
       }
-    } catch {
+    } catch (error) {
       setSubmitError(dispatched
         ? "Could not confirm the save. Your draft remains here; retrying it unchanged checks the same capture."
-        : "The draft could not be prepared for capture. Your text remains here; no capture was sent.");
+        : error instanceof Error
+          ? `${error.message} Your draft remains here; no capture was sent.`
+          : "The draft could not be prepared for capture. Your text remains here; no capture was sent.");
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -255,7 +277,7 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
   }
 
   return (
-    <form className={`wb-capture wb-capture--${density}`} onSubmit={submit} aria-busy={saving}>
+    <form className={`wb-capture wb-capture--${density}${retrospectiveTime ? " wb-capture--time" : ""}`} onSubmit={submit} aria-busy={saving}>
       {readOnly && input.accessNotice !== "view" ? (
         <InlineAlert tone="warning">{input.access.reason}</InlineAlert>
       ) : null}
@@ -332,9 +354,28 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
             label: option.label,
             description: option.description,
             disabled: !option.enabled || !option.supportedModes.includes(mode),
+            automatic: option.targetId === AUTOMATIC_TARGET_ID,
           }))}
           onChange={selectTarget}
         />
+
+        {retrospectiveTime ? (
+          <label className="wb-capture__time">
+            <span>Time <small>(optional)</small></span>
+            <input
+              type="time"
+              aria-label="Log time"
+              value={localTime}
+              disabled={readOnly}
+              onChange={(event) => setDraftValue((current) => ({
+                ...current,
+                localTime: event.target.value,
+                pendingSubmission: undefined,
+              }))}
+            />
+            <small>{retrospectiveTime.timezone}; blank uses capture time</small>
+          </label>
+        ) : null}
 
         <Button
           variant="primary"

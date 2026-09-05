@@ -25,6 +25,7 @@ from work_buddy.journal_capture.models import (
     ProcessingState,
 )
 from work_buddy.journal_capture.store import JournalCaptureStore
+from work_buddy.journal_day import JournalDayWindow
 from work_buddy.settings import get_journal_day_window
 
 
@@ -208,12 +209,9 @@ class JournalCaptureService:
             raise JournalCaptureValidationError("Automatic routing requires smart processing.")
         if input_mode not in _VALID_INPUT_MODES:
             raise JournalCaptureValidationError("The input mode is not supported.")
-        if stated_at is not None:
-            try:
-                datetime.fromisoformat(stated_at.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise JournalCaptureValidationError("The capture time is invalid.") from exc
-        return resolve_day_id(day_id)
+        local_date = resolve_day_id(day_id)
+        validate_stated_at(stated_at, window=get_journal_day_window(local_date))
+        return local_date
 
     def accept(
         self,
@@ -345,6 +343,84 @@ class JournalCaptureService:
         )
         if effect is None:
             raise KeyError("journal_effect_not_found")
+        async_start = getattr(self.smart_processor, "start", None)
+        if callable(async_start):
+            expected_disclosure = (effect.payload or {}).get(
+                "smart_disclosure_sha256"
+            )
+            with self._smart_lock:
+                processor = self.smart_processor
+                current_disclosure = self.smart_disclosure_sha256
+            if (
+                self.smart_configuration is not None
+                and expected_disclosure != current_disclosure
+            ):
+                self.store.finish_effect(
+                    capture_id,
+                    effect_type,
+                    succeeded=False,
+                    error_code="smart_disclosure_changed",
+                )
+                return self.store.set_processing(
+                    capture_id,
+                    status=ProcessingState.FAILED,
+                    error_code="smart_disclosure_changed",
+                )
+            try:
+                outcome = processor.start(
+                    capture=capture,
+                    effect=effect,
+                    exact_text=exact_text,
+                    smart_disclosure_sha256=current_disclosure,
+                )
+            except Exception as exc:
+                latest = self.store.get_capture(capture_id)
+                if (
+                    latest is not None
+                    and latest.processing_status is ProcessingState.FAILED
+                ):
+                    return latest
+                code = getattr(exc, "code", None)
+                if (
+                    not isinstance(code, str)
+                    or not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", code)
+                ):
+                    code = "smart_worker_start_failed"
+                self.store.finish_effect(
+                    capture_id,
+                    effect_type,
+                    succeeded=False,
+                    error_code=code,
+                )
+                return self.store.set_processing(
+                    capture_id,
+                    status=ProcessingState.FAILED,
+                    error_code=code,
+                )
+            status = outcome.get("status") if isinstance(outcome, Mapping) else None
+            if status in {"started", "already_running", "settled"}:
+                latest = self.store.get_capture(capture_id)
+                assert latest is not None
+                return latest
+            code = (
+                "journal_authorization_expired"
+                if status == "authorization_expired"
+                else "smart_source_too_large"
+                if status == "source_too_large"
+                else "smart_worker_start_failed"
+            )
+            if code != "journal_authorization_expired":
+                self.store.finish_effect(
+                    capture_id,
+                    effect_type,
+                    succeeded=False,
+                    error_code=code,
+                )
+            return self.store.set_processing(
+                capture_id,
+                status=ProcessingState.FAILED,
+                error_code=code,
+            )
         owner = f"journal-smart:{uuid.uuid4().hex}"
         leased = self.store.lease_effect(effect.effect_id, owner=owner)
         if leased is None:
@@ -378,33 +454,12 @@ class JournalCaptureService:
             if self.smart_configuration is not None and expected_disclosure != current_disclosure:
                 raise SmartDisclosureChanged("The Smart provider changed. Review the current disclosure and retry.")
             result = processor.process(capture=capture, exact_text=exact_text)
-            if result.target is CaptureTarget.AUTO:
-                raise RuntimeError("invalid_smart_target")
-            if capture.requested_target is not CaptureTarget.AUTO:
-                # Smart annotation must never silently reroute an explicit target.
-                resolved_target = capture.requested_target
-            else:
-                resolved_target = CaptureTarget.RUNNING_NOTES if result.follow_up else result.target
-            annotation: dict[str, Any] = {
-                "summary": result.summary,
-                "effects": list(result.effects),
-            }
-            if result.producer_ref:
-                annotation["producer_ref"] = result.producer_ref
-            if result.model_id:
-                annotation["model_id"] = result.model_id
-            if result.disclosure_manifest_sha256:
-                annotation["disclosure_manifest_sha256"] = result.disclosure_manifest_sha256
-            settled = self.store.settle_smart(
-                capture_id,
+            return self._complete_smart_result(
+                capture=capture,
                 effect_type=effect_type,
-                annotation=annotation,
-                resolved_target=resolved_target,
-                proposal_payload=(self._proposal_payload(capture, result.follow_up) if result.follow_up else None),
+                exact_text=exact_text,
+                result=result,
             )
-            self._materialize(settled, exact_text=exact_text, target=resolved_target)
-            self.deliver_proposal(capture_id)
-            return self.store.get_capture(capture_id) or settled
         except Exception as exc:
             latest = self.store.get_capture(capture_id)
             if latest is not None and latest.processing_status is ProcessingState.SUCCEEDED:
@@ -427,6 +482,95 @@ class JournalCaptureService:
                 status=ProcessingState.FAILED,
                 error_code=code,
             )
+
+    def complete_smart_worker(
+        self,
+        *,
+        capture_id: str,
+        exact_text: str,
+        result: SmartCaptureResult,
+        worker_request_id: str,
+        worker_lease_token: str,
+        worker_session_id: str,
+        input_manifest_sha256: str,
+        result_sha256: str,
+    ) -> JournalCapture:
+        """Commit one lease-bound hosted-worker result without redisclosure."""
+
+        self.authority.capture_mode()
+        capture = self.store.get_capture(capture_id)
+        if capture is None or capture.mode is not CaptureMode.SMART:
+            raise JournalCaptureValidationError(
+                "That Smart capture is unavailable."
+            )
+        effect_type = (
+            "auto_route"
+            if capture.requested_target is CaptureTarget.AUTO
+            else "smart_annotate"
+        )
+        return self._complete_smart_result(
+            capture=capture,
+            effect_type=effect_type,
+            exact_text=exact_text,
+            result=result,
+            worker_binding={
+                "worker_request_id": worker_request_id,
+                "worker_lease_token": worker_lease_token,
+                "worker_session_id": worker_session_id,
+                "input_manifest_sha256": input_manifest_sha256,
+                "result_sha256": result_sha256,
+            },
+        )
+
+    def _complete_smart_result(
+        self,
+        *,
+        capture: JournalCapture,
+        effect_type: str,
+        exact_text: str,
+        result: SmartCaptureResult,
+        worker_binding: Mapping[str, str] | None = None,
+    ) -> JournalCapture:
+        if result.target is CaptureTarget.AUTO:
+            raise RuntimeError("invalid_smart_target")
+        if capture.requested_target is not CaptureTarget.AUTO:
+            # Smart annotation must never silently reroute an explicit target.
+            resolved_target = capture.requested_target
+        else:
+            resolved_target = (
+                CaptureTarget.RUNNING_NOTES if result.follow_up else result.target
+            )
+        annotation: dict[str, Any] = {
+            "summary": result.summary,
+            "effects": list(result.effects),
+        }
+        if result.producer_ref:
+            annotation["producer_ref"] = result.producer_ref
+        if result.model_id:
+            annotation["model_id"] = result.model_id
+        if result.disclosure_manifest_sha256:
+            annotation["disclosure_manifest_sha256"] = (
+                result.disclosure_manifest_sha256
+            )
+        settled = self.store.settle_smart(
+            capture.capture_id,
+            effect_type=effect_type,
+            annotation=annotation,
+            resolved_target=resolved_target,
+            proposal_payload=(
+                self._proposal_payload(capture, result.follow_up)
+                if result.follow_up
+                else None
+            ),
+            **({} if worker_binding is None else dict(worker_binding)),
+        )
+        self._materialize(
+            settled,
+            exact_text=exact_text,
+            target=resolved_target,
+        )
+        self.deliver_proposal(capture.capture_id)
+        return self.store.get_capture(capture.capture_id) or settled
 
     @staticmethod
     def _proposal_payload(capture: JournalCapture, follow_up: TaskProposalFollowUp) -> dict[str, Any]:
@@ -648,6 +792,45 @@ class JournalCaptureService:
             )
         except JournalProjectionError as exc:
             self.store.mark_projection_failed(entry.entry_id, error_code=exc.code)
+
+
+def _stated_instant(stated_at: str) -> datetime:
+    """Parse one retrospective time as an unambiguous absolute instant.
+
+    A wall-clock string with no offset names a different instant in every zone,
+    so it cannot be placed on a Journal day.  The caller states the offset.
+    """
+
+    try:
+        parsed = datetime.fromisoformat(stated_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise JournalCaptureValidationError("The stated time is invalid.") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise JournalCaptureValidationError(
+            "The stated time needs a time zone offset."
+        )
+    return parsed
+
+
+def validate_stated_at(
+    stated_at: str | None,
+    *,
+    window: JournalDayWindow,
+) -> str | None:
+    """Confirm a stated time is an instant inside the day it is filed under.
+
+    ``window`` belongs to the target day, which is the day named by the request
+    rather than whichever day happens to be current when the request arrives.
+    """
+
+    if stated_at is None:
+        return None
+    parsed = _stated_instant(stated_at)
+    if not window.start <= parsed < window.end:
+        raise JournalCaptureValidationError(
+            "The stated time is outside that Journal day."
+        )
+    return stated_at
 
 
 def resolve_day_id(day_id: str) -> str:

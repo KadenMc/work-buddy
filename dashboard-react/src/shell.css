@@ -29,9 +29,26 @@
     color: var(--wb-color-accent);
   }
 
-  .header__brand-mark svg {
+  /*
+   * The brand mark is a single-colour silhouette whose face is negative
+   * space, so it is painted through a mask and takes the shell accent. That
+   * keeps one vector asset legible on both schemes and under every skin,
+   * where a baked-in colour would clash.
+   */
+  .header__brand-logo {
+    display: block;
     width: var(--wb-icon-size-md);
     height: var(--wb-icon-size-md);
+    background-color: currentColor;
+    -webkit-mask: url("./assets/work-buddy-logo.svg") center / contain no-repeat;
+    mask: url("./assets/work-buddy-logo.svg") center / contain no-repeat;
+  }
+
+  @media (forced-colors: active) {
+    .header__brand-logo {
+      forced-color-adjust: none;
+      background-color: LinkText;
+    }
   }
 
   .header h1 {
@@ -44,12 +61,6 @@
 
   .header h1 span {
     color: var(--wb-color-accent);
-  }
-
-  .header__descriptor {
-    margin-left: var(--wb-space-2);
-    color: var(--wb-color-text-muted);
-    font-weight: var(--wb-font-weight-regular);
   }
 
   .header-meta {
@@ -207,7 +218,6 @@
 
     .header-statuses,
     .clock,
-    .header__descriptor,
     .wb-help-mode-toggle,
     .wb-customize-view-toggle {
       display: none;

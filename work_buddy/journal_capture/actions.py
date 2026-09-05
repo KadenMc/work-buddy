@@ -65,6 +65,7 @@ class JournalActionSourceService:
         actor: Mapping[str, Any],
         authorship: str = "human",
         review_state: str = "not_applicable",
+        stated_at: str | None = None,
     ) -> JournalNativeItem:
         dependency_id = _stable("jirsd_", client_mutation_id)
         consumer_id = f"journal-item-revision:{dependency_id}"
@@ -83,6 +84,11 @@ class JournalActionSourceService:
                 "actor": dict(actor),
                 "authorship": authorship,
                 "reviewState": review_state,
+                # A corrected occurrence time is part of what the reader
+                # asked for, so a replay that changes it diverges here as
+                # well as in the domain. Absent, the key stays out so
+                # already recorded mutations keep their request identity.
+                **({"statedAt": stated_at} if stated_at is not None else {}),
             }
         )
         now = _now()
@@ -180,6 +186,7 @@ class JournalActionSourceService:
             review_state=review_state,
             operation=operation,
             source_dependency_id=dependency_id,
+            stated_at=stated_at,
         )
         self.sources.acknowledge_usage(reservation.usage_id)
         with self.journal.transaction() as conn:

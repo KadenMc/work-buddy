@@ -1,5 +1,3 @@
-import { Sparkle } from "@phosphor-icons/react/Sparkle";
-
 import { CustomizeViewToggle } from "../dashboard/customize/CustomizeViewToggle";
 import { HelpModeToggle } from "../dashboard/help/HelpModeToggle";
 import { useDashboardTemporalContext } from "../dashboard/temporal/DashboardTemporalContext";
@@ -72,11 +70,10 @@ export default function Header({
     <header className="header">
       <div className="header__brand">
         <span className="header__brand-mark" aria-hidden="true">
-          <Sparkle weight="duotone" />
+          <span className="header__brand-logo" />
         </span>
         <h1>
           <span>work-buddy</span>
-          <span className="header__descriptor">dashboard</span>
         </h1>
       </div>
       <div className="header-meta">

@@ -3086,6 +3086,59 @@ def _m024_document_module_bindings(conn: sqlite3.Connection) -> None:
     _set_legacy_version(conn, 24)
 
 
+def _m025_account_backed_smart_processing(conn: sqlite3.Connection) -> None:
+    """Persist each explicitly launched account-backed Smart worker attempt."""
+
+    conn.executescript(
+        """
+        CREATE TABLE journal_smart_processing_requests (
+            request_id TEXT PRIMARY KEY,
+            capture_id TEXT NOT NULL REFERENCES journal_captures(capture_id),
+            effect_id TEXT NOT NULL REFERENCES journal_effects(effect_id),
+            attempt_number INTEGER NOT NULL CHECK(attempt_number >= 1),
+            provider_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            provider_label TEXT NOT NULL,
+            model_label TEXT NOT NULL,
+            smart_disclosure_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'leased','succeeded','failed','canceled'
+            )),
+            lease_owner TEXT,
+            lease_token_sha256 TEXT,
+            lease_expires_at TEXT,
+            input_manifest_sha256 TEXT,
+            result_sha256 TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            UNIQUE(capture_id,attempt_number),
+            CHECK(length(smart_disclosure_sha256) = 64),
+            CHECK (
+                (status='leased' AND lease_owner IS NOT NULL
+                    AND lease_token_sha256 IS NOT NULL
+                    AND lease_expires_at IS NOT NULL
+                    AND completed_at IS NULL)
+                OR
+                (status='succeeded' AND input_manifest_sha256 IS NOT NULL
+                    AND result_sha256 IS NOT NULL AND completed_at IS NOT NULL)
+                OR
+                (status IN ('failed','canceled') AND completed_at IS NOT NULL)
+            )
+        );
+        CREATE INDEX journal_smart_processing_requests_capture_idx
+            ON journal_smart_processing_requests(
+                capture_id,attempt_number,request_id
+            );
+        CREATE UNIQUE INDEX journal_smart_processing_requests_active_uq
+            ON journal_smart_processing_requests(capture_id)
+            WHERE status='leased';
+        """
+    )
+    _set_legacy_version(conn, 25)
+
+
 class JournalMigrationRunner(MigrationRunner):
     """Adopt the old meta-versioned Journal schema without guessing."""
 
@@ -3228,6 +3281,11 @@ JOURNAL_MIGRATIONS = JournalMigrationRunner(
             24,
             "content-free Journal document module bindings",
             _m024_document_module_bindings,
+        ),
+        Migration(
+            25,
+            "account-backed Journal Smart processing workers",
+            _m025_account_backed_smart_processing,
         ),
     ],
 )

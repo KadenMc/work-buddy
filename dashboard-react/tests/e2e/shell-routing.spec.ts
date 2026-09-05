@@ -9,6 +9,93 @@ test("the app root resolves to the default registered view", async ({ page }) =>
   ).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "Journal", level: 1 })).toBeVisible();
   await expect(page.getByRole("region", { name: "Quick Capture", exact: true })).toBeVisible();
+
+  const brand = page.locator(".header__brand");
+  await expect(brand.getByRole("heading", { level: 1 })).toHaveText("work-buddy");
+  const logo = brand.locator(".header__brand-logo");
+  await expect(logo).toBeVisible();
+  const mark = await logo.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const box = element as HTMLElement;
+    return {
+      maskImage: style.maskImage || style.webkitMaskImage,
+      backgroundColor: style.backgroundColor,
+      width: box.offsetWidth,
+      height: box.offsetHeight,
+    };
+  });
+  // The mark is painted through a mask so it takes the shell accent rather
+  // than a baked-in brand colour, and the asset must actually resolve.
+  expect(mark.maskImage).toMatch(/^url\(".*\.svg"\)$/u);
+  expect(mark.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  expect(mark.width).toBeGreaterThan(0);
+  expect(mark.height).toBeGreaterThan(0);
+});
+
+test("the shared loading indicator has stable geometry and honors reduced motion", async ({
+  page,
+}) => {
+  let releaseJournalRequest: (() => void) | undefined;
+  const journalRequestGate = new Promise<void>((resolve) => {
+    releaseJournalRequest = resolve;
+  });
+  await page.route("**/api/local-identity/session/csrf", async (route) => {
+    await route.fulfill({ status: 401 });
+  });
+  await page.route("**/api/state", async (route) => {
+    await route.fulfill({ json: { status: "running" } });
+  });
+  await page.route("**/api/events", async (route) => {
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: "",
+    });
+  });
+  await page.route("**/api/journal/view", async (route) => {
+    await journalRequestGate;
+    await route.fulfill({
+      status: 503,
+      json: { error: "test_unavailable" },
+    });
+  });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+
+  try {
+    await page.goto("/app/journal");
+    const spinner = page.locator(".wb-widget-state .wb-spinner").first();
+    await expect(spinner).toBeVisible();
+    const normal = await spinner.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const box = element as HTMLElement;
+      return {
+        display: style.display,
+        width: box.offsetWidth,
+        height: box.offsetHeight,
+        animationName: style.animationName,
+        animationDuration: style.animationDuration,
+        animationIterationCount: style.animationIterationCount,
+      };
+    });
+    // The duration is the point of the assertion: paced from a loop token, a
+    // full turn reads as progress. Paced from a transition token it strobes.
+    expect(normal).toEqual({
+      // An inline box ignores width and height, which collapsed the ring to a
+      // sliver. Any non-inline display keeps the declared square.
+      display: "block",
+      width: 18,
+      height: 18,
+      animationName: "wb-spin",
+      animationDuration: "0.8s",
+      animationIterationCount: "infinite",
+    });
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect.poll(() =>
+      spinner.evaluate((element) => getComputedStyle(element).animationIterationCount),
+    ).toBe("1");
+  } finally {
+    releaseJournalRequest?.();
+  }
 });
 
 test("the Journal view supports direct navigation and refresh", async ({ page }) => {

@@ -20,6 +20,12 @@ export interface SelectFieldOption<Value extends string> {
   readonly label: string;
   readonly description?: string;
   readonly disabled?: boolean;
+  /**
+   * Marks an option that stands for an automatic decision rather than a
+   * concrete destination, so it reads as a stand-in in both the closed
+   * trigger and the open list.
+   */
+  readonly automatic?: boolean;
 }
 
 export interface SelectFieldProps<Value extends string> {
@@ -50,7 +56,7 @@ export function SelectField<Value extends string>({
 }: SelectFieldProps<Value>) {
   return (
     <Select
-      className={`wb-field wb-select-field${compact ? " wb-select-field--compact" : ""}${hideLabel || compact ? " wb-select-field--label-hidden" : ""} ${className}`.trim()}
+      className={`wb-field wb-select-field${compact ? " wb-select-field--compact" : ""}${hideLabel || compact ? " wb-select-field--label-hidden" : ""}${options.find((option) => option.value === value)?.automatic ? " wb-select-field--automatic" : ""} ${className}`.trim()}
       selectedKey={value}
       isDisabled={disabled}
       onSelectionChange={(key: Key | null) => {
@@ -76,7 +82,7 @@ export function SelectField<Value extends string>({
               id={option.value}
               textValue={option.label}
               isDisabled={option.disabled}
-              className="wb-listbox__item"
+              className={`wb-listbox__item${option.automatic ? " wb-listbox__item--automatic" : ""}`}
             >
               {({ isSelected }) => (
                 <>

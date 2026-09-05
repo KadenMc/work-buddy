@@ -61,10 +61,13 @@ test("resolves distinct and capability-gated actions for records, plans, and cal
   await openCalendarSpike(page);
 
   await page.locator('[data-wb-calendar-item-id="mobile-edge-capture"]').click();
-  await expect(page.getByRole("button", { name: "Open record" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Go to record source" })).toBeVisible();
-  await expect(page.getByText(/Records describe observed work/)).toBeVisible();
+  // A record authored outside this surface offers no action that would
+  // resolve, so it explains itself instead of showing controls that cannot act.
+  await expect(page.getByText(/authored elsewhere/)).toBeVisible();
   await expect(page.getByRole("button", { name: /Edit/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Delete/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open record" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Go to record source" })).toHaveCount(0);
   await page.getByRole("button", { name: "Close calendar item details" }).click();
 
   await page.locator('[data-wb-calendar-item-id="prototype-mobile"]').click();
@@ -243,10 +246,9 @@ test("keeps presentation discoverable at narrow size and opens list items throug
   await listRecord.click();
   const inspector = page.getByRole("dialog");
   await expect(inspector).toContainText("Captured mobile timeline edge case");
-  await expect(inspector.getByRole("button", { name: "Open record" })).toBeVisible();
-  await expect(
-    inspector.getByRole("button", { name: "Go to record source" }),
-  ).toBeVisible();
+  // The list presentation reaches the same inspector as the calendar one, so
+  // a record explains why it offers no action here rather than showing any.
+  await expect(inspector.getByText(/authored elsewhere/)).toBeVisible();
 });
 
 test("reverts a rejected drag through the Work Buddy intent result", async ({ page }) => {

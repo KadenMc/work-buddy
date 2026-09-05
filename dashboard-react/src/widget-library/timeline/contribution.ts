@@ -30,6 +30,8 @@ export const TIMELINE_APP_CONTRIBUTION = {
       outputIntentSchemas: [
         { schemaId: "wb.timeline.open-item", version: 1 },
         { schemaId: "wb.timeline.item-action-requested", version: 1 },
+        { schemaId: "wb.timeline.item-edit-requested", version: 1 },
+        { schemaId: "wb.timeline.item-delete-requested", version: 1 },
         { schemaId: "wb.timeline.render-mode-changed", version: 1 },
         { schemaId: "wb.timeline.replan-requested", version: 1 },
       ],
@@ -49,6 +51,8 @@ export const TIMELINE_APP_CONTRIBUTION = {
       outputIntentSchemas: [
         { schemaId: "wb.timeline.open-item", version: 1 },
         { schemaId: "wb.timeline.item-action-requested", version: 1 },
+        { schemaId: "wb.timeline.item-edit-requested", version: 1 },
+        { schemaId: "wb.timeline.item-delete-requested", version: 1 },
         { schemaId: "wb.timeline.render-mode-changed", version: 1 },
         { schemaId: "wb.timeline.replan-requested", version: 1 },
       ],
@@ -64,6 +68,16 @@ export const TIMELINE_APP_CONTRIBUTION = {
           preview: "block",
         },
         {
+          schema: { schemaId: "wb.timeline.item-edit-requested", version: 1 },
+          effect: "mutation",
+          preview: "block",
+        },
+        {
+          schema: { schemaId: "wb.timeline.item-delete-requested", version: 1 },
+          effect: "mutation",
+          preview: "block",
+        },
+        {
           schema: { schemaId: "wb.timeline.render-mode-changed", version: 1 },
           effect: "mutation",
           preview: "simulate",
@@ -72,6 +86,18 @@ export const TIMELINE_APP_CONTRIBUTION = {
           schema: { schemaId: "wb.timeline.replan-requested", version: 1 },
           effect: "external",
           preview: "block",
+        },
+      ],
+      drafts: [
+        {
+          draftName: "record-edit",
+          schema: { schemaId: "wb.timeline.day.record-edit-draft", version: 1 },
+          persistence: "device",
+          sensitivity: "private",
+          retentionDays: 14,
+          maxBytes: 262_144,
+          clearPolicy: "confirm",
+          scope: { kind: "input-field", path: ["day", "dayId"] },
         },
       ],
       sizeContract: {

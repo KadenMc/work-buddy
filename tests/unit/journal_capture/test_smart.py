@@ -26,6 +26,11 @@ from work_buddy.sources.disclosure import SourcesDisclosureService
 from work_buddy.sources.models import ActorRef
 from work_buddy.sources.store import SourceStore
 from work_buddy.settings import get_journal_day_window
+from work_buddy.settings.broker import get_journal_smart_execution_path
+from work_buddy.settings.registry import (
+    JOURNAL_SMART_EXECUTION_API_MODEL,
+    JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT,
+)
 
 
 class _Runner:
@@ -149,7 +154,12 @@ def test_production_smart_processor_requires_explicit_supported_config(
         "work_buddy.config.load_config",
         lambda: {"journal": {"smart_processing": {"enabled": False}}},
     )
-    assert configured_journal_smart_processor(sources, journal) is None
+    assert (
+        configured_journal_smart_processor(
+            sources, journal, execution_path=JOURNAL_SMART_EXECUTION_API_MODEL
+        )
+        is None
+    )
 
     monkeypatch.setattr(
         "work_buddy.config.load_config",
@@ -164,7 +174,12 @@ def test_production_smart_processor_requires_explicit_supported_config(
     )
     # A local profile whose concrete model is learned only after dispatch
     # cannot make a truthful write-ahead provider/model claim.
-    assert configured_journal_smart_processor(sources, journal) is None
+    assert (
+        configured_journal_smart_processor(
+            sources, journal, execution_path=JOURNAL_SMART_EXECUTION_API_MODEL
+        )
+        is None
+    )
 
 
 def test_expired_smart_authorization_pauses_without_model_egress_and_can_be_reauthorized(
@@ -263,16 +278,191 @@ def test_availability_distinguishes_opt_in_and_provider_failure(tmp_path, monkey
     sources = SourceStore.create(tmp_path / "sources")
     journal = JournalCaptureStore(tmp_path / "journal.db")
     monkeypatch.setattr("work_buddy.config.load_config", lambda: {})
-    processor, availability = configured_journal_smart_processing(sources, journal)
+    processor, availability = configured_journal_smart_processing(
+        sources, journal, execution_path=JOURNAL_SMART_EXECUTION_API_MODEL
+    )
     assert processor is None and availability.state == "disabled_by_policy"
     assert availability.code == "smart_not_enabled"
     monkeypatch.setattr("work_buddy.config.load_config", lambda: {
         "journal": {"smart_processing": {"enabled": True, "tier": "invalid-tier"}}
     })
-    processor, availability = configured_journal_smart_processing(sources, journal)
+    processor, availability = configured_journal_smart_processing(
+        sources, journal, execution_path=JOURNAL_SMART_EXECUTION_API_MODEL
+    )
     assert processor is None and availability.state == "provider_unavailable"
     assert availability.code == "provider_not_preflightable"
     assert availability.as_dict()["disclosure"]["maxInputBytes"] == 32768
+
+
+def _enable_smart(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {"journal": {"smart_processing": {"enabled": True}}},
+    )
+
+
+def _stub_account_selection(monkeypatch) -> None:
+    """Answer the account preflight without probing a real local runtime."""
+
+    from work_buddy.agent_execution import registry as execution_registry
+    from work_buddy.agent_execution.models import AgentExecutionSelection
+
+    selection = AgentExecutionSelection(
+        "claude-code", "sonnet", "Claude Code", "Sonnet"
+    )
+    monkeypatch.setattr(
+        execution_registry, "default_selection", lambda: selection
+    )
+    monkeypatch.setattr(
+        execution_registry,
+        "validate_selection",
+        lambda candidate, refresh=False: candidate,
+    )
+
+
+def test_smart_execution_path_defaults_to_the_subscription_agent() -> None:
+    # work-buddy already runs on an agent runtime the user signs in to, while
+    # the API path additionally needs a configured API model, so the account
+    # the user already has is the honest default.
+    assert get_journal_smart_execution_path() == (
+        JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT
+    )
+
+
+def test_subscription_agent_path_reports_the_account_provider_and_model(
+    tmp_path, monkeypatch
+):
+    from work_buddy.journal_capture.smart_worker import (
+        JournalAccountBackedSmartProcessor,
+    )
+
+    sources = SourceStore.create(tmp_path / "sources")
+    journal = JournalCaptureStore(tmp_path / "journal.db")
+    _enable_smart(monkeypatch)
+    _stub_account_selection(monkeypatch)
+    processor, availability = configured_journal_smart_processing(
+        sources, journal, execution_path=JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT
+    )
+    assert isinstance(processor, JournalAccountBackedSmartProcessor)
+    assert availability.state == "ready" and availability.code == "ready"
+    assert availability.provider == "Claude Code"
+    assert availability.model == "Sonnet"
+    assert "Claude Code · Sonnet" in processor.disclosure_summary
+    assert "no web access" in processor.disclosure_summary
+
+
+def test_api_model_path_reports_the_preflighted_provider_and_model(
+    tmp_path, monkeypatch
+):
+    sources = SourceStore.create(tmp_path / "sources")
+    journal = JournalCaptureStore(tmp_path / "journal.db")
+    _enable_smart(monkeypatch)
+    processor, availability = configured_journal_smart_processing(
+        sources, journal, execution_path=JOURNAL_SMART_EXECUTION_API_MODEL
+    )
+    assert isinstance(processor, JournalSourceBoundSmartProcessor)
+    assert availability.state == "ready" and availability.code == "ready"
+    assert availability.provider == "anthropic"
+    assert availability.model == processor.spec.model_id
+    assert f"anthropic · {processor.spec.model_id}" in processor.disclosure_summary
+    assert "no tools or web access" in processor.disclosure_summary
+
+
+def test_saved_setting_selects_the_path_without_an_explicit_argument(
+    tmp_path, monkeypatch
+):
+    from work_buddy.settings import broker
+    from work_buddy.settings.registry import JOURNAL_SMART_EXECUTION_ID
+    from work_buddy.journal_capture.smart_worker import (
+        JournalAccountBackedSmartProcessor,
+    )
+
+    sources = SourceStore.create(tmp_path / "sources")
+    journal = JournalCaptureStore(tmp_path / "journal.db")
+    _enable_smart(monkeypatch)
+    _stub_account_selection(monkeypatch)
+    processor, _availability = configured_journal_smart_processing(sources, journal)
+    assert isinstance(processor, JournalAccountBackedSmartProcessor)
+
+    broker.update_value(
+        JOURNAL_SMART_EXECUTION_ID,
+        scope="profile",
+        value=JOURNAL_SMART_EXECUTION_API_MODEL,
+        expected_revision="value:0",
+    )
+    processor, _availability = configured_journal_smart_processing(sources, journal)
+    assert isinstance(processor, JournalSourceBoundSmartProcessor)
+
+
+def test_unavailable_subscription_account_is_reported_not_silently_swapped(
+    tmp_path, monkeypatch
+):
+    from work_buddy.agent_execution import registry as execution_registry
+
+    sources = SourceStore.create(tmp_path / "sources")
+    journal = JournalCaptureStore(tmp_path / "journal.db")
+    _enable_smart(monkeypatch)
+
+    def unavailable() -> None:
+        raise RuntimeError("no agent runtime is signed in")
+
+    monkeypatch.setattr(execution_registry, "default_selection", unavailable)
+    processor, availability = configured_journal_smart_processing(
+        sources, journal, execution_path=JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT
+    )
+    assert processor is None
+    assert availability.state == "provider_unavailable"
+    assert availability.code == "provider_not_preflightable"
+
+
+def test_one_capture_spawn_is_bounded_far_below_the_general_agent_allowance(
+    monkeypatch,
+):
+    from work_buddy.agent_execution import registry as execution_registry
+    from work_buddy.agent_execution.models import (
+        AgentExecutionSelection,
+        AgentSpawnOutcome,
+    )
+    from work_buddy.journal_capture.smart_worker import (
+        SMART_PROCESSING_BUDGET_USD,
+        JournalSmartProcessingRunner,
+        JournalSmartWorkerSpec,
+    )
+
+    assert 0 < SMART_PROCESSING_BUDGET_USD <= 0.05
+
+    requests = []
+
+    def record(request):
+        requests.append(request)
+        return AgentSpawnOutcome(
+            status="ok", selection=request.selection, pid=4321,
+            session_id=request.session_id,
+        )
+
+    monkeypatch.setattr(execution_registry, "start_detached", record)
+
+    class _Store:
+        def claim_smart_processing_request(self, **_kwargs):
+            return {"leaseToken": "lease-token"}
+
+    class _Capture:
+        capture_id = "capture-budget"
+
+    class _Effect:
+        effect_id = "effect-budget"
+
+    outcome = JournalSmartProcessingRunner().start(
+        store=_Store(),
+        capture=_Capture(),
+        effect=_Effect(),
+        spec=JournalSmartWorkerSpec(
+            AgentExecutionSelection("claude-code", "sonnet", "Claude Code", "Sonnet")
+        ),
+        smart_disclosure_sha256="disclosure-hash",
+    )
+    assert outcome["status"] == "started"
+    assert requests[0].max_budget_usd == SMART_PROCESSING_BUDGET_USD
 
 
 @pytest.mark.parametrize("follow_up", [

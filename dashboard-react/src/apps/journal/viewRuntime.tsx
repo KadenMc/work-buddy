@@ -1,5 +1,11 @@
 import { JournalViewChrome } from "./chrome/JournalViewChrome";
 import type { JournalViewModel } from "./contracts";
+import {
+  journalSearchForDay,
+  journalSearchHasDay,
+  journalTodayLocalDate,
+  shiftJournalLocalDate,
+} from "./journalDay";
 import { InMemoryJournalProvider } from "./providers/InMemoryJournalProvider";
 import { LegacyFlaskViewAdapter } from "./providers/LegacyFlaskViewAdapter";
 import { HttpJournalProvider } from "./providers/HttpJournalProvider";
@@ -11,6 +17,7 @@ import type {
 } from "../../dashboard/contributions/viewModules";
 import { LocalStoragePersonalizationRepository } from "../../dashboard/personalization/repository";
 import { selectViewProviderFromSearch } from "../../dashboard/providers/providerSelection";
+import { Button } from "../../ui";
 
 export const hostContractVersion = 1 as const;
 
@@ -30,7 +37,7 @@ export function createRuntime(
         id: "live",
         label: "Live Journal",
         isDemo: false,
-        provider: new HttpJournalProvider(),
+        provider: new HttpJournalProvider({ location: context.location }),
       },
       {
         id: "legacy",
@@ -41,6 +48,12 @@ export function createRuntime(
     ],
     { search: context.search, defaultId: "live" },
   );
+
+  const returnToToday = () => {
+    context.location.pushSearch(
+      journalSearchForDay(context.location.getSearch(), null),
+    );
+  };
 
   return {
     provider: selection.provider,
@@ -56,6 +69,11 @@ export function createRuntime(
             <div className="journal-view-chrome__main">
               <h1 id="journal-view-title">Journal</h1>
               <div className="journal-view-chrome__actions">
+                {journalSearchHasDay(context.location.getSearch()) ? (
+                  <Button size="small" variant="ghost" onClick={returnToToday}>
+                    Today
+                  </Button>
+                ) : null}
                 {slots.contextualActions}
               </div>
             </div>
@@ -66,6 +84,7 @@ export function createRuntime(
           </header>
         );
       }
+      const today = journalTodayLocalDate(model.day);
       return (
         <JournalViewChrome
           day={model.day}
@@ -73,6 +92,26 @@ export function createRuntime(
           quality={model.quality}
           source={model.source}
           hostActions={slots.contextualActions}
+          {...(selection.id === "live"
+            ? {
+                onNavigateDay: (direction: "previous" | "next") => {
+                  context.location.pushSearch(journalSearchForDay(
+                    context.location.getSearch(),
+                    shiftJournalLocalDate(
+                      model.day.localDate,
+                      direction === "previous" ? -1 : 1,
+                      today,
+                    ),
+                  ));
+                },
+                onSelectDay: (localDate: string) => context.location.pushSearch(
+                  journalSearchForDay(context.location.getSearch(), localDate),
+                ),
+                ...(journalSearchHasDay(context.location.getSearch())
+                  ? { onReturnToToday: returnToToday }
+                  : {}),
+              }
+            : {})}
         />
       );
     },
