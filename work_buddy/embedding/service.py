@@ -20,6 +20,7 @@ Model registry:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
@@ -32,6 +33,8 @@ from typing import Any
 import numpy as np
 from flask import Flask, Response, jsonify, request
 from rank_bm25 import BM25Okapi
+
+from work_buddy.utils.index_lock import index_lock
 
 # ---------------------------------------------------------------------------
 # Model registry
@@ -862,6 +865,12 @@ def ir_search_endpoint():
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
+# How long a build waits for the DB-wide IR lock before reporting itself skipped.
+# Short but nonzero: long enough to absorb the handoff from a build that is already
+# finishing, short enough that a caller never waits out someone else's full build.
+_IR_BUILD_LOCK_TIMEOUT_S = 1.0
+
+
 @app.route("/ir/index", methods=["POST"])
 def ir_index_endpoint():
     """Build or check the IR search index.
@@ -873,17 +882,41 @@ def ir_index_endpoint():
         "force": false                  // default false
     }
     Response: {"result": {...}}
+
+    Builds across every IR source serialize on one DB-wide advisory lock. A build
+    that arrives while another holds it is not queued; it returns
+    ``{"skipped": true, "reason": "build_in_progress"}`` so a scheduled caller
+    fails fast and retries on its next tick.
     """
     data = request.get_json(silent=True) or {}
     action = data.get("action", "build")
     source = data.get("source", "conversation")
 
-    from work_buddy.ir.store import build_index, index_status
+    from work_buddy.ir.store import _db_path, build_index, index_status
 
     try:
         if action == "status":
-            result = index_status(source=source)
-        else:
+            return jsonify({"result": index_status(source=source)})
+
+        # Every IR source shares one SQLite DB, and building is CPU-bound in this
+        # same process that serves /ir/search. Concurrent builds therefore contend
+        # for one writer and one interpreter, which inflates each build's duration
+        # and starves search until it exceeds the client timeout. Serialize every
+        # build on a DB-wide advisory lock, and skip rather than queue: a caller
+        # that waited would hold a request open for the length of another source's
+        # build, and the next scheduled tick will pick the work up anyway.
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(
+                    index_lock(_db_path(), timeout=_IR_BUILD_LOCK_TIMEOUT_S)
+                )
+            except TimeoutError:
+                return jsonify({"result": {
+                    "source": source,
+                    "skipped": True,
+                    "reason": "build_in_progress",
+                }})
+
             result = build_index(
                 source=source,
                 days=data.get("days", 30),
@@ -894,6 +927,8 @@ def ir_index_endpoint():
             # self-call) because _IN_SERVICE is set in main(). Failures
             # here degrade the index to BM25-only rather than failing the
             # whole build — callers can check result["dense"] for status.
+            # Encoding stays inside the lock so a build's index and vectors
+            # are written as one unit.
             if data.get("include_dense", True):
                 try:
                     from work_buddy.ir.dense import build_vectors

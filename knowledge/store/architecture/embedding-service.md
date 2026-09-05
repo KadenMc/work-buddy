@@ -107,6 +107,24 @@ dev_notes: |-
 
   A reachable embedding service that fails an ``/ir/index`` request surfaces the **real** error, not a generic "service unavailable". ``client._request`` catches ``HTTPError`` (a subclass of ``URLError``, so it must be caught first) separately from connection failures, logs the status + body, and — with ``return_http_error=True`` (passed only by ``ir_index``) — returns ``{"error", "status"}`` rather than collapsing a 500 to ``None``. The ``ir_index`` dispatch then distinguishes: ``None`` → service unreachable (remediation points at the sidecar via ``utils/service_hints.py::sidecar_restart_command``, since the embedding service is a sidecar-supervised child, not a standalone scheduled task); an error envelope → surface the real ``/ir/index`` error; otherwise the status/build result. Every *other* client caller still gets ``None`` on any failure — the flag defaults off, so their graceful-degradation contract is unchanged.
 
+  ## IR builds serialize on a DB-wide lock, and skip rather than queue
+
+  ``/ir/search`` and ``/ir/index`` run in the SAME process, and building is CPU-bound (BM25 tokenisation plus SentenceTransformer encoding). Werkzeug is threaded, so a concurrent search is accepted but its thread is starved for the duration of the build. Unserialized builds compound: every IR source (conversation, summary, task_note, docs, chrome) writes to ONE SQLite DB on its own cron, so overlapping builds contend for a single writer and a single GIL, each inflating the others' duration. Once a build outlasts its own cron interval the next tick stacks on top of it, a positive feedback loop whose end state is searches exceeding the 30s client timeout in ``client.ir_search`` and surfacing as the misleading "embedding service unavailable".
+
+  The exclusion boundary:
+
+  - ``ir_index_endpoint`` holds ``utils.index_lock.index_lock(ir.store._db_path())`` across BOTH ``build_index`` and ``build_vectors``, so a build's rows and its vectors land as one unit. Mirrors ``vault_index.indexer.run_index``.
+  - Acquisition uses ``_IR_BUILD_LOCK_TIMEOUT_S`` (short); a ``TimeoutError`` returns a skipped result. **Skip, never queue.** A waiting caller would hold an HTTP request open for the length of another source's build, and the scheduled tick picks the work up next cycle anyway.
+  - ``action="status"`` returns before the lock is taken, so status stays readable during a build (the same guarantee ``context/vault_index`` documents).
+  - ``context_ops._ir_index_dispatch`` probes ``index_lock.is_locked`` read-only and short-circuits before the HTTP round trip. The endpoint enforces the exclusion regardless; the probe only avoids the request.
+  - ``indexing/adapters/ir.py::bulk_build`` holds the same lock across its whole multi-source sweep so it cannot interleave with the scheduled per-source builds.
+
+  The lock self-heartbeats from a daemon thread, so a long build never ages past the stale window. Never SIGKILL a build; a killed holder can leave a ``*.lock`` that is honored until it ages out.
+
+  **What the lock does not fix.** Serialization stops builds compounding; it does not make search fast while a single build runs. Build and search share one interpreter, and the legacy IR search path materialises every candidate row into Python (``load_documents`` pulls and JSON-parses the corpus, then scoring runs in a Python loop), so a query costing ~2s of interpreter time stretches to minutes against an active build. This is contention for Python execution inside one process, not a saturated machine: ``/health`` still answers in under 0.1s and the service occupies roughly one core. The durable fixes are moving builds out of the process, or serving the lexical path natively from FTS5 the way ``architecture/consolidated-index`` does.
+
+  ``IndexProtocol.lock_key`` (``indexing/protocol.py``) is declared by every adapter but consumed by nothing. It is not an exclusion mechanism, and reading it as one would be a mistake.
+
   ## Adding a new model
 
   Add an entry to `config.yaml` under `embedding.models` (or `_DEFAULT_MODELS` in `service.py` for the fallback). Required fields: HF name, dims, `eager` (bool). Eager-load only models on the critical path for interactive work; lazy-load large models (e.g. the 526 MB `leaf-ir` passage encoder) that are used only during indexing.
@@ -165,7 +183,11 @@ A long-running sidecar service providing dense vector embeddings for work-buddy'
 - `POST /embed` — embed a batch of texts, return vectors
 - `POST /similarity` — cosine similarity between a query and candidate texts
 - `POST /search` — BM25 + embedding hybrid search over candidates
-- `POST /ir/search`, `POST /ir/index` — indexed IR search over registered sources
+- `POST /ir/search`, `POST /ir/index` — indexed IR search over registered sources. Every IR
+  source shares one SQLite DB, so builds serialize on a DB-wide advisory lock; a build that
+  arrives while another build is running returns `{"skipped": true, "reason":
+  "build_in_progress"}` instead of queueing. `action="status"` is never gated and stays
+  readable during a build
 - `POST /vault/search`, `POST /vault/index` — vault semantic index search / build, run
   in-process so the resident vector matrix stays warm and the bulk encode shares the broker
   (see `architecture/vault-index`)
