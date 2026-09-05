@@ -71,18 +71,24 @@ class IRIndexAdapter:
         on_progress: Callable[[BuildProgress], None] | None = None,
     ) -> BuildResult:
         from work_buddy.ir.dense import build_vectors
-        from work_buddy.ir.store import build_index
+        from work_buddy.ir.store import _db_path, build_index
+        from work_buddy.utils.index_lock import index_lock
 
         days = 36500 if full_history else 30
         stats: dict = {}
         try:
-            for src in _IR_SOURCES:
-                if on_progress:
-                    on_progress(BuildProgress(phase="scanning"))
-                stats[src] = {
-                    "index": build_index(source=src, days=days),
-                    "dense": build_vectors(source=src),
-                }
+            # Every IR source shares one SQLite DB and one embedding-service
+            # process. Hold the DB-wide lock across the whole sweep so this bulk
+            # build cannot interleave with the scheduled per-source builds; the
+            # lock heartbeats itself, so a long full-history run stays honored.
+            with index_lock(_db_path()):
+                for src in _IR_SOURCES:
+                    if on_progress:
+                        on_progress(BuildProgress(phase="scanning"))
+                    stats[src] = {
+                        "index": build_index(source=src, days=days),
+                        "dense": build_vectors(source=src),
+                    }
             return BuildResult(name=self.name, ok=True, stats=stats)
         except Exception as exc:
             return BuildResult(

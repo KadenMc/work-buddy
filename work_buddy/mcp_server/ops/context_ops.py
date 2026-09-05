@@ -109,10 +109,27 @@ def _register() -> None:
         days: int = 30,
         force: bool = False,
     ) -> str:
-        """Build or check the IR index via the embedding service."""
+        """Build or check the IR index via the embedding service.
+
+        A ``build`` skips when another IR build already holds the DB-wide advisory
+        lock, detected with a read-only ``is_locked`` probe. The four index crons
+        and any manual run all write to one SQLite DB. The service enforces the
+        same exclusion; probing here just avoids the round trip.
+        """
         import json
 
         from work_buddy.utils.service_hints import sidecar_restart_command
+
+        if action == "build":
+            from work_buddy.ir.store import _db_path
+            from work_buddy.utils import index_lock
+
+            if index_lock.is_locked(_db_path()):
+                return json.dumps({
+                    "source": source,
+                    "skipped": True,
+                    "reason": "build_in_progress",
+                })
 
         result = _ir_index_client(
             action, source=source, days=days, force=force,
