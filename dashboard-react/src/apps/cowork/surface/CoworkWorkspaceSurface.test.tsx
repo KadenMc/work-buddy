@@ -1003,6 +1003,7 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
           },
           reasonCode: "descendant_scan_incomplete",
           retryable: true,
+          availableActions: ["retry"],
         },
         catalog: {
           status: "error",

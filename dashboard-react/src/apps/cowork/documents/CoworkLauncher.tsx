@@ -5,9 +5,10 @@ import {
   ModalOverlay,
 } from "react-aria-components";
 
-import { Button, InlineAlert, Spinner } from "../../../ui";
+import { ActivityStatus, Button, InlineAlert } from "../../../ui";
 import type {
   CoworkDocumentSummary,
+  CoworkFolderAction,
   CoworkFolderSummary,
   CoworkScratchSummary,
   CoworkViewModel,
@@ -26,6 +27,7 @@ interface CoworkLauncherProps {
   } | null;
   readonly onRetryInspection: () => void;
   readonly onCancelInspection: () => void;
+  readonly onChooseFolder: () => void;
   readonly onInitialize: () => void;
   readonly onOpenFolder: (storeId: string) => void;
   readonly onOpenDocument: (document: CoworkDocumentSummary) => void;
@@ -37,8 +39,18 @@ const unavailableCopy: Record<string, string> = {
   folder_unreadable: "Work Buddy can’t read that folder.",
   folder_disallowed: "Work Buddy can’t open that location.",
   descendant_scan_incomplete: "Co-work couldn’t finish opening that folder.",
-  folder_too_large_for_safe_setup: "Choose a smaller folder to use with Co-work.",
+  folder_too_large_for_safe_setup:
+    "That folder holds too many items for Co-work to check safely.",
 };
+
+/** A refusal the user can leave by picking a different folder. */
+const offersFolderChoice = (actions: readonly CoworkFolderAction[]): boolean =>
+  actions.includes("choose_narrower_folder") || actions.includes("choose_another");
+
+const folderChoiceLabel = (actions: readonly CoworkFolderAction[]): string =>
+  actions.includes("choose_narrower_folder")
+    ? "Choose a smaller folder"
+    : "Choose another folder";
 
 const folderConflictCopy: Record<string, string> = {
   folder_layout_incomplete: "This folder has an incomplete Co-work setup.",
@@ -189,6 +201,7 @@ export function CoworkLauncher({
   pendingFolderAction = null,
   onRetryInspection,
   onCancelInspection,
+  onChooseFolder,
   onInitialize,
   onOpenFolder,
   onOpenDocument,
@@ -205,14 +218,21 @@ export function CoworkLauncher({
   const navigationBusy = openingFolder || folderActionBusy;
 
   if (selection.kind === "inspecting_descendants") {
+    // The scan reports what it has checked, never a total, so the count appears only
+    // once the walk has something to report.
+    const visited = selection.progress.visited;
     return (
       <section
         className="wb-cowork-launcher wb-cowork-launcher--centered"
         aria-label="Opening folder"
         aria-busy="true"
       >
-        <Spinner />
-        <p>Opening {selection.candidate.folderName}…</p>
+        <ActivityStatus
+          label={`Opening ${selection.candidate.folderName}…`}
+          detail={
+            visited > 0 ? `${visited.toLocaleString()} items checked` : undefined
+          }
+        />
         <Button onClick={onCancelInspection}>Cancel</Button>
       </section>
     );
@@ -405,6 +425,18 @@ export function CoworkLauncher({
               {folderActionBusy ? "Opening…" : "Try again"}
             </Button>
           ) : null}
+          {model.folderChooser.available &&
+          offersFolderChoice(selection.availableActions) ? (
+            <Button
+              variant="primary"
+              onClick={onChooseFolder}
+              disabled={folderActionBusy}
+            >
+              {folderActionBusy
+                ? "Opening…"
+                : folderChoiceLabel(selection.availableActions)}
+            </Button>
+          ) : null}
         </div>
       </section>
     );
@@ -429,9 +461,7 @@ export function CoworkLauncher({
           </InlineAlert>
         ) : null}
         {model.catalog.status === "loading" ? (
-          <p role="status" className="wb-cowork-launcher__loading">
-            <Spinner /> Loading documents…
-          </p>
+          <ActivityStatus label="Loading documents…" />
         ) : null}
         {model.catalog.error !== null ? (
           <InlineAlert tone="danger">

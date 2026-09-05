@@ -6,7 +6,7 @@ import {
   asWidgetTypeId,
   type DashboardIntent,
 } from "../../../dashboard/contributions/contracts";
-import { COWORK_INTENTS } from "../contracts";
+import { COWORK_INTENTS, type CoworkFolderSelection } from "../contracts";
 import { bootstrapCoworkYdoc } from "../documents/bootstrapCoworkYdoc";
 import { frameSegments } from "../persistence/framing";
 import {
@@ -1303,6 +1303,7 @@ describe("HttpCoworkProvider", () => {
   it("continues a bounded folder check automatically before asking to set up the Folder", async () => {
     const location = new MemoryLocation();
     let inspections = 0;
+    let selectionDuringScan: CoworkFolderSelection | null = null;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/truth/cowork/folders?")) {
@@ -1323,6 +1324,7 @@ describe("HttpCoworkProvider", () => {
           });
         }
         expect(body).toEqual({ continuation_token: "continue-1" });
+        selectionDuringScan = (await provider.loadView()).model.folderSelection;
         return json({
           status: "uninitialized",
           folder_name: "work-buddy",
@@ -1350,9 +1352,66 @@ describe("HttpCoworkProvider", () => {
     ).toMatchObject({ status: "accepted" });
 
     expect(inspections).toBe(2);
+    expect(selectionDuringScan).toEqual({
+      kind: "inspecting_descendants",
+      candidate: {
+        folderName: "work-buddy",
+        folderPath: "C:/Projects/work-buddy",
+      },
+      progress: { visited: 250, complete: false },
+    });
     expect((await provider.loadView()).model.folderSelection).toMatchObject({
       kind: "setup_confirmation",
       candidate: { folderName: "work-buddy" },
+    });
+  });
+
+  it("surfaces the narrower folder action when a folder is too large to check", async () => {
+    const location = new MemoryLocation();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({ read_only: false, folders: [], diagnostics: [] });
+      }
+      if (url.endsWith("/folders/inspect")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          folder_path: "C:/Projects/work-buddy",
+        });
+        return json({
+          status: "unavailable",
+          folder_name: "work-buddy",
+          folder_path: "C:/Projects/work-buddy",
+          reason_code: "folder_too_large_for_safe_setup",
+          actions: ["choose_narrower_folder"],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+    await provider.loadView();
+
+    await expect(
+      provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, {
+          action: "inspect",
+          folderPath: "C:/Projects/work-buddy",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "accepted" });
+
+    expect((await provider.loadView()).model.folderSelection).toEqual({
+      kind: "unavailable",
+      candidate: {
+        folderName: "work-buddy",
+        folderPath: "C:/Projects/work-buddy",
+      },
+      reasonCode: "folder_too_large_for_safe_setup",
+      retryable: false,
+      availableActions: ["choose_narrower_folder"],
     });
   });
 

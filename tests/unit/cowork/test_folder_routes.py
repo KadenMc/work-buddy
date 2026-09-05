@@ -30,6 +30,7 @@ from work_buddy.cowork.file_importers import (
     MARKDOWN_FILE_IMPORTER,
     MARKDOWN_MAX_SOURCE_BYTES,
 )
+from work_buddy.cowork import project_store
 from work_buddy.cowork.native_folder_chooser import NativeFolderChooserError
 from work_buddy.cowork.project_store import FolderLifecycleError, ProjectStoreManager
 from work_buddy.truth.identity import sha256_bytes
@@ -114,12 +115,13 @@ def _client(
     location_chooser=None,
     importer_registry=None,
     read_only=lambda: False,
-    scan_budget: int = 2_000,
+    scan_work_per_page: int | None = None,
+    scan_work_limit: int | None = None,
 ):
     manager = ProjectStoreManager(
         data_root=tmp_path / "machine",
-        scan_budget=scan_budget,
-        scan_hard_limit=100,
+        scan_work_per_page=scan_work_per_page,
+        scan_work_limit=scan_work_limit,
     )
     registry = TruthStoreRegistry(tmp_path / "registry.db")
     blueprint = create_folder_blueprint(
@@ -1053,7 +1055,7 @@ def test_scan_continuation_token_hides_machine_scan_cursor(tmp_path: Path) -> No
     folder.mkdir()
     for index in range(4):
         (folder / f"child-{index}").mkdir()
-    client, manager, _ = _client(tmp_path, scan_budget=1)
+    client, manager, _ = _client(tmp_path, scan_work_per_page=1)
 
     response = client.post(
         "/api/truth/cowork/folders/inspect", json={"folder_path": str(folder)}
@@ -1071,6 +1073,61 @@ def test_scan_continuation_token_hides_machine_scan_cursor(tmp_path: Path) -> No
             break
     assert response["status"] == "uninitialized"
     assert "inspection_token" in response
+
+
+def test_a_folder_past_the_work_limit_refuses_without_minting_a_token(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "sprawling"
+    folder.mkdir()
+    for index in range(4):
+        (folder / f"entry-{index}.txt").write_text(str(index), encoding="ascii")
+    client, _, _ = _client(tmp_path, scan_work_limit=1)
+
+    response = client.post(
+        "/api/truth/cowork/folders/inspect",
+        json={"folder_path": str(folder)},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "unavailable"
+    assert payload["reason_code"] == "folder_too_large_for_safe_setup"
+    assert payload["actions"] == ["choose_narrower_folder"]
+    # The refusal carries an action and no authority: a scan that stopped
+    # early proved nothing about the tree, so it cannot mint a token that
+    # setup would spend.
+    assert "inspection_token" not in payload
+
+
+def test_folder_growth_after_the_token_is_minted_still_refuses_setup(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "growing"
+    folder.mkdir()
+    client, _, _ = _client(
+        tmp_path,
+        scan_work_limit=project_store._SCAN_DIRECTORY_WEIGHT,
+    )
+
+    inspected = client.post(
+        "/api/truth/cowork/folders/inspect",
+        json={"folder_path": str(folder)},
+    ).get_json()
+    assert inspected["status"] == "uninitialized"
+
+    (folder / "child").mkdir()
+    refused = client.post(
+        "/api/truth/cowork/folders/initialize",
+        json={
+            "inspection_token": inspected["inspection_token"],
+            "idempotency_key": "grew-past-the-work-limit",
+        },
+    )
+
+    assert refused.status_code == 409
+    assert refused.get_json()["error"]["code"] == "folder_changed"
+    assert not (folder / ".wbuddy").exists()
 
 
 def test_nested_folder_boundary_details_survive_the_http_contract(

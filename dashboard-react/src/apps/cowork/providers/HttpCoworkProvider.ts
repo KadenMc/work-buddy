@@ -18,6 +18,7 @@ import {
   type CoworkCatalogState,
   type CoworkDocumentOpenIntentPayload,
   type CoworkDocumentSummary,
+  type CoworkFolderAction,
   type CoworkFolderCandidate,
   type CoworkFolderSelectIntentPayload,
   type CoworkFolderSelection,
@@ -89,6 +90,26 @@ const payloadRecord = (intent: DashboardIntent): Record<string, unknown> =>
   typeof intent.payload === "object" && intent.payload !== null
     ? (intent.payload as Record<string, unknown>)
     : {};
+
+/**
+ * The action union is the single source of truth for what the server may offer.
+ * A widened union fails to compile here until this lookup names the addition,
+ * so an action the server already emits cannot be dropped in transit.
+ */
+const FOLDER_ACTIONS: Record<CoworkFolderAction, true> = {
+  retry: true,
+  inspect: true,
+  open_owner: true,
+  choose_another: true,
+  choose_narrower_folder: true,
+};
+
+const folderActions = (
+  actions: readonly string[],
+): readonly CoworkFolderAction[] =>
+  actions.filter((action): action is CoworkFolderAction =>
+    Object.prototype.hasOwnProperty.call(FOLDER_ACTIONS, action),
+  );
 
 const folderActionError = (error: unknown): CoworkApiError => {
   const apiError = asCoworkApiError(error);
@@ -802,6 +823,7 @@ export class HttpCoworkProvider implements ViewProvider {
           candidate: null,
           reasonCode: "folder_not_found",
           retryable: true,
+          availableActions: ["retry"],
         },
         ...(hasPreviousFolder
           ? {}
@@ -1636,13 +1658,7 @@ export class HttpCoworkProvider implements ViewProvider {
           | "folder_layout_incomplete"
           | "folder_store_collision"
           | "identity_conflict",
-        availableActions: inspection.actions.filter(
-          (action): action is "retry" | "inspect" | "open_owner" | "choose_another" =>
-            action === "retry" ||
-            action === "inspect" ||
-            action === "open_owner" ||
-            action === "choose_another",
-        ),
+        availableActions: folderActions(inspection.actions),
       };
     }
     return {
@@ -1655,6 +1671,7 @@ export class HttpCoworkProvider implements ViewProvider {
         | "descendant_scan_incomplete"
         | "folder_too_large_for_safe_setup",
       retryable: inspection.actions.includes("retry"),
+      availableActions: folderActions(inspection.actions),
     };
   }
 

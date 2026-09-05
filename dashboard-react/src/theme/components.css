@@ -666,6 +666,25 @@
     gap: var(--wb-space-4);
   }
 
+  .wb-activity-status {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: var(--wb-space-4);
+  }
+
+  .wb-activity-status__indicator {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+
+  /* The label and its detail read as one message, so they sit tighter than
+     the stack's default rhythm. This follows .wb-stack to win on order. */
+  .wb-activity-status__copy {
+    gap: var(--wb-space-2);
+    text-align: start;
+  }
+
   .wb-widget-frame {
     position: relative;
     display: flex;

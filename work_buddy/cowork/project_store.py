@@ -64,12 +64,26 @@ COMPONENT_GITIGNORE_LINES = (
     "!/store.yaml",
     "!/export/",
 )
-DEFAULT_SCAN_BUDGET = 2_000
-DEFAULT_SCAN_HARD_LIMIT = 50_000
+DEFAULT_SCAN_WORK_PER_PAGE = 20_000
+DEFAULT_SCAN_WORK_LIMIT = 750_000
 DEFAULT_TOKEN_TTL_SECONDS = 15 * 60
+# A directory that mutates while it is being listed is re-queued instead of
+# failing the whole scan. This caps that: a directory under continuous churn
+# stops the scan honestly rather than spinning against it.
+_SCAN_DIRECTORY_RETRY_LIMIT = 3
+# Opening a directory costs two metadata lookups plus a listing; reading one
+# entry out of an open listing is served from the same enumeration. Measured
+# against a large repository the first is roughly forty times the second, so
+# the scan charges a directory forty units and an entry one. The weight prices
+# opening a directory, not every syscall the walk makes.
+_SCAN_DIRECTORY_WEIGHT = 40
 _TOKEN = re.compile(r"^[0-9a-f]{32}$")
+# The child every Work Buddy component writes beneath. A directory listing
+# that never names it cannot be a store root, which is what lets the scan
+# decide a boundary from the listing it already has.
+_COMPONENT_DIR_NAME = ".wbuddy"
 _SKIP_DIRS = frozenset(
-    {".git", ".wbuddy", "node_modules", ".venv", "vendor"}
+    {".git", _COMPONENT_DIR_NAME, "node_modules", ".venv", "vendor"}
 )
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -331,6 +345,23 @@ def _assert_managed_layout_safe(root: Path) -> None:
         root / ".wbuddy" / "cowork",
         root_device=root_info.st_dev,
     )
+
+
+def _is_store_root(scan_root: Path, directory: str) -> bool:
+    """Report whether ``directory`` holds a Co-work store of its own.
+
+    Only a directory whose own listing named the component child reaches this
+    probe, so the metadata lookups are spent on the few directories that can
+    possibly answer yes. The component child is read with ``lstat`` first: a
+    redirected component is refused rather than followed, so the probe cannot
+    read a store that lives outside the scanned tree.
+    """
+
+    component = os.path.join(directory, _COMPONENT_DIR_NAME)
+    info = _lstat_managed(scan_root, Path(component))
+    if info is None or not stat.S_ISDIR(info.st_mode):
+        return False
+    return os.path.isfile(os.path.join(component, "cowork", "store.yaml"))
 
 
 def _managed_sidecar_root(sidecar: str | Path) -> tuple[Path, Path]:
@@ -679,6 +710,103 @@ def _fingerprint(root: Path) -> str:
     ).hexdigest()
 
 
+# The one setup refusal a caller can answer by asking again: reading the
+# folder's Work Buddy data failed, so the classification settled nothing about
+# what that data holds and the same folder can classify differently on the next
+# attempt. Every other refusal describes a fact the walk did establish, which
+# repeating the call cannot change. Membership decides both the ``retryable``
+# flag and the HTTP status, so the two cannot drift apart.
+_RETRYABLE_SETUP_REFUSALS = frozenset({"folder_unreachable"})
+
+
+def _setup_refusal(
+    current: FolderInspection,
+    *,
+    observed: bool,
+) -> FolderLifecycleError:
+    """Compose the refusal that stops setup on a folder that cannot take it.
+
+    A caller that inspected the folder and then asked for setup holds a
+    fingerprint over that observation, so its refusal reports the folder
+    moving out from under what a human was shown. A caller with no prior
+    observation has no such gap to honour, and its refusal carries the
+    classification's own code and prose, naming what the folder is instead of
+    implying a race that did not happen.
+
+    The message is the whole contract for an agent caller, which reads the
+    exception text and nothing else, so each one names both the folder's state
+    and the action that answers it. A refusal that follows from failing to read
+    the folder, rather than from what a read found, says exactly that and keeps
+    the unreachable classification's retryable 503: an agent told the data is
+    unread waits and asks again, where an agent told the data is broken repairs
+    a folder that was never shown to be broken.
+    """
+
+    if observed:
+        return FolderLifecycleError(
+            "folder_changed",
+            "The folder is no longer available for setup.",
+            retryable=True,
+        )
+    status = current.status
+    code = current.reason_code or status
+    if status == "initialized":
+        code = "folder_already_initialized"
+        message = (
+            "This folder is already set up for Co-work. Open it instead of "
+            "setting it up again."
+        )
+    elif status == "inside_existing_folder":
+        code = "inside_existing_folder"
+        message = (
+            "This folder sits inside a folder that is already set up for "
+            "Co-work. Set up a folder outside that one instead."
+        )
+    elif code == "contains_nested_folder":
+        message = (
+            "This folder encloses a folder that is already set up for "
+            "Co-work. Set up a folder that does not enclose it instead."
+        )
+    elif code == "folder_too_large_for_safe_setup":
+        message = (
+            "This folder holds too many items for Co-work to check safely. "
+            "Set up a narrower folder inside it instead."
+        )
+    elif code == "folder_unreachable":
+        # Reading the folder's Work Buddy data failed, so nothing is known
+        # about what that data holds. Naming the folder unread rather than
+        # incomplete is what keeps a caller from repairing a healthy store
+        # that a backup or a scanner happened to be holding open.
+        message = (
+            "This folder's Work Buddy data is temporarily unavailable, so "
+            "Co-work cannot tell what state the folder is in. Try setting it "
+            "up again in a moment."
+        )
+    elif code == "identity_conflict":
+        # The data was read and the records contradict each other, which is a
+        # settled fact about the folder and a different repair from an
+        # incomplete layout.
+        message = (
+            "This folder's Co-work records disagree about which store the "
+            "folder holds. Repair that data, or set up a different folder."
+        )
+    elif status == "collision":
+        message = (
+            "This folder already holds Work Buddy data that does not form a "
+            "complete Co-work folder. Repair that data, or set up a "
+            "different folder."
+        )
+    else:
+        message = "Co-work cannot set this folder up in the state it is in."
+    retryable = code in _RETRYABLE_SETUP_REFUSALS
+    return FolderLifecycleError(
+        code,
+        message,
+        status=503 if retryable else 409,
+        retryable=retryable,
+    )
+
+
 def _folder_from_registry_path(path: Path) -> Path:
     if path.name == "cowork" and path.parent.name == ".wbuddy":
         return path.parent.parent
@@ -724,16 +852,36 @@ class ProjectStoreManager:
         self,
         *,
         data_root: str | Path | None = None,
-        scan_budget: int = DEFAULT_SCAN_BUDGET,
-        scan_hard_limit: int = DEFAULT_SCAN_HARD_LIMIT,
+        scan_work_per_page: int | None = None,
+        scan_work_limit: int | None = None,
     ) -> None:
         if data_root is None:
             from work_buddy.paths import data_dir
 
             data_root = data_dir()
         self.data_root = Path(data_root).expanduser().resolve()
-        self.scan_budget = max(1, int(scan_budget))
-        self.scan_hard_limit = max(self.scan_budget, int(scan_hard_limit))
+        # Both budgets are resolved here rather than in the signature, so a
+        # caller that reassigns the module default reaches every manager it
+        # builds afterwards. The two knobs are independently valid: a page
+        # budget larger than the refusal threshold simply means one page
+        # reaches it, and flooring the threshold to the page budget would
+        # discard a deliberately small one.
+        self.scan_work_per_page = max(
+            1,
+            int(
+                DEFAULT_SCAN_WORK_PER_PAGE
+                if scan_work_per_page is None
+                else scan_work_per_page
+            ),
+        )
+        self.scan_work_limit = max(
+            1,
+            int(
+                DEFAULT_SCAN_WORK_LIMIT
+                if scan_work_limit is None
+                else scan_work_limit
+            ),
+        )
         self.scan_dir = self.data_root / "runtime" / "cowork-folder-scans"
         self.receipt_dir = self.data_root / "runtime" / "cowork-folder-receipts"
 
@@ -749,6 +897,27 @@ class ProjectStoreManager:
             absent_only=not path.exists(),
         )
 
+    def _sweep_scan_state(self) -> None:
+        """Drop scan cursors no continuation token can still reach.
+
+        A caller can abandon a paged scan at any point, leaving its pending
+        list on disk. The cursor is reachable only through a signed token that
+        expires after ``DEFAULT_TOKEN_TTL_SECONDS``, so a file older than that
+        window is unreachable work. Every failure here is swallowed: an
+        undeleted cursor is a small leak, never a reason to refuse a scan.
+        """
+
+        cutoff = time.time() - DEFAULT_TOKEN_TTL_SECONDS
+        try:
+            for entry in self.scan_dir.iterdir():
+                try:
+                    if entry.is_file() and entry.stat().st_mtime < cutoff:
+                        entry.unlink(missing_ok=True)
+                except OSError:
+                    continue
+        except OSError:
+            return
+
     def _scan_descendants(
         self,
         root: Path,
@@ -756,6 +925,34 @@ class ProjectStoreManager:
         continuation_token: str | None = None,
         complete: bool = False,
     ) -> ScanResult:
+        """Look for a Co-work store beneath ``root``, a budgeted page at a time.
+
+        The paged walk is an advisory preview: it drives the launcher and mints
+        an inspection token, and it trusts the pages it already walked instead
+        of revalidating them on every continuation. The proof that gates a
+        write is ``initialize``, which re-walks the whole tree in one unpaged
+        pass while holding the folder operation locks and refuses anything that
+        no longer classifies as ``uninitialized``. A preview that drifted
+        between pages therefore cannot authorize an unsafe setup: the locked
+        re-walk sees the store that appeared and stops the write.
+
+        Every directory the walk reads is one a listing admitted: an entry is
+        queued only after ``is_symlink`` and the reparse-point attribute clear
+        it and its device matches the root's, and the root itself is validated
+        by ``inspect`` before the walk starts. The walk therefore holds a
+        redirect-free path to each directory it opens, and spends metadata
+        lookups only where a listing names a component child.
+
+        Both the page budget and the refusal threshold are counted in work
+        units, where opening a directory costs ``_SCAN_DIRECTORY_WEIGHT`` and
+        listing one entry costs 1, so a page of directories and a page of
+        files take comparable wall time and neither shape escapes the
+        threshold. The predicate reads only the shape of the tree, so the same
+        tree refuses on every machine. A directory re-read after an mtime race
+        is charged for each read, so the total is exact only for a quiescent
+        tree.
+        """
+
         root_info = root.stat()
         if continuation_token:
             state_path = self._scan_path(continuation_token)
@@ -767,106 +964,155 @@ class ProjectStoreManager:
                     "The folder scan can no longer be resumed; inspect it again.",
                     retryable=True,
                 ) from exc
-            if state.get("root") != str(root) or state.get("root_mtime_ns") != root_info.st_mtime_ns:
+            if state.get("root") != str(root):
+                # A cursor holds the pending list of one folder. Replaying it
+                # against another would report that folder's descendants.
                 state_path.unlink(missing_ok=True)
                 raise FolderLifecycleError(
                     "descendant_scan_incomplete",
-                    "The folder changed while descendants were inspected.",
+                    "The folder scan belongs to another folder; inspect it again.",
                     retryable=True,
                 )
             token = continuation_token
             pending = list(state.get("pending") or [])
             visited = int(state.get("visited") or 0)
-            fingerprints = {
+            work = int(state.get("work") or 0)
+            retries = {
                 str(key): int(value)
-                for key, value in (state.get("directory_fingerprints") or {}).items()
+                for key, value in (state.get("directory_retries") or {}).items()
             }
-            for relative, expected_mtime in fingerprints.items():
-                directory = root if relative == "." else root / relative
-                try:
-                    current_mtime = directory.stat().st_mtime_ns
-                except OSError as exc:
-                    state_path.unlink(missing_ok=True)
-                    raise FolderLifecycleError(
-                        "descendant_scan_incomplete",
-                        "A visited folder descendant changed during inspection.",
-                        retryable=True,
-                    ) from exc
-                if current_mtime != expected_mtime:
-                    state_path.unlink(missing_ok=True)
-                    raise FolderLifecycleError(
-                        "descendant_scan_incomplete",
-                        "A visited folder descendant changed during inspection.",
-                        retryable=True,
-                    )
         else:
             token = uuid.uuid4().hex
             state_path = self._scan_path(token)
+            self._sweep_scan_state()
             pending = ["."]
             visited = 0
-            fingerprints: dict[str, int] = {}
+            work = 0
+            retries: dict[str, int] = {}
 
-        budget_used = 0
+        page_work = 0
         nested: list[str] = []
         root_device = root_info.st_dev
+        # The walk addresses directories as plain strings joined onto the
+        # resolved root. ``Path`` belongs at the API boundary. Inside the loop
+        # every path is built once and handed straight to an ``os`` call, and
+        # relative paths are held POSIX-style, which is the form the cursor
+        # stores and the caller reads.
+        root_path = str(root)
         try:
-            while pending and (complete or budget_used < self.scan_budget):
+            # Work is spent per directory and per entry but tested per
+            # directory, so one page spends at most the budget plus one
+            # directory's worth of work. Tightening that needs a cursor inside
+            # a directory listing, and ``os.scandir`` exposes no stable resume
+            # point, so the alternative is buffering whole listings to disk:
+            # dearer than the overshoot.
+            while pending and (complete or page_work < self.scan_work_per_page):
                 relative = pending.pop()
-                directory = root if relative == "." else root / relative
-                if relative != ".":
-                    _assert_managed_layout_safe(directory)
-                    if (
-                        directory / ".wbuddy" / "cowork" / "store.yaml"
-                    ).is_file():
-                        nested.append(relative.replace(os.sep, "/"))
+                directory = (
+                    root_path if relative == "." else os.path.join(root_path, relative)
+                )
+                try:
+                    before_mtime = os.stat(directory).st_mtime_ns
+                    listing = os.scandir(directory)
+                except (FileNotFoundError, NotADirectoryError):
+                    # The directory went away between being queued and being
+                    # read, the same race an entry can lose. A path that no
+                    # longer exists cannot hold a store, so dropping it leaves
+                    # the proof intact.
+                    retries.pop(relative, None)
+                    continue
+                children: list[str] = []
+                names_component = False
+                with listing as entries:
+                    # Charged only once the metadata lookup and the listing
+                    # have both succeeded, so a directory that went away
+                    # between being queued and being read costs nothing
+                    # rather than being billed for work the walk never did.
+                    page_work += _SCAN_DIRECTORY_WEIGHT
+                    work += _SCAN_DIRECTORY_WEIGHT
+                    if work > self.scan_work_limit:
                         state_path.unlink(missing_ok=True)
-                        return ScanResult(
-                            "nested",
-                            visited_entries=visited,
-                            nested_folders=tuple(sorted(nested)),
-                        )
-                before_mtime = directory.stat().st_mtime_ns
-                with os.scandir(directory) as entries:
+                        return ScanResult("too_large", visited_entries=visited)
                     for entry in entries:
                         visited += 1
-                        budget_used += 1
-                        if visited > self.scan_hard_limit:
+                        page_work += 1
+                        work += 1
+                        if work > self.scan_work_limit:
                             state_path.unlink(missing_ok=True)
                             return ScanResult("too_large", visited_entries=visited)
-                        if entry.name in _SKIP_DIRS:
+                        name = entry.name
+                        if name in _SKIP_DIRS:
+                            # A component child is the one skipped name the
+                            # scan still learns something from: it decides
+                            # whether this directory is worth probing at all.
+                            if name == _COMPONENT_DIR_NAME:
+                                names_component = True
                             continue
                         try:
+                            if not entry.is_dir(follow_symlinks=False):
+                                # A file holds no store and is never opened, so
+                                # its redirection and device facts are never
+                                # consulted and never worth reading.
+                                continue
+                            redirected = entry.is_symlink()
                             info = entry.stat(follow_symlinks=False)
+                        except (FileNotFoundError, NotADirectoryError):
+                            # The entry went away between the listing and the
+                            # lookup. A path that no longer exists cannot hold
+                            # a store, so skipping it leaves the proof intact.
+                            continue
                         except OSError as exc:
+                            # An entry that exists but cannot be read could
+                            # hide a store, so skipping it would make the
+                            # proof unsound.
                             raise FolderLifecycleError(
                                 "descendant_scan_incomplete",
                                 "A folder descendant could not be inspected.",
                                 retryable=True,
                             ) from exc
                         attributes = getattr(info, "st_file_attributes", 0)
-                        reparse = getattr(__import__("stat"), "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
                         crosses_device = bool(
                             root_device and info.st_dev and info.st_dev != root_device
                         )
-                        if entry.is_symlink() or attributes & reparse or crosses_device:
+                        if redirected or attributes & _REPARSE_POINT or crosses_device:
                             continue
-                        if entry.is_dir(follow_symlinks=False):
-                            child = entry.name if relative == "." else str(Path(relative) / entry.name)
-                            pending.append(child)
-                after_mtime = directory.stat().st_mtime_ns
-                if after_mtime != before_mtime:
-                    state_path.unlink(missing_ok=True)
-                    raise FolderLifecycleError(
-                        "descendant_scan_incomplete",
-                        "A folder descendant changed while it was inspected.",
-                        retryable=True,
-                    )
-                fingerprints[relative] = after_mtime
-                if nested:
-                    state_path.unlink(missing_ok=True)
-                    return ScanResult(
-                        "nested", visited_entries=visited, nested_folders=tuple(sorted(nested))
-                    )
+                        children.append(
+                            name if relative == "." else f"{relative}/{name}"
+                        )
+                try:
+                    settled = os.stat(directory).st_mtime_ns == before_mtime
+                except (FileNotFoundError, NotADirectoryError):
+                    # Deleted while it was being listed. Whatever it held is
+                    # gone with it, so the children it yielded are dropped too.
+                    retries.pop(relative, None)
+                    continue
+                if not settled:
+                    # The listing raced a writer and may have missed an entry.
+                    # Re-queue the directory and drop the children it yielded,
+                    # so the re-read is the only thing that enqueues them.
+                    attempts = retries.get(relative, 0) + 1
+                    if attempts > _SCAN_DIRECTORY_RETRY_LIMIT:
+                        raise FolderLifecycleError(
+                            "descendant_scan_incomplete",
+                            "A folder descendant kept changing while it was inspected.",
+                            retryable=True,
+                        )
+                    retries[relative] = attempts
+                    pending.append(relative)
+                    continue
+                retries.pop(relative, None)
+                if (
+                    names_component
+                    and relative != "."
+                    and _is_store_root(root, directory)
+                ):
+                    # A store root is a hard boundary: record it and leave its
+                    # interior unwalked. The caller needs the boundary, and
+                    # everything below it belongs to that store, so the
+                    # children this listing yielded are dropped.
+                    nested.append(relative)
+                    continue
+                pending.extend(children)
         except FolderLifecycleError:
             state_path.unlink(missing_ok=True)
             raise
@@ -878,15 +1124,25 @@ class ProjectStoreManager:
                 retryable=True,
             ) from exc
 
+        if nested:
+            # One page can cross several boundaries, and the caller renders
+            # them as a list. Report all of them together and stop: the folder
+            # is already disqualified, so further pages buy nothing.
+            state_path.unlink(missing_ok=True)
+            return ScanResult(
+                "nested",
+                visited_entries=visited,
+                nested_folders=tuple(sorted(nested)),
+            )
         if pending:
             self._save_json(
                 state_path,
                 {
                     "root": str(root),
-                    "root_mtime_ns": root_info.st_mtime_ns,
                     "pending": pending,
                     "visited": visited,
-                    "directory_fingerprints": fingerprints,
+                    "work": work,
+                    "directory_retries": retries,
                     "updated_at": time.time(),
                 },
             )
@@ -987,16 +1243,26 @@ class ProjectStoreManager:
                 reason_code=exc.code,
                 actions=("repair", "choose_another"),
             )
-        owner = self._nearest_owner(root)
-        if owner is not None:
-            return FolderInspection(
-                "inside_existing_folder", root, root.name,
-                owner_path=owner.folder_path, owner_store_id=owner.store_id,
-                actions=("open_owner", "choose_another"), fingerprint=_fingerprint(root),
-            )
-        exact = self._classify_exact(root)
-        if exact.status != "uninitialized":
-            return exact
+        if continuation_token is None:
+            # Ownership and exact classification gate the walk, so a
+            # continuation token exists only where both already answered:
+            # no ancestor owns the folder and the folder itself classifies as
+            # ``uninitialized``. Every terminal page classifies again, and the
+            # answer that gates a write comes from ``initialize``, which
+            # re-walks the tree unpaged under the folder operation locks. A
+            # continuation therefore carries no authority these two would have
+            # to re-establish.
+            owner = self._nearest_owner(root)
+            if owner is not None:
+                return FolderInspection(
+                    "inside_existing_folder", root, root.name,
+                    owner_path=owner.folder_path, owner_store_id=owner.store_id,
+                    actions=("open_owner", "choose_another"),
+                    fingerprint=_fingerprint(root),
+                )
+            exact = self._classify_exact(root)
+            if exact.status != "uninitialized":
+                return exact
         scan = self._scan_descendants(
             root,
             continuation_token=continuation_token,
@@ -1184,10 +1450,25 @@ class ProjectStoreManager:
         folder: str | Path,
         *,
         registry: TruthStoreRegistry,
-        inspection_fingerprint: str,
+        inspection_fingerprint: str | None,
         idempotency_key: str,
         profile: Mapping[str, Any] | None = None,
     ) -> TruthStore:
+        """Set one folder up for Co-work under the folder operation locks.
+
+        ``inspection_fingerprint`` carries a caller's earlier observation of
+        the folder, and setup refuses a folder that moved since a human was
+        shown it. A caller that reaches setup with no such gap to honour passes
+        ``None`` and is refused on what the locked walk finds, which names the
+        folder's actual state rather than reporting a change nobody made.
+
+        Neither caller rests its safety on the fingerprint. The walk here runs
+        inside the folder operation locks, classifies the folder from the
+        filesystem, and refuses anything that is not ``uninitialized``; the
+        managed-layout assertion then re-runs around every write beneath the
+        folder.
+        """
+
         root = _canonical_folder(folder)
         replay = self._receipt(idempotency_key, "initialize", root, registry)
         if replay is not None:
@@ -1197,14 +1478,13 @@ class ProjectStoreManager:
             if replay is not None:
                 return replay
             current = self.inspect(root, complete_scan=True)
-            if current.fingerprint != inspection_fingerprint:
+            observed = inspection_fingerprint is not None
+            if observed and current.fingerprint != inspection_fingerprint:
                 raise FolderLifecycleError(
                     "folder_changed", "The folder changed after it was inspected.", retryable=True
                 )
             if current.status != "uninitialized":
-                raise FolderLifecycleError(
-                    "folder_changed", "The folder is no longer available for setup.", retryable=True
-                )
+                raise _setup_refusal(current, observed=observed)
             _assert_managed_layout_safe(root)
             manifest = read_manifest(root)
             wbuddy = root / ".wbuddy"
@@ -1257,8 +1537,8 @@ class ProjectStoreManager:
 __all__ = [
     "CANONICAL_LAYOUT",
     "COMPONENT_GITIGNORE_LINES",
-    "DEFAULT_SCAN_BUDGET",
-    "DEFAULT_SCAN_HARD_LIMIT",
+    "DEFAULT_SCAN_WORK_LIMIT",
+    "DEFAULT_SCAN_WORK_PER_PAGE",
     "FolderInspection",
     "FolderLifecycleError",
     "MANIFEST_FORMAT",

@@ -247,14 +247,6 @@
   gap: var(--wb-space-2);
 }
 
-.wb-cowork-launcher__loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--wb-space-2);
-  color: var(--wb-color-text-muted);
-}
-
 .wb-cowork-launcher__section {
   inline-size: 100%;
   margin-block-start: var(--wb-space-6);

@@ -3,6 +3,7 @@ export {
   type ActionMenuItemDefinition,
   type ActionMenuSectionDefinition,
 } from "./ActionMenu";
+export { ActivityStatus, type ActivityStatusProps } from "./ActivityStatus";
 export {
   Button,
   type ButtonProps,

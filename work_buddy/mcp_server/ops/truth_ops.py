@@ -372,13 +372,16 @@ def truth_store_create(
         registry_parent.parent if registry_parent.name == "db" else registry_parent
     )
     manager = ProjectStoreManager(data_root=manager_data_root)
-    inspection = manager.inspect(root, complete_scan=True)
-    if inspection.fingerprint is None:
-        raise InvariantViolation("Folder inspection did not produce a setup fingerprint")
+    # Setup walks the folder once. The walk that authorizes the write is the
+    # one inside the folder operation locks, which classifies the folder from
+    # the filesystem and refuses anything that is not an empty candidate. This
+    # caller shows the folder to nobody between deciding and writing, so it
+    # holds no observation for a fingerprint to pin, and a refusal here names
+    # the folder's state instead of a change nobody made.
     store = manager.initialize(
         root,
         registry=registry,
-        inspection_fingerprint=inspection.fingerprint,
+        inspection_fingerprint=None,
         idempotency_key=f"truth-store-create:{requested}",
         profile=values,
     )
