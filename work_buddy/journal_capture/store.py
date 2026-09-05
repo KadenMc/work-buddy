@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -1578,6 +1579,301 @@ class JournalCaptureStore:
             assert updated is not None
             return self._effect(updated)
 
+    def claim_smart_processing_request(
+        self,
+        *,
+        request_id: str,
+        capture_id: str,
+        effect_id: str,
+        worker_id: str,
+        provider_id: str,
+        model_id: str,
+        provider_label: str,
+        model_label: str,
+        smart_disclosure_sha256: str,
+        lease_seconds: int = 900,
+    ) -> Mapping[str, Any] | None:
+        """Atomically pin and lease one account-backed Smart attempt.
+
+        A provider/model pair is copied from the already validated execution
+        selection.  An existing live attempt wins; an expired attempt is
+        terminal and can only be replaced by this fresh explicit start.
+        """
+
+        if (
+            not request_id.startswith("jspr_")
+            or len(request_id) != 37
+            or not worker_id
+            or not provider_id
+            or not model_id
+            or not provider_label
+            or not model_label
+            or len(smart_disclosure_sha256) != 64
+            or lease_seconds < 30
+            or lease_seconds > 3600
+        ):
+            raise ValueError("invalid Journal Smart worker binding")
+        now_dt = datetime.now(UTC)
+        now = now_dt.isoformat()
+        expires = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
+        lease_token = secrets.token_urlsafe(32)
+        token_sha256 = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+        with self.transaction() as conn:
+            capture = conn.execute(
+                "SELECT * FROM journal_captures WHERE capture_id=?",
+                (capture_id,),
+            ).fetchone()
+            effect = conn.execute(
+                "SELECT * FROM journal_effects WHERE effect_id=?",
+                (effect_id,),
+            ).fetchone()
+            if (
+                capture is None
+                or capture["mode"] != CaptureMode.SMART.value
+                or effect is None
+                or effect["capture_id"] != capture_id
+                or effect["effect_type"] not in {"auto_route", "smart_annotate"}
+            ):
+                raise JournalCaptureConflict(
+                    "That Smart processing request is unavailable."
+                )
+            if capture["processing_status"] == ProcessingState.SUCCEEDED.value:
+                return None
+            payload = _decode_json(effect["payload_json"]) or {}
+            if payload.get("smart_disclosure_sha256") != smart_disclosure_sha256:
+                raise JournalCaptureConflict(
+                    "The Smart provider changed. Review the current disclosure and retry."
+                )
+            if (
+                effect["authorization_expires_at"] is not None
+                and effect["authorization_expires_at"] <= now
+            ):
+                conn.execute(
+                    "UPDATE journal_effects SET state='paused',"
+                    "error_code='journal_authorization_expired',lease_owner=NULL,"
+                    "lease_expires_at=NULL,updated_at=? WHERE effect_id=?",
+                    (now, effect_id),
+                )
+                return None
+            conn.execute(
+                "UPDATE journal_smart_processing_requests SET status='failed',"
+                "lease_owner=NULL,lease_token_sha256=NULL,lease_expires_at=NULL,"
+                "error_code='smart_worker_lease_expired',completed_at=?,updated_at=? "
+                "WHERE capture_id=? AND status='leased' AND lease_expires_at<=?",
+                (now, now, capture_id, now),
+            )
+            active = conn.execute(
+                "SELECT request_id FROM journal_smart_processing_requests "
+                "WHERE capture_id=? AND status='leased'",
+                (capture_id,),
+            ).fetchone()
+            if active is not None:
+                return None
+            attempt = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(attempt_number),0)+1 "
+                    "FROM journal_smart_processing_requests WHERE capture_id=?",
+                    (capture_id,),
+                ).fetchone()[0]
+            )
+            conn.execute(
+                "INSERT INTO journal_smart_processing_requests("
+                "request_id,capture_id,effect_id,attempt_number,provider_id,"
+                "model_id,provider_label,model_label,smart_disclosure_sha256,"
+                "status,lease_owner,lease_token_sha256,lease_expires_at,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'leased',?,?,?,?,?)",
+                (
+                    request_id,
+                    capture_id,
+                    effect_id,
+                    attempt,
+                    provider_id,
+                    model_id,
+                    provider_label,
+                    model_label,
+                    smart_disclosure_sha256,
+                    worker_id,
+                    token_sha256,
+                    expires,
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE journal_effects SET state='running',attempts=attempts+1,"
+                "lease_owner=?,lease_expires_at=?,error_code=NULL,updated_at=? "
+                "WHERE effect_id=?",
+                (worker_id, expires, now, effect_id),
+            )
+            conn.execute(
+                "UPDATE journal_captures SET processing_status='running',"
+                "processing_error_code=NULL,revision=revision+1,updated_at=? "
+                "WHERE capture_id=?",
+                (now, capture_id),
+            )
+            conn.execute(
+                "UPDATE journal_entries SET processing_status='running',"
+                "processing_error_code=NULL,updated_at=? WHERE capture_id=?",
+                (now, capture_id),
+            )
+        return {
+            "requestId": request_id,
+            "captureId": capture_id,
+            "effectId": effect_id,
+            "attemptNumber": attempt,
+            "providerId": provider_id,
+            "modelId": model_id,
+            "providerLabel": provider_label,
+            "modelLabel": model_label,
+            "smartDisclosureSha256": smart_disclosure_sha256,
+            "leaseOwner": worker_id,
+            "leaseToken": lease_token,
+            "leaseExpiresAt": expires,
+            "authorizationFingerprint": str(effect["authorization_fingerprint"]),
+        }
+
+    def get_smart_processing_request(
+        self, request_id: str
+    ) -> Mapping[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_smart_processing_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def get_active_smart_processing_request(
+        self, capture_id: str
+    ) -> Mapping[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_smart_processing_requests "
+                "WHERE capture_id=? AND status='leased' "
+                "ORDER BY attempt_number DESC LIMIT 1",
+                (capture_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def validate_smart_processing_worker_lease(
+        self,
+        *,
+        request_id: str,
+        lease_token: str,
+        worker_id: str,
+    ) -> Mapping[str, Any]:
+        """Validate the secret, worker identity, effect, and authorization."""
+
+        now = _utc_now()
+        token_sha256 = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT request.*,effect.authorization_fingerprint,"
+                "effect.authorization_expires_at,effect.state AS effect_state,"
+                "effect.lease_owner AS effect_lease_owner,"
+                "effect.lease_expires_at AS effect_lease_expires_at "
+                "FROM journal_smart_processing_requests AS request "
+                "JOIN journal_effects AS effect ON effect.effect_id=request.effect_id "
+                "WHERE request.request_id=?",
+                (request_id,),
+            ).fetchone()
+        if (
+            row is None
+            or row["status"] != "leased"
+            or row["lease_owner"] != worker_id
+            or row["lease_token_sha256"] != token_sha256
+            or row["lease_expires_at"] <= now
+            or row["effect_state"] != EffectState.RUNNING.value
+            or row["effect_lease_owner"] != worker_id
+            or row["effect_lease_expires_at"] <= now
+            or (
+                row["authorization_expires_at"] is not None
+                and row["authorization_expires_at"] <= now
+            )
+        ):
+            raise JournalCaptureConflict(
+                "That Smart processing lease is unavailable."
+            )
+        return dict(row)
+
+    def record_smart_processing_input_manifest(
+        self,
+        *,
+        request_id: str,
+        lease_token: str,
+        worker_id: str,
+        manifest_sha256: str,
+    ) -> None:
+        self.validate_smart_processing_worker_lease(
+            request_id=request_id,
+            lease_token=lease_token,
+            worker_id=worker_id,
+        )
+        with self.transaction() as conn:
+            changed = conn.execute(
+                "UPDATE journal_smart_processing_requests SET "
+                "input_manifest_sha256=COALESCE(input_manifest_sha256,?),"
+                "updated_at=? WHERE request_id=? AND status='leased' "
+                "AND lease_owner=? AND lease_token_sha256=? "
+                "AND (input_manifest_sha256 IS NULL OR input_manifest_sha256=?)",
+                (
+                    manifest_sha256,
+                    _utc_now(),
+                    request_id,
+                    worker_id,
+                    hashlib.sha256(lease_token.encode("utf-8")).hexdigest(),
+                    manifest_sha256,
+                ),
+            ).rowcount
+        if changed != 1:
+            raise JournalCaptureConflict(
+                "That Smart processing input changed during delivery."
+            )
+
+    def fail_smart_processing_request(
+        self,
+        *,
+        request_id: str,
+        lease_token: str,
+        worker_id: str,
+        error_code: str,
+    ) -> None:
+        now = _utc_now()
+        token_sha256 = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_smart_processing_requests "
+                "WHERE request_id=? AND status='leased' AND lease_owner=? "
+                "AND lease_token_sha256=? AND lease_expires_at>?",
+                (request_id, worker_id, token_sha256, now),
+            ).fetchone()
+            if row is None:
+                raise JournalCaptureConflict(
+                    "That Smart processing lease is unavailable."
+                )
+            conn.execute(
+                "UPDATE journal_smart_processing_requests SET status='failed',"
+                "lease_owner=NULL,lease_token_sha256=NULL,lease_expires_at=NULL,"
+                "error_code=?,completed_at=?,updated_at=? WHERE request_id=?",
+                (error_code[:128], now, now, request_id),
+            )
+            conn.execute(
+                "UPDATE journal_effects SET state='failed',lease_owner=NULL,"
+                "lease_expires_at=NULL,error_code=?,updated_at=? "
+                "WHERE effect_id=? AND lease_owner=?",
+                (error_code[:128], now, row["effect_id"], worker_id),
+            )
+            conn.execute(
+                "UPDATE journal_captures SET processing_status='failed',"
+                "processing_error_code=?,revision=revision+1,updated_at=? "
+                "WHERE capture_id=?",
+                (error_code[:128], now, row["capture_id"]),
+            )
+            conn.execute(
+                "UPDATE journal_entries SET processing_status='failed',"
+                "processing_error_code=?,updated_at=? WHERE capture_id=?",
+                (error_code[:128], now, row["capture_id"]),
+            )
+
     def reauthorize_effect(
         self,
         capture_id: str,
@@ -1769,6 +2065,11 @@ class JournalCaptureStore:
         annotation: Mapping[str, Any],
         resolved_target: CaptureTarget,
         proposal_payload: Mapping[str, Any] | None = None,
+        worker_request_id: str | None = None,
+        worker_lease_token: str | None = None,
+        worker_session_id: str | None = None,
+        input_manifest_sha256: str | None = None,
+        result_sha256: str | None = None,
     ) -> JournalCapture:
         """Commit the model result and optional delivery command atomically.
 
@@ -1777,6 +2078,17 @@ class JournalCaptureStore:
         """
 
         now = _utc_now()
+        worker_values = (
+            worker_request_id,
+            worker_lease_token,
+            worker_session_id,
+            input_manifest_sha256,
+            result_sha256,
+        )
+        if any(value is not None for value in worker_values) and any(
+            value is None for value in worker_values
+        ):
+            raise ValueError("The Smart worker completion binding is incomplete.")
         with self.transaction() as conn:
             effect = conn.execute(
                 "SELECT * FROM journal_effects WHERE capture_id=? AND effect_type=?",
@@ -1784,11 +2096,77 @@ class JournalCaptureStore:
             ).fetchone()
             if effect is None:
                 raise KeyError("journal_effect_not_found")
+            if worker_request_id is not None:
+                request = conn.execute(
+                    "SELECT * FROM journal_smart_processing_requests "
+                    "WHERE request_id=?",
+                    (worker_request_id,),
+                ).fetchone()
+                assert worker_lease_token is not None
+                assert worker_session_id is not None
+                assert input_manifest_sha256 is not None
+                assert result_sha256 is not None
+                token_sha256 = hashlib.sha256(
+                    worker_lease_token.encode("utf-8")
+                ).hexdigest()
+                if request is not None and request["status"] == "succeeded":
+                    if (
+                        request["capture_id"] == capture_id
+                        and request["effect_id"] == effect["effect_id"]
+                        and request["input_manifest_sha256"]
+                        == input_manifest_sha256
+                        and request["result_sha256"] == result_sha256
+                    ):
+                        row = conn.execute(
+                            "SELECT * FROM journal_captures WHERE capture_id=?",
+                            (capture_id,),
+                        ).fetchone()
+                        assert row is not None
+                        return self._capture(row)
+                    raise JournalCaptureConflict(
+                        "That Smart completion was already used for another result."
+                    )
+                if (
+                    request is None
+                    or request["capture_id"] != capture_id
+                    or request["effect_id"] != effect["effect_id"]
+                    or request["status"] != "leased"
+                    or request["lease_owner"] != worker_session_id
+                    or request["lease_token_sha256"] != token_sha256
+                    or request["lease_expires_at"] <= now
+                    or request["input_manifest_sha256"]
+                    != input_manifest_sha256
+                    or effect["state"] != EffectState.RUNNING.value
+                    or effect["lease_owner"] != worker_session_id
+                    or effect["lease_expires_at"] <= now
+                    or (
+                        effect["authorization_expires_at"] is not None
+                        and effect["authorization_expires_at"] <= now
+                    )
+                ):
+                    raise JournalCaptureConflict(
+                        "That Smart processing lease is unavailable."
+                    )
             if proposal_payload is not None:
                 self.enqueue_proposal(
                     capture_id, proposal_payload,
                     authorization_fingerprint=effect["authorization_fingerprint"],
                     authorization_expires_at=effect["authorization_expires_at"], conn=conn,
+                )
+            if worker_request_id is not None:
+                conn.execute(
+                    "UPDATE journal_smart_processing_requests SET "
+                    "status='succeeded',lease_owner=NULL,"
+                    "lease_token_sha256=NULL,lease_expires_at=NULL,"
+                    "input_manifest_sha256=?,result_sha256=?,error_code=NULL,"
+                    "completed_at=?,updated_at=? WHERE request_id=?",
+                    (
+                        input_manifest_sha256,
+                        result_sha256,
+                        now,
+                        now,
+                        worker_request_id,
+                    ),
                 )
             conn.execute(
                 """UPDATE journal_effects SET state='succeeded',error_code=NULL,

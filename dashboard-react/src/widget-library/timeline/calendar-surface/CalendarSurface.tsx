@@ -76,11 +76,14 @@ export function CalendarSurface({
             itemId: activeItem.id,
             expectedRevision: activeItem.revision,
           };
+    // An action that hands its outcome to the surface behind this popover closes
+    // whatever the result: a failure notice is unreachable while the dialog covers
+    // the page and hides it from assistive technology.
     try {
       const result: CalendarSurfaceIntentResult = await onIntent(intent);
+      if (action.closeOnAction) closeInspector();
       if (result.status === "accepted") {
         onAnnouncement?.(`${action.label} requested for ${activeItem.title}.`, "polite");
-        if (action.closeOnAction) closeInspector();
         return;
       }
       onAnnouncement?.(
@@ -88,6 +91,7 @@ export function CalendarSurface({
         "assertive",
       );
     } catch {
+      if (action.closeOnAction) closeInspector();
       onAnnouncement?.("The calendar action could not be requested.", "assertive");
     }
   };

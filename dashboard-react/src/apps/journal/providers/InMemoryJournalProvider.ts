@@ -126,6 +126,22 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null;
 }
 
+/**
+ * Split a record's exact text into the title and detail a timeline row shows,
+ * by the same rule the live producer uses, so an edit here reads the way the
+ * same edit reads against the running Journal.
+ */
+function timelineRecordCopy(text: string): {
+  readonly text: string;
+  readonly title: string;
+  readonly detail?: string;
+} {
+  const lines = text.split(/\r?\n/u);
+  const title = lines.find((line) => line.trim().length > 0)?.trim() ?? "Journal entry";
+  const detail = lines.slice(1).join("\n").trim();
+  return { text, title, ...(detail.length === 0 ? {} : { detail }) };
+}
+
 function captureIntentMatches(
   intent: DashboardIntent,
   expected: typeof JULY11_SMART_CAPTURE_INTENT | typeof JULY11_DUMB_CAPTURE_INTENT,
@@ -368,6 +384,78 @@ export class InMemoryJournalProvider implements ViewProvider {
             this.#result(intent, "accepted", `Open source for ${item.title}`),
           )
         : this.#result(intent, "unavailable", "This timeline action is not implemented");
+    }
+
+    if (
+      intent.intent_type === "wb.timeline.item-edit-requested" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.timeline &&
+      isRecord(intent.payload) &&
+      typeof intent.payload.item_id === "string" &&
+      typeof intent.payload.expected_version === "number" &&
+      typeof intent.payload.text === "string"
+    ) {
+      if (mutationId === undefined) {
+        return this.#result(intent, "rejected", "Timeline edit requires client_mutation_id");
+      }
+      const itemId = intent.payload.item_id;
+      const expectedVersion = intent.payload.expected_version;
+      const text = intent.payload.text;
+      const statedAt = intent.payload.stated_at;
+      if (
+        statedAt !== undefined &&
+        (typeof statedAt !== "string" || !Number.isFinite(Date.parse(statedAt)))
+      ) {
+        return this.#result(intent, "rejected", "That record time is invalid");
+      }
+      const existing = this.#timelineRecord(itemId);
+      if (existing === undefined) {
+        return this.#result(intent, "rejected", "Timeline record is not present");
+      }
+      if (existing.version !== expectedVersion) {
+        return this.#result(intent, "conflict", "Timeline record version changed");
+      }
+      const revision = this.#commitTimelineItems("timeline-edit", (items) =>
+        items.map((item) =>
+          item.itemId === itemId
+            ? {
+                ...item,
+                ...timelineRecordCopy(text),
+                ...(typeof statedAt === "string" && item.shape === "point"
+                  ? { at: statedAt }
+                  : {}),
+                version: (item.version ?? 0) + 1,
+              }
+            : item,
+        ),
+      );
+      return this.#result(intent, "accepted", "Journal record saved", revision);
+    }
+
+    if (
+      intent.intent_type === "wb.timeline.item-delete-requested" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.timeline &&
+      isRecord(intent.payload) &&
+      typeof intent.payload.item_id === "string" &&
+      typeof intent.payload.expected_version === "number"
+    ) {
+      if (mutationId === undefined) {
+        return this.#result(intent, "rejected", "Timeline delete requires client_mutation_id");
+      }
+      const itemId = intent.payload.item_id;
+      const expectedVersion = intent.payload.expected_version;
+      const existing = this.#timelineRecord(itemId);
+      if (existing === undefined) {
+        return this.#result(intent, "rejected", "Timeline record is not present");
+      }
+      if (existing.version !== expectedVersion) {
+        return this.#result(intent, "conflict", "Timeline record version changed");
+      }
+      const revision = this.#commitTimelineItems("timeline-delete", (items) =>
+        items.filter((item) => item.itemId !== itemId),
+      );
+      return this.#result(intent, "accepted", "Journal record deleted", revision);
     }
 
     if (
@@ -696,6 +784,11 @@ export class InMemoryJournalProvider implements ViewProvider {
               targetType: "journal_item",
               targetId: `log:${mutationId}`,
             },
+            // A record the reader just typed here is content this surface
+            // authored, so it carries what an in-place edit needs to assert.
+            text: exactText,
+            version: 1,
+            authorityKind: "native_plain",
           }
         : undefined;
     const runningNote: JournalRunningNoteItem | undefined =
@@ -844,6 +937,32 @@ export class InMemoryJournalProvider implements ViewProvider {
       this.#intentResults.set(intent.client_mutation_id, result);
     }
     return result;
+  }
+
+  #timelineRecord(itemId: string) {
+    return this.#current.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.timeline
+    ].items.find((candidate) => candidate.itemId === itemId);
+  }
+
+  #commitTimelineItems(
+    label: string,
+    update: (
+      items: readonly JournalTimelineItem[],
+    ) => readonly JournalTimelineItem[],
+  ): string {
+    return this.#commit(label, (model) => ({
+      ...model,
+      widgetInputs: {
+        ...model.widgetInputs,
+        [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: {
+          ...model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
+          items: update(
+            model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items,
+          ),
+        },
+      },
+    }));
   }
 
   #commit(

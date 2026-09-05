@@ -80,6 +80,12 @@ _JOURNAL_PROMPT_GENERATION_CAPABILITIES = frozenset(
         "journal_prompt_generation_complete",
     }
 )
+_JOURNAL_SMART_PROCESSING_CAPABILITIES = frozenset(
+    {
+        "journal_smart_processing_context",
+        "journal_smart_processing_complete",
+    }
+)
 
 
 def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
@@ -95,7 +101,11 @@ def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
     )
     from work_buddy.journal_capture.execution_identity import (
         journal_prompt_request_from_session,
+        journal_smart_request_from_session,
     )
+
+    if journal_smart_request_from_session(session_id) is not None:
+        return _JOURNAL_SMART_PROCESSING_CAPABILITIES
 
     if journal_prompt_request_from_session(session_id) is not None:
         return _JOURNAL_PROMPT_GENERATION_CAPABILITIES

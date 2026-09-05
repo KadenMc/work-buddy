@@ -682,4 +682,86 @@ describe("QuickTextCaptureWidget", () => {
     expect(await screen.findByRole("textbox", { name: "Capture text" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Capture" })).toBeDisabled();
   });
+  describe("retrospective capture time", () => {
+    const retrospectiveInput: QuickTextCaptureInput = {
+      ...baseInput,
+      retrospectiveTime: {
+        targetIds: ["log"],
+        localDate: "2026-07-11",
+        timezone: "America/New_York",
+        windowStart: "2026-07-11T05:00:00-04:00",
+        windowEnd: "2026-07-12T05:00:00-04:00",
+      },
+    };
+
+    it("offers the time field only for a destination that accepts one", async () => {
+      render(renderCapture(retrospectiveInput, vi.fn()));
+
+      expect(await screen.findByRole("textbox", { name: "Capture text" })).toBeEnabled();
+      expect(screen.getByLabelText("Log time")).toBeInTheDocument();
+
+      render(
+        renderCapture(
+          {
+            ...retrospectiveInput,
+            retrospectiveTime: { ...retrospectiveInput.retrospectiveTime!, targetIds: ["running_notes"] },
+          },
+          vi.fn(),
+        ),
+      );
+
+      expect(screen.getAllByLabelText("Log time")).toHaveLength(1);
+    });
+
+    it("sends the wall-clock time as an instant inside the Journal day", async () => {
+      const emit = vi.fn();
+      render(renderCapture(retrospectiveInput, emit));
+
+      await userEvent.type(
+        await screen.findByRole("textbox", { name: "Capture text" }),
+        "stood up at the whiteboard",
+      );
+      fireEvent.change(screen.getByLabelText("Log time"), { target: { value: "14:30" } });
+      await userEvent.click(screen.getByRole("button", { name: "Capture" }));
+
+      await waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
+      expect(emit.mock.calls[0]?.[0].payload).toMatchObject({
+        exact_text: "stood up at the whiteboard",
+        stated_at: "2026-07-11T14:30:00-04:00",
+      });
+    });
+
+    it("omits the time entirely when the field is left blank", async () => {
+      const emit = vi.fn();
+      render(renderCapture(retrospectiveInput, emit));
+
+      await userEvent.type(
+        await screen.findByRole("textbox", { name: "Capture text" }),
+        "no stated time",
+      );
+      await userEvent.click(screen.getByRole("button", { name: "Capture" }));
+
+      await waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
+      expect(emit.mock.calls[0]?.[0].payload).not.toHaveProperty("stated_at");
+    });
+
+    it("files a pre-boundary time on the day's later civil date", async () => {
+      const emit = vi.fn();
+      render(renderCapture(retrospectiveInput, emit));
+
+      await userEvent.type(
+        await screen.findByRole("textbox", { name: "Capture text" }),
+        "still up after midnight",
+      );
+      // The Journal day opens at 05:00, so 04:30 belongs to the following
+      // civil date while still sitting inside this same Journal day.
+      fireEvent.change(screen.getByLabelText("Log time"), { target: { value: "04:30" } });
+      await userEvent.click(screen.getByRole("button", { name: "Capture" }));
+
+      await waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
+      expect(emit.mock.calls[0]?.[0].payload).toMatchObject({
+        stated_at: "2026-07-12T04:30:00-04:00",
+      });
+    });
+  });
 });

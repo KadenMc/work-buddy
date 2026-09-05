@@ -53,6 +53,57 @@ describe("toCalendarSurfaceModel", () => {
     expect(engineEvent).not.toHaveProperty("end");
   });
 
+  it("advertises corrections only for a record the provider itself authors", () => {
+    const model = toCalendarSurfaceModel({
+      ...input,
+      items: [
+        { ...point, text: "Captured decision", version: 4, authorityKind: "native_plain" },
+        {
+          ...point,
+          itemId: "record:imported",
+          text: "Imported decision",
+          version: 4,
+          authorityKind: "legacy_entry",
+        },
+      ],
+    });
+
+    expect(model.items[0]?.capabilities).toEqual({
+      open: true,
+      move: false,
+      resize: false,
+      remove: true,
+      edit: true,
+    });
+    expect(model.items[0]?.policy?.label).toBe("editable");
+    expect(model.items[1]?.capabilities).toEqual({
+      open: true,
+      move: false,
+      resize: false,
+      remove: false,
+      edit: false,
+    });
+    expect(model.items[1]?.policy?.label).toBe("past — protected");
+  });
+
+  it("withholds corrections when the record carries no usable version", () => {
+    const model = toCalendarSurfaceModel({
+      ...input,
+      items: [
+        { ...point, text: "Captured decision", authorityKind: "native_plain" },
+        {
+          ...point,
+          itemId: "record:zero-version",
+          text: "Captured decision",
+          version: 0,
+          authorityKind: "native_plain",
+        },
+      ],
+    });
+
+    expect(model.items.map((item) => item.capabilities.edit)).toEqual([false, false]);
+  });
+
   it("keeps Journal range and presentation independent", () => {
     const model = toCalendarSurfaceModel({ ...input, renderMode: "list" });
     expect(model.view).toEqual({ range: "day", presentation: "list" });

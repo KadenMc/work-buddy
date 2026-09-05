@@ -247,14 +247,22 @@ describe("Journal and the real widget library", () => {
     const before = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
     const initialTimeline = before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items;
     const emitted: DashboardIntent[] = [];
+    const timelineInput = toDayTimelineInput(
+      before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
+    );
+    const timelinePresentation = presentation(JOURNAL_INSTANCE_IDS.timeline, "expanded");
     render(
-      <DayTimelineWidget
-        input={toDayTimelineInput(
-          before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
-        )}
-        emit={collectIntent(emitted)}
-        presentation={presentation(JOURNAL_INSTANCE_IDS.timeline, "expanded")}
-      />,
+      <WidgetDraftTestScope
+        definition={TIMELINE_APP_CONTRIBUTION.widgetDefinitions[0]}
+        presentation={timelinePresentation}
+        input={timelineInput}
+      >
+        <DayTimelineWidget
+          input={timelineInput}
+          emit={collectIntent(emitted)}
+          presentation={timelinePresentation}
+        />
+      </WidgetDraftTestScope>,
     );
 
     await user.click(screen.getByRole("radio", { name: "List" }));
@@ -379,12 +387,19 @@ describe("Journal and the real widget library", () => {
         JOURNAL_WIDGET_INSTANCE_IDS.timeline
       ],
     );
+    const boundaryPresentation = presentation(JOURNAL_INSTANCE_IDS.timeline, "compact");
     render(
-      <DayTimelineWidget
+      <WidgetDraftTestScope
+        definition={TIMELINE_APP_CONTRIBUTION.widgetDefinitions[0]}
+        presentation={boundaryPresentation}
         input={input}
-        emit={async (intent) => ({ intent_id: intent.intent_id, status: "accepted" })}
-        presentation={presentation(JOURNAL_INSTANCE_IDS.timeline, "compact")}
-      />,
+      >
+        <DayTimelineWidget
+          input={input}
+          emit={async (intent) => ({ intent_id: intent.intent_id, status: "accepted" })}
+          presentation={boundaryPresentation}
+        />
+      </WidgetDraftTestScope>,
     );
 
     expect(input.day.localDate).toBe("2026-07-11");

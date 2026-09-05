@@ -10,6 +10,14 @@ Production composition is deliberately feature-gated.  Enabling Smart mode is
 an explicit configuration decision because it may disclose private Journal
 text to the configured frontier provider.  Tests inject the runner and never
 perform network calls.
+
+Two execution paths satisfy the same Journal contract, and Settings decides
+which one a Smart capture uses.  The subscription-agent path launches a
+least-authority detached agent on the account the user already signs in to and
+follows their default chat model.  The API-model path calls one API endpoint in
+process for the shortest wait and bills that API account per capture.  Both
+report their own availability and disclose their own concrete provider/model
+before any capture text moves.
 """
 
 from __future__ import annotations
@@ -17,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from work_buddy.agent_execution.disclosure import (
     DisclosureDirection,
@@ -35,6 +43,13 @@ from work_buddy.paths import resolve
 from work_buddy.sources.disclosure import SourcesDisclosureService
 from work_buddy.sources.models import ActorRef
 from work_buddy.sources.store import SourceStore
+
+
+if TYPE_CHECKING:
+    from work_buddy.journal_capture.smart_worker import (
+        JournalAccountBackedSmartProcessor,
+        JournalSmartWorkerSpec,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -207,19 +222,19 @@ class JournalSourceBoundSmartProcessor:
             resolve_content=lambda: exact,
             handoff=self._call_model,
         )
-        result = self._validated_result(response)
+        result = validate_smart_result(response.structured_output)
         binding = run.bind_output(
             output_ref=f"journal-capture:{capture.capture_id}",
             idempotency_key=f"journal-smart-output-{attempt_key}",
         )
         return SmartCaptureResult(
-            target=result["target"],
-            summary=result["summary"],
-            effects=result["effects"],
+            target=result.target,
+            summary=result.summary,
+            effects=result.effects,
             producer_ref=f"agent-execution:{run_id}",
             model_id=response.model or self.spec.model_id,
             disclosure_manifest_sha256=binding.manifest_sha256,
-            follow_up=result["follow_up"],
+            follow_up=result.follow_up,
         )
 
     def _call_model(self, exact: bytes) -> LLMResponse:
@@ -245,62 +260,142 @@ class JournalSourceBoundSmartProcessor:
     ) -> dict[str, Any]:
         if response.is_error():
             raise JournalSmartProcessingError("smart_model_failed")
-        value = response.structured_output
-        if not isinstance(value, Mapping):
-            raise JournalSmartProcessingError("smart_model_invalid_output")
-        if set(value) - {"target", "summary", "effects", "follow_up"}:
-            raise JournalSmartProcessingError("smart_model_invalid_output")
-        try:
-            target = CaptureTarget(str(value.get("target") or ""))
-        except ValueError as exc:
-            raise JournalSmartProcessingError("smart_model_invalid_output") from exc
-        if target is CaptureTarget.AUTO:
-            raise JournalSmartProcessingError("smart_model_invalid_output")
-        summary = value.get("summary")
-        effects = value.get("effects")
+        result = validate_smart_result(response.structured_output)
+        return {
+            "target": result.target,
+            "summary": result.summary,
+            "effects": result.effects,
+            "follow_up": result.follow_up,
+        }
+
+
+def validate_smart_result(value: Any) -> SmartCaptureResult:
+    """Validate the only structured result a Smart worker may commit."""
+
+    if not isinstance(value, Mapping):
+        raise JournalSmartProcessingError("smart_model_invalid_output")
+    if set(value) - {"target", "summary", "effects", "follow_up"}:
+        raise JournalSmartProcessingError("smart_model_invalid_output")
+    try:
+        target = CaptureTarget(str(value.get("target") or ""))
+    except ValueError as exc:
+        raise JournalSmartProcessingError("smart_model_invalid_output") from exc
+    if target is CaptureTarget.AUTO:
+        raise JournalSmartProcessingError("smart_model_invalid_output")
+    summary = value.get("summary")
+    effects = value.get("effects")
+    if (
+        not isinstance(summary, str)
+        or not summary.strip()
+        or len(summary) > 240
+        or not isinstance(effects, list)
+        or len(effects) > 3
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or len(item) > 160
+            for item in effects
+        )
+    ):
+        raise JournalSmartProcessingError("smart_model_invalid_output")
+    follow_up = value.get("follow_up")
+    typed_follow_up = None
+    if follow_up is not None:
         if (
-            not isinstance(summary, str)
-            or not summary.strip()
-            or len(summary) > 240
-            or not isinstance(effects, list)
-            or len(effects) > 3
-            or any(
-                not isinstance(item, str)
-                or not item.strip()
-                or len(item) > 160
-                for item in effects
-            )
+            not isinstance(follow_up, Mapping)
+            or set(follow_up) != {"kind", "task_text", "rationale"}
+            or follow_up.get("kind") != "task_proposal"
+            or not isinstance(follow_up.get("task_text"), str)
+            or not follow_up["task_text"].strip()
+            or len(follow_up["task_text"]) > 500
+            or not isinstance(follow_up.get("rationale"), str)
+            or not follow_up["rationale"].strip()
+            or len(follow_up["rationale"]) > 1000
         ):
             raise JournalSmartProcessingError("smart_model_invalid_output")
-        follow_up = value.get("follow_up")
-        typed_follow_up = None
-        if follow_up is not None:
-            if (not isinstance(follow_up, Mapping)
-                    or set(follow_up) != {"kind", "task_text", "rationale"}
-                    or follow_up.get("kind") != "task_proposal"
-                    or not isinstance(follow_up.get("task_text"), str)
-                    or not follow_up["task_text"].strip() or len(follow_up["task_text"]) > 500
-                    or not isinstance(follow_up.get("rationale"), str)
-                    or not follow_up["rationale"].strip() or len(follow_up["rationale"]) > 1000):
-                raise JournalSmartProcessingError("smart_model_invalid_output")
-            typed_follow_up = TaskProposalFollowUp(
-                task_text=follow_up["task_text"].strip(), rationale=follow_up["rationale"].strip(),
-            )
-        return {
-            "target": target,
-            "summary": summary.strip(),
-            "effects": tuple(item.strip() for item in effects),
-            "follow_up": typed_follow_up,
-        }
+        typed_follow_up = TaskProposalFollowUp(
+            task_text=follow_up["task_text"].strip(),
+            rationale=follow_up["rationale"].strip(),
+        )
+    return SmartCaptureResult(
+        target=target,
+        summary=summary.strip(),
+        effects=tuple(item.strip() for item in effects),
+        follow_up=typed_follow_up,
+    )
 
 
 def configured_journal_smart_processor(
     sources_store: SourceStore,
     journal_store: JournalCaptureStore,
-) -> JournalSourceBoundSmartProcessor | None:
+    *,
+    execution_path: str | None = None,
+) -> "JournalSourceBoundSmartProcessor | JournalAccountBackedSmartProcessor | None":
     """Compose the production processor only after an explicit config opt-in."""
 
-    return configured_journal_smart_processing(sources_store, journal_store)[0]
+    return configured_journal_smart_processing(
+        sources_store,
+        journal_store,
+        execution_path=execution_path,
+    )[0]
+
+
+def _api_model_processing(
+    sources_store: SourceStore,
+    journal_store: JournalCaptureStore,
+    configuration: Mapping[str, Any],
+) -> tuple[JournalSourceBoundSmartProcessor, JournalSmartProcessorSpec]:
+    """One in-process API call whose concrete model is known before disclosure."""
+
+    tier = ModelTier(str(configuration.get("tier") or ModelTier.FRONTIER_FAST.value))
+    spec = JournalSmartProcessorSpec.from_tier(tier)
+    from work_buddy.security.local_identity import get_default_authority
+
+    enrolled = get_default_authority().enrolled_actor()
+    issuer = ActorRef(
+        issuer_authority_id=enrolled.issuer_authority_id,
+        subject="work-buddy-agent-execution",
+        kind="service",
+        tenant_scope_id=enrolled.tenant_scope_id,
+    )
+    disclosure_sources = SourcesDisclosureService(
+        sources_store,
+        tenant_scope_id=enrolled.tenant_scope_id,
+        issuer=issuer,
+    )
+    gateway = DisclosureGateway(
+        DisclosureManifestStore(resolve("db/agent-execution")),
+        disclosure_sources,
+    )
+    processor = JournalSourceBoundSmartProcessor(
+        sources_store=sources_store,
+        journal_store=journal_store,
+        disclosure_sources=disclosure_sources,
+        disclosure_gateway=gateway,
+        spec=spec,
+    )
+    return processor, spec
+
+
+def _subscription_agent_processing(
+    journal_store: JournalCaptureStore,
+) -> tuple["JournalAccountBackedSmartProcessor", "JournalSmartWorkerSpec"]:
+    """One detached least-authority worker on the account already signed in."""
+
+    from work_buddy.journal_capture.smart_worker import (
+        JournalAccountBackedSmartProcessor,
+        JournalSmartProcessingRunner,
+        JournalSmartWorkerSpec,
+    )
+
+    runner = JournalSmartProcessingRunner()
+    spec = JournalSmartWorkerSpec(runner.prepare())
+    processor = JournalAccountBackedSmartProcessor(
+        journal_store=journal_store,
+        spec=spec,
+        runner=runner,
+    )
+    return processor, spec
 
 
 def configured_journal_smart_processing(
@@ -308,10 +403,17 @@ def configured_journal_smart_processing(
     journal_store: JournalCaptureStore,
     *,
     enabled: bool | None = None,
-) -> tuple[JournalSourceBoundSmartProcessor | None, JournalSmartAvailability]:
+    execution_path: str | None = None,
+) -> tuple[
+    "JournalSourceBoundSmartProcessor | JournalAccountBackedSmartProcessor | None",
+    JournalSmartAvailability,
+]:
     """Preserve policy-disabled vs broken-provider status without any model call."""
 
     from work_buddy.config import load_config
+    from work_buddy.settings.registry import (
+        JOURNAL_SMART_EXECUTION_API_MODEL,
+    )
 
     value = load_config().get("journal", {}).get("smart_processing", {}) or {}
     if not isinstance(value, Mapping):
@@ -320,38 +422,23 @@ def configured_journal_smart_processing(
         enabled = value.get("enabled") is True
     if not enabled:
         return None, JournalSmartAvailability()
+    if execution_path is None:
+        from work_buddy.settings.broker import get_journal_smart_execution_path
+
+        execution_path = get_journal_smart_execution_path()
     spec = None
     try:
-        tier = ModelTier(str(value.get("tier") or ModelTier.FRONTIER_FAST.value))
-        spec = JournalSmartProcessorSpec.from_tier(tier)
-        from work_buddy.security.local_identity import get_default_authority
-
-        enrolled = get_default_authority().enrolled_actor()
-        issuer = ActorRef(
-            issuer_authority_id=enrolled.issuer_authority_id,
-            subject="work-buddy-agent-execution",
-            kind="service",
-            tenant_scope_id=enrolled.tenant_scope_id,
-        )
-        disclosure_sources = SourcesDisclosureService(
-            sources_store,
-            tenant_scope_id=enrolled.tenant_scope_id,
-            issuer=issuer,
-        )
-        gateway = DisclosureGateway(
-            DisclosureManifestStore(resolve("db/agent-execution")),
-            disclosure_sources,
-        )
-        processor = JournalSourceBoundSmartProcessor(
-            sources_store=sources_store,
-            journal_store=journal_store,
-            disclosure_sources=disclosure_sources,
-            disclosure_gateway=gateway,
-            spec=spec,
-        )
+        if execution_path == JOURNAL_SMART_EXECUTION_API_MODEL:
+            processor, spec = _api_model_processing(
+                sources_store, journal_store, value
+            )
+            provider, model = spec.provider_id, spec.model_id
+        else:
+            processor, spec = _subscription_agent_processing(journal_store)
+            provider, model = spec.provider_label, spec.model_label
         return processor, JournalSmartAvailability(
             state="ready", code="ready", reason="Smart is ready. Your exact capture is saved before processing.",
-            provider=spec.provider_id, model=spec.model_id,
+            provider=provider, model=model,
         )
     except Exception as exc:
         logger.warning(

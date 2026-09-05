@@ -26,6 +26,19 @@ export type DayTimelineItem = TimelineTemporalPlacement & {
   readonly mutability: TimelineItemMutability;
   readonly precision: TimelinePrecision;
   readonly provenance: WidgetProvenance;
+  /**
+   * Exact stored text of the authoring record. The title and detail above are a
+   * display split of it, so an edit round-trips the text the owning store holds
+   * instead of a reformatted rejoin.
+   */
+  readonly text?: string;
+  /** Numeric content revision of the authoring record, used as its compare-and-set token. */
+  readonly version?: number;
+  /**
+   * The owning provider's vocabulary for who authors this item's content. Only
+   * items authored by the provider itself accept text and time changes here.
+   */
+  readonly authorityKind?: string;
   readonly navigation?: TimelineNavigationTarget;
 };
 
@@ -71,6 +84,30 @@ export interface TimelineItemActionRequestedIntent
   readonly client_mutation_id: string;
 }
 
+/**
+ * Correct one record in place. `stated_at` is present only when the reader
+ * changed the occurrence time, so an untouched time is never restated.
+ */
+export interface TimelineItemEditRequestedIntent
+  extends WidgetIntent<{
+    readonly item_id: string;
+    readonly expected_version: number;
+    readonly text: string;
+    readonly stated_at?: string;
+  }> {
+  readonly intent_type: "wb.timeline.item-edit-requested";
+  readonly client_mutation_id: string;
+}
+
+export interface TimelineItemDeleteRequestedIntent
+  extends WidgetIntent<{
+    readonly item_id: string;
+    readonly expected_version: number;
+  }> {
+  readonly intent_type: "wb.timeline.item-delete-requested";
+  readonly client_mutation_id: string;
+}
+
 export interface TimelineReplanRequestedIntent
   extends WidgetIntent<{
     readonly day_id: string;
@@ -82,5 +119,7 @@ export interface TimelineReplanRequestedIntent
 export type DayTimelineIntent =
   | TimelineOpenItemIntent
   | TimelineItemActionRequestedIntent
+  | TimelineItemEditRequestedIntent
+  | TimelineItemDeleteRequestedIntent
   | TimelineRenderModeChangedIntent
   | TimelineReplanRequestedIntent;

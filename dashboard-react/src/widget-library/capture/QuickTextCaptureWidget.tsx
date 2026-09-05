@@ -24,6 +24,7 @@ export default function QuickTextCaptureWidget({
         target_id: request.targetId,
         mode: request.mode,
         exact_text: request.exactText,
+        ...(request.statedAt ? { stated_at: request.statedAt } : {}),
         ...(request.followUpActionId ? { follow_up_action: request.followUpActionId } : {}),
         ...(request.smartDisclosureSha256 ? { smart_disclosure_sha256: request.smartDisclosureSha256 } : {}),
       },

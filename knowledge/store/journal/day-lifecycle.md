@@ -38,6 +38,24 @@ Callers must not compute the end by adding 24 hours. Day length can differ aroun
 
 Local boundary construction resolves gaps and folds explicitly. A nonexistent wall time advances to the first valid instant. An ambiguous wall time uses the policy's deterministic fold rule. The resulting adjacent windows remain contiguous and non-overlapping.
 
+## Reading and writing a day other than today
+
+The Journal view resolves one day per request. A `day` query parameter naming a
+local date in `YYYY-MM-DD` opens that day; its absence opens today. A value that
+is not a real calendar date is refused, and so is a date after today, because no
+Journal day exists ahead of the current one. There is no floor: the boundary
+policy resolves any earlier date from its base epoch, so a day far back opens and
+simply holds nothing.
+
+A day other than today is fully writable. Captures file into the day the request
+names rather than into today, and existing records on it are edited and deleted
+through the same authority checks that govern today. The surface marks a day that
+is not today so the distinction stays visible while it is being written to.
+
+A capture may also state when it happened. That instant is bounded by the target
+day's own window, not by today's, so a time typed against a day in the past is
+checked against the window that day actually ran under.
+
 ## Policy changes
 
 Changing the boundary creates a pending transition that becomes effective at the next safe day boundary. Policy epochs retain the timezone, boundary, and effective range under which days were created. Existing Journal days are not silently reassigned to a different window.

@@ -80,6 +80,22 @@ def _validate_local_date(value: str) -> date:
     return parsed
 
 
+def _validate_stated_instant(value: str) -> datetime:
+    """Require a stated occurrence time to name one absolute instant.
+
+    Day membership is a policy question the calling surface answers against the
+    target day's window.  The domain only refuses a time that no zone can place.
+    """
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise JournalCaptureValidationError("The stated time is invalid.") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise JournalCaptureValidationError("The stated time needs a time zone offset.")
+    return parsed
+
+
 def _schedule_membership(
     schedule_kind: str,
     schedule: Mapping[str, Any],
@@ -1251,6 +1267,7 @@ class JournalDomainService:
         review_state: str = "not_applicable",
         operation: str = "edit",
         source_dependency_id: str | None = None,
+        stated_at: str | None = None,
     ) -> JournalNativeItem:
         if operation not in {"edit", "correct"}:
             raise JournalCaptureValidationError(
@@ -1258,6 +1275,8 @@ class JournalDomainService:
             )
         if not plain_value:
             raise JournalCaptureValidationError("A Journal value cannot be empty.")
+        if stated_at is not None:
+            _validate_stated_instant(stated_at)
         request = {
             "operation": operation,
             "item_id": item_id,
@@ -1267,6 +1286,8 @@ class JournalDomainService:
             "authorship": authorship,
             "review_state": review_state,
         }
+        if stated_at is not None:
+            request["stated_at"] = stated_at
         if source_dependency_id is not None:
             request["source_dependency_id"] = source_dependency_id
         request_sha = _sha(request)
@@ -1331,11 +1352,24 @@ class JournalDomainService:
                 "operation": operation,
                 "actor": dict(actor),
             }
+            # ``created_at`` carries the occurrence time a person states, which
+            # is what the day's chronological order and displayed time read.
+            # A correction that names a new time moves the entry to where it
+            # belongs. One that names none leaves the stated time untouched.
             conn.execute(
                 "UPDATE journal_items SET current_plain_value=?,current_content_sha256=?,"
-                "source_ref=?,lifecycle='current',current_revision=?,updated_at=? "
+                "source_ref=?,lifecycle='current',current_revision=?,"
+                "created_at=COALESCE(?,created_at),updated_at=? "
                 "WHERE item_id=?",
-                (plain_value, _sha(plain_value), next_source, revision, now, item_id),
+                (
+                    plain_value,
+                    _sha(plain_value),
+                    next_source,
+                    revision,
+                    stated_at,
+                    now,
+                    item_id,
+                ),
             )
             conn.execute(
                 """

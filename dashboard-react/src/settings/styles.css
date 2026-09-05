@@ -306,6 +306,10 @@
     margin: var(--wb-space-5) var(--wb-space-7) 0;
   }
 
+  .wb-execution-profile-setting-control {
+    padding: var(--wb-space-7);
+  }
+
   .wb-settings-section {
     display: grid;
     gap: var(--wb-space-5);

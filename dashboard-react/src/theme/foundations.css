@@ -68,6 +68,13 @@
     --wb-motion-duration-fast: 120ms;
     --wb-motion-duration-standard: 190ms;
     --wb-motion-duration-slow: 280ms;
+    /*
+     * Continuous loops are paced separately from the transition durations
+     * above. A transition token describes how long one state change takes;
+     * reusing it for a looping animation makes the loop run at transition
+     * speed, which reads as a strobe rather than as progress.
+     */
+    --wb-motion-duration-loop: 800ms;
     --wb-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
     --wb-motion-easing-enter: cubic-bezier(0, 0, 0, 1);
   }

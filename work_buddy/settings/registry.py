@@ -14,9 +14,12 @@ from work_buddy.journal_day import DEFAULT_DAY_BOUNDARY, parse_local_time
 
 
 SCHEMA_VERSION = 1
-REGISTRY_REVISION = "settings-registry:6"
+REGISTRY_REVISION = "settings-registry:7"
 JOURNAL_DAY_BOUNDARY_ID = "wb.journal.day-boundary"
 JOURNAL_SMART_PROCESSING_ID = "wb.journal.smart-processing"
+JOURNAL_SMART_EXECUTION_ID = "wb.journal.smart-execution"
+JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT = "subscription_agent"
+JOURNAL_SMART_EXECUTION_API_MODEL = "api_model"
 DASHBOARD_ASSISTANCE_ID = "wb.dashboard.assistance"
 DASHBOARD_ASSISTANCE_TIER_ID = "wb.dashboard.assistance-tier"
 DASHBOARD_CHAT_EXECUTION_DEFAULT_ID = "wb.dashboard.chat-execution-default"
@@ -134,6 +137,51 @@ _ADDITIONAL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "presentation": {"control": "select", "apply_behavior": "immediate", "options": [
             {"value": "disabled", "label": "Off — no model processing"},
             {"value": "enabled", "label": "Allow Smart capture"},
+        ]},
+        "visibility": "frontend", "sensitivity": "ordinary",
+    },
+    {
+        "setting_id": JOURNAL_SMART_EXECUTION_ID,
+        "definition_version": 1, "value_version": 1,
+        "owner": {"kind": "app", "id": "wb.journal", "label": "Journal"},
+        "provenance": {"complement_id": "wb.journal", "label": "Journal", "trust_tier": "native"},
+        "title": "Smart capture processing",
+        "short_description": (
+            "Choose whether Smart capture runs on your subscription agent or an API model."
+        ),
+        "long_description": (
+            "This choice applies only while Smart capture is on. Your subscription agent "
+            "reuses the provider and model from Default chat model and signs in with the "
+            "subscription you already pay for, so a capture adds no separate charge but "
+            "takes longer to settle. An API model answers in a single direct call for the "
+            "shortest wait and bills your API account for each capture. It keeps its own "
+            "configured model, because Default chat model names an agent runtime rather "
+            "than an API endpoint. Either way the same 32 KiB limit, the same provider and "
+            "model disclosure, and the same task-proposal review apply."
+        ),
+        "keywords": ["smart", "capture", "model", "provider", "subscription", "api", "speed", "cost"],
+        "tags": ["journal", "execution"],
+        "value_schema": {
+            "type": "string",
+            "enum": [
+                JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT,
+                JOURNAL_SMART_EXECUTION_API_MODEL,
+            ],
+        },
+        "default_value": JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT,
+        "allowed_scopes": ["profile"], "default_scope": "profile",
+        "applies_to": [{"kind": "app", "id": "wb.journal", "label": "Journal"}],
+        "affects": [{"ref": {"kind": "view", "id": "wb.journal.main", "label": "Journal view"},
+                     "note": "Changes which provider and model run Smart capture and how soon a Smart capture settles."}],
+        "presentation": {"control": "select", "apply_behavior": "immediate", "options": [
+            {
+                "value": JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT,
+                "label": "Your subscription agent (slower, no separate charge)",
+            },
+            {
+                "value": JOURNAL_SMART_EXECUTION_API_MODEL,
+                "label": "An API model (fastest, billed for each capture)",
+            },
         ]},
         "visibility": "frontend", "sensitivity": "ordinary",
     },
@@ -355,6 +403,12 @@ _PLACEMENTS: tuple[dict[str, Any], ...] = (
         "setting_id": JOURNAL_SMART_PROCESSING_ID,
         "page_id": "wb.settings.app.journal", "context_id": "wb.settings.app.journal",
         "section_id": "capture", "order": 20,
+    },
+    {
+        "placement_id": "wb.settings.placement.app.journal.smart-execution",
+        "setting_id": JOURNAL_SMART_EXECUTION_ID,
+        "page_id": "wb.settings.app.journal", "context_id": "wb.settings.app.journal",
+        "section_id": "capture", "order": 30,
     },
     {
         "placement_id": "wb.settings.placement.app.journal.day-boundary",

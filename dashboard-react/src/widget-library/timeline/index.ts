@@ -6,6 +6,8 @@ export type {
   TimelineDensity,
   TimelineItemKind,
   TimelineItemActionRequestedIntent,
+  TimelineItemDeleteRequestedIntent,
+  TimelineItemEditRequestedIntent,
   TimelineItemMutability,
   TimelineItemStatus,
   TimelineOpenItemIntent,
@@ -14,9 +16,14 @@ export type {
   TimelineReplanRequestedIntent,
 } from "./contracts";
 export {
+  timelineItemAcceptsContentEdits,
   toCalendarSurfaceItem,
   toCalendarSurfaceModel,
 } from "./calendar-surface/fromDayTimeline";
+export {
+  CALENDAR_RECORD_DELETE_ACTION_ID,
+  CALENDAR_RECORD_EDIT_ACTION_ID,
+} from "./calendar-surface/actions";
 export {
   DAY_TIMELINE_MODULE,
   DAY_TIMELINE_MODULE_ID,

@@ -47,6 +47,9 @@ const RESEARCH_SESSION = {
   precision: "exact",
   provenance: { source: "conversation_observability", label: "observed session" },
   navigation: { targetType: "session", targetId: "session:journal-contracts" },
+  text: "Mapped Journal data contracts",
+  version: 1,
+  authorityKind: "generated",
 } as const satisfies JournalTimelineItem;
 
 const PRODUCT_STANDUP = {
@@ -76,6 +79,9 @@ const MOBILE_EDGE_CAPTURE = {
   precision: "exact",
   provenance: { source: "user", label: "you" },
   navigation: { targetType: "journal_item", targetId: "capture:mobile-edge-case" },
+  text: "Captured mobile timeline edge case",
+  version: 1,
+  authorityKind: "native_plain",
 } as const satisfies JournalTimelineItem;
 
 const PROTOTYPE_PLAN = {
@@ -328,6 +334,9 @@ const DUMB_LOG_ITEM = {
   precision: "exact",
   provenance: { source: "user", label: "you" },
   navigation: { targetType: "journal_item", targetId: "log:coffee-refill" },
+  text: JULY11_DUMB_CAPTURE_INTENT.payload.exact_text,
+  version: 1,
+  authorityKind: "native_plain",
 } as const satisfies JournalTimelineItem;
 
 interface MakeModelOptions {
