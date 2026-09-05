@@ -23,6 +23,10 @@ def _register() -> None:
         journal_prompt_generation_complete,
         journal_prompt_generation_context,
     )
+    from work_buddy.journal_capture.smart_worker import (
+        journal_smart_processing_complete,
+        journal_smart_processing_context,
+    )
     from work_buddy.mcp_server.context_wrappers import (
         activity_timeline,
         hot_files,
@@ -42,6 +46,14 @@ def _register() -> None:
     register_op(
         "op.wb.journal_prompt_generation_complete",
         journal_prompt_generation_complete,
+    )
+    register_op(
+        "op.wb.journal_smart_processing_context",
+        journal_smart_processing_context,
+    )
+    register_op(
+        "op.wb.journal_smart_processing_complete",
+        journal_smart_processing_complete,
     )
     register_op("op.wb.vault_write_at_location", lambda **kw: __import__('work_buddy.obsidian.vault_writer', fromlist=['write_at_location']).write_at_location(**kw))
     register_op("op.wb.obsidian_retry", lambda **kw: __import__('work_buddy.obsidian.retry', fromlist=['obsidian_retry']).obsidian_retry(**kw))

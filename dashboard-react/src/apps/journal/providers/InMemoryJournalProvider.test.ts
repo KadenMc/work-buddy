@@ -19,6 +19,8 @@ import {
   type JournalCaptureSubmitIntent,
   type JournalRunningNoteDeleteIntent,
   type JournalTimelineItem,
+  type JournalTimelineItemDeleteIntent,
+  type JournalTimelineItemEditIntent,
 } from "../contracts";
 import {
   JULY11_DUMB_CAPTURE_INTENT,
@@ -479,5 +481,111 @@ describe("InMemoryJournalProvider", () => {
 
     expect(appMismatch.changed).toBe(false);
     expect(viewMismatch.changed).toBe(false);
+  });
+
+  it("marks only a record this surface authored as accepting content edits", async () => {
+    const provider = new InMemoryJournalProvider();
+    const view = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const items = view.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items;
+
+    // The edit gate reads these three together, so the fixture has to carry
+    // the same shape the running Journal sends.
+    expect(itemById(items, "timeline:mobile-edge-capture")).toMatchObject({
+      authorityKind: "native_plain",
+      version: 1,
+      text: expect.any(String),
+    });
+    expect(itemById(items, "timeline:northwind-review").authorityKind).toBeUndefined();
+    expect(itemById(items, "timeline:research-session").authorityKind).toBe("generated");
+  });
+
+  it("edits a record's text and time in place and bumps its version", async () => {
+    const provider = new InMemoryJournalProvider();
+    const before = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const record = itemById(
+      before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items,
+      "timeline:mobile-edge-capture",
+    );
+    const intent = {
+      intent_type: "wb.timeline.item-edit-requested",
+      schema_version: 1,
+      intent_id: "intent:edit-timeline-record",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.timeline,
+      client_mutation_id: "timeline-edit:mobile-edge",
+      payload: {
+        item_id: record.itemId,
+        expected_version: record.version!,
+        text: "Captured the edge case, then rewrote it",
+        stated_at: "2026-07-11T10:05:00-04:00",
+      },
+    } as const satisfies JournalTimelineItemEditIntent;
+
+    const result = await provider.dispatch(toDashboardJournalIntent(intent));
+    const after = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "refresh" });
+    const edited = itemById(
+      after.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items,
+      record.itemId,
+    );
+
+    expect(result).toMatchObject({ status: "accepted" });
+    expect(edited).toMatchObject({
+      text: "Captured the edge case, then rewrote it",
+      title: "Captured the edge case, then rewrote it",
+      at: "2026-07-11T10:05:00-04:00",
+      version: 2,
+    });
+  });
+
+  it("refuses an edit whose expected version is behind the record", async () => {
+    const provider = new InMemoryJournalProvider();
+    const before = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const record = itemById(
+      before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items,
+      "timeline:mobile-edge-capture",
+    );
+    const intent = {
+      intent_type: "wb.timeline.item-edit-requested",
+      schema_version: 1,
+      intent_id: "intent:edit-timeline-stale",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.timeline,
+      client_mutation_id: "timeline-edit:stale",
+      payload: {
+        item_id: record.itemId,
+        expected_version: record.version! + 1,
+        text: "Written against a version that is not there",
+      },
+    } as const satisfies JournalTimelineItemEditIntent;
+
+    expect(await provider.dispatch(toDashboardJournalIntent(intent))).toMatchObject({
+      status: "conflict",
+    });
+  });
+
+  it("removes a record from the timeline on delete", async () => {
+    const provider = new InMemoryJournalProvider();
+    const before = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const record = itemById(
+      before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items,
+      "timeline:mobile-edge-capture",
+    );
+    const intent = {
+      intent_type: "wb.timeline.item-delete-requested",
+      schema_version: 1,
+      intent_id: "intent:delete-timeline-record",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.timeline,
+      client_mutation_id: "timeline-delete:mobile-edge",
+      payload: { item_id: record.itemId, expected_version: record.version! },
+    } as const satisfies JournalTimelineItemDeleteIntent;
+
+    const result = await provider.dispatch(toDashboardJournalIntent(intent));
+    const after = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "refresh" });
+
+    expect(result).toMatchObject({ status: "accepted" });
+    expect(
+      after.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items,
+    ).not.toContainEqual(expect.objectContaining({ itemId: record.itemId }));
   });
 });

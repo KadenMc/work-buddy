@@ -668,7 +668,13 @@ function ExecutionProfileSetting({ projected, values }: {
   const disabled = values.status !== "ready" || values.mutationSettingId === definition.settingId;
 
   return <SettingCard projected={projected} value={value}>
-    {control ? <ChatExecutionPicker control={control} disabled={disabled} /> : (
+    {control ? (
+      <ChatExecutionPicker
+        className="wb-execution-profile-setting-control"
+        control={control}
+        disabled={disabled}
+      />
+    ) : (
       <InlineAlert tone={values.status === "loading" ? "info" : "warning"}>
         {values.status === "loading" ? "Loading the authoritative default…" : "The Settings service is unavailable. Model selection is disabled until it reconnects."}
       </InlineAlert>

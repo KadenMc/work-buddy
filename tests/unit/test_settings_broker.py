@@ -11,6 +11,7 @@ from work_buddy.settings import broker, store
 from work_buddy.settings.registry import (
     COWORK_REVIEW_NAV_BINDING_ID,
     JOURNAL_DAY_BOUNDARY_ID,
+    JOURNAL_SMART_EXECUTION_ID,
     JOURNAL_SMART_PROCESSING_ID,
     DASHBOARD_ASSISTANCE_ID,
     DASHBOARD_ASSISTANCE_TIER_ID,
@@ -48,7 +49,7 @@ def _value(at: datetime):
 
 def test_registry_defines_app_owned_settings_with_canonical_placements() -> None:
     payload = broker.get_registry()
-    assert payload["registry_revision"] == "settings-registry:6"
+    assert payload["registry_revision"] == "settings-registry:7"
     assert [item["setting_id"] for item in payload["definitions"]] == [
         JOURNAL_DAY_BOUNDARY_ID,
         COWORK_REVIEW_NAV_BINDING_ID,
@@ -56,6 +57,7 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
         DASHBOARD_ASSISTANCE_TIER_ID,
         DASHBOARD_CHAT_EXECUTION_DEFAULT_ID,
         JOURNAL_SMART_PROCESSING_ID,
+        JOURNAL_SMART_EXECUTION_ID,
     ]
     definition = payload["definitions"][0]
     assert definition["owner"] == {
@@ -70,6 +72,7 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
     assert [item["context_id"] for item in payload["placements"]] == [
         "wb.settings.system.dashboard-ai",
         "wb.settings.system.dashboard-ai",
+        "wb.settings.app.journal",
         "wb.settings.app.journal",
         "wb.settings.app.journal",
         "wb.settings.app.cowork",

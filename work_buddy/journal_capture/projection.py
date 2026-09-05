@@ -14,6 +14,17 @@ from work_buddy.settings import peek_journal_day_binding, peek_journal_day_windo
 
 
 def current_day(local_date: str | None = None) -> dict[str, Any]:
+    """Resolve the day a Journal view is about, current or explicitly named.
+
+    Both branches read the same policy history and supply exactly the keys
+    projected below, so a named day is described by the policy that was in
+    force for it.  The current-day binding also carries the revision of the
+    boundary setting, which a named day deliberately does not: that revision
+    describes the value in force now, so attributing it to an earlier day would
+    misdate the policy that day actually ran under.  A day's policy identity
+    travels instead as its timezone, boundary, and window bounds.
+    """
+
     if local_date is None:
         binding, _event = peek_journal_day_binding()
     else:
@@ -24,7 +35,6 @@ def current_day(local_date: str | None = None) -> dict[str, Any]:
             "day_boundary_start": window.boundary,
             "window_start": window.start.isoformat(),
             "window_end": window.end.isoformat(),
-            "boundary_setting_revision": None,
         }
     return {
         "dayId": (
@@ -230,7 +240,7 @@ def view_snapshot(
             "targets": [
                 {
                     "targetId": "auto",
-                    "label": "Let Journal route it",
+                    "label": "Auto",
                     "description": (
                         smart_processing_disclosure
                         or "Journal uses optional smart processing to choose one destination."

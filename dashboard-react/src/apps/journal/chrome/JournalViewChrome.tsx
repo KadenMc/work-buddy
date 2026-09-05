@@ -13,6 +13,7 @@ import type {
   JournalDayBinding,
   JournalDemoSource,
 } from "../contracts";
+import { isJournalLocalDate, journalTodayLocalDate } from "../journalDay";
 
 export interface JournalViewChromeProps {
   readonly day: JournalDayBinding;
@@ -22,6 +23,7 @@ export interface JournalViewChromeProps {
   /** Placement slot for Dashboard-host-owned contextual controls. */
   readonly hostActions?: ReactNode;
   readonly onNavigateDay?: (direction: "previous" | "next") => void;
+  readonly onSelectDay?: (localDate: string) => void;
   readonly onReturnToToday?: () => void;
 }
 
@@ -61,9 +63,18 @@ export function JournalViewChrome({
   source,
   hostActions,
   onNavigateDay,
+  onSelectDay,
   onReturnToToday,
 }: JournalViewChromeProps) {
   const issueMessage = quality.issues.map((issue) => issue.message).join(" ");
+  const today = journalTodayLocalDate(day);
+  const atToday = day.localDate === today;
+  // A partly typed or cleared date input reports a value no day can be read
+  // from. Those keystrokes leave the shown day alone rather than navigating.
+  const selectDay = (value: string) => {
+    if (!isJournalLocalDate(value) || value > today) return;
+    if (value !== day.localDate) onSelectDay?.(value);
+  };
 
   return (
     <header className="journal-view-chrome" aria-labelledby="journal-view-title">
@@ -90,11 +101,31 @@ export function JournalViewChrome({
                   icon={<CaretRight weight="bold" />}
                   variant="ghost"
                   size="small"
+                  disabled={day.localDate >= today}
                   onClick={() => onNavigateDay("next")}
                 />
               ) : null}
             </div>
-            <p className="journal-view-chrome__date">{formatDate(day)}</p>
+            <div className="journal-view-chrome__date-row">
+              <p className="journal-view-chrome__date">{formatDate(day)}</p>
+              {atToday ? null : (
+                <span className="journal-view-chrome__day-mark">
+                  {day.localDate < today ? "Past day" : "Future day"}
+                </span>
+              )}
+            </div>
+            {onSelectDay ? (
+              <label className="journal-view-chrome__date-picker">
+                <span>Journal day</span>
+                <input
+                  type="date"
+                  aria-label="Open Journal day"
+                  value={day.localDate}
+                  max={today}
+                  onChange={(event) => selectDay(event.target.value)}
+                />
+              </label>
+            ) : null}
             <div className="journal-view-chrome__metadata">
               <span>
                 <SunHorizon weight="duotone" aria-hidden="true" />

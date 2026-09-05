@@ -716,6 +716,24 @@ def get_journal_smart_processing_enabled() -> bool:
     return value["effective_value"] == "enabled"
 
 
+def get_journal_smart_execution_path() -> str:
+    """Persisted choice of which execution path runs one Smart capture.
+
+    A value outside the declared enum cannot select a path. Fall back to the
+    registry default rather than composing an unknown processor.
+    """
+
+    value, _event = _read_value(registry.JOURNAL_SMART_EXECUTION_ID, _observed_at())
+    selected = value["effective_value"]
+    allowed = {
+        registry.JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT,
+        registry.JOURNAL_SMART_EXECUTION_API_MODEL,
+    }
+    if selected not in allowed:
+        return registry.JOURNAL_SMART_EXECUTION_SUBSCRIPTION_AGENT
+    return str(selected)
+
+
 def get_dashboard_assistance_settings() -> dict[str, Any]:
     """One Settings authority for new, explicitly started assistant sessions."""
 

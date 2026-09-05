@@ -108,6 +108,14 @@ export type JournalTimelineItem = TimelineTemporalPlacement & {
   readonly precision: TimelinePrecision;
   readonly provenance: TimelineProvenance;
   readonly navigation?: TimelineNavigationTarget;
+  /**
+   * What an in-place content edit needs: the record's exact text, the numeric
+   * revision the write asserts against, and the authority that decides whether
+   * this surface may change it at all.
+   */
+  readonly text?: string;
+  readonly version?: number;
+  readonly authorityKind?: string;
 };
 
 export type TimelineRenderMode = "timeline" | "list";
@@ -180,6 +188,13 @@ export interface JournalCaptureInput {
   readonly accessNotice?: "widget" | "view";
   readonly smartAvailability?: CaptureSmartAvailability;
   readonly secondaryActions?: readonly CaptureSecondaryAction[];
+  readonly retrospectiveTime?: {
+    readonly targetIds: readonly string[];
+    readonly localDate: IsoDate;
+    readonly timezone: string;
+    readonly windowStart: IsoDateTime;
+    readonly windowEnd: IsoDateTime;
+  };
   readonly smartHelp?: {
     readonly summary: string;
     readonly details: string;
@@ -584,6 +599,33 @@ export interface JournalTimelineItemActionIntent
   };
 }
 
+export interface JournalTimelineItemEditIntent
+  extends JournalIntentEnvelope<
+    "wb.timeline.item-edit-requested",
+    typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline
+  > {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly item_id: string;
+    readonly expected_version: number;
+    readonly text: string;
+    /** A corrected occurrence time, sent only when the reader changed it. */
+    readonly stated_at?: IsoDateTime;
+  };
+}
+
+export interface JournalTimelineItemDeleteIntent
+  extends JournalIntentEnvelope<
+    "wb.timeline.item-delete-requested",
+    typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline
+  > {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly item_id: string;
+    readonly expected_version: number;
+  };
+}
+
 export interface JournalTimelineRequestReplanIntent
   extends JournalIntentEnvelope<
     "wb.timeline.replan-requested",
@@ -727,6 +769,8 @@ export type JournalIntent =
   | JournalCaptureSubmitIntent
   | JournalTimelineOpenItemIntent
   | JournalTimelineItemActionIntent
+  | JournalTimelineItemEditIntent
+  | JournalTimelineItemDeleteIntent
   | JournalTimelineRequestReplanIntent
   | JournalTimelineSetRenderModeIntent
   | JournalRunningNoteEditIntent

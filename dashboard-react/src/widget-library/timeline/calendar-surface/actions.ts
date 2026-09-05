@@ -48,18 +48,23 @@ export type CalendarItemActionResolver = (
   context: CalendarItemActionContext,
 ) => CalendarItemActionResolution;
 
+/** Correct a record's own text and time, dispatched to the surface's owner. */
+export const CALENDAR_RECORD_EDIT_ACTION_ID = "wb.calendar.record.edit";
+/** Withdraw a record from the day, dispatched to the surface's owner. */
+export const CALENDAR_RECORD_DELETE_ACTION_ID = "wb.calendar.record.delete";
+
+const READ_ONLY_SURFACE_NOTE = "This calendar surface is read-only.";
+
 const openAction = (
   item: CalendarSurfaceItem,
 ): CalendarItemActionDescriptor => ({
   id: `wb.calendar.${item.kind}.open`,
   label:
-    item.kind === "record"
-      ? "Open record"
-      : item.kind === "plan"
-        ? "Open plan"
-        : item.kind === "calendar"
-          ? "Open event"
-          : "Open item",
+    item.kind === "plan"
+      ? "Open plan"
+      : item.kind === "calendar"
+        ? "Open event"
+        : "Open item",
   group: "primary",
   icon: "open",
   dispatch: "open",
@@ -75,11 +80,9 @@ const sourceAction = (
     label:
       item.kind === "calendar"
         ? "View in source calendar"
-        : item.kind === "record"
-          ? "Go to record source"
-          : item.kind === "plan"
-            ? "Go to plan source"
-            : "Go to item source",
+        : item.kind === "plan"
+          ? "Go to plan source"
+          : "Go to item source",
     group: "primary",
     icon: "source",
     dispatch: "action",
@@ -87,16 +90,58 @@ const sourceAction = (
   };
 };
 
+/**
+ * A record states something that happened, so its menu is about the statement
+ * itself: correct what it says and when, or withdraw it. Rescheduling verbs
+ * belong to items that hold a position rather than describe one.
+ */
+const recordActions = (
+  item: CalendarSurfaceItem,
+  access: CalendarSurfaceModel["access"],
+): CalendarItemActionResolution => {
+  const canMutate = access.mode === "read_write";
+  const actions: CalendarItemActionDescriptor[] = [];
+  if (canMutate && item.capabilities.edit === true) {
+    actions.push({
+      id: CALENDAR_RECORD_EDIT_ACTION_ID,
+      label: "Edit",
+      group: "edit",
+      icon: "edit-time",
+      dispatch: "action",
+      closeOnAction: true,
+    });
+  }
+  if (canMutate && item.capabilities.remove) {
+    actions.push({
+      id: CALENDAR_RECORD_DELETE_ACTION_ID,
+      label: "Delete",
+      group: "danger",
+      icon: "remove",
+      tone: "danger",
+      dispatch: "action",
+      closeOnAction: true,
+    });
+  }
+  const note = !canMutate
+    ? access.reason ?? READ_ONLY_SURFACE_NOTE
+    : actions.length === 0
+      ? "This record is authored elsewhere, so its text and time cannot be changed here."
+      : undefined;
+  return { actions, ...(note ? { note } : {}) };
+};
+
 export function defaultCalendarItemActions(
   item: CalendarSurfaceItem,
   access: CalendarSurfaceModel["access"],
 ): CalendarItemActionResolution {
+  if (item.kind === "record") return recordActions(item, access);
+
   const actions: CalendarItemActionDescriptor[] = [openAction(item)];
   const source = sourceAction(item);
   if (source) actions.push(source);
 
   const canEdit = access.mode === "read_write";
-  if (item.kind !== "record" && canEdit && item.capabilities.move) {
+  if (canEdit && item.capabilities.move) {
     actions.push({
       id: `wb.calendar.${item.kind}.edit-time`,
       label: item.kind === "calendar" ? "Edit event time" : "Edit scheduled time",
@@ -105,7 +150,7 @@ export function defaultCalendarItemActions(
       dispatch: "action",
     });
   }
-  if (item.kind !== "record" && canEdit && item.capabilities.resize) {
+  if (canEdit && item.capabilities.resize) {
     actions.push({
       id: `wb.calendar.${item.kind}.change-duration`,
       label: "Change duration",
@@ -114,7 +159,7 @@ export function defaultCalendarItemActions(
       dispatch: "action",
     });
   }
-  if (item.kind !== "record" && canEdit && item.capabilities.remove) {
+  if (canEdit && item.capabilities.remove) {
     actions.push({
       id: `wb.calendar.${item.kind}.remove`,
       label:
@@ -134,12 +179,10 @@ export function defaultCalendarItemActions(
     item.capabilities.move || item.capabilities.resize || item.capabilities.remove;
   const note =
     access.mode === "read_only"
-      ? access.reason ?? "This calendar surface is read-only."
+      ? access.reason ?? READ_ONLY_SURFACE_NOTE
       : item.kind === "calendar" && !mutable
         ? "This calendar event is read-only here. Provider editing is not connected."
-        : item.kind === "record"
-          ? "Records describe observed work and are not rescheduled from the calendar."
-          : undefined;
+        : undefined;
 
   return { actions, ...(note ? { note } : {}) };
 }

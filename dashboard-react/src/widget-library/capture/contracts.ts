@@ -76,6 +76,13 @@ export interface QuickTextCaptureInput {
   };
   readonly smartAvailability?: CaptureSmartAvailability;
   readonly secondaryActions?: readonly CaptureSecondaryAction[];
+  readonly retrospectiveTime?: {
+    readonly targetIds: readonly string[];
+    readonly localDate: string;
+    readonly timezone: string;
+    readonly windowStart: string;
+    readonly windowEnd: string;
+  };
   readonly targets: readonly CaptureTargetOption[];
   readonly capturesToday: number;
   readonly recentSubmissions: readonly CaptureSubmissionRecord[];

@@ -19,6 +19,7 @@ import {
   asWidgetSlotId,
 } from "../../../dashboard/contributions/contracts";
 import type { ViewProvider } from "../../../dashboard/providers/ViewProvider";
+import type { ViewLocationAdapter } from "../../../dashboard/contributions/viewModules";
 import type { CaptureFollowUp, CaptureSmartAvailability } from "../../../widget-library/capture/contracts";
 import { safeCaptureAppHref } from "../../../widget-library/capture/FollowUpLinks";
 import {
@@ -70,10 +71,13 @@ import {
   type JournalViewModel,
   type JournalWidgetInput,
 } from "../contracts";
+import { journalDayFromSearch } from "../journalDay";
 import {
   LegacyFlaskViewAdapter,
   type LegacyJournalViewSnapshot,
 } from "./LegacyFlaskViewAdapter";
+
+export { journalDayFromSearch };
 
 export const JOURNAL_VIEW_ENDPOINT = "/api/journal/view" as const;
 export const JOURNAL_CAPTURE_ENDPOINT = "/api/journal/captures" as const;
@@ -99,6 +103,7 @@ export type HttpJournalProviderOptions = {
   readonly legacyProvider?: LegacyFlaskViewAdapter;
   readonly clock?: () => string;
   readonly navigate?: (href: string) => void;
+  readonly location?: ViewLocationAdapter;
 };
 
 type NativeJournalPayload = {
@@ -117,6 +122,24 @@ type NativeJournalPayload = {
   readonly nativeItems: readonly NativeJournalModuleItem[];
   readonly promptInteractions: readonly JournalPromptInteraction[];
 };
+
+/**
+ * The window a retrospective capture time must land inside. Log is the only
+ * destination that carries a stated time, so the destinations that accept one
+ * travel with the window rather than being re-derived per call site.
+ */
+function retrospectiveCaptureTime(
+  day: NativeJournalPayload["day"],
+): NonNullable<JournalCaptureInput["retrospectiveTime"]> {
+  return {
+    targetIds: ["log"],
+    localDate: day.localDate,
+    timezone: day.timezone,
+    windowStart: day.windowStart,
+    windowEnd: day.windowEnd,
+  };
+}
+
 
 type NativeJournalLogEntry = {
   readonly itemId: string;
@@ -1044,6 +1067,12 @@ function timelineFromNative(
           shape: "point" as const,
           at: entry.createdAt,
           title,
+          // The timeline offers content edits, so it carries the exact text
+          // it would round-trip, the numeric revision the write asserts
+          // against, and the authority that decides whether it may be edited.
+          text: entry.text,
+          version: entry.revision,
+          authorityKind: entry.authorityKind,
           ...(detail.length === 0 ? {} : { detail }),
           status: "observed" as const,
           mutability: "past_protected" as const,
@@ -1069,6 +1098,9 @@ function timelineFromNative(
           shape: "point" as const,
           at: item.createdAt,
           title,
+          text: item.text,
+          version: item.revision,
+          authorityKind: item.authorityKind,
           ...(detail.length === 0 ? {} : { detail }),
           status: "observed" as const,
           mutability: "past_protected" as const,
@@ -1291,6 +1323,7 @@ function providerComposition(
         revision: native.revision,
         access: viewAccess,
         accessNotice: "view",
+        retrospectiveTime: retrospectiveCaptureTime(native.day),
       };
     } else if (module.moduleTypeId === "day_stream") {
       inputs[module.moduleInstanceId] = {
@@ -1409,37 +1442,109 @@ export class HttpJournalProvider implements ViewProvider {
   readonly #legacy: LegacyFlaskViewAdapter;
   readonly #clock: () => string;
   readonly #navigate: (href: string) => void;
+  readonly #location?: ViewLocationAdapter;
   #last: HttpJournalViewSnapshot | undefined;
   readonly #invalidationListeners = new Set<(invalidation: AppInvalidation) => void>();
   #generationPollTimer: ReturnType<typeof setTimeout> | undefined;
   #generationPollAttempt = 0;
   #generationPending = false;
+  #locationWatch: (() => void) | undefined;
+  #watchedDay: string | null = null;
 
   constructor(options: HttpJournalProviderOptions = {}) {
     this.#fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.#legacy = options.legacyProvider ?? new LegacyFlaskViewAdapter({ fetchImpl: this.#fetch });
     this.#clock = options.clock ?? (() => new Date().toISOString());
     this.#navigate = options.navigate ?? ((href) => window.location.assign(href));
+    this.#location = options.location;
   }
 
+  /**
+   * Everything this provider listens to is bound to having a listener, so a
+   * provider that is built but never mounted holds nothing.
+   */
   subscribeInvalidations(listener: (invalidation: AppInvalidation) => void): () => void {
     this.#invalidationListeners.add(listener);
+    this.#watchLocation();
     if (this.#generationPending) this.#scheduleGenerationPoll();
     return () => {
       this.#invalidationListeners.delete(listener);
-      if (this.#invalidationListeners.size === 0 && this.#generationPollTimer !== undefined) {
+      if (this.#invalidationListeners.size > 0) return;
+      if (this.#generationPollTimer !== undefined) {
         clearTimeout(this.#generationPollTimer);
         this.#generationPollTimer = undefined;
       }
+      this.#releaseLocation();
     };
+  }
+
+  /** Drops every listener and timer this provider owns. */
+  dispose(): void {
+    this.#invalidationListeners.clear();
+    if (this.#generationPollTimer !== undefined) {
+      clearTimeout(this.#generationPollTimer);
+      this.#generationPollTimer = undefined;
+    }
+    this.#releaseLocation();
+  }
+
+  #watchLocation(): void {
+    if (this.#location === undefined || this.#locationWatch !== undefined) return;
+    this.#watchedDay = this.#requestedDay();
+    this.#locationWatch = this.#location.subscribe((search) => {
+      const nextDay = journalDayFromSearch(search);
+      if (nextDay === this.#watchedDay) return;
+      this.#watchedDay = nextDay;
+      this.#last = undefined;
+      const invalidation: AppInvalidation = {
+        id: `journal-day:${nextDay ?? "today"}:${Date.now()}`,
+        appId: JOURNAL_APP_ID,
+        viewIds: [JOURNAL_VIEW_DEFINITION_ID],
+        reason: "journal_day_selection_changed",
+        observedAt: this.#clock(),
+      };
+      for (const listener of this.#invalidationListeners) listener(invalidation);
+    });
+  }
+
+  #releaseLocation(): void {
+    this.#locationWatch?.();
+    this.#locationWatch = undefined;
+  }
+
+  /** The day the reader is asking for right now, or null while today is shown. */
+  #requestedDay(): string | null {
+    return journalDayFromSearch(this.#location?.getSearch() ?? "");
   }
 
   async loadView(viewId: ViewId, _request: ViewLoadRequest): Promise<HttpJournalViewSnapshot> {
     if (viewId !== JOURNAL_VIEW_DEFINITION_ID) {
       throw new Error(`HttpJournalProvider cannot load view ${viewId}`);
     }
+    // A snapshot composed for a day the reader has already left describes a day
+    // nothing is showing. Committing it would answer the widget loads that
+    // follow with a revision the view no longer holds, so it is abandoned and
+    // the day now on screen is read instead.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const requestedDay = this.#requestedDay();
+      const composed = await this.#composeView(viewId, requestedDay);
+      if (requestedDay !== this.#requestedDay()) continue;
+      this.#last = composed.snapshot;
+      this.#updateGenerationPolling(composed.generationPending);
+      return composed.snapshot;
+    }
+    throw new Error("The Journal day kept changing while this view was loading.");
+  }
+
+  async #composeView(
+    viewId: ViewId,
+    requestedDay: string | null,
+  ): Promise<{
+    readonly snapshot: HttpJournalViewSnapshot;
+    readonly generationPending: boolean;
+  }> {
     const identity = await initializeLocalIdentity({ fetchImpl: this.#fetch });
-    const native = await this.#readNative();
+    const native = await this.#readNative(requestedDay);
     const authorityState = native.effectiveComposition?.authorityState
       ?? "legacy_compatibility";
     const databaseAuthority = authorityState === "database_only"
@@ -1492,6 +1597,7 @@ export class HttpJournalProvider implements ViewProvider {
     const fixedWidgetInputs = {
       [JOURNAL_WIDGET_INSTANCE_IDS.capture]: {
         ...native.capture,
+        retrospectiveTime: retrospectiveCaptureTime(native.day),
         revision: native.revision,
         access: writeAccess,
         accessNotice: "view" as const,
@@ -1544,12 +1650,13 @@ export class HttpJournalProvider implements ViewProvider {
       bindings: bindings(model),
       widgetInputs,
     };
-    this.#last = snapshot;
-    this.#updateGenerationPolling(native.promptInteractions.some((interaction) =>
-      interaction.generationRequests.some((generation) =>
-        generation.status === "pending" || generation.status === "leased"),
-    ));
-    return snapshot;
+    return {
+      snapshot,
+      generationPending: native.promptInteractions.some((interaction) =>
+        interaction.generationRequests.some((generation) =>
+          generation.status === "pending" || generation.status === "leased"),
+      ),
+    };
   }
 
   #updateGenerationPolling(active: boolean): void {
@@ -1653,6 +1760,12 @@ export class HttpJournalProvider implements ViewProvider {
     }
     if (notesInstance && intent.intent_type === "wb.notes.restore-requested") {
       return this.#actOnItem(intent, "restore");
+    }
+    if (intent.intent_type === "wb.timeline.item-edit-requested") {
+      return this.#actOnItem(intent, "edit");
+    }
+    if (intent.intent_type === "wb.timeline.item-delete-requested") {
+      return this.#actOnItem(intent, "tombstone");
     }
     if (intent.intent_type === "wb.journal.prompt-create") {
       return this.#createPromptInteraction(intent);
@@ -1883,11 +1996,18 @@ export class HttpJournalProvider implements ViewProvider {
         || typeof operation !== "string" || !allowed.has(operation)) {
       return this.#result(intent, "rejected", "That Journal item action is invalid.");
     }
-    const exactText = noteOperation === "edit" ? payload.markdown : payload.exact_text;
+    // Notes carry their edited body as markdown and timeline records carry it
+    // as text. Both name the same exact wording the writer just typed.
+    const editedText = typeof payload.markdown === "string"
+      ? payload.markdown
+      : payload.text;
+    const exactText = noteOperation === "edit" ? editedText : payload.exact_text;
     if ((operation === "edit" || operation === "correct")
         && (typeof exactText !== "string" || exactText.length === 0)) {
       return this.#result(intent, "rejected", "Enter the Journal text to save.");
     }
+    // The writer can place an edited record at the time it actually happened.
+    const statedAt = payload.stated_at;
     const targetDomain = payload.target_domain;
     const targetId = payload.target_id;
     if (operation === "route" && (typeof targetDomain !== "string"
@@ -1898,6 +2018,7 @@ export class HttpJournalProvider implements ViewProvider {
       clientMutationId: intent.client_mutation_id,
       expectedRevision,
       ...(typeof exactText === "string" ? { exactText } : {}),
+      ...(typeof statedAt === "string" ? { statedAt } : {}),
       ...(typeof targetDomain === "string" ? { targetDomain } : {}),
       ...(typeof targetId === "string" ? { targetId } : {}),
       ...(typeof payload.target_revision === "string"
@@ -2373,8 +2494,11 @@ export class HttpJournalProvider implements ViewProvider {
       : { changed: true, revision: snapshot.revision, snapshot };
   }
 
-  async #readNative(): Promise<NativeJournalPayload> {
-    const response = await this.#fetch(JOURNAL_VIEW_ENDPOINT, {
+  async #readNative(requestedDay: string | null): Promise<NativeJournalPayload> {
+    const endpoint = requestedDay === null
+      ? JOURNAL_VIEW_ENDPOINT
+      : `${JOURNAL_VIEW_ENDPOINT}?day=${encodeURIComponent(requestedDay)}`;
+    const response = await this.#fetch(endpoint, {
       method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" },
