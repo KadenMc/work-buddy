@@ -157,6 +157,20 @@ const mintBrowserIdentityBootstrap = async (page: Page): Promise<string> => {
   return result.payload.token!;
 };
 
+/**
+ * Open Co-work with a human-authority session, on the origin that can mint one.
+ *
+ * Any test that writes needs this: creating, importing, editing, submitting
+ * feedback, reviewing a proposal, and removing a document all issue an exact
+ * authority gesture before their request, and that gesture is refused without
+ * a session. A test that writes without one does not fail at the network layer,
+ * it fails as a dialog reading "An authenticated local session is required",
+ * which is easy to misread as the feature being broken.
+ *
+ * `gotoCowork` stays for the tests that are about the unauthenticated surface
+ * itself: production-preview isolation, the launcher, and the observation half
+ * of folder setup. Those assert on the preview origin and must not move.
+ */
 const gotoAuthenticatedCowork = async (
   page: Page,
   search = "?mode=launcher",
@@ -410,8 +424,11 @@ const readBrowserOutbox = async (
     },
   );
 
-const seedLegacyScratch = async (page: Page): Promise<void> => {
-  await page.goto("/app/", { waitUntil: "domcontentloaded" });
+const seedLegacyScratch = async (page: Page, origin = ""): Promise<void> => {
+  // Browser-local writing lives in origin-scoped IndexedDB. A test that seeds
+  // here and then reads from a different origin finds nothing, so the caller
+  // names the origin it is going to use.
+  await page.goto(`${origin}/app/`, { waitUntil: "domcontentloaded" });
   await page.evaluate(
     async ({ snapshotBase64, snapshotSha256, scratchId }) => {
       const binary = atob(snapshotBase64);
@@ -607,7 +624,16 @@ test.describe.serial("Co-work live lifecycle", () => {
       await fileDigest(path.join(fixture.ordinary.path, ".wbuddy", "search", "state.bin")),
     ).toBe(fixture.ordinary.sibling_state_sha256);
 
+    // Everything above is observation: inspecting a Folder and setting one up
+    // leave no document behind, so they need no authority. Creating one does.
+    // Document creation issues an exact human-authority gesture, and the
+    // gesture is only mintable from the backend origin, so the run has to move
+    // there and carry a session before it can write.
     await mkdir(path.join(fixture.ordinary.path, "drafts"));
+    await gotoAuthenticatedCowork(page, `?store_id=${ordinaryStoreId}`);
+    await expect(
+      page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
+    ).toBeVisible({ timeout: 30_000 });
     await page.getByRole("button", { name: "New", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
     await expect(page.getByText(/Document type/i)).toHaveCount(0);
@@ -654,7 +680,9 @@ test.describe.serial("Co-work live lifecycle", () => {
   test("AC-04: register existing Markdown without changing one source byte", async ({ page }) => {
     const before = await readFile(fixture.source.path);
     expect(digest(before)).toBe(fixture.source.sha256);
-    await gotoCowork(page, `?store_id=${ordinaryStoreId}`);
+    // Import registers a document and records who authored its text, so it
+    // needs an authority gesture just as creation does.
+    await gotoAuthenticatedCowork(page, `?store_id=${ordinaryStoreId}`);
     await expect(
       page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
     ).toBeVisible();
@@ -717,7 +745,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       }
     });
 
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -876,7 +904,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
   }) => {
     const quote = "A line preserved exactly.";
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1024,7 +1052,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     });
     expect(control.ok(), await control.text()).toBe(true);
 
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1136,7 +1164,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
     request,
   }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
@@ -1483,8 +1511,11 @@ test.describe.serial("Co-work live lifecycle", () => {
   test("AC-09: legacy local writing is recovered and removed only after saving opens", async ({
     page,
   }) => {
-    await seedLegacyScratch(page);
-    await gotoCowork(page, "?mode=launcher");
+    // Promoting the recovered draft into the Folder is a create, so this test
+    // runs on the backend origin throughout: the scratch is seeded there and
+    // the session is minted there.
+    await seedLegacyScratch(page, backendBaseURL);
+    await gotoAuthenticatedCowork(page, "?mode=launcher");
     const recovered = page.getByRole("button", {
       name: /Recovered document.*Recovered from an earlier session/,
     });
@@ -1512,7 +1543,7 @@ test.describe.serial("Co-work live lifecycle", () => {
   });
 
   test("AC-10: offline edits survive reload and retry in order", async ({ page, request }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
@@ -1710,7 +1741,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       );
     });
 
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1902,7 +1933,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
     request,
   }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1970,7 +2001,7 @@ test.describe.serial("Co-work live lifecycle", () => {
   test("AC-19: the live workspace is accessible by axe, keyboard, and narrow peer panes", async ({
     page,
   }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );

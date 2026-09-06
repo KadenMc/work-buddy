@@ -56,6 +56,10 @@ The live harness needs a browser session, so its throwaway server adds one that 
 
 Stated plainly, because it is the mistake worth preventing: do not attempt to mint a session against the real dashboard. The route is absent by design, and its absence is not a gap to route around. When browser-driven work needs an authenticated session, start the interactive harness and use the URL it prints.
 
+The same boundary has a consequence inside the live suite. Creating a document, importing one, editing it, submitting feedback, reviewing a proposal, and removing a document each issue an exact human-authority gesture before their request, and the gesture is only mintable from the backend origin. A live test that exercises any of those has to open through the authenticated helper rather than the plain one. Getting this wrong is easy to misdiagnose: the request never leaves the browser, so nothing appears in the server log and the failure surfaces as a message inside the dialog reading that an authenticated local session is required. That reads as a broken feature when it is a test opening the wrong way. Only the tests about the unauthenticated surface itself, production-preview isolation and the launcher, should open plainly.
+
+Browser-local writing is origin-scoped in the same way. A recovered draft lives in IndexedDB under whichever origin created it, so a test that seeds one and then reads it from a different origin finds nothing and reports an empty launcher rather than a seeding failure.
+
 ## Driving the browser pane
 
 For read-only inspection of dashboard UI, open the demo fixture routes against whatever dev server is already running: `/app/journal?provider=demo` and `/app/cowork?cowork_fixture=demo`. Real components render against in-memory providers, so clicking through them cannot reach the user's data.
