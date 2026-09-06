@@ -18,6 +18,8 @@ from work_buddy.cowork.source_observation import (
     SourceObservationError,
     read_document_source,
 )
+from work_buddy.cowork import render
+from work_buddy.document_kernel.projection import project_document
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import sha256_bytes
@@ -295,6 +297,86 @@ def api_doc_source(document_id: str):
     for name, value in _source_headers(data).items():
         response.headers[name] = value
     return response
+
+
+@catalog_blueprint.get("/api/truth/cowork/render/formats")
+def api_render_formats():
+    """Which deliverables this host can actually produce.
+
+    The caller renders a menu from this rather than from a fixed list, so a host
+    without pandoc never offers a format that would fail when clicked.
+    """
+    return jsonify({"ok": True, "formats": render.available_formats()})
+
+
+@catalog_blueprint.get("/api/truth/doc/<document_id>/render")
+def api_doc_render(document_id: str):
+    """Serve one document's current head as a downloadable deliverable.
+
+    The caller may pin ``expected_structured_head_sha256``. A mismatch is a
+    conflict rather than a silent substitution: the browser holds edits in an
+    outbox, so a render issued mid-drain would otherwise hand back text older
+    than the editor is showing, with nothing to reveal it.
+    """
+    store, failure = _store_from_request()
+    if failure:
+        return failure
+    try:
+        document = documents.get_document(store, document_id)
+    except InvariantViolation:
+        return _error("document_not_found", "Document does not exist.", 404)
+
+    fmt = str(request.args.get("format") or "markdown").strip()
+    if fmt not in render.FORMATS:
+        return _error(
+            "invalid_request",
+            f"format must be one of {', '.join(render.FORMATS)}",
+            400,
+            field="format",
+        )
+
+    try:
+        projection = project_document(store, document_id)
+    except InvariantViolation as exc:
+        return _error("projection_unavailable", str(exc), 409, retryable=True)
+
+    expected = str(request.args.get("expected_structured_head_sha256") or "").strip()
+    if expected and expected != projection.structured_head_sha256:
+        return _error(
+            "stale_head",
+            "The document moved on since the render was requested.",
+            409,
+            retryable=True,
+            details={"structured_head_sha256": projection.structured_head_sha256},
+        )
+
+    try:
+        payload = render.render(projection.markdown, fmt)
+    except render.RenderError as exc:
+        return _error(exc.code, str(exc), exc.status)
+
+    spec = render.FORMATS[fmt]
+    response = Response(payload, mimetype=spec.media_type)
+    for name, value in _source_headers(payload).items():
+        response.headers[name] = value
+    response.headers["X-WB-Structured-Head-Sha256"] = projection.structured_head_sha256
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{_render_filename(document, projection, spec)}"'
+    )
+    return response
+
+
+def _render_filename(document, projection, spec) -> str:
+    """A stable, filesystem-safe name that carries the head it was cut from.
+
+    The head fragment is what makes "which copy did I send" answerable later,
+    without the recipient needing anything but the filename.
+    """
+    stem = "".join(
+        character if character.isalnum() or character in "-_" else "-"
+        for character in (document.title or "document")
+    ).strip("-")
+    return f"{stem or 'document'}-{projection.structured_head_sha256[:12]}{spec.extension}"
 
 
 def register_catalog_routes(app):

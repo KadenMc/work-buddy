@@ -44,6 +44,7 @@ from work_buddy.cowork.proposal_applicability import (
     assess_proposal_applicability,
     load_current_projection,
 )
+from work_buddy.document_kernel.projection import project_document
 from work_buddy.mcp_server.op_registry import register_op
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector, parse_selector
@@ -514,6 +515,50 @@ def cowork_doc_list(store_id: str, profile: str | None = None) -> dict[str, Any]
         "docs": docs_payload,
     }
     return result
+
+
+def cowork_doc_serialize(store_id: str, document_id: str) -> dict[str, Any]:
+    """Return one cowork doc's canonical Markdown at its current head.
+
+    This is the text the browser's own serializer produces, and the space in
+    which proposal anchors and expression marks resolve. It is not shaped for
+    publication: entity encoding and backslash escaping are part of the
+    canonical form, and every renderer that consumes it decodes them. A caller
+    that strips them is changing the document, not cleaning it up.
+
+    ``projection_sha256`` names this exact text. ``projection_receipt_match``
+    reports whether the stored projection blob agrees with what the kernel just
+    produced, so a divergence between the packaged worker and the browser
+    surfaces as data rather than as a silent difference in an exported file.
+    """
+    store = _open_store(store_id)
+    _require_document_surface(store)
+    document = documents.get_document(store, document_id)
+    projection = project_document(store, document_id)
+
+    with store._read_connection() as conn:
+        recorded, _reason = load_current_projection(
+            store,
+            document,
+            structured_head_sha256=projection.structured_head_sha256,
+            conn=conn,
+        )
+    receipt_match = (
+        None
+        if recorded is None
+        else recorded.projection_sha256 == projection.projection_sha256
+    )
+
+    return {
+        "ok": True,
+        "store_id": store.store_id,
+        "document_id": document.id,
+        "markdown": projection.markdown,
+        "structured_head_sha256": projection.structured_head_sha256,
+        "projection_sha256": projection.projection_sha256,
+        "byte_length": projection.byte_length,
+        "projection_receipt_match": receipt_match,
+    }
 
 
 def cowork_doc_get(
@@ -1390,6 +1435,9 @@ def register_ops(*, replace: bool = True) -> None:
     """
     register_op("op.wb.cowork_doc_list", cowork_doc_list, replace=replace)
     register_op("op.wb.cowork_doc_get", cowork_doc_get, replace=replace)
+    register_op(
+        "op.wb.cowork_doc_serialize", cowork_doc_serialize, replace=replace
+    )
     register_op(
         "op.wb.cowork_action_snapshot_get",
         cowork_action_snapshot_get,

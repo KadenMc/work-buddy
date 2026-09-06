@@ -2,7 +2,7 @@
 name: Co-work
 kind: concept
 description: The human-and-agent surface for living documents, with durable editing, source-safe file import, explicit file writes, content provenance, proposal review, and first-class Truth observability and management.
-summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, From file, folder selection, document selection, and explicit folder closing. From file uses a format-neutral importer boundary with Markdown support today; it creates a managed Co-work document without rewriting the source artifact. Co-work keeps structured editing state durable through an offline-capable outbox, records frozen-target authorship and human-review attestations for imported, pasted, directly entered, and accepted-proposal text, binds each document to one durable conversation with exact feedback anchors, and routes agent contributions through human-reviewed proposals.
+summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, From file, Export, folder selection, document selection, and explicit folder closing. From file uses a format-neutral importer boundary with Markdown support today; it creates a managed Co-work document without rewriting the source artifact. Co-work keeps structured editing state durable through an offline-capable outbox, records frozen-target authorship and human-review attestations for imported, pasted, directly entered, and accepted-proposal text, binds each document to one durable conversation with exact feedback anchors, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork
 - documents
@@ -137,6 +137,13 @@ import. It is disabled only when read-only mode, folder permissions, or host
 capabilities make that continuation unavailable. These creation actions never
 appear in the launcher body or inside the Open document dialog, and catalog
 loading does not keep them locked after a writable folder has been established.
+
+**Export** joins the bar for a registered folder document. Its primary action
+downloads Markdown, and a menu beside it offers whichever converted formats the
+host can actually produce. It is absent for a browser-local document, which has
+no server copy to render, and blocked while the document is unsynced, because a
+copy taken mid-drain would be older than the editor is showing with nothing in
+the file to reveal it. See `cowork/render`.
 
 The launcher has one **Documents** list whose contents follow the current
 context. With a folder open, it contains only ready registered documents from
@@ -437,7 +444,8 @@ from appearing after retirement.
 ## Human and agent authority
 
 The agent-facing capabilities are `cowork_doc_list`, `cowork_doc_get`,
-`cowork_doc_propose_edit`, `cowork_doc_comment`, and `cowork_doc_expression_mark`.
+`cowork_doc_serialize`, `cowork_doc_propose_edit`, `cowork_doc_comment`, and
+`cowork_doc_expression_mark`.
 An agent reads a document and proposes work on it. Every agent contribution is an
 open proposal, never a decision. Accept, amend, reject, redirect, endorse, and
 defer are human gestures collected on the dashboard, because an agent cannot

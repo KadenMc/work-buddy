@@ -32,7 +32,9 @@ parents:
 ---
 
 `cowork_doc_get` is a read-only view of the document's metadata and
-ledger-canonical review layer; content itself rides the binary Y.Doc transport.
+ledger-canonical review layer. Content itself rides the binary Y.Doc transport
+and is not returned here; `cowork_doc_serialize` is the sibling read that
+projects the document's canonical Markdown at its current head.
 It returns open proposals, expressions, feedback, source-writeback policy, and
 separately named structured, projection, recorded-import-source, and
 currently-observed-file hashes. The read does not append a drift event.

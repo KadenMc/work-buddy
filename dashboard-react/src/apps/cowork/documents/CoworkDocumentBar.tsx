@@ -15,6 +15,7 @@ import {
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type { CoworkMaterializationState } from "../materialization/contracts";
 import { coworkErrorMessage } from "../providers/errors";
+import { CoworkExportButton } from "./CoworkExportButton";
 import { LinkedLocalFilesPanel } from "./LinkedLocalFilesPanel";
 
 interface CoworkDocumentBarProps {
@@ -434,6 +435,14 @@ export function CoworkDocumentBar({
           <Button size="small" onClick={onRetrySync} disabled={onRetrySync === undefined}>
             {scratch !== null ? "Try saving again" : "Sync now"}
           </Button>
+        ) : null}
+        {registeredSession !== null ? (
+          <CoworkExportButton
+            storeId={registeredSession.storeId}
+            documentId={registeredSession.document.documentId}
+            syncStatus={syncStatus}
+            disabled={folderActionBusy}
+          />
         ) : null}
         {document !== null || scratch !== null ? (
           <Button
