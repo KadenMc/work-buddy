@@ -280,6 +280,13 @@ const waitForEditor = async (page: Page): Promise<ReturnType<Page["getByRole"]>>
   return editor;
 };
 
+/**
+ * Read the store and document identities out of the current Co-work route.
+ *
+ * The route carries a unique eight-character prefix whenever the Folder
+ * catalog admits one, and the full identity otherwise. These values are the
+ * URL's own presentation form, not registry identities.
+ */
 const currentRouteIds = (page: Page): { storeId: string; documentId: string } => {
   const query = new URL(page.url()).searchParams;
   const storeId = query.get("store_id");
@@ -287,6 +294,57 @@ const currentRouteIds = (page: Page): { storeId: string; documentId: string } =>
   if (storeId === null || documentId === null) {
     throw new Error(`expected a registered Co-work route, received ${page.url()}`);
   }
+  return { storeId, documentId };
+};
+
+const widen = (routeId: string, registered: readonly string[], label: string): string => {
+  const matches = registered.filter(
+    (candidate) => candidate === routeId || candidate.startsWith(routeId),
+  );
+  expect(
+    matches,
+    `route ${label} ${routeId} must widen to exactly one registered identity`,
+  ).toHaveLength(1);
+  return matches[0];
+};
+
+const registeredStoreIds = async (page: Page): Promise<string[]> => {
+  const payload = await page.evaluate(async () => {
+    const response = await fetch("/api/truth/cowork/folders", {
+      headers: { accept: "application/json" },
+    });
+    return (await response.json()) as { folders?: { store_id: string }[] };
+  });
+  return (payload.folders ?? []).map((entry) => entry.store_id);
+};
+
+const registeredDocumentIds = async (page: Page, storeId: string): Promise<string[]> => {
+  const payload = await page.evaluate(async (id: string) => {
+    const response = await fetch(`/api/truth/doc/list?store_id=${encodeURIComponent(id)}`, {
+      headers: { accept: "application/json" },
+    });
+    return (await response.json()) as { docs?: { document_id: string }[] };
+  }, storeId);
+  return (payload.docs ?? []).map((entry) => entry.document_id);
+};
+
+/**
+ * Widen the route's presentation identities back to the registry identities.
+ *
+ * Every API surface resolves store and document identities exactly, so any
+ * value threaded from the route into a request, or compared against a value
+ * that came from an API payload, has to be widened first.
+ */
+const resolveRouteIds = async (
+  page: Page,
+): Promise<{ storeId: string; documentId: string }> => {
+  const route = currentRouteIds(page);
+  const storeId = widen(route.storeId, await registeredStoreIds(page), "store_id");
+  const documentId = widen(
+    route.documentId,
+    await registeredDocumentIds(page, storeId),
+    "document_id",
+  );
   return { storeId, documentId };
 };
 
@@ -505,9 +563,10 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(
       page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
     ).toBeVisible({ timeout: 30_000 });
-    const storeId = new URL(page.url()).searchParams.get("store_id");
-    expect(storeId).toMatch(/^[0-9a-f]{32}$/);
-    ordinaryStoreId = storeId ?? "";
+    const routeStoreId = new URL(page.url()).searchParams.get("store_id");
+    expect(routeStoreId).toMatch(/^[0-9a-f]{8}(?:[0-9a-f]{24})?$/);
+    ordinaryStoreId = widen(routeStoreId ?? "", await registeredStoreIds(page), "store_id");
+    expect(ordinaryStoreId).toMatch(/^[0-9a-f]{32}$/);
     await expect(
       page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
     ).toBeVisible();
@@ -525,8 +584,16 @@ test.describe.serial("Co-work live lifecycle", () => {
       path.join(fixture.ordinary.path, ".wbuddy", "cowork", ".gitignore"),
       "utf-8",
     );
-    for (const entry of ["/store.db", "/store.db-*", "/runtime/", "/blobs/"]) {
-      expect(componentIgnore).toContain(entry);
+    // The component directory ignores everything and re-includes only the
+    // durable surface, so a new sidecar file fails closed instead of leaking
+    // into history. Assert that shape rather than a list of named exclusions,
+    // which would go stale the moment the store grows another local file.
+    expect(componentIgnore).toContain("/*");
+    for (const reincluded of ["!/.gitignore", "!/store.yaml", "!/export/"]) {
+      expect(componentIgnore).toContain(reincluded);
+    }
+    for (const machineLocal of ["!/store.db", "!/runtime/", "!/blobs/"]) {
+      expect(componentIgnore).not.toContain(machineLocal);
     }
     const publishedManifest = await readFile(
       path.join(fixture.ordinary.path, ".wbuddy", "manifest.yaml"),
@@ -556,8 +623,8 @@ test.describe.serial("Co-work live lifecycle", () => {
     const editor = await waitForEditor(page);
     await expect(editor).toHaveText("");
     await expect(editor).not.toContainText("Context bundle cache");
-    ({ documentId: firstDocumentId } = currentRouteIds(page));
-    expect(currentRouteIds(page).storeId).toBe(ordinaryStoreId);
+    ({ documentId: firstDocumentId } = await resolveRouteIds(page));
+    expect((await resolveRouteIds(page)).storeId).toBe(ordinaryStoreId);
     expect(
       await readFile(path.join(fixture.ordinary.path, "drafts", "first-working-note.md")),
     ).toEqual(Buffer.alloc(0));
@@ -578,7 +645,7 @@ test.describe.serial("Co-work live lifecycle", () => {
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toHaveText("");
-    expect(currentRouteIds(page)).toEqual({
+    expect(await resolveRouteIds(page)).toEqual({
       storeId: ordinaryStoreId,
       documentId: firstDocumentId,
     });
@@ -595,7 +662,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     const editor = await waitForEditor(page);
     await expect(editor).toContainText("Imported note");
     await expect(editor).toContainText("A line preserved exactly.");
-    ({ documentId: importedDocumentId } = currentRouteIds(page));
+    ({ documentId: importedDocumentId } = await resolveRouteIds(page));
     expect(await readFile(fixture.source.path)).toEqual(before);
 
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -1082,10 +1149,10 @@ test.describe.serial("Co-work live lifecycle", () => {
     );
     await page.getByRole("button", { name: "Create document" }).click();
     await expect
-      .poll(() => currentRouteIds(page).documentId, { timeout: 30_000 })
+      .poll(async () => (await resolveRouteIds(page)).documentId, { timeout: 30_000 })
       .not.toBe(firstDocumentId);
     await waitForEditor(page);
-    const second = currentRouteIds(page);
+    const second = await resolveRouteIds(page);
     const secondPath = path.join(fixture.ordinary.path, "second-working-note.md");
 
     // Reload makes the catalog-derived mutation permissions authoritative after bootstrap.
@@ -1130,17 +1197,17 @@ test.describe.serial("Co-work live lifecycle", () => {
     const firstOption = page.getByRole("option", { name: /First Working Note/ });
     await firstOption.click();
     await expect
-      .poll(() => currentRouteIds(page).documentId, { timeout: 30_000 })
+      .poll(async () => (await resolveRouteIds(page)).documentId, { timeout: 30_000 })
       .toBe(firstDocumentId);
     await expect(await waitForEditor(page)).toHaveText("");
-    expect(currentRouteIds(page).documentId).toBe(firstDocumentId);
+    expect((await resolveRouteIds(page)).documentId).toBe(firstDocumentId);
 
     await page.goBack({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toContainText(firstMarker);
-    expect(currentRouteIds(page).documentId).toBe(second.documentId);
+    expect((await resolveRouteIds(page)).documentId).toBe(second.documentId);
     await page.goForward({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toHaveText("");
-    expect(currentRouteIds(page).documentId).toBe(firstDocumentId);
+    expect((await resolveRouteIds(page)).documentId).toBe(firstDocumentId);
 
     await chooseFolder(page, fixture.initialized, fixture.ordinary.name);
     await expect(
@@ -1151,7 +1218,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     );
     await page.goBack({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toHaveText("");
-    expect(currentRouteIds(page).documentId).toBe(firstDocumentId);
+    expect((await resolveRouteIds(page)).documentId).toBe(firstDocumentId);
   });
 
   test("AC-PROV: direct-entry provenance is durable and owns selection actions", async ({
@@ -1230,7 +1297,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(editor).toHaveAttribute("aria-readonly", "false");
     await expect(editor.locator("p")).toHaveCount(1);
     await expect(editor.locator("p").first()).toHaveText(existingParagraph);
-    const { documentId } = currentRouteIds(page);
+    const { documentId } = await resolveRouteIds(page);
 
     const attestationResponses: number[] = [];
     const attestationRequestFailures: string[] = [];
@@ -1431,7 +1498,8 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.getByRole("button", { name: "Create document" }).click();
     await expect
       .poll(() => new URL(page.url()).searchParams.get("document_id"), { timeout: 30_000 })
-      .toMatch(/^[0-9a-f]{32}$/);
+      .toMatch(/^[0-9a-f]{8}(?:[0-9a-f]{24})?$/);
+    expect((await resolveRouteIds(page)).documentId).toMatch(/^[0-9a-f]{32}$/);
     await expect(await waitForEditor(page)).toContainText(fixture.scratch.marker);
     expect(await readFile(path.join(fixture.ordinary.path, "recovered-document.md"), "utf-8")).toBe(
       fixture.scratch.marker,

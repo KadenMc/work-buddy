@@ -32,6 +32,8 @@ dev_notes: |-
 
   Task reads and IR must project the current structured head plus uncompacted Yjs updates, not only the compacted blob. Restore preserves retired bindings/documents and creates a new active successor. Opaque local-file handles never expose absolute paths to the browser.
 
+  `document_kernel.projection.project_document` is the shared entry point for that read. It resolves the head through `ydoc_store.current_structured_head` rather than hashing whatever three separate reads happened to observe, because compaction rotates the update log separately from the snapshot pointer and an unchecked pair can name state that no longer exists: the authority raises on an in-flight marker instead, turning a silently stale projection into a retryable failure. It also defaults to the shared kernel client, so a caller does not spawn a Node worker per read.
+
   Never append a normal browser update to a bound document without a `DocumentChangeRecord`. The durable intent/materialized/committed state is the recovery authority. The `change_id` query link opens a compact source-and-change inspection row; do not expose raw source bytes through that read endpoint.
 ---
 
