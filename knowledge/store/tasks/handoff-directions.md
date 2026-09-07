@@ -2,7 +2,7 @@
 name: Task Handoff Directions
 kind: directions
 description: How to write a structured session handoff prompt and package it as native task knowledge.
-summary: 'Write from what you already know. Use the exact section structure: Task, Context, What I Already Know, Key Files, System Notes, Suggested Approach. Create via task_create with initial Co-work knowledge in summary.'
+summary: 'Write from what you already know. Use the exact section structure: Task, Context, What I Already Know, Key Files, System Notes, Suggested Approach. Create via task_create, asking for the task note explicitly with requested_note_role and passing the prompt as initial_note.'
 trigger: user wants to hand off in-progress work to a new agent session via a task
 command: wb-task-handoff
 capabilities:
@@ -41,11 +41,24 @@ Be specific. File paths absolute. Decisions include rationale.
 
 ## Create the task
 
-mcp__work-buddy__wb_run("task_create", {"task_text": "<concise summary>", "summary": "<full handoff prompt>"})
+```
+mcp__work-buddy__wb_run("task_create", {
+    "task_text": "<concise single-line description>",
+    "requested_note_role": "working_document/v1",
+    "initial_note": "<full handoff prompt>",
+})
+```
 
-The `summary` parameter provisions the Co-work document. `task_create` carries a
-stable mutation ID, so a response-loss retry through the gateway replays the
-same native task instead of creating a duplicate. Do not use `obsidian_retry`.
+`requested_note_role` is what provisions the Co-work document, and `initial_note`
+is its body. Pass both: the role alone yields an empty document, and the text alone
+is refused outright with "Choose a task note role before supplying note text". The
+`summary` parameter is a scalar field on the task record and creates no document at
+all, so a handoff passed there is not knowledge the next session can open, only a
+string it has to be told about.
+
+`task_create` carries a stable mutation ID, so a response-loss retry through the
+gateway replays the same native task instead of creating a duplicate. Do not use
+`obsidian_retry`.
 
 ## Confirm
 
