@@ -265,8 +265,8 @@ def internal_bus():
     persisted, and an event that arrives while no browser is subscribed is
     simply dropped.
 
-    The central named host-callback policy rejects browser and proxy traffic,
-    and this handler also requires a loopback peer. Its read-only exception is
+    In read-only mode the central host-callback policy rejects unauthenticated
+    browser and proxy traffic. This handler also requires a loopback peer. Its exception is
     limited to the in-memory bus; no domain callbacks execute on publication.
     """
     if request.remote_addr not in ("127.0.0.1", "::1"):

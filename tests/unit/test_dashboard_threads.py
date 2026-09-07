@@ -343,6 +343,7 @@ def _make_child_under(parent, fsm_state="awaiting_confirmation"):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("declared_thread_action_registry")
 class TestActionOptionsEndpoint:
     """The per-thread action library endpoint backs the inner-thread
     action switcher (a child opened directly has no group grid to

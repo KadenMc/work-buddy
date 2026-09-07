@@ -1589,6 +1589,8 @@ def test_provenance_review_route_respects_dashboard_read_only_mode(
     assert response.get_json() == {
         "ok": False,
         "error": "Dashboard is in read-only mode",
+        "code": "read_only",
+        "message": "Dashboard is in read-only mode",
     }
 
 

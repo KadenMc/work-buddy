@@ -74,7 +74,7 @@ dev_notes: |-
 
   ## Cross-process publishes go straight to the dashboard
 
-  ``publish_cross_process`` POSTs ``{event_type, payload}`` to the dashboard's loopback-only ``POST /internal/bus`` endpoint, which re-publishes on the in-process bus. No durable store sits in the path: an event that arrives while no browser is subscribed is dropped, matching the bus's best-effort, no-replay contract. A dashboard that is down drops the event silently — the publisher never blocks and never auto-spawns the dashboard. The endpoint is gated to ``127.0.0.1`` / ``::1`` because the dashboard has no auth and can be bound to ``0.0.0.0`` / published over Tailscale.
+  ``publish_cross_process`` POSTs ``{event_type, payload}`` to the dashboard's loopback-only ``POST /internal/bus`` endpoint, which re-publishes on the in-process bus. No durable store sits in the path: an event that arrives while no browser is subscribed is dropped, matching the bus's best-effort, no-replay contract. A dashboard that is down drops the event silently. The publisher never blocks and never auto-spawns the dashboard. The handler's loopback check confines ingress to local publishers even when the service listens on all interfaces or is published through Tailscale. The read-only caller policy is specified in the HTTP surface contract.
 
   ## Layering: clarify/, tasks/, health/, llm/ all import work_buddy.dashboard.events
 
@@ -109,7 +109,7 @@ This bus is the **lossy real-time UI** layer — drop-oldest, no durability, no 
 
 * **HTTP**
   * ``GET /api/events`` — SSE stream. No read-only gate. ``Cache-Control: no-cache``, ``X-Accel-Buffering: no``. 15 s idle keepalive comment to defeat intermediary idle-close.
-  * ``POST /internal/bus`` — loopback-only ingress for cross-process publishers. Validates ``event_type`` and re-publishes ``{event_type, payload}`` on the in-process bus. Gated to ``127.0.0.1`` / ``::1``; exempt from the read-only gate (UI-refresh events must flow even in display-only mode).
+  * ``POST /internal/bus``: loopback-only ingress for cross-process publishers. Validates ``event_type`` and re-publishes ``{event_type, payload}`` on the in-process bus. Requires a peer at ``127.0.0.1`` or ``::1``. In read-only mode, its declared in-memory exception additionally requires an authenticated local session or a direct loopback host callback without browser provenance or proxy headers. It does not persist events or invoke domain callbacks.
 
 * **Browser**
   * ``window.eventBus.{on, off, isConnected, lastHeartbeat}`` — per-event-type dispatcher.

@@ -40,6 +40,55 @@ def authenticate_dashboard_client(tmp_path, monkeypatch):
     return authenticate
 
 
+@pytest.fixture
+def declared_thread_action_registry(monkeypatch):
+    """Use shipped action schemas without host preferences or registry caches.
+
+    Catalog presentation tests need declared parameters, not live tool probes.
+    Resolve the actual declarations against isolated registered ops, then
+    restore the caller's operation maps and registry cache after each test.
+    """
+    from pathlib import Path
+
+    from work_buddy.knowledge.capability_loader import load_declared_capabilities
+    from work_buddy.knowledge.file_store import read_unit
+    from work_buddy.knowledge.model import unit_from_dict
+    from work_buddy.mcp_server import op_registry, registry
+
+    # Direct op-module imports can leave registrations present before the
+    # complete built-in scan. Rebuild against fresh maps so cached module
+    # reloads cannot duplicate an earlier test's partial registrations.
+    monkeypatch.setattr(op_registry, "_OPS", {})
+    monkeypatch.setattr(op_registry, "_OP_EFFECTS", {})
+    monkeypatch.setattr(op_registry, "_FAILED_MODULES", set())
+    monkeypatch.setattr(op_registry, "_builtins_loaded", False)
+
+    store_dir = Path(__file__).resolve().parents[1] / "knowledge" / "store"
+    unit_paths = (
+        "journal/journal_append_to_note",
+        "threads/thread_dismiss",
+        "threads/thread_defer",
+        "threads/thread_rename",
+    )
+    units = {}
+    for path in unit_paths:
+        raw = read_unit(store_dir, path)
+        assert raw is not None, f"Missing action declaration: {path}"
+        units[path] = unit_from_dict(path, raw)
+    capabilities, issues = load_declared_capabilities(units)
+    assert not issues, issues
+    entries = {entry.name: entry for entry in capabilities}
+    assert set(entries) == {path.rsplit("/", 1)[1] for path in unit_paths}
+
+    def refuse_execution(*_args, **_kwargs):
+        pytest.fail("Catalog presentation tests must not execute actions")
+
+    for entry in entries.values():
+        entry.callable = refuse_execution
+    monkeypatch.setattr(registry, "_REGISTRY", entries)
+    return entries
+
+
 @pytest.fixture(autouse=True)
 def _set_session_env(monkeypatch):
     """Ensure WORK_BUDDY_SESSION_ID is always set for imports."""

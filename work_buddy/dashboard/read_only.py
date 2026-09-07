@@ -17,14 +17,6 @@ READ_ONLY_EXCEPTIONS = {
 }
 HOST_CALLBACK_EXCEPTIONS = {
     "internal_bus": "events.publish_cross_process forwards an ephemeral event from a local process.",
-    "api_workflow_views_create": "notifications.surfaces.dashboard delivers a workflow view from the sidecar.",
-    "api_workflow_view_dismiss": "notifications and conversations host adapters dismiss a workflow view.",
-    "api_notification_log_add": "mcp_server.ops.notifications_ops records notification delivery.",
-    "api_dashboard_interact": "mcp_server.ops.sidecar_ops forwards host dashboard interaction requests.",
-}
-SESSION_EXCEPTIONS = {
-    "local_identity.redeem_bootstrap": "Redeems a host-minted grant before a session exists.",
-    "local_identity.refresh_session_csrf": "Reports normal unauthenticated recovery and checks exact Origin itself.",
 }
 
 _connect = sqlite3.connect
@@ -49,30 +41,21 @@ def reject_read_only():
     return None
 
 
-def register_session_exception(app, endpoint: str, reason: str) -> None:
-    """Register an independently authenticated host control, never a write exception."""
-    if endpoint not in app.view_functions or not reason.strip():
-        raise ValueError("A session exception must name an existing endpoint and its authentication reason")
-    app.extensions.setdefault("dashboard_session_exceptions", {})[endpoint] = reason
-
-
 def validate_exception_registry(app) -> None:
     """Reject stale or unexplained request-policy declarations."""
-    entries = {**READ_ONLY_EXCEPTIONS, **SESSION_EXCEPTIONS, **HOST_CALLBACK_EXCEPTIONS, **app.extensions.get("dashboard_session_exceptions", {})}
+    entries = {**READ_ONLY_EXCEPTIONS, **HOST_CALLBACK_EXCEPTIONS}
     for endpoint, reason in entries.items():
         if endpoint not in app.view_functions or not reason.strip():
             raise ValueError(f"Invalid dashboard request exception: {endpoint}")
 
 
 def guard_dashboard_request():
-    """Refuse non-safe methods before any domain lookup or request hook."""
-    from flask import current_app, jsonify, request
-    if request.method in SAFE_METHODS:
+    """Enforce read-only mode before domain work; writable routes own their auth."""
+    from flask import jsonify, request
+    if request.method in SAFE_METHODS or not is_read_only():
         return None
-    if is_read_only() and request.endpoint not in READ_ONLY_EXCEPTIONS:
+    if request.endpoint not in READ_ONLY_EXCEPTIONS:
         return reject_read_only()
-    if request.endpoint in SESSION_EXCEPTIONS or request.endpoint in current_app.extensions.get("dashboard_session_exceptions", {}):
-        return None
     if request.endpoint in HOST_CALLBACK_EXCEPTIONS and is_host_callback_request():
         return None
     from work_buddy.dashboard.local_identity_api import authenticate_request_session

@@ -315,6 +315,7 @@ class TestRedirectFeedbackBlock:
         assert self._build(t) != ""
 
 
+@pytest.mark.usefixtures("declared_thread_action_registry")
 class TestActionCatalogRequiredMarking:
     """The action catalog injected into the inference prompt marks
     required params so the model fills them."""

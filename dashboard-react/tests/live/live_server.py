@@ -117,7 +117,6 @@ from work_buddy.conversations.store import add_message, get_conversation  # noqa
 from work_buddy.cowork import api as cowork_api  # noqa: E402
 from work_buddy.cowork import document_agent as document_agent  # noqa: E402
 from work_buddy.cowork.conversations import CONVERSATION_SOURCE  # noqa: E402
-from work_buddy.dashboard.read_only import register_session_exception  # noqa: E402
 from work_buddy.dashboard.service import app  # noqa: E402
 from work_buddy.security.local_identity import (  # noqa: E402
     DEFAULT_AUDIENCE,
@@ -394,15 +393,6 @@ def _conversation_reply():
             "conversation_id": conversation_id,
             "message_id": posted.message_id,
         }
-    )
-
-
-for _endpoint in (
-    "_agent_control", "_identity_bootstrap", "_seed_proposal", "_conversation_reply"
-):
-    register_session_exception(
-        app, _endpoint,
-        "Nonce-gated control route on the marker-guarded disposable dashboard host.",
     )
 
 
