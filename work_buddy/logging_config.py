@@ -43,6 +43,11 @@ def setup_logging(level: int = logging.INFO) -> None:
         return
     _configured = True
 
+    from work_buddy.storage.read_only import process_read_only
+    if process_read_only():
+        logging.basicConfig(level=level, stream=sys.stderr)
+        return
+
     # Force std streams to UTF-8 with backslashreplace so non-ASCII log
     # output (e.g. Obsidian task descriptions, vault content) never
     # raises UnicodeEncodeError on Windows where the default codec is

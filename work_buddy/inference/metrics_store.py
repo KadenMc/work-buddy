@@ -75,6 +75,11 @@ def _db_path() -> Path:
 def get_connection() -> sqlite3.Connection:
     """Open (creating + migrating once per path) the broker-metrics DB."""
     path = _db_path()
+    from work_buddy.storage.read_only import process_read_only
+    if process_read_only():
+        conn = sqlite3.connect(str(path), timeout=10)
+        conn.row_factory = sqlite3.Row
+        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row

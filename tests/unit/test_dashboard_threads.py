@@ -39,9 +39,9 @@ def fresh_threads_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(fresh_threads_db):
+def client(fresh_threads_db, authenticate_dashboard_client):
     from work_buddy.dashboard.service import app
-    yield app.test_client()
+    yield authenticate_dashboard_client(app.test_client())
 
 
 # ---------------------------------------------------------------------------

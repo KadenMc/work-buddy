@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from work_buddy.storage.read_only import process_read_only
 
 from work_buddy.backups.source_foundation_restore import (
     require_source_foundation_writable,
@@ -122,7 +123,7 @@ class TruthStoreRegistry:
 
             db_path = resolve("db/truth-registry")
         self.db_path = Path(db_path).expanduser().resolve()
-        if source_foundation_read_only():
+        if source_foundation_read_only() or process_read_only():
             if not self.db_path.is_file():
                 require_source_foundation_writable("truth_registry.initialize")
         else:
@@ -132,10 +133,10 @@ class TruthStoreRegistry:
         conn.close()
 
     def _connect(self) -> sqlite3.Connection:
-        read_only = source_foundation_read_only()
+        read_only = source_foundation_read_only() or process_read_only()
         conn = sqlite3.connect(
             (
-                f"file:{self.db_path.resolve()}?mode=ro"
+                self.db_path.resolve().as_uri() + "?mode=ro"
                 if read_only
                 else str(self.db_path)
             ),
@@ -411,7 +412,7 @@ class TruthStoreRegistry:
 
     def list_stores(self, *, refresh: bool = True) -> tuple[RegisteredTruthStore, ...]:
         """List registered stores in stable path order."""
-        if source_foundation_read_only():
+        if source_foundation_read_only() or process_read_only():
             refresh = False
         if refresh:
             conn = self._connect()
@@ -466,14 +467,14 @@ class TruthStoreRegistry:
         if row is None:
             return None
         record = self._record(row)
-        if source_foundation_read_only():
+        if source_foundation_read_only() or process_read_only():
             refresh = False
         return self._refresh_path(record, raise_collision=True) if refresh else record
 
     def paths_for_store_id(self, store_id: str) -> tuple[Path, ...]:
         """Return the single reachable path for an identity, or no paths."""
         rows = self._rows_for_store_id(store_id)
-        if source_foundation_read_only():
+        if source_foundation_read_only() or process_read_only():
             reachable = [row.path for row in rows if row.reachable]
             if len(reachable) > 1:
                 raise StoreIdentityCollision(
@@ -522,7 +523,7 @@ class TruthStoreRegistry:
         refresh: bool = True,
     ) -> RegisteredTruthStore | None:
         """Return the live row for a store identity."""
-        if source_foundation_read_only():
+        if source_foundation_read_only() or process_read_only():
             refresh = False
         if refresh:
             paths = self.paths_for_store_id(store_id)
@@ -733,7 +734,7 @@ class TruthStoreRegistry:
     def open_store(self, store_id: str) -> TruthStore:
         """Open and touch the single reachable canonical store."""
 
-        read_only = source_foundation_read_only()
+        read_only = source_foundation_read_only() or process_read_only()
         row = self.get_by_store_id(store_id, refresh=not read_only)
         if row is None:
             raise TruthRegistryError(f"truth store is not reachable: {store_id}")

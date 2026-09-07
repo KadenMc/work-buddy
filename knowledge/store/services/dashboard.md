@@ -55,9 +55,30 @@ The Settings panel also has **Embeddings** and **Inference** sub-views. Settings
 * **React app:** ``GET /app/`` serves the Vite build from ``dashboard-react/dist``. It is the primary desktop UI opened by ``wbuddy launch`` and by the installer’s console-less native launcher; views move into it incrementally while unmigrated surfaces remain available in the root dashboard. ``GET /app/manifest.webmanifest`` and ``GET /app/icons/*`` provide optional PWA install metadata and branded icons with explicit media types. The PWA is an identity/standalone-window enhancement, not the runtime bootstrap. Release packaging builds this frontend before assembling the source-tree payload and refuses to build a payload when the dist is absent.
 * **Remote access:** Published privately via ``tailscale serve --bg 5127`` — the ``tailscale`` component (registered in ``COMPONENT_CATALOG``) gates this with click-to-fix requirements; see ``architecture/health/components`` and ``status/tailscale-status-directions``. The browser only hits same-origin ``/api/...`` routes; all local service reads happen server-side.
 * **Frame boundary:** Every response sets ``Content-Security-Policy: frame-ancestors 'none'`` and ``X-Frame-Options: DENY`` so another site cannot embed dashboard controls.
-* **Read-only mode:** ``dashboard.read_only: true`` in ``config.yaml`` gates every mutating HTTP method (403) and hides or disables mutation controls in both frontends.
+* **Read-only HTTP policy:** ``dashboard.read_only: true`` in ``config.yaml`` enables the central request refusal and frontend mutation restrictions. The separate ``--read-only`` process also enforces storage and process boundaries described below.
 
 The React dashboard's standardized widget runtime, appearance contract, calendar presentation, and native Journal and Tasks views are documented under `services/dashboard/react`. Registry-driven configuration authority is documented at `settings`.
+
+## Read-only request and process boundaries
+
+`work_buddy.dashboard.read_only.guard_dashboard_request` is the first application `before_request` hook. In read-only mode it refuses every method outside GET, HEAD, OPTIONS, and TRACE with HTTP 403 unless the endpoint has an explicit read-only exception. In writable mode, non-safe methods require an authenticated local session unless the endpoint has a declared bootstrap, independently authenticated control, or local host callback exception. Host callbacks require a direct loopback peer and Host, and reject browser provenance and proxy headers; they preserve local process compatibility without requiring browser credentials. An exemption from the session check does not bypass the read-only refusal. Exception entries name registered endpoints and carry reasons, checked by `validate_exception_registry`. Existing route-level `_reject_read_only()` calls delegate to the shared policy as defense in depth, and operation-bound gesture checks still apply where required.
+
+The process entry point is `wbuddy dashboard --read-only --port <port>`, or `uv run python -m work_buddy.dashboard --read-only --port <port>` from the repository. Replace `<port>` with an explicit free port outside 5124, 5126, and 5127. It binds only to `127.0.0.1`, reads the selected data and configuration roots, and does not start normal dashboard pollers, identity bootstrap, or store prewarming. Keep the user's normal dashboard process running separately. Use `WORK_BUDDY_DATA_DIR` and `WORK_BUDDY_CONFIG_DIR` to select disposable roots during validation.
+
+The process installs its SQLite interposer before importing dashboard stores. On-disk paths and SQLite URIs open with `mode=ro`; every connection receives `PRAGMA query_only = ON`, including in-memory connections. The connection authorizer rejects ATTACH and attempts to disable query-only mode. Python file-write and filesystem-mutation operations, outbound connections, and child processes are refused. The sole child-process exception is the exact bundled document-kernel worker, which exchanges document bytes over pipes. That Node worker is trusted application code and does not inherit the Python process's audit protections. Logs use stdout and stderr. These controls apply to the dashboard process; independently invoked shell commands and other services have their own boundaries.
+
+SQLite can still create or update native WAL and SHM coordination files when reading a live database. Account for those separately from authoritative database content, configuration, and document blobs; do not describe the whole filesystem as immutable. External-provider panes can be unavailable because the process cannot connect to sibling services, external providers, or tools. A stored-data read does not establish that those integrations work in this mode.
+
+This process is opt-in. Before treating it as an agent read surface, run the runtime mutation audit and the isolated GET survey:
+
+```bash
+uv run python -m scripts.audit_dashboard_mutations --json
+uv run python -m scripts.survey_dashboard_read_only --json
+```
+
+The mutation audit enumerates non-safe route methods from Flask's URL map, records executed guards and HTTP results, and checks the disposable root for changes. The GET survey uses independently seeded writable and read-only roots, supplies real fixture identities for covered dynamic routes, and records each route's response and observed connection policy. It compares file hashes, table counts, and logical SQLite schema and row digests obtained through a read transaction for each database. The logical digests include row updates stored in WAL without exposing row contents in the report, so unchanged counts or main-database bytes alone cannot pass the authority comparison. Review every SQLite or permission failure and every unexpected response, with a fix or an explicit unavailable/read-only disposition. A `missing_resource` record exercises rejection, not the existing-resource path; add a fixture or retain that coverage gap. A successful process exit alone does not establish a clean survey or complete route coverage.
+
+Only after that isolated survey is clean, start the separate process on the intended real data root and non-service port. Record authoritative counts or revisions before and after a browser read and a refused non-safe request. Require the read to render, the request to return HTTP 403, and the authority observations to remain unchanged. Do not mint a session, write fixtures, or use real items for mutation tests. Keep provider limitations and untested paths explicit in the review record. See `dev/live-testing-directions` and `dev/dashboard/verification-directions` for browser evidence requirements.
 
 ## Card registry (feature cards)
 
@@ -88,7 +109,7 @@ The dashboard updates in real time from server-pushed events delivered over ``GE
 * ``POST /api/control/reprobe`` — re-run every tool probe, rebuild the graph.
 * ``POST /api/reprobe/<component_id>`` — pre-existing; per-component reprobe, reused by Settings' ↻ button.
 
-All mutating control endpoints are gated by ``_reject_read_only()`` and auto-grant the relevant consent (the click IS the consent, same pattern as workflow-launch).
+All mutating control endpoints pass through the central request policy and retain shared ``_reject_read_only()`` checks. They auto-grant the relevant consent (the click IS the consent, same pattern as workflow-launch).
 
 ## Settings broker endpoints
 
@@ -105,7 +126,7 @@ Settings responses are no-store. Writes and resets honor dashboard read-only mod
 * ``POST /api/dashboard/interact`` — typed entry point for agents driving forms (called by the ``dashboard_interact`` MCP capability and any other process). Body ``{action, form_id, field?, value?, timeout_seconds?}``.
 * ``POST /api/dashboard/interact/result/<request_id>`` — frontend's postback for rendezvous-backed actions (``form_submit``, ``form_get_state``). Body ``{ok, error?, errors_by_field?, fields?}``.
 
-Both gated by ``_reject_read_only()``. These are retained compatibility routes and cannot drive the React Jobs authoring form. See ``services/dashboard/form-bridge`` for the protocol.
+Both pass through the central request policy and retain shared ``_reject_read_only()`` checks. These are retained compatibility routes and cannot drive the React Jobs authoring form. See ``services/dashboard/form-bridge`` for the protocol.
 
 ## User-job endpoints
 
@@ -127,7 +148,7 @@ Triage runs through the unified source pipeline (the ``run_source_pipeline`` cap
 ## CRITICAL for all agents modifying dashboard code
 
 * **Never add browser-side fetches to sibling localhost ports** (5123, 5124, 27125, etc.) — these break on mobile and over Tailscale. All cross-service reads must happen server-side.
-* **Gate new POST routes with ``_reject_read_only()``** so read-only deployments stay read-only.
+* **Keep the central request guard first.** New non-safe routes inherit read-only and session refusal. Any exception must name the exact registered endpoint, state its reason, and pass the runtime audit; session exceptions never authorize read-only writes. Retain shared route-level checks as defense in depth.
 * **Same-origin only** for any fetch from the frontend.
 * **Silent conversation create for sidebar-bound chats** — call ``conversations.store.create_conversation`` directly, NOT the ``conversation_create`` capability, so ``_notify_conversation_created`` does not double-mount the conversation as both a CHAT toast/workflow-view tab and a sidebar.
 * **Keep the legacy form bridge frozen.** Existing handlers route ``dashboard.form.*`` events through ``wbFormBridge``; new consumers use widget-native assisted drafts and human-only submission, not DOM-driving events.

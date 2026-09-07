@@ -394,7 +394,7 @@ def test_start_requires_write_authority_while_existing_runs_remain_readable(
     monkeypatch,
 ):
     env = analysis_api_env
-    monkeypatch.setattr(cowork_api, "_is_read_only", lambda: True)
+    monkeypatch.setitem(env["client"].application.extensions, "dashboard_read_only", lambda: True)
 
     blocked = env["client"].post(
         _url(env),

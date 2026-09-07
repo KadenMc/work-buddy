@@ -869,6 +869,9 @@ def _warm_knowledge_index() -> None:
     thread because the embedding service may still be loading models
     when the MCP server starts. If dense fails, BM25 is still ready.
     """
+    from work_buddy.storage.read_only import process_read_only
+    if process_read_only():
+        return
     import threading
     from work_buddy.knowledge.store import load_store
     from work_buddy.knowledge.index import get_index

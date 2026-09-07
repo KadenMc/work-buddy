@@ -719,6 +719,9 @@ def _print_dashboard_url(prefix: str = "") -> None:
 
 
 def cmd_dashboard(args) -> int:
+    if getattr(args, "read_only", False):
+        from work_buddy.dashboard.read_only import serve
+        return serve(port=args.port)
     url = _dashboard_url()
     print(url)
     if getattr(args, "open", False):

@@ -6,11 +6,12 @@ import pytest
 
 
 @pytest.fixture
-def client():
+def client(authenticate_dashboard_client):
     """Flask test client for the dashboard app."""
     from work_buddy.dashboard.service import app
     app.config["TESTING"] = True
     with app.test_client() as c:
+        authenticate_dashboard_client(c)
         yield c
 
 
@@ -65,13 +66,17 @@ class TestLaunchAgentValidation:
 class TestLaunchAgentReadOnly:
     """Read-only mode blocks agent launches."""
 
-    def test_read_only_returns_403(self, client):
-        with patch("work_buddy.dashboard.service._is_read_only", return_value=True):
+    def test_read_only_returns_403(self, client, monkeypatch):
+        from work_buddy.dashboard import service
+        monkeypatch.setitem(service._cfg, "dashboard", {"read_only": True})
+        with patch("work_buddy.session_launcher.begin_session") as begin:
             resp = client.post("/api/launch-agent", json={
                 "prompt": "/wb-setup diagnose hindsight",
                 "mode": "desktop",
             })
         assert resp.status_code == 403
+        assert resp.get_json()["code"] == "read_only"
+        begin.assert_not_called()
 
 
 @pytest.mark.unit

@@ -267,6 +267,9 @@ def api_truth_policy(document_id: str):
     except truth_activation.TruthActivationError as exc:
         return _activation_error(exc)
     except InvariantViolation as exc:
+        from work_buddy.truth.read_snapshot import ReadSnapshotBusy
+        if isinstance(exc, ReadSnapshotBusy):
+            return _error("truth_policy_unavailable", str(exc), status=503, retryable=True)
         return _error("truth_policy_unavailable", str(exc), status=409)
     return jsonify(
         {

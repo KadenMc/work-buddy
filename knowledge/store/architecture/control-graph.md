@@ -103,6 +103,8 @@ Universal ``?`` button on every non-ok requirement (except those already offerin
 * ``POST /api/control/fix/<req_id>`` — applies the fix; body ``{params}`` for input_required. Re-runs the check, returns ``{ok, detail, side_effects, recheck, spawned}``.
 * ``POST /api/control/help/<node_id>`` — spawns a help session.
 
+The read-only dashboard centrally rejects all mutating control requests before endpoint code runs, including preference, fix, reprobe, and help actions. ``GET /api/control/graph`` remains available for inspection.
+
 ## Caching and invalidation
 
 * ``build_graph()`` in ``work_buddy/control/graph.py`` has a 45-s TTL with a ``threading.Lock``.

@@ -720,8 +720,14 @@ def resolve_document_truth_policy_snapshot(
     from work_buddy.cowork import lifecycle_lock
     from work_buddy.truth import ydoc_store
 
-    with lifecycle_lock.document_lifecycle_lock(store.store_id, document_id):
-        with ydoc_store.document_lock(store, document_id):
+    from contextlib import nullcontext
+    from work_buddy.storage.read_only import process_read_only
+    from work_buddy.truth.read_snapshot import document_read_snapshot
+    readonly = process_read_only()
+    lifecycle = nullcontext() if readonly else lifecycle_lock.document_lifecycle_lock(store.store_id, document_id)
+    barrier = document_read_snapshot if readonly else ydoc_store.document_lock
+    with lifecycle:
+        with barrier(store, document_id):
             with store._read_connection() as read_conn:
                 read_conn.execute("BEGIN")
                 try:

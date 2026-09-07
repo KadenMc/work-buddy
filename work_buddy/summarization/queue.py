@@ -55,6 +55,9 @@ CREATE INDEX IF NOT EXISTS idx_summarization_queue_enqueued_at
 
 def ensure_queue_table(conn=None) -> None:
     """Idempotent queue table creation. Called by enqueue/dequeue paths."""
+    from work_buddy.storage.read_only import process_read_only
+    if process_read_only():
+        return
     if conn is None:
         conn = get_connection()
         owned = True

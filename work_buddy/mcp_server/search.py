@@ -21,11 +21,17 @@ _SEARCH_LOG = resolve("logs/search-debug")
 
 
 def _get_search_log() -> Path:
-    _SEARCH_LOG.parent.mkdir(parents=True, exist_ok=True)
+    from work_buddy.storage.read_only import process_read_only
+    if not process_read_only():
+        _SEARCH_LOG.parent.mkdir(parents=True, exist_ok=True)
     return _SEARCH_LOG
 
 
 def _log_to_file(path: Path, msg: str) -> None:
+    from work_buddy.storage.read_only import process_read_only
+    if process_read_only():
+        logger.debug("%s", msg)
+        return
     import time
     with open(path, "a", encoding="utf-8") as f:
         f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")

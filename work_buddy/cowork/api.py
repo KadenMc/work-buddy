@@ -29,6 +29,10 @@ from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 from flask import Blueprint, Response, jsonify, request
+from work_buddy.dashboard.read_only import (
+    is_read_only as _is_read_only,
+    reject_read_only as _reject_read_only,
+)
 
 from work_buddy.conversations import execution as conversation_execution
 from work_buddy.cowork import (
@@ -102,21 +106,6 @@ def _registry() -> TruthStoreRegistry:
 
 def _open_store(store_id: str) -> TruthStore:
     return _registry().open_store(store_id)
-
-
-def _is_read_only() -> bool:
-    try:
-        from work_buddy.config import load_config
-
-        return bool(load_config().get("dashboard", {}).get("read_only", False))
-    except Exception:  # noqa: BLE001 - a config failure never blocks a read route
-        return False
-
-
-def _reject_read_only():
-    if _is_read_only():
-        return jsonify({"ok": False, "error": "Dashboard is in read-only mode"}), 403
-    return None
 
 
 def cowork_mutation_context_sha256(
@@ -1681,6 +1670,9 @@ def api_doc_ydoc_pull(document_id: str):
             store, document, since_offset=since_offset
         )
     except InvariantViolation as exc:
+        from work_buddy.truth.read_snapshot import ReadSnapshotBusy
+        if isinstance(exc, ReadSnapshotBusy):
+            return _fail(str(exc), 503)
         return _fail(str(exc), 400)
     response = Response(body, mimetype="application/octet-stream")
     for name, value in headers.items():

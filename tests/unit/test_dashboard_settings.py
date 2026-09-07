@@ -6,6 +6,8 @@ import pytest
 
 from work_buddy import config as wb_config
 from work_buddy.dashboard import service as dash_service
+from work_buddy.dashboard import local_identity_api
+from work_buddy.security.local_identity import LocalIdentityAuthority
 from work_buddy.settings import broker, store
 
 
@@ -28,7 +30,16 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setitem(dash_service._cfg, "dashboard", {"read_only": False})
     monkeypatch.setattr(broker, "publish_change", lambda event: None)
     dash_service.app.config["TESTING"] = True
+    authority = LocalIdentityAuthority(tmp_path / "identity.db")
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: authority)
     with dash_service.app.test_client() as test_client:
+        bootstrap = authority.mint_bootstrap(origin="http://localhost")
+        authenticated = test_client.post(
+            "/api/local-identity/bootstrap/redeem",
+            json={"token": bootstrap.token},
+            headers={"Origin": "http://localhost"},
+        )
+        assert authenticated.status_code == 200
         yield test_client
 
 
@@ -204,7 +215,7 @@ def test_post_reset_alias_and_read_only_enforcement(client, monkeypatch) -> None
         },
     )
     assert blocked.status_code == 403
-    assert blocked.get_json()["error"] == "read_only"
+    assert blocked.get_json()["code"] == "read_only"
     snapshot = client.get("/api/settings/values").get_json()
     assert snapshot["read_only"] is True
 
@@ -296,7 +307,7 @@ def test_preview_uses_existing_validation_conflict_and_read_only_contract(
         },
     )
     assert blocked.status_code == 403
-    assert blocked.get_json()["error"] == "read_only"
+    assert blocked.get_json()["code"] == "read_only"
 
 
 def test_successful_write_publishes_normalized_settings_event(

@@ -553,7 +553,7 @@ def test_notification_dispatcher_and_palette_skip_obsidian_clients(monkeypatch):
     commands.assert_not_called()
 
 
-def test_forged_palette_execute_is_fenced_after_obsidian_opt_out(monkeypatch):
+def test_forged_palette_execute_is_fenced_after_obsidian_opt_out(monkeypatch, authenticate_dashboard_client):
     from work_buddy.dashboard import service
 
     monkeypatch.setattr(
@@ -564,7 +564,7 @@ def test_forged_palette_execute_is_fenced_after_obsidian_opt_out(monkeypatch):
         "work_buddy.obsidian.commands.ObsidianCommands",
         side_effect=AssertionError("command bridge constructed"),
     ) as commands:
-        response = service.app.test_client().post(
+        response = authenticate_dashboard_client(service.app.test_client()).post(
             "/api/palette/execute",
             json={"command_id": "obsidian::app:open-settings", "params": {}},
         )
@@ -575,7 +575,7 @@ def test_forged_palette_execute_is_fenced_after_obsidian_opt_out(monkeypatch):
 
 
 def test_cached_workbuddy_palette_entry_is_rechecked_before_listing_and_call(
-    monkeypatch,
+    monkeypatch, authenticate_dashboard_client,
 ):
     from work_buddy.dashboard import api, service
     from work_buddy.mcp_server.registry import Capability
@@ -599,7 +599,7 @@ def test_cached_workbuddy_palette_entry_is_rechecked_before_listing_and_call(
     )
 
     assert api._workbuddy_commands({}) == []
-    response = service.app.test_client().post(
+    response = authenticate_dashboard_client(service.app.test_client()).post(
         "/api/palette/execute",
         json={"command_id": f"work-buddy::{capability.name}", "params": {}},
     )

@@ -1571,7 +1571,7 @@ def test_provenance_review_route_respects_dashboard_read_only_mode(
     seeded,
     monkeypatch,
 ):
-    monkeypatch.setattr(api, "_is_read_only", lambda: True)
+    monkeypatch.setitem(client.application.extensions, "dashboard_read_only", lambda: True)
     response = client.post(
         _url(
             f"/api/truth/doc/{seeded['document'].id}/"
@@ -2310,7 +2310,7 @@ def test_conversation_bind_preserves_document_mutation_gates(
     expected_error,
 ):
     if gate == "read_only":
-        monkeypatch.setattr(api, "_is_read_only", lambda: True)
+        monkeypatch.setitem(client.application.extensions, "dashboard_read_only", lambda: True)
     elif gate == "retired":
         monkeypatch.setattr(
             api.documents,

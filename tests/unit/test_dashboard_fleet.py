@@ -70,7 +70,7 @@ def test_fleet_fingerprint_detects_material_change():
     assert api._fleet_fingerprint(base) != api._fleet_fingerprint(model)
 
 
-def test_fleet_roster_route_success(monkeypatch):
+def test_fleet_roster_route_success(monkeypatch, authenticate_dashboard_client):
     from types import SimpleNamespace
     from work_buddy.dashboard.service import app
     import work_buddy.mcp_server.ops.inference_ops as iops
@@ -85,13 +85,13 @@ def test_fleet_roster_route_success(monkeypatch):
     monkeypatch.setattr(api, "bust_fleet_cache", lambda: None)
     monkeypatch.setattr("work_buddy.dashboard.events.publish_auto", lambda *a, **k: None)
 
-    resp = app.test_client().post("/api/fleet/roster",
+    resp = authenticate_dashboard_client(app.test_client()).post("/api/fleet/roster",
                                   json={"action": "set", "device_id": "X", "role": "r"})
     assert resp.status_code == 200 and resp.get_json()["success"] is True
     assert store["inference"]["fleet"][0]["role"] == "r"
 
 
-def test_fleet_roster_route_validation_400(monkeypatch):
+def test_fleet_roster_route_validation_400(monkeypatch, authenticate_dashboard_client):
     from types import SimpleNamespace
     from work_buddy.dashboard.service import app
     import work_buddy.mcp_server.ops.inference_ops as iops
@@ -102,7 +102,7 @@ def test_fleet_roster_route_validation_400(monkeypatch):
         "work_buddy.mcp_server.registry.get_registry",
         lambda: {"fleet_roster": SimpleNamespace(callable=iops._fleet_roster_dispatch)},
     )
-    resp = app.test_client().post("/api/fleet/roster", json={"action": "set", "device_id": ""})
+    resp = authenticate_dashboard_client(app.test_client()).post("/api/fleet/roster", json={"action": "set", "device_id": ""})
     assert resp.status_code == 400
     assert "device_id" in resp.get_json()["errors_by_field"]
 

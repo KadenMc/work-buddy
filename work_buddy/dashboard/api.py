@@ -24,6 +24,7 @@ from urllib.request import Request, urlopen
 
 from work_buddy.config import load_config
 from work_buddy.paths import data_dir, resolve
+from work_buddy.storage.read_only import process_read_only
 
 logger = logging.getLogger(__name__)
 
@@ -329,7 +330,7 @@ def _build_system_state() -> dict[str, Any]:
         "uptime_seconds": round(uptime),
         "last_tick_at": state.get("last_tick_at", 0),
         "exclusion_active": state.get("exclusion_active", False),
-        "read_only": _cfg.get("dashboard", {}).get("read_only", False),
+        "read_only": process_read_only() or _cfg.get("dashboard", {}).get("read_only", False),
         "services": state.get("services", {}),
         "jobs": jobs,
         "events": state.get("events", []),

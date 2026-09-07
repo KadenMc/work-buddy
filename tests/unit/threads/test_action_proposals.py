@@ -1142,13 +1142,13 @@ def test_malformed_execution_result_is_typed_unavailable(stack):
     ],
 )
 def test_legacy_dashboard_routes_cannot_edit_or_execute_managed_proposals(
-    stack, endpoint, body
+    stack, endpoint, body, authenticate_dashboard_client
 ):
     from work_buddy.dashboard import service as dashboard
 
     proposal = create(stack)
     before = [event.to_dict() for event in store.list_events(proposal["thread_id"])]
-    response = dashboard.app.test_client().post(
+    response = authenticate_dashboard_client(dashboard.app.test_client()).post(
         f"/api/threads/{proposal['thread_id']}/{endpoint}",
         json=body,
     )

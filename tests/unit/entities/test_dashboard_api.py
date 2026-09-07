@@ -13,7 +13,7 @@ import pytest
 
 
 @pytest.fixture
-def api_client(tmp_path, monkeypatch):
+def api_client(tmp_path, monkeypatch, authenticate_dashboard_client):
     """Flask test client with a tmp entity store wired in."""
     entity_db = tmp_path / "entities.db"
     fake_cfg = {"entities": {"db_path": str(entity_db)}}
@@ -28,7 +28,7 @@ def api_client(tmp_path, monkeypatch):
 
     from work_buddy.dashboard.service import app
     app.config["TESTING"] = True
-    client = app.test_client()
+    client = authenticate_dashboard_client(app.test_client())
 
     class Env:
         pass

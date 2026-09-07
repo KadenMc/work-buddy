@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from work_buddy.artifacts.io import atomic_write_bytes
+from work_buddy.storage.read_only import process_read_only
 from work_buddy.backups.source_foundation_restore import (
     require_source_foundation_writable,
     source_foundation_read_only,
@@ -791,7 +792,7 @@ class TruthStore:
         # Version and identity checks must precede persistent PRAGMAs so an
         # older engine leaves a future store byte-for-byte untouched.
         conn = store._open_connection(configure_storage=False)
-        read_only = source_foundation_read_only()
+        read_only = source_foundation_read_only() or process_read_only()
         migrated = False
         compatibility_backfilled = False
         try:
@@ -885,10 +886,10 @@ class TruthStore:
         *,
         configure_storage: bool = True,
     ) -> sqlite3.Connection:
-        read_only = source_foundation_read_only()
+        read_only = source_foundation_read_only() or process_read_only()
         conn = sqlite3.connect(
             (
-                f"file:{self._paths.db.resolve()}?mode=ro"
+                self._paths.db.resolve().as_uri() + "?mode=ro"
                 if read_only
                 else str(self._paths.db)
             ),

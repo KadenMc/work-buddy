@@ -475,7 +475,7 @@ def test_truth_reads_remain_available_while_mutations_fail_closed_read_only(
         created_at=NOW,
         status_at=NOW,
     ).claim
-    monkeypatch.setattr(api, "_is_read_only", lambda: True)
+    monkeypatch.setitem(client.application.extensions, "dashboard_read_only", lambda: True)
 
     listed = client.get(_url(seeded, view="folder"))
     blocked = client.post(

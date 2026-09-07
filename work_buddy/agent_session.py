@@ -242,7 +242,9 @@ def get_consent_requests_dir() -> Path:
     Telegram, etc.) and all backend processes (MCP server, sidecar).
     """
     requests_dir = get_agents_dir() / "consent" / "requests"
-    requests_dir.mkdir(parents=True, exist_ok=True)
+    from work_buddy.storage.read_only import process_read_only
+    if not process_read_only():
+        requests_dir.mkdir(parents=True, exist_ok=True)
     return requests_dir
 
 

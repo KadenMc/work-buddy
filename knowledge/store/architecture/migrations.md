@@ -23,6 +23,10 @@ parents:
 - architecture
 - architecture
 dev_notes: |-
+  ## Protected dashboard reads
+
+  In the opt-in dashboard read-only process, `MigrationRunner.run()` validates that `PRAGMA user_version` equals the deployed target, then returns before acquiring a writer lock, bootstrapping migration history, or restamping hashes. Older and future versions are refused. Scoped Truth opens likewise validate the current version markers without migrations or backfills. Initialize and migrate stores through their normal writable owner before opening this read surface. See `services/dashboard` for the process boundary and its survey requirements.
+
   ## Hashing pipeline
 
   `_hash_callable` runs: `inspect.getsource(fn)` returns the function text; `ast.parse` produces a syntax tree; `_strip_docstrings` removes docstring `Expr` nodes (the AST's only carrier of docstring text); `_normalize_outer_fn_name` rewrites the top-level `FunctionDef.name` to `<fn>` so the Python binding identifier doesn't change the hash; `ast.unparse` round-trips the tree back to canonical source text; SHA-256 reduces that text to the stored digest. The migration's identity is its position in the runner's migrations list, not its symbol name.

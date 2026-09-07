@@ -14,7 +14,7 @@ from work_buddy.cowork.document_agent import document_agent_consumer
 
 
 @pytest.fixture
-def dashboard_client(tmp_path, monkeypatch):
+def dashboard_client(tmp_path, monkeypatch, authenticate_dashboard_client):
     database = tmp_path / "throwaway-dashboard-conversations.db"
     monkeypatch.setattr(store, "_DB_PATH", database)
     conn = store.get_connection()
@@ -60,6 +60,7 @@ def dashboard_client(tmp_path, monkeypatch):
     )
     service.app.config.update(TESTING=True)
     with service.app.test_client() as client:
+        authenticate_dashboard_client(client)
         yield client
 
 

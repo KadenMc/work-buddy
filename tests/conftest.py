@@ -18,6 +18,28 @@ os.environ.setdefault("WORK_BUDDY_SESSION_ID", "test-session-00000000")
 import pytest
 
 
+@pytest.fixture
+def authenticate_dashboard_client(tmp_path, monkeypatch):
+    """Give an opted-in route client a real session from a temporary authority."""
+    from work_buddy.dashboard import local_identity_api
+    from work_buddy.security.local_identity import LocalIdentityAuthority
+
+    authority = LocalIdentityAuthority(tmp_path / "dashboard-local-identity.db")
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: authority)
+
+    def authenticate(client):
+        bootstrap = authority.mint_bootstrap(origin="http://localhost")
+        response = client.post(
+            "/api/local-identity/bootstrap/redeem",
+            json={"token": bootstrap.token},
+            headers={"Origin": "http://localhost"},
+        )
+        assert response.status_code == 200, response.get_json()
+        return client
+
+    return authenticate
+
+
 @pytest.fixture(autouse=True)
 def _set_session_env(monkeypatch):
     """Ensure WORK_BUDDY_SESSION_ID is always set for imports."""

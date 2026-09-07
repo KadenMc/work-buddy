@@ -570,10 +570,11 @@ def test_help_brief_for_component_includes_diagnostic_section():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def client():
+def client(authenticate_dashboard_client):
     from work_buddy.dashboard.service import app
     app.config["TESTING"] = True
     with app.test_client() as c:
+        authenticate_dashboard_client(c)
         yield c
 
 
@@ -588,10 +589,14 @@ def test_fix_endpoint_404_unknown_returns_ok_false_payload(client):
     assert data["ok"] is False
 
 
-def test_fix_endpoint_blocked_in_read_only(client):
-    with mock.patch("work_buddy.dashboard.service._is_read_only", return_value=True):
+def test_fix_endpoint_blocked_in_read_only(client, monkeypatch):
+    from work_buddy.dashboard import service
+    monkeypatch.setitem(service._cfg, "dashboard", {"read_only": True})
+    with mock.patch("work_buddy.control.fix_runner.run_fix") as fix:
         resp = client.post("/api/control/fix/core/data/writable", json={})
     assert resp.status_code == 403
+    assert resp.get_json()["code"] == "read_only"
+    fix.assert_not_called()
 
 
 def test_fix_endpoint_smoke_e2e(client, tmp_path, monkeypatch):
@@ -607,10 +612,14 @@ def test_fix_endpoint_smoke_e2e(client, tmp_path, monkeypatch):
     assert target.exists()
 
 
-def test_help_endpoint_blocked_in_read_only(client):
-    with mock.patch("work_buddy.dashboard.service._is_read_only", return_value=True):
+def test_help_endpoint_blocked_in_read_only(client, monkeypatch):
+    from work_buddy.dashboard import service
+    monkeypatch.setitem(service._cfg, "dashboard", {"read_only": True})
+    with mock.patch("work_buddy.control.help_briefs.spawn_help_agent") as spawn:
         resp = client.post("/api/control/help/component:obsidian")
     assert resp.status_code == 403
+    assert resp.get_json()["code"] == "read_only"
+    spawn.assert_not_called()
 
 
 def test_help_endpoint_dispatches(client):
