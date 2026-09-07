@@ -53,16 +53,20 @@ interface Fixture {
   };
 }
 
-const fixturePath = process.env.COWORK_LIVE_FIXTURE_FILE;
-if (fixturePath === undefined) throw new Error("COWORK_LIVE_FIXTURE_FILE is required");
+const fixturePath = process.env.WB_LIVE_FIXTURE_FILE;
+if (fixturePath === undefined) throw new Error("WB_LIVE_FIXTURE_FILE is required");
 const fixture = JSON.parse(await readFile(fixturePath, "utf-8")) as Fixture;
-const expectedHarnessNonce = process.env.COWORK_LIVE_HARNESS_NONCE;
+const expectedHarnessNonce = process.env.WB_LIVE_HARNESS_NONCE;
 if (expectedHarnessNonce === undefined) {
-  throw new Error("COWORK_LIVE_HARNESS_NONCE is required");
+  throw new Error("WB_LIVE_HARNESS_NONCE is required");
 }
-const backendBaseURL = process.env.COWORK_LIVE_BACKEND_URL;
+const backendBaseURL = process.env.WB_LIVE_BACKEND_URL;
 if (backendBaseURL === undefined) {
-  throw new Error("COWORK_LIVE_BACKEND_URL is required");
+  throw new Error("WB_LIVE_BACKEND_URL is required");
+}
+const frontendBaseURL = process.env.WB_LIVE_BASE_URL;
+if (frontendBaseURL === undefined) {
+  throw new Error("WB_LIVE_BASE_URL is required");
 }
 
 const digest = (bytes: Uint8Array): string =>
@@ -111,28 +115,29 @@ const gotoCowork = async (page: Page, search = "?mode=launcher"): Promise<void> 
 
 const mintBrowserIdentityBootstrap = async (page: Page): Promise<string> => {
   // The mint route exists only in the isolated live server. Calling it from the
-  // directly served throwaway browser page supplies the exact Origin that will
-  // redeem it. Human authority deliberately rejects Vite's proxy-marked requests.
-  await page.goto(`${backendBaseURL}/app/`, { waitUntil: "domcontentloaded" });
+  // production-preview browser page supplies the exact Origin that will redeem
+  // it. Its API proxy preserves that Origin and Host. Bundle writes and
+  // browser-local recovery stay on this same origin.
+  await page.goto(`${frontendBaseURL}/app/`, { waitUntil: "domcontentloaded" });
   const result = await page.evaluate(async ({ nonce }) => {
-    const denied = await fetch("/api/_cowork-live/identity-bootstrap", {
+    const denied = await fetch("/api/_live/identity-bootstrap", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ origin: window.location.origin }),
     });
-    const mismatched = await fetch("/api/_cowork-live/identity-bootstrap", {
+    const mismatched = await fetch("/api/_live/identity-bootstrap", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-WB-Cowork-Live-Control": nonce,
+        "X-WB-Live-Control": nonce,
       },
       body: JSON.stringify({ origin: "http://127.0.0.1:1" }),
     });
-    const allowed = await fetch("/api/_cowork-live/identity-bootstrap", {
+    const allowed = await fetch("/api/_live/identity-bootstrap", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-WB-Cowork-Live-Control": nonce,
+        "X-WB-Live-Control": nonce,
       },
       body: JSON.stringify({ origin: window.location.origin }),
     });
@@ -168,8 +173,7 @@ const mintBrowserIdentityBootstrap = async (page: Page): Promise<string> => {
  * which is easy to misread as the feature being broken.
  *
  * `gotoCowork` stays for the tests that are about the unauthenticated surface
- * itself: production-preview isolation, the launcher, and the observation half
- * of folder setup. Those assert on the preview origin and must not move.
+ * itself: production-preview isolation and the launcher.
  */
 const gotoAuthenticatedCowork = async (
   page: Page,
@@ -177,7 +181,7 @@ const gotoAuthenticatedCowork = async (
 ): Promise<void> => {
   const bootstrap = await mintBrowserIdentityBootstrap(page);
   await page.goto(
-    `${backendBaseURL}/app/cowork${search}` +
+    `${frontendBaseURL}/app/cowork${search}` +
       `#wb-bootstrap=${encodeURIComponent(bootstrap)}`,
     { waitUntil: "domcontentloaded" },
   );
@@ -472,7 +476,7 @@ let ordinaryStoreId = "";
 let firstDocumentId = "";
 let importedDocumentId = "";
 
-test.describe.serial("Co-work live lifecycle", () => {
+test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () => {
   test.beforeEach(async ({ page }) => {
     // A browser runner cannot interact with a host-native modal. Keep the real Folder list
     // response and advertise the picker so each test can replace only the one choose call
@@ -497,14 +501,14 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
     request,
   }) => {
-    expect(fixture.format).toBe("cowork-live-fixture/v1");
+    expect(fixture.format).toBe("wb-live-fixture/v1");
     expect(fixture.harness.backend_port).not.toBe(fixture.harness.normal_dashboard_port);
     expect(fixture.harness.frontend_port).not.toBe(fixture.harness.normal_dashboard_port);
     expect(await fileDigest(fixture.sentinel.path)).toBe(fixture.sentinel.sha256);
 
     const response = await request.get("/api/truth/cowork/folders");
     expect(response.ok()).toBe(true);
-    expect(response.headers()["x-wb-cowork-live-harness"]).toBe(expectedHarnessNonce);
+    expect(response.headers()["x-wb-live-harness"]).toBe(expectedHarnessNonce);
     const payload = (await response.json()) as {
       folders: readonly { store_id: string; folder_path: string }[];
     };
@@ -545,7 +549,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     request,
   }) => {
     const ordinaryBefore = await treeDigest(fixture.ordinary.path);
-    await gotoCowork(page);
+    await gotoAuthenticatedCowork(page);
 
     let releaseInitialize!: () => void;
     let observeInitialize!: () => void;
@@ -624,11 +628,9 @@ test.describe.serial("Co-work live lifecycle", () => {
       await fileDigest(path.join(fixture.ordinary.path, ".wbuddy", "search", "state.bin")),
     ).toBe(fixture.ordinary.sibling_state_sha256);
 
-    // Everything above is observation: inspecting a Folder and setting one up
-    // leave no document behind, so they need no authority. Creating one does.
-    // Document creation issues an exact human-authority gesture, and the
-    // gesture is only mintable from the backend origin, so the run has to move
-    // there and carry a session before it can write.
+    // Folder setup writes support data under the enrolled session. Document
+    // creation also needs an exact human-authority gesture. Keep both operations
+    // on the same origin so the session and browser-local recovery agree.
     await mkdir(path.join(fixture.ordinary.path, "drafts"));
     await gotoAuthenticatedCowork(page, `?store_id=${ordinaryStoreId}`);
     await expect(
@@ -709,9 +711,9 @@ test.describe.serial("Co-work live lifecycle", () => {
     const bindingUrl =
       `/api/truth/doc/${importedDocumentId}/conversation?store_id=${ordinaryStoreId}`;
     const resetAgent = await request.post(
-      "/api/_cowork-live/agent-control",
+      "/api/_live/agent-control",
       {
-        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+        headers: { "X-WB-Live-Control": expectedHarnessNonce },
         data: { mode: "running", reset: true },
       },
     );
@@ -812,9 +814,9 @@ test.describe.serial("Co-work live lifecycle", () => {
       conversationRequests.some((pathname) => pathname.includes("cowork-doc-")),
     ).toBe(false);
     const spawnedAfterFeedback = await request.get(
-      "/api/_cowork-live/agent-state",
+      "/api/_live/agent-state",
       {
-        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+        headers: { "X-WB-Live-Control": expectedHarnessNonce },
       },
     );
     expect(spawnedAfterFeedback.ok(), await spawnedAfterFeedback.text()).toBe(
@@ -849,9 +851,9 @@ test.describe.serial("Co-work live lifecycle", () => {
     ).toBe(1);
 
     const replyResponse = await request.post(
-      "/api/_cowork-live/conversation-reply",
+      "/api/_live/conversation-reply",
       {
-        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+        headers: { "X-WB-Live-Control": expectedHarnessNonce },
         data: {
           conversation_id: feedbackPayload.conversation_id,
           message: reply,
@@ -877,9 +879,9 @@ test.describe.serial("Co-work live lifecycle", () => {
     ).toBeVisible();
     expect(conversationStarts).toHaveLength(startsBeforeReload);
     const spawnedAfterReload = await request.get(
-      "/api/_cowork-live/agent-state",
+      "/api/_live/agent-state",
       {
-        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+        headers: { "X-WB-Live-Control": expectedHarnessNonce },
       },
     );
     expect(spawnedAfterReload.ok(), await spawnedAfterReload.text()).toBe(true);
@@ -1049,8 +1051,8 @@ test.describe.serial("Co-work live lifecycle", () => {
   }) => {
     const quote = "A line preserved exactly.";
     const feedback = "Keep this note even if chat cannot start.";
-    const control = await request.post("/api/_cowork-live/agent-control", {
-      headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+    const control = await request.post("/api/_live/agent-control", {
+      headers: { "X-WB-Live-Control": expectedHarnessNonce },
       data: { mode: "spawn_failed", reset: true },
     });
     expect(control.ok(), await control.text()).toBe(true);
@@ -1112,8 +1114,8 @@ test.describe.serial("Co-work live lifecycle", () => {
       page.getByRole("button", { name: "Try again", exact: true }),
     ).toHaveCount(0);
 
-    const failedState = await request.get("/api/_cowork-live/agent-state", {
-      headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+    const failedState = await request.get("/api/_live/agent-state", {
+      headers: { "X-WB-Live-Control": expectedHarnessNonce },
     });
     expect(failedState.ok(), await failedState.text()).toBe(true);
     expect(await failedState.json()).toEqual(
@@ -1124,8 +1126,8 @@ test.describe.serial("Co-work live lifecycle", () => {
       }),
     );
 
-    const recover = await request.post("/api/_cowork-live/agent-control", {
-      headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+    const recover = await request.post("/api/_live/agent-control", {
+      headers: { "X-WB-Live-Control": expectedHarnessNonce },
       data: { mode: "running" },
     });
     expect(recover.ok(), await recover.text()).toBe(true);
@@ -1163,9 +1165,9 @@ test.describe.serial("Co-work live lifecycle", () => {
       page.getByRole("textbox", { name: "Message" }),
     ).toBeVisible();
     const recoveredState = await request.get(
-      "/api/_cowork-live/agent-state",
+      "/api/_live/agent-state",
       {
-        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+        headers: { "X-WB-Live-Control": expectedHarnessNonce },
       },
     );
     expect(recoveredState.ok(), await recoveredState.text()).toBe(true);
@@ -1340,7 +1342,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     );
     expect(bootstrapSourceRequest.method()).toBe("POST");
     expect((await bootstrapSourceRequest.allHeaders())["origin"]).toBe(
-      new URL(backendBaseURL).origin,
+      new URL(frontendBaseURL).origin,
     );
     expect(bootstrapSourceMatch).not.toBeNull();
     expect(bootstrapSourceRequest.postDataJSON()).toEqual({
@@ -1548,9 +1550,8 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
   }) => {
     // Promoting the recovered draft into the Folder is a create, so this test
-    // runs on the backend origin throughout: the scratch is seeded there and
-    // the session is minted there.
-    await seedLegacyScratch(page, backendBaseURL);
+    // keeps the scratch and the enrolled session on the preview origin.
+    await seedLegacyScratch(page, frontendBaseURL);
     await gotoAuthenticatedCowork(page, "?mode=launcher");
     const recovered = page.getByRole("button", {
       name: /Recovered document.*Recovered from an earlier session/,
@@ -1694,13 +1695,13 @@ test.describe.serial("Co-work live lifecycle", () => {
     request,
   }) => {
     test.skip(
-      process.env.COWORK_LIVE_SKIP_AC15 === "1",
+      process.env.WB_LIVE_SKIP_AC15 === "1",
       "diagnostic iteration for lifecycle cases after the known proposal-origin defect",
     );
     const quote = "A line preserved exactly.";
     const replacement = "A line accepted through live review.";
-    const seeded = await request.post("/api/_cowork-live/seed-proposal", {
-      headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+    const seeded = await request.post("/api/_live/seed-proposal", {
+      headers: { "X-WB-Live-Control": expectedHarnessNonce },
       data: {
         store_id: ordinaryStoreId,
         document_id: importedDocumentId,
@@ -1932,7 +1933,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     );
     expect(reimportSourceRequest.method()).toBe("POST");
     expect((await reimportSourceRequest.allHeaders())["origin"]).toBe(
-      new URL(backendBaseURL).origin,
+      new URL(frontendBaseURL).origin,
     );
     expect(reimportSourceMatch).not.toBeNull();
     expect(reimportSourceRequest.postDataJSON()).toEqual({

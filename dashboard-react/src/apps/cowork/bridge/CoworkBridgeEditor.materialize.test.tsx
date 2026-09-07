@@ -8,6 +8,7 @@ import { resetLocalIdentityForTests } from "../../../security/localIdentity";
 
 import { bootstrapCoworkYdoc } from "../documents/bootstrapCoworkYdoc";
 import { HttpCoworkMaterializationClient } from "../materialization/HttpCoworkMaterializationClient";
+import { CoworkHttpClient } from "../providers/CoworkHttpClient";
 import type {
   CoworkMaterializationController,
   CoworkMaterializationState,
@@ -31,6 +32,83 @@ import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
 describe("CoworkBridgeEditor explicit Markdown Save", () => {
   beforeEach(() => resetLocalIdentityForTests());
+
+  it("allows explicit Save when lifecycle inspection finds structured changes with identical Markdown", async () => {
+    const initialized = await bootstrapCoworkYdoc(new TextEncoder().encode("Saved text"));
+    if (!initialized.ok) throw new Error(initialized.message);
+    const server = new InMemoryCoworkYdocTransport();
+    const empty = await server.pull({});
+    await server.push({
+      batch: initialized.snapshot,
+      baseSha256: empty.docSha256,
+      baseYdocGeneration: empty.ydocGeneration,
+      compaction: {
+        snapshot: initialized.snapshot,
+        snapshotSha256: initialized.snapshotSha256,
+      },
+    });
+    const source = {
+      available: true,
+      sha256: initialized.sourceSha256,
+      etag: null,
+      sourceUrl: "/fixture-source",
+    };
+    const inspect = vi.spyOn(CoworkHttpClient.prototype, "inspectDrift").mockResolvedValue({
+      state: "clean",
+      lastMaterializedSha256: initialized.sourceSha256,
+      currentFileSha256: initialized.sourceSha256,
+      snapshotSha256: initialized.snapshotSha256,
+      structuredHeadSha256: "a".repeat(64),
+      updateTailPresent: false,
+      unmaterializedStructuredEdits: true,
+      baseline: source,
+      source,
+      diffAvailable: true,
+      canReimport: false,
+    });
+    const client = new HttpCoworkMaterializationClient();
+    const materialize = vi.spyOn(client, "materialize").mockImplementation(
+      async (_storeId, _documentId, request) => ({
+        newFileSha256: request.renderedSha256,
+        structuredHeadSha256: request.expectedStructuredHeadSha256,
+        documentVersionId: "saved-version",
+        materializedAt: "2026-09-07T12:00:00Z",
+        driftState: "clean",
+      }),
+    );
+    const controllerRef: { current: CoworkMaterializationController | null } = { current: null };
+    const states: CoworkMaterializationState[] = [];
+    render(
+      <CoworkBridgeEditor
+        document={new Y.Doc()}
+        transport={server}
+        seedMarkdown=""
+        storeId="lifecycle-save-store"
+        documentId="lifecycle-save-document"
+        currentFileSha256={initialized.sourceSha256}
+        initialDriftState="clean"
+        canMaterialize
+        materializationClient={client}
+        onMaterializationController={(controller) => { controllerRef.current = controller; }}
+        onMaterializationState={(state) => states.push(state)}
+      />,
+    );
+    await screen.findByRole("textbox", { name: "Document editor" }, { timeout: 10_000 });
+    await waitFor(() => expect(states[states.length - 1]).toMatchObject({ kind: "up_to_date" }));
+    const controller = controllerRef.current;
+    if (controller === null) throw new Error("materialization controller was not ready");
+
+    await act(async () => controller.settleForLifecycle());
+    expect(inspect).toHaveBeenCalledWith("lifecycle-save-store", "lifecycle-save-document");
+    expect(states[states.length - 1]).toMatchObject({ kind: "unsaved" });
+    expect(materialize).not.toHaveBeenCalled();
+
+    await act(async () => controller.save());
+    expect(materialize).toHaveBeenCalledOnce();
+    expect(materialize.mock.calls[0][2].renderedMarkdown).toBe("Saved text");
+    expect(states[states.length - 1]).toMatchObject({ kind: "up_to_date" });
+    inspect.mockRestore();
+  }, 25_000);
 
   it("refuses to compact a legacy tracked-suggestion projection", async () => {
     const initialized = await bootstrapCoworkYdoc(

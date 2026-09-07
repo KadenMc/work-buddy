@@ -1,16 +1,19 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const baseURL = process.env.COWORK_LIVE_BASE_URL;
+const baseURL = process.env.WB_LIVE_BASE_URL;
+const app = process.env.WB_LIVE_APP ?? "cowork";
+
+if (app !== "cowork") throw new Error(`No live specification registered for app: ${app}`);
 
 if (baseURL === undefined || baseURL.length === 0) {
   throw new Error(
-    "COWORK_LIVE_BASE_URL is required. Run `npm run test:e2e:cowork-live` instead of invoking this config directly.",
+    "WB_LIVE_BASE_URL is required. Run `npm run test:e2e:live -- --app cowork` instead of invoking this config directly.",
   );
 }
 
 export default defineConfig({
   testDir: "./tests/live",
-  testMatch: "cowork-live.spec.ts",
+  testMatch: `${app}.spec.ts`,
   fullyParallel: false,
   workers: 1,
   forbidOnly: true,
@@ -18,7 +21,7 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 20_000 },
   reporter: "list",
-  outputDir: "./test-results/cowork-live/playwright",
+  outputDir: "./test-results/live/playwright",
   use: {
     baseURL,
     trace: "retain-on-failure",
@@ -27,13 +30,13 @@ export default defineConfig({
   },
   projects: [
     {
-      name: "cowork-live",
+      name: "live",
       use: { ...devices["Desktop Chrome"] },
     },
     {
-      name: "cowork-live-firefox",
+      name: "live-firefox",
       grep: /@firefox-smoke/,
-      dependencies: ["cowork-live"],
+      dependencies: ["live"],
       use: { ...devices["Desktop Firefox"] },
     },
   ],

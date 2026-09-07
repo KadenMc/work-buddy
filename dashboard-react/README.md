@@ -63,21 +63,39 @@ npm run typecheck
 npm test
 npm run build
 npm run test:e2e
-npm run test:e2e:cowork-live
-npm run test:e2e:cowork-live:interactive
+npm run test:e2e:live -- --app cowork
+npm run test:e2e:live:interactive -- --app cowork
 ```
 
 `npm test` runs Vitest component and contract tests. `npm run test:e2e` starts Vite and
 runs Playwright against Chromium and Firefox; use `npm run test:e2e:ui` for the
 interactive runner. Set `PLAYWRIGHT_PORT` if port `4173` is unavailable.
+Ordinary browser artifacts stay under `test-results/e2e/`. The live runner owns
+`test-results/live/`, with Playwright artifacts in its `playwright/` child, so starting
+an ordinary suite preserves a running interactive harness's session metadata.
 
-The Co-work live harness typechecks and builds the production bundle, then seeds a
-temporary, isolated Folder with its own data and config roots. It serves Flask and the
-production preview on random ports that explicitly exclude the normal dashboard port
-`5127`. The first command runs Playwright; the `:interactive` command prints an isolated
-URL and waits for Ctrl+C or its timeout. Both stop their services and remove the marked
-temporary root automatically, including after a failure. They never use live Folder,
-data, or config state.
+The live harness selects its seeder and specification with `--app cowork`. Automated
+runs typecheck and build the production bundle. `:interactive` and `--dev` use Vite's
+dev server, so source edits reload live; pass `--build` for production preview instead.
+Both modes announce whether source changes need a restart. The harness owns a marked
+temporary root with disposable Folders, data, and config, and proxies only to its
+isolated Flask backend on a port other than `5127`. Use `--frontend-port` when a browser
+launcher needs a fixed port. Interactive mode prints an authenticated URL and records
+the mode, URLs, and nonce in `test-results/live/interactive-session.json`. Ctrl+C or
+the timeout stops the services and removes the root; failed cleanup fails the run.
+
+The isolated host injects deterministic folder and file pickers through the product's
+picker seam. Open folder selects the seeded Reference Folder; Choose Location keeps
+the active fixture folder. Import selects the declared source file when it belongs to
+that active folder, and otherwise returns cancellation. Native picker adapters and
+native picker child processes are refused, so browser exploration cannot open an OS
+file or folder dialog on the user's desktop. The normal dashboard keeps its native
+pickers.
+
+See `dev/dashboard/verification-directions` through `agent_docs` for browser guidance
+and the environment rule. Harness guard and seeding checks run with
+`npm run test:live-harness` and, from the repository root,
+`uv run pytest dashboard-react/tests/live/test_live_harness.py`.
 
 Focused Flask, launcher, and packaging tests live in the repository-level Python test
 suite and should be run through `uv run pytest ...` from the repository root.

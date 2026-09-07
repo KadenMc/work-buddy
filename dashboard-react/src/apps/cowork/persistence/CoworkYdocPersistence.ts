@@ -321,8 +321,10 @@ export class CoworkYdocPersistence {
   /** Stop observing edits and wait only for device-local durability. */
   async dispose(): Promise<void> {
     this.stop();
-    await this.ensureDeviceDurability();
+    // Effect replay can subscribe again while device durability is still pending.
+    // Detach only the subscriptions present when this cleanup starts.
     this.#statusListeners.clear();
+    await this.ensureDeviceDurability();
   }
 
   /** Offset-sliced pull: apply only the batches appended after the client's cursor. */

@@ -13,8 +13,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:cowork-live": "node tests/live/run-cowork-live.mjs",
-    "test:e2e:cowork-live:interactive": "node tests/live/run-cowork-live.mjs --interactive",
+    "test:e2e:live": "node tests/live/run-live.mjs",
+    "test:e2e:live:interactive": "node tests/live/run-live.mjs --interactive",
+    "test:live-harness": "node --test tests/live/harness.test.mjs",
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
