@@ -1040,7 +1040,10 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.getByRole("button", { name: "Clear", exact: true }).click();
   });
 
-  test("AC-05B: failed agent start keeps feedback visible until an explicit restart", async ({
+  // Chat lifecycle is automatic: a failed start offers no recovery control of
+  // its own, and the driver is woken by the next authored turn rather than by a
+  // restart button. What must survive the failure is the feedback already written.
+  test("AC-05B: a failed agent start keeps feedback visible and recovers on the next authored turn", async ({
     page,
     request,
   }) => {
@@ -1102,14 +1105,12 @@ test.describe.serial("Co-work live lifecycle", () => {
         name: `Jump to passage: "${quote}"`,
       }),
     ).toBeVisible();
+    // No recovery control is offered, deliberately. Restart controls were
+    // removed when the lifecycle became automatic, so asserting their absence
+    // keeps a reintroduced button from passing unnoticed.
     await expect(
-      page.getByText("Chat couldn’t start.", { exact: true }),
-    ).toBeVisible();
-    const retryStart = page.getByRole("button", {
-      name: "Try again",
-      exact: true,
-    });
-    await expect(retryStart).toBeVisible();
+      page.getByRole("button", { name: "Try again", exact: true }),
+    ).toHaveCount(0);
 
     const failedState = await request.get("/api/_cowork-live/agent-state", {
       headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
@@ -1128,14 +1129,34 @@ test.describe.serial("Co-work live lifecycle", () => {
       data: { mode: "running" },
     });
     expect(recover.ok(), await recover.text()).toBe(true);
+    // Authoring the next turn is what wakes the driver now. Reopening the
+    // document does not: a bound conversation is discovered with a GET that
+    // never re-prepares it, so recovery needs a route that ensures a driver,
+    // and feedback is the one such route the workspace still reaches.
+    const secondFeedback = "Still here after the failed start.";
     const retryResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname ===
-          `/api/truth/doc/${importedDocumentId}/conversation` &&
+          `/api/truth/doc/${importedDocumentId}/feedback` &&
         response.request().method() === "POST",
     );
-    await retryStart.click();
+    await page.getByText(quote, { exact: true }).selectText();
+    await page
+      .getByRole("button", { name: "Give feedback", exact: true })
+      .click();
+    await page
+      .getByRole("textbox", {
+        name: "Feedback on the selected passage",
+        exact: true,
+      })
+      .fill(secondFeedback);
+    await page
+      .getByRole("button", { name: "Send feedback", exact: true })
+      .click();
     expect((await retryResponse).ok()).toBe(true);
+    await expect(page.getByText(secondFeedback, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
 
     await expect(page.getByText(feedback, { exact: true })).toBeVisible();
     await expect(
@@ -1241,9 +1262,13 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(
       page.getByRole("button", { name: fixture.initialized.name, exact: true }).first(),
     ).toBeVisible();
-    expect(new URL(page.url()).searchParams.get("store_id")).toBe(
-      fixture.initialized.store_id,
-    );
+    expect(
+      widen(
+        new URL(page.url()).searchParams.get("store_id") ?? "",
+        await registeredStoreIds(page),
+        "store_id",
+      ),
+    ).toBe(fixture.initialized.store_id);
     await page.goBack({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toHaveText("");
     expect((await resolveRouteIds(page)).documentId).toBe(firstDocumentId);
@@ -1502,7 +1527,18 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page
       .getByRole("button", { name: fixture.ordinary.name, exact: true })
       .click();
-    await expect(page).toHaveURL(new RegExp(`store_id=${ordinaryStoreId}`));
+    // The route carries the store's presentation form, so accept its unique
+    // prefix or the full identity and nothing looser: a bare substring match
+    // would also accept a different store that happens to share a prefix.
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("store_id") ?? "", {
+        timeout: 20_000,
+      })
+      .toMatch(
+        new RegExp(
+          `^${ordinaryStoreId.slice(0, 8)}(?:${ordinaryStoreId.slice(8)})?$`,
+        ),
+      );
     await expect(
       page.getByRole("button", { name: "Close folder", exact: true }),
     ).toBeVisible();
@@ -2056,7 +2092,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await second.focus();
     await page.keyboard.press("Enter");
     await expect
-      .poll(() => new URL(page.url()).searchParams.get("document_id"), {
+      .poll(async () => (await resolveRouteIds(page)).documentId, {
         timeout: 30_000,
       })
       .not.toBe(firstDocumentId);
