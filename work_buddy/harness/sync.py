@@ -50,13 +50,15 @@ def sync_harnesses(
         )
 
     if dry_run or check:
-        return runner.generate(
+        result = runner.generate(
             input_root=input_root,
             output_root=out,
             targets=targets,
             dry_run=dry_run,
             check=check,
         )
+        _record_toolchain_versions(result, ids)
+        return result
 
     preview = runner.generate(
         input_root=input_root,
@@ -75,11 +77,24 @@ def sync_harnesses(
     )
     result.backup_dir = backup_dir
     if not result.ok:
-        _restore_backup(out, result.generated_paths or preview.generated_paths, backup_dir, existing)
+        restore_paths = sorted(set(preview.generated_paths) | set(result.generated_paths))
+        _restore_backup(out, restore_paths, backup_dir, existing)
         return result
 
     _project_private_rules(out, ids, result)
+    _record_toolchain_versions(result, ids)
     return result
+
+
+def _record_toolchain_versions(result: HarnessSyncResult, harness_ids: tuple[str, ...]) -> None:
+    cfg = load_harness_config()
+    versions = {"rulesync": cfg.rulesync_version}
+    if any(
+        target.browser_surface == "mcp-playwright"
+        for target in resolve_harnesses(harness_ids)
+    ):
+        versions["playwright_mcp"] = cfg.playwright_mcp_version
+    result.data["toolchain_versions"] = versions
 
 
 def build_rulesync_input(input_root: Path, harness_ids: Iterable[str]) -> Path:
@@ -91,7 +106,7 @@ def build_rulesync_input(input_root: Path, harness_ids: Iterable[str]) -> Path:
     for harness_id in selected:
         get_harness(harness_id)
 
-    _write_mcp(rulesync_root)
+    _write_mcp(rulesync_root, selected)
     _write_rules(rulesync_root, selected)
     _write_commands_and_skills(rulesync_root)
     _write_hooks(rulesync_root, selected)
@@ -108,10 +123,24 @@ def _reset_generated_tree(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
 
 
-def _write_mcp(root: Path) -> None:
+def _write_mcp(root: Path, harness_ids: tuple[str, ...]) -> None:
     from work_buddy.cli.commands import _mcp_config
 
-    _write_text(root / "mcp.json", json.dumps(_mcp_config(), indent=2))
+    config = _mcp_config()
+    browser_targets = [
+        target.rulesync_target
+        for target in resolve_harnesses(harness_ids)
+        if target.browser_surface == "mcp-playwright"
+    ]
+    if browser_targets:
+        version = load_harness_config().playwright_mcp_version
+        config["mcpServers"]["playwright"] = {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", f"@playwright/mcp@{version}", "--isolated"],
+            "targets": browser_targets,
+        }
+    _write_text(root / "mcp.json", json.dumps(config, indent=2))
 
 
 def _write_rules(root: Path, harness_ids: tuple[str, ...]) -> None:
@@ -131,6 +160,21 @@ def _write_rules(root: Path, harness_ids: tuple[str, ...]) -> None:
                 "targets": [target.rulesync_target],
             },
             projected,
+        )
+    if "claudecode" in harness_ids:
+        _write_frontmatter_file(
+            root / "rules" / "dashboard-development.md",
+            {
+                "description": "Dashboard development guidance",
+                "targets": [get_harness("claudecode").rulesync_target],
+                "globs": ["dashboard-react/**"],
+            },
+            "When work affects dashboard user tasks or user-visible behavior, "
+            "load `dev/dashboard/ux-directions` and "
+            "`dev/dashboard/verification-directions` through `agent_docs` at full "
+            "depth before deciding the interaction design or opening a browser. "
+            "Reading dashboard code for unrelated work does not require a "
+            "dashboard review.",
         )
 
 

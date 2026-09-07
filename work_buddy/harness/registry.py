@@ -23,6 +23,7 @@ _HARNESSES: dict[str, HarnessTarget] = {
         session_env="WORK_BUDDY_SESSION_ID",
         transcript_provider="claudecode",
         lifecycle_events=_LIFECYCLE_EVENTS,
+        browser_surface="native-pane",
     ),
     "codexcli": HarnessTarget(
         id="codexcli",
@@ -34,6 +35,7 @@ _HARNESSES: dict[str, HarnessTarget] = {
         session_env="CODEX_THREAD_ID",
         transcript_provider="codexcli",
         lifecycle_events=_LIFECYCLE_EVENTS,
+        browser_surface="mcp-playwright",
     ),
 }
 

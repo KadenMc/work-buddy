@@ -14,11 +14,15 @@ def load_harness_config() -> HarnessConfig:
     primary = str(cfg.get("primary") or "")
     version = str(rulesync.get("version") or "9.6.0")
     command = str(rulesync.get("command") or "")
+    playwright = cfg.get("playwright_mcp") or {}
     return HarnessConfig(
         enabled=enabled,
         primary=primary,
         rulesync_version=version,
         rulesync_command=command,
+        playwright_mcp_version=str(
+            playwright.get("version") or HarnessConfig().playwright_mcp_version
+        ),
     )
 
 
@@ -28,6 +32,7 @@ def save_harness_selection(
     local = wb_config.read_config_local()
     current = local.get("harness") or {}
     rulesync = current.get("rulesync") or {}
+    playwright = current.get("playwright_mcp") or {}
 
     next_enabled = tuple(current.get("enabled") or ())
     next_primary = str(current.get("primary") or "")
@@ -48,6 +53,11 @@ def save_harness_selection(
             "version": str(rulesync.get("version") or "9.6.0"),
             "command": str(rulesync.get("command") or ""),
         },
+        "playwright_mcp": {
+            "version": str(
+                playwright.get("version") or load_harness_config().playwright_mcp_version
+            ),
+        },
     }
     wb_config.write_config_local("harness", data)
     return HarnessConfig(
@@ -55,4 +65,5 @@ def save_harness_selection(
         primary=data["primary"],
         rulesync_version=data["rulesync"]["version"],
         rulesync_command=data["rulesync"]["command"],
+        playwright_mcp_version=data["playwright_mcp"]["version"],
     )

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from work_buddy import paths
+from work_buddy.harness.model import HarnessConfig
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,9 @@ DEFAULTS = {
         "rulesync": {
             "version": "9.6.0",
             "command": "",
+        },
+        "playwright_mcp": {
+            "version": HarnessConfig().playwright_mcp_version,
         },
     },
     "sidecar": {

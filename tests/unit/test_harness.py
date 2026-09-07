@@ -8,9 +8,10 @@ import subprocess
 from pathlib import Path
 
 import yaml
+import pytest
 
 from work_buddy.harness.backends.rulesync import RulesyncBackend
-from work_buddy.harness.model import HarnessSyncResult, HarnessTarget
+from work_buddy.harness.model import HarnessConfig, HarnessSyncResult, HarnessTarget
 from work_buddy.harness.sync import (
     _project_private_rules,
     build_rulesync_input,
@@ -144,13 +145,17 @@ def test_rulesync_backend_uses_json_generate_and_feature_union(monkeypatch, tmp_
     assert result.total_files == 3
 
 
-def test_rulesync_command_uses_absolute_npx_when_rulesync_missing(monkeypatch):
+def test_rulesync_command_uses_absolute_npx_when_rulesync_missing(monkeypatch, tmp_path):
     def fake_which(name):
         if name == "npx":
             return "C:/Program Files/nodejs/npx.CMD"
         return None
 
     monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(
+        "work_buddy.harness.toolchain.managed_rulesync_path",
+        lambda version: tmp_path / "missing-rulesync.exe",
+    )
 
     class Cfg:
         rulesync_command = ""
@@ -313,6 +318,44 @@ def test_install_rulesync_verifies_release_checksum(tmp_path, monkeypatch):
     assert target.read_bytes() == binary
 
 
+def test_sync_failure_restores_previewed_paths_missing_from_partial_result(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    output.mkdir()
+    originals = {"AGENTS.md": "original agent rules", ".mcp.json": "original servers"}
+    for relative, content in originals.items():
+        (output / relative).write_text(content, encoding="utf-8")
+    monkeypatch.setattr("work_buddy.paths.data_dir", lambda name="": tmp_path / "data" / name)
+    monkeypatch.setattr("work_buddy.paths.asset_root", lambda: tmp_path / "assets")
+
+    class PartiallyReportedFailure:
+        def generate(self, **kwargs):
+            preview = kwargs.get("dry_run", False)
+            if not preview:
+                for relative in originals:
+                    (output / relative).write_text("partial replacement", encoding="utf-8")
+                (output / "CLAUDE.md").write_text("partial new rules", encoding="utf-8")
+            reported = [*originals, "CLAUDE.md"] if preview else ["AGENTS.md"]
+            return HarnessSyncResult(
+                ok=preview,
+                returncode=0 if preview else 1,
+                targets=("codexcli", "claudecode"),
+                input_root=kwargs["input_root"],
+                output_root=kwargs["output_root"],
+                command=["rulesync"],
+                dry_run=preview,
+                data={"features": {"rules": {"count": len(reported), "paths": reported}}},
+                error="second renderer failed" if not preview else "",
+            )
+
+    result = sync_harnesses(
+        ("codexcli", "claudecode"), output_root=output, backend=PartiallyReportedFailure(),
+    )
+    assert not result.ok
+    for relative, content in originals.items():
+        assert (output / relative).read_text(encoding="utf-8") == content
+    assert not (output / "CLAUDE.md").exists()
+
+
 def test_private_claude_rules_project_to_owned_codex_override(tmp_path):
     (tmp_path / "CLAUDE.local.md").write_text(
         "Use Claude Code for this private preference.\n", encoding="utf-8"
@@ -363,3 +406,127 @@ def _frontmatter(path: Path) -> tuple[dict, str]:
     meta = yaml.safe_load("\n".join(lines[1:end])) or {}
     body = "\n".join(lines[end + 1 :]).strip()
     return meta, body
+
+
+def test_registry_declares_browser_surface_and_unknown_target_defaults_to_none():
+    from work_buddy.harness.registry import get_harness
+
+    assert get_harness("claudecode").browser_surface == "native-pane"
+    assert get_harness("codexcli").browser_surface == "mcp-playwright"
+    target = HarnessTarget(id="other", label="Other", rulesync_target="other", description="", features=())
+    assert target.browser_surface == "none"
+
+
+@pytest.mark.parametrize("selected", [("codexcli",), ("claudecode",), ("claudecode", "codexcli")])
+def test_playwright_projection_is_pinned_isolated_and_targeted(tmp_path, monkeypatch, selected):
+    monkeypatch.setattr("work_buddy.paths.asset_root", lambda: tmp_path / "assets")
+    cfg = HarnessConfig(playwright_mcp_version="1.2.3")
+    monkeypatch.setattr("work_buddy.harness.sync.load_harness_config", lambda: cfg)
+    root = build_rulesync_input(tmp_path / "input", selected)
+    servers = json.loads((root / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert "work-buddy" in servers
+    if "codexcli" not in selected:
+        assert "playwright" not in servers
+    else:
+        assert servers["playwright"] == {
+            "type": "stdio", "command": "npx",
+            "args": ["-y", "@playwright/mcp@1.2.3", "--isolated"],
+            "targets": ["codexcli"],
+        }
+
+
+def test_playwright_projection_reads_surface_instead_of_harness_name(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from work_buddy.harness.registry import _HARNESSES
+
+    monkeypatch.setattr("work_buddy.paths.asset_root", lambda: tmp_path / "assets")
+    monkeypatch.setitem(_HARNESSES, "codexcli", replace(_HARNESSES["codexcli"], browser_surface="none"))
+    root = build_rulesync_input(tmp_path / "input", ("codexcli",))
+    assert "playwright" not in json.loads((root / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_dashboard_rule_is_path_scoped_and_claude_only(tmp_path, monkeypatch):
+    monkeypatch.setattr("work_buddy.paths.asset_root", lambda: tmp_path / "assets")
+    root = build_rulesync_input(tmp_path / "input", ("claudecode", "codexcli"))
+    meta, body = _frontmatter(root / "rules" / "dashboard-development.md")
+    assert meta["targets"] == ["claudecode"]
+    assert meta["globs"] == ["dashboard-react/**"]
+    assert "dev/dashboard/ux-directions" in body
+    assert "dev/dashboard/verification-directions" in body
+    assert "unrelated work does not require" in body
+    root = build_rulesync_input(tmp_path / "input", ("codexcli",))
+    assert not (root / "rules" / "dashboard-development.md").exists()
+
+
+def test_sync_check_surfaces_pins_and_detects_version_drift(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    cfg = HarnessConfig(playwright_mcp_version="1.2.3")
+    monkeypatch.setattr("work_buddy.harness.sync.load_harness_config", lambda: cfg)
+    monkeypatch.setattr("work_buddy.paths.data_dir", lambda name="": tmp_path / name)
+    monkeypatch.setattr("work_buddy.paths.asset_root", lambda: tmp_path / "assets")
+
+    class CheckingBackend:
+        def generate(self, **kwargs):
+            path = kwargs["input_root"] / ".rulesync" / "mcp.json"
+            actual = json.loads(path.read_text(encoding="utf-8"))
+            drift = "@playwright/mcp@1.2.3" not in actual["mcpServers"]["playwright"]["args"]
+            return HarnessSyncResult(
+                ok=True, returncode=0, targets=("codexcli",),
+                input_root=kwargs["input_root"], output_root=kwargs["output_root"],
+                command=["rulesync"], check=True, data={"hasDiff": drift},
+            )
+
+    result = sync_harnesses(("codexcli",), output_root=tmp_path / "out", check=True, backend=CheckingBackend())
+    assert result.data["toolchain_versions"] == {"rulesync": cfg.rulesync_version, "playwright_mcp": "1.2.3"}
+    assert result.has_diff is False
+    cfg = replace(cfg, playwright_mcp_version="1.2.4")
+    result = sync_harnesses(("codexcli",), output_root=tmp_path / "out", check=True, backend=CheckingBackend())
+    assert result.data["toolchain_versions"]["playwright_mcp"] == "1.2.4"
+    assert result.has_diff is True
+
+
+def test_harness_selection_preserves_playwright_version_override(monkeypatch):
+    from work_buddy.harness.config import load_harness_config, save_harness_selection
+
+    local = {"harness": {"enabled": ["codexcli"], "playwright_mcp": {"version": "1.2.3"}}}
+    monkeypatch.setattr("work_buddy.config.load_config", lambda: local)
+    monkeypatch.setattr("work_buddy.config.read_config_local", lambda: local)
+    monkeypatch.setattr("work_buddy.config.write_config_local", lambda key, value: local.__setitem__(key, value))
+    assert load_harness_config().playwright_mcp_version == "1.2.3"
+    assert save_harness_selection(primary="codexcli").playwright_mcp_version == "1.2.3"
+    assert local["harness"]["playwright_mcp"]["version"] == "1.2.3"
+
+
+def test_rulesync_multi_target_projection_filters_mcp_before_rendering(tmp_path, monkeypatch):
+    from work_buddy.harness.registry import get_harness
+
+    monkeypatch.setattr("work_buddy.paths.asset_root", lambda: tmp_path / "assets")
+    input_root = tmp_path / "input"
+    build_rulesync_input(input_root, ("claudecode", "codexcli"))
+    observed = {}
+
+    def fake_run(argv, **kwargs):
+        target = argv[argv.index("--targets") + 1]
+        root = Path(argv[argv.index("--input-root") + 1])
+        observed[target] = json.loads((root / ".rulesync/mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+        assert "--check" in argv
+        path = ".mcp.json" if target == "claudecode" else ".codex/config.toml"
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({
+            "success": True,
+            "data": {"features": {"mcp": {"count": 1, "paths": [path]}}, "hasDiff": target == "codexcli"},
+        }), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = RulesyncBackend(command=["rulesync"]).generate(
+        input_root=input_root, output_root=tmp_path / "output",
+        targets=[get_harness("claudecode"), get_harness("codexcli")], check=True,
+    )
+    assert "playwright" not in observed["claudecode"]
+    assert "playwright" in observed["codexcli"]
+    assert "work-buddy" in observed["claudecode"]
+    assert "work-buddy" in observed["codexcli"]
+    assert result.ok
+    assert result.has_diff
+    assert result.generated_paths == [".codex/config.toml", ".mcp.json"]
+    assert result.total_files == 2

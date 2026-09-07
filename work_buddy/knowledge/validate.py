@@ -219,6 +219,35 @@ def _check_placeholder_duplicates(store: dict[str, PromptUnit]) -> list[dict[str
     return errors
 
 
+def _check_harness_placeholders(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Harness placeholders require a default child for unknown callers."""
+    from work_buddy.knowledge.model import _PLACEHOLDER_RE, _build_placeholder_parser
+
+    errors: list[dict[str, str]] = []
+    for path, unit in sorted(store.items()):
+        targets: set[str] = set()
+        for content in unit.content.values():
+            if not isinstance(content, str):
+                continue
+            for match in _PLACEHOLDER_RE.finditer(content):
+                try:
+                    args, _ = _build_placeholder_parser().parse_known_args(
+                        match.group(1).split()
+                    )
+                except (ValueError, SystemExit):
+                    continue
+                if args.harness:
+                    targets.add(args.path)
+        for target in sorted(targets):
+            if f"{target}/default" not in store:
+                errors.append({
+                    "check": "harness_placeholder_default",
+                    "path": path,
+                    "message": f"Harness placeholder {target!r} requires {target + '/default'!r}.",
+                })
+    return errors
+
+
 def _check_capability_op_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
     """Check 9: declaration-based capabilities resolve to a registered op.
 
@@ -704,6 +733,7 @@ _CHECKS = [
     ("directions_fields", _check_directions_fields),
     ("kind_specific_fields", _check_kind_specific_fields),
     ("placeholder_duplicate", _check_placeholder_duplicates),
+    ("harness_placeholder_default", _check_harness_placeholders),
     ("durable_surfaces", _check_durable_surfaces),
     ("parent_child_symmetry", _check_parent_child_symmetry),
     ("capability_op_resolution", _check_capability_op_resolution),
@@ -796,7 +826,7 @@ def docs_validate(
         checks: Comma-separated check names to run. Empty = run all.
                  Available: dag_integrity, command_mapping, thinned_commands,
                  store_path_validity, required_fields, directions_fields,
-                 kind_specific_fields, placeholder_duplicate,
+                 kind_specific_fields, placeholder_duplicate, harness_placeholder_default,
                  durable_surfaces, parent_child_symmetry,
                  capability_op_resolution,
                  workflow_step_dag, workflow_step_consistency,

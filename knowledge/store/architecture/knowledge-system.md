@@ -71,6 +71,14 @@ The "subsystem-of-system" relationship is derivable: walk a unit's `parents` and
 
 Content can reference other units inline. The syntax is two angle brackets, `wb:`, the target unit path, two angle brackets — e.g. a reference to `obsidian/bridge` is written as that path surrounded by the `wb:` prefix and angle-bracket markers. At `depth="full"`, the placeholder is replaced with the referenced unit's content. Appending ` --recursive` after the path opts in to transitive expansion. Parsed with argparse (extensible to `--depth`, `--section`, etc.).
 
+### Harness-aware references
+
+Append ` --harness` after the target path, before the closing markers, to select a child variant. For a target such as `dev/testing/browser-surface`, a caller on `codexcli` receives that path's `codexcli` child. If the selected child does not exist, resolution uses `<path>/default`. The parent holds shared framing and remains independently readable and searchable. Variants are ordinary knowledge units with their parent declared in frontmatter.
+
+An explicit `agent_docs(..., harness="codexcli")` overrides detection for authoring and previews. With `harness=None`, the resolver reads the originating session's manifest using the full native session identity. An absent or unreadable manifest falls back to `WORK_BUDDY_HARNESS_ID`, then to `codexcli` when `CODEX_THREAD_ID` is present, otherwise to `unknown`. Lookup does not register a session or repair a manifest. The selected variant still falls back to the default child when missing.
+
+The `--harness` and `--recursive` flags compose: one chooses content, the other controls expansion within it. Caller recursion and size limits still apply. `recursive="none"` preserves the entire placeholder literally, including its flags.
+
 ### Caller-side knobs on `agent_docs`
 
 Callers can override authorial defaults at query time:
@@ -79,8 +87,9 @@ Callers can override authorial defaults at query time:
 - `recursive="all"` — every placeholder expands transitively, ignoring per-flag choices.
 - `recursive="none"` — placeholders are preserved literally (markup not resolved). Useful for editing or inspection.
 - `max_depth=N` — caps recursion depth. `-1` (default) selects the mode default: unlimited in `default` mode, 10 in `all` mode. `0` disables recursion entirely. Positive ints set an exact cap.
+- `harness=<id>` selects the variant for harness-aware placeholders instead of detecting the caller. It changes rendered content, not the search corpus.
 
-The search corpus is always indexed with `recursive="default"` so search relevance doesn't shift with caller intent.
+The search corpus is always indexed with `recursive="default"` so search relevance doesn't shift with caller intent. Harness-aware references concatenate all direct variant paths in sorted order, including the default child, with an HTML comment naming each harness. Both the combined index and partitioned retrieval use this representation. A search for a tool from either browser recipe can therefore find the containing directions unit, while a full-depth response expands only the requested or detected variant.
 
 ### Three safety mechanisms layered around recursive expansion
 
@@ -95,6 +104,7 @@ Each cap emits a distinct visible marker so the reader sees exactly what was eli
 - **Write-time hint (informational).** The internal `create_unit` / `update_unit` write primitives return a `hints` field flagging plain placeholders that target units with their own placeholders — the case where the author probably wanted `--recursive` but forgot. Never blocks an edit.
 - **Write-time hard reject (error).** The same write path rejects content with **duplicate placeholders within a single unit**: the same target appearing more than once contributes zero readable content (the per-unit-occurrence cap renders subsequent references as back-ref markers), so it's never the right authorial choice. The editor returns `{"error": "placeholder_duplicate", "duplicates": [...]}` and does not persist.
 - **Validator parity.** `docs_validate` runs a `placeholder_duplicate` check corpus-wide so direct-file bypasses are still caught.
+- **Harness fallback.** The `harness_placeholder_default` check requires `<target>/default` for every harness-aware target referenced in unit content. Missing selected variants fall back at read time; a missing default produces a visible not-found marker and a validation error.
 
 ## Retired: context chaining
 
@@ -119,4 +129,4 @@ A persistent BM25 + dense vector index over full unit content is warmed eagerly 
 - `knowledge_index_status` — check index health
 - `docs_edit` — the workflow for editing or creating **any** unit kind: it returns the unit's `.md` path, the agent edits it natively, and the commit step validates (kind-aware) and reconciles the store cache + index.
 - `docs_delete` / `docs_move` — structural operations (remove / relocate a unit and reconcile parent references).
-- `docs_validate` — kind-aware structural validation over the store (DAG, placeholder duplicates, capability op-resolution, workflow step-DAG).
+- `docs_validate` covers kind-aware structural validation over the store: DAG, placeholder duplicates, harness fallback children, capability op-resolution, and workflow step-DAG.

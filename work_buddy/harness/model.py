@@ -24,6 +24,7 @@ class HarnessTarget:
     session_env: str = ""
     transcript_provider: str = ""
     lifecycle_events: tuple[str, ...] = ()
+    browser_surface: str = "none"
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class HarnessConfig:
     primary: str = ""
     rulesync_version: str = "9.6.0"
     rulesync_command: str = ""
+    playwright_mcp_version: str = "0.0.80"
 
 
 @dataclass

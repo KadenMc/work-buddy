@@ -29,11 +29,19 @@ The generated harness surface is intentionally disposable. `wbuddy harness sync`
 
 Rulesync is pinned by version. Installer provisioning downloads the matching standalone release binary into `<data_root>/tools/rulesync/<version>/`, verifies it against the release `SHA256SUMS`, and executes it directly. An exact-version PATH binary is accepted; pinned `npx` remains a development fallback.
 
+`HarnessTarget.browser_surface` declares the interactive browser surface: `native-pane` for Claude Code, `mcp-playwright` for Codex, and `none` by default. This field describes tool availability. It does not determine which dashboard data a browser may touch. `dev/dashboard/verification-directions` defines the environment and authentication rules.
+
+For selected targets declaring `mcp-playwright`, sync projects a stdio MCP server named `playwright`, launched as `npx -y @playwright/mcp@<version> --isolated`. The version comes from `HarnessConfig.playwright_mcp_version`, configurable through `harness.playwright_mcp.version`. Sync reports the selected pins under `toolchain_versions`, including on `wbuddy harness sync --check`. Targets using a native pane do not receive that browser server.
+
+Claude Code projection also includes a dashboard development rule scoped to `dashboard-react/**`. Rulesync input uses `globs`, which projects to Claude's `paths` frontmatter. The rule routes applicable dashboard work to `dev/dashboard/ux-directions` and `dev/dashboard/verification-directions`; reading dashboard source for unrelated work does not require a dashboard review. The canonical instructions carry the same applicability router for every harness.
+
 Lifecycle and session identity:
 
 - Both first-class harnesses project `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop` through `wbuddy hook`.
 - Native session identity is preserved: Claude supplies its session id and Codex supplies `CODEX_THREAD_ID` / hook `session_id`. Agents initialize the gateway with `wb_init(session_id=<native-id>, harness_id=<id>)`.
 - Hook delivery records harness, native id, transcript path, cwd, and model in the session manifest. Stop blocks only when pending work-buddy messages need review.
+
+Knowledge content can select a browser recipe at read time through the `--harness` inline-placeholder flag. A reference to a parent path resolves to its `<path>/<harness_id>` variant or `<path>/default`. `agent_docs(harness=<id>)` overrides detection for authoring and previews. Otherwise the resolver uses the originating session's manifest, then `WORK_BUDDY_HARNESS_ID`, then the `CODEX_THREAD_ID` heuristic for `codexcli`, and finally `unknown`. Missing variants use the default child. See `architecture/knowledge-system` for expansion, indexing, and validation, and `dev/testing/browser-surface` for the maintained recipes.
 
 Conversation ingestion is a separate provider boundary under `work_buddy/transcripts/`. Built-in `claudecode` and `codexcli` providers map native JSONL into canonical sessions, turns, and tool calls. Third-party harnesses can register providers through the `work_buddy.transcript_providers` Python entry-point group. Canonical data feeds context collection, session inspection, conversation observability, IR search, and Dashboard Chats without those consumers parsing one harness format directly.
 
