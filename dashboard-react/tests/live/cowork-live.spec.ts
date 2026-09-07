@@ -157,6 +157,20 @@ const mintBrowserIdentityBootstrap = async (page: Page): Promise<string> => {
   return result.payload.token!;
 };
 
+/**
+ * Open Co-work with a human-authority session, on the origin that can mint one.
+ *
+ * Any test that writes needs this: creating, importing, editing, submitting
+ * feedback, reviewing a proposal, and removing a document all issue an exact
+ * authority gesture before their request, and that gesture is refused without
+ * a session. A test that writes without one does not fail at the network layer,
+ * it fails as a dialog reading "An authenticated local session is required",
+ * which is easy to misread as the feature being broken.
+ *
+ * `gotoCowork` stays for the tests that are about the unauthenticated surface
+ * itself: production-preview isolation, the launcher, and the observation half
+ * of folder setup. Those assert on the preview origin and must not move.
+ */
 const gotoAuthenticatedCowork = async (
   page: Page,
   search = "?mode=launcher",
@@ -410,8 +424,11 @@ const readBrowserOutbox = async (
     },
   );
 
-const seedLegacyScratch = async (page: Page): Promise<void> => {
-  await page.goto("/app/", { waitUntil: "domcontentloaded" });
+const seedLegacyScratch = async (page: Page, origin = ""): Promise<void> => {
+  // Browser-local writing lives in origin-scoped IndexedDB. A test that seeds
+  // here and then reads from a different origin finds nothing, so the caller
+  // names the origin it is going to use.
+  await page.goto(`${origin}/app/`, { waitUntil: "domcontentloaded" });
   await page.evaluate(
     async ({ snapshotBase64, snapshotSha256, scratchId }) => {
       const binary = atob(snapshotBase64);
@@ -607,7 +624,16 @@ test.describe.serial("Co-work live lifecycle", () => {
       await fileDigest(path.join(fixture.ordinary.path, ".wbuddy", "search", "state.bin")),
     ).toBe(fixture.ordinary.sibling_state_sha256);
 
+    // Everything above is observation: inspecting a Folder and setting one up
+    // leave no document behind, so they need no authority. Creating one does.
+    // Document creation issues an exact human-authority gesture, and the
+    // gesture is only mintable from the backend origin, so the run has to move
+    // there and carry a session before it can write.
     await mkdir(path.join(fixture.ordinary.path, "drafts"));
+    await gotoAuthenticatedCowork(page, `?store_id=${ordinaryStoreId}`);
+    await expect(
+      page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
+    ).toBeVisible({ timeout: 30_000 });
     await page.getByRole("button", { name: "New", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
     await expect(page.getByText(/Document type/i)).toHaveCount(0);
@@ -654,7 +680,9 @@ test.describe.serial("Co-work live lifecycle", () => {
   test("AC-04: register existing Markdown without changing one source byte", async ({ page }) => {
     const before = await readFile(fixture.source.path);
     expect(digest(before)).toBe(fixture.source.sha256);
-    await gotoCowork(page, `?store_id=${ordinaryStoreId}`);
+    // Import registers a document and records who authored its text, so it
+    // needs an authority gesture just as creation does.
+    await gotoAuthenticatedCowork(page, `?store_id=${ordinaryStoreId}`);
     await expect(
       page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
     ).toBeVisible();
@@ -717,7 +745,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       }
     });
 
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -876,7 +904,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
   }) => {
     const quote = "A line preserved exactly.";
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1012,7 +1040,10 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.getByRole("button", { name: "Clear", exact: true }).click();
   });
 
-  test("AC-05B: failed agent start keeps feedback visible until an explicit restart", async ({
+  // Chat lifecycle is automatic: a failed start offers no recovery control of
+  // its own, and the driver is woken by the next authored turn rather than by a
+  // restart button. What must survive the failure is the feedback already written.
+  test("AC-05B: a failed agent start keeps feedback visible and recovers on the next authored turn", async ({
     page,
     request,
   }) => {
@@ -1024,7 +1055,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     });
     expect(control.ok(), await control.text()).toBe(true);
 
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1074,14 +1105,12 @@ test.describe.serial("Co-work live lifecycle", () => {
         name: `Jump to passage: "${quote}"`,
       }),
     ).toBeVisible();
+    // No recovery control is offered, deliberately. Restart controls were
+    // removed when the lifecycle became automatic, so asserting their absence
+    // keeps a reintroduced button from passing unnoticed.
     await expect(
-      page.getByText("Chat couldn’t start.", { exact: true }),
-    ).toBeVisible();
-    const retryStart = page.getByRole("button", {
-      name: "Try again",
-      exact: true,
-    });
-    await expect(retryStart).toBeVisible();
+      page.getByRole("button", { name: "Try again", exact: true }),
+    ).toHaveCount(0);
 
     const failedState = await request.get("/api/_cowork-live/agent-state", {
       headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
@@ -1100,14 +1129,34 @@ test.describe.serial("Co-work live lifecycle", () => {
       data: { mode: "running" },
     });
     expect(recover.ok(), await recover.text()).toBe(true);
+    // Authoring the next turn is what wakes the driver now. Reopening the
+    // document does not: a bound conversation is discovered with a GET that
+    // never re-prepares it, so recovery needs a route that ensures a driver,
+    // and feedback is the one such route the workspace still reaches.
+    const secondFeedback = "Still here after the failed start.";
     const retryResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname ===
-          `/api/truth/doc/${importedDocumentId}/conversation` &&
+          `/api/truth/doc/${importedDocumentId}/feedback` &&
         response.request().method() === "POST",
     );
-    await retryStart.click();
+    await page.getByText(quote, { exact: true }).selectText();
+    await page
+      .getByRole("button", { name: "Give feedback", exact: true })
+      .click();
+    await page
+      .getByRole("textbox", {
+        name: "Feedback on the selected passage",
+        exact: true,
+      })
+      .fill(secondFeedback);
+    await page
+      .getByRole("button", { name: "Send feedback", exact: true })
+      .click();
     expect((await retryResponse).ok()).toBe(true);
+    await expect(page.getByText(secondFeedback, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
 
     await expect(page.getByText(feedback, { exact: true })).toBeVisible();
     await expect(
@@ -1136,7 +1185,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
     request,
   }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
@@ -1213,9 +1262,13 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(
       page.getByRole("button", { name: fixture.initialized.name, exact: true }).first(),
     ).toBeVisible();
-    expect(new URL(page.url()).searchParams.get("store_id")).toBe(
-      fixture.initialized.store_id,
-    );
+    expect(
+      widen(
+        new URL(page.url()).searchParams.get("store_id") ?? "",
+        await registeredStoreIds(page),
+        "store_id",
+      ),
+    ).toBe(fixture.initialized.store_id);
     await page.goBack({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toHaveText("");
     expect((await resolveRouteIds(page)).documentId).toBe(firstDocumentId);
@@ -1474,7 +1527,18 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page
       .getByRole("button", { name: fixture.ordinary.name, exact: true })
       .click();
-    await expect(page).toHaveURL(new RegExp(`store_id=${ordinaryStoreId}`));
+    // The route carries the store's presentation form, so accept its unique
+    // prefix or the full identity and nothing looser: a bare substring match
+    // would also accept a different store that happens to share a prefix.
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("store_id") ?? "", {
+        timeout: 20_000,
+      })
+      .toMatch(
+        new RegExp(
+          `^${ordinaryStoreId.slice(0, 8)}(?:${ordinaryStoreId.slice(8)})?$`,
+        ),
+      );
     await expect(
       page.getByRole("button", { name: "Close folder", exact: true }),
     ).toBeVisible();
@@ -1483,8 +1547,11 @@ test.describe.serial("Co-work live lifecycle", () => {
   test("AC-09: legacy local writing is recovered and removed only after saving opens", async ({
     page,
   }) => {
-    await seedLegacyScratch(page);
-    await gotoCowork(page, "?mode=launcher");
+    // Promoting the recovered draft into the Folder is a create, so this test
+    // runs on the backend origin throughout: the scratch is seeded there and
+    // the session is minted there.
+    await seedLegacyScratch(page, backendBaseURL);
+    await gotoAuthenticatedCowork(page, "?mode=launcher");
     const recovered = page.getByRole("button", {
       name: /Recovered document.*Recovered from an earlier session/,
     });
@@ -1512,7 +1579,7 @@ test.describe.serial("Co-work live lifecycle", () => {
   });
 
   test("AC-10: offline edits survive reload and retry in order", async ({ page, request }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
@@ -1710,7 +1777,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       );
     });
 
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1902,7 +1969,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
     request,
   }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1970,7 +2037,7 @@ test.describe.serial("Co-work live lifecycle", () => {
   test("AC-19: the live workspace is accessible by axe, keyboard, and narrow peer panes", async ({
     page,
   }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
@@ -2025,7 +2092,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await second.focus();
     await page.keyboard.press("Enter");
     await expect
-      .poll(() => new URL(page.url()).searchParams.get("document_id"), {
+      .poll(async () => (await resolveRouteIds(page)).documentId, {
         timeout: 30_000,
       })
       .not.toBe(firstDocumentId);
