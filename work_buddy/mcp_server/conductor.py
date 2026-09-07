@@ -2115,10 +2115,11 @@ def _relevant_step_results(
     return _cap_step_results(visible)
 
 
-_TYPE_MAP: dict[str, type] = {
+_TYPE_MAP: dict[str, type | tuple[type, ...]] = {
     "dict": dict,
     "list": list,
     "str": str,
+    "str | null": (str, type(None)),
     "int": int,
     "float": float,
     "bool": bool,

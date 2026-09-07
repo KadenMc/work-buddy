@@ -44,12 +44,25 @@ steps:
       tests_passed: int
       tests_failed: int
       blocking: bool
+      surfaces_run: list
+      ux_review_ref: str | null
+  invokes: []
+- id: dashboard_evidence
+  name: Record dashboard verification coverage
+  step_type: code
+  depends_on:
+  - test
+  auto_run:
+    callable: work_buddy.dev.commit.review_dashboard_evidence
+    input_map:
+      test_result: test
+    timeout: 20
   invokes: []
 - id: document
   name: Update knowledge-store docs via /wb-dev-document (or explicitly skip with rationale)
   step_type: reasoning
   depends_on:
-  - test
+  - dashboard_evidence
   workflow_ref: dev-document
   result_schema:
     required_keys:
@@ -105,6 +118,7 @@ steps:
   step_type: reasoning
   depends_on:
   - cleanup
+  - dashboard_evidence
   result_schema:
     required_keys:
     - commit_hash
@@ -182,7 +196,8 @@ The previous `/wb-commit` was a prose checklist loaded by a slash command. Agent
 Auto-run. The conductor calls `work_buddy.dev.commit.assess_state()` and passes the result forward. Returned fields:
 - `current_branch`, `is_main`: branch info.
 - `changed_files`, `classified`: what you're about to commit, by bucket (module / knowledge / slash / tests / config / other).
-- `test_candidates`: test files that *might* apply, heuristically derived from changed module names.
+- `test_candidates`: Python tests suggested from changed module names.
+- `dashboard`: changed status, component coverage, matching App e2e specs, live-harness relevance, and the selection reason. Health registry changes can alter generated Settings UI without a React file changing.
 - `warnings`: soft signals (on main, direct JSON edits, empty diff).
 
 ## branch_guard
@@ -213,11 +228,25 @@ Reasoning step. For each module file you changed (`assess.classified.module`), r
 Run via:
 
 ```bash
-export WORK_BUDDY_SESSION_ID='test-session-00000000' && \
-  python -m pytest <test_files> -q --tb=short
+uv run python -m pytest <test_files> -q --tb=short
 ```
 
 Record: which files ran, pass count, fail count. If any failure is on code **you changed**, advance with `blocking: true` and fix before retrying the step. If failures are on code you didn't touch, note them and advance with `blocking: false`.
+
+For dashboard work, use `assess.dashboard` and load `dev/dashboard/verification-directions`. Select the surfaces that exercise the changed behavior:
+
+```bash
+npm --prefix dashboard-react test
+npm --prefix dashboard-react run test:e2e -- --workers=1
+npm --prefix dashboard-react run test:e2e:live -- --app cowork
+npm --prefix dashboard-react run build
+```
+
+Name the environment for every result. Demo fixture routes support presentation checks. Every persisted write uses the isolated live harness. The default e2e proxy can reach the user's dashboard, so a runner name does not establish isolation.
+
+Record `surfaces_run` using `component`, `e2e`, `live`, `visual`, and `python`. If the change affects a dashboard user task, complete `dev/dashboard/ux-review` or reuse an existing review whose scope and implementation still match. Set `ux_review_ref` to its workflow run id or artifact path. Use null when a UX review does not apply and explain why. Reassess when the change expands into another surface.
+
+Missing dashboard surface evidence without a rationale produces a recorded warning. It does not block advancement. Resolve the gap when possible and carry remaining warnings into the commit body and metadata.
 
 If no test files apply (e.g. pure doc change), advance with `tests_run: []`, `tests_passed: 0`, `tests_failed: 0`, `blocking: false`.
 
@@ -228,12 +257,18 @@ Advance shape:
   "tests_passed": 12,
   "tests_failed": 0,
   "blocking": false,
+  "surfaces_run": ["python"],
+  "ux_review_ref": null,
   "rationale": "optional — e.g. 'no tests apply for pure doc change'"
 }
 ```
 
 ---
 **Advance via** `wb_advance(workflow_run_id=..., step_result={...})`. The parameter is `step_result` (not `result`) — FastMCP silently drops unknown kwargs.
+
+## dashboard_evidence
+
+Auto-run. Reassess the current diff and compare the test result's `surfaces_run` and `rationale` with dashboard applicability. Return `warnings`, the dashboard assessment, the evidence reference, and `blocking: false`. Scope changes after orientation are included. Keep warnings visible in the commit body and structured record.
 
 ## document
 
@@ -320,6 +355,8 @@ Verify with `git diff --cached --stat` that only your intended changes are stage
 
 ## Commit message
 
+Include each `dashboard_evidence.warnings` item under `Dashboard verification warning:` and any coverage rationale under `Dashboard verification rationale:`. These are scoped evidence records, not claims of a passing UX review.
+
 Follow the repo's conventional-commit style (check `git log --oneline -5`). Keep the subject short and imperative; put the why in the body.
 
 If the `document` step was skipped, paste the `skip_rationale` into the commit body under a `Doc-update skipped:` line so the skip is visible in history.
@@ -339,7 +376,7 @@ Advance with:
 ```json
 {
   "commit_hash": "<full or 7+ char hash from git output>",
-  "message": "<subject line>",
+  "message": "<full commit message, including dashboard verification warnings and rationale>",
   "staged_files": ["..."]
 }
 ```
@@ -350,6 +387,8 @@ Advance with:
 ## record
 
 Code step. Dispatch `commit_record` via `wb_run` with structured metadata. Pull most fields from prior step_results:
+
+Use the full `commit.message`, including its `Dashboard verification warning:` and `Dashboard verification rationale:` entries, so the structured artifact retains the same coverage record as the git commit. Do not reduce it to the subject line.
 
 ```
 mcp__work-buddy__wb_run("commit_record", {
