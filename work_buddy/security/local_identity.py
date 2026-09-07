@@ -404,12 +404,15 @@ class LocalIdentityAuthority:
         self._schema_ready = False
 
     def _connect(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        from work_buddy.storage.read_only import process_read_only
+        if not process_read_only():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), timeout=10, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 10000")
-        self._ensure_schema(conn)
+        if not process_read_only():
+            self._ensure_schema(conn)
         return conn
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
@@ -771,11 +774,12 @@ class LocalIdentityAuthority:
             float(row["idle_expires_at"]) <= now
             or float(row["absolute_expires_at"]) <= now
         ):
-            conn.execute(
-                "UPDATE local_browser_sessions SET revoked_at = COALESCE(revoked_at, ?) "
-                "WHERE session_id = ?",
-                (now, str(row["session_id"])),
-            )
+            if touch:
+                conn.execute(
+                    "UPDATE local_browser_sessions SET revoked_at = COALESCE(revoked_at, ?) "
+                    "WHERE session_id = ?",
+                    (now, str(row["session_id"])),
+                )
             raise LocalIdentityError(
                 "session_expired", "The local session has expired.", status=401
             )
@@ -798,11 +802,12 @@ class LocalIdentityAuthority:
                 raise LocalIdentityError(
                     "csrf_mismatch", "The CSRF token is invalid.", status=403
                 )
-            conn.execute(
-                "UPDATE local_session_csrf_tokens SET last_used_at = ? "
-                "WHERE session_id = ? AND token_hash = ?",
-                (now, str(row["session_id"]), supplied),
-            )
+            if touch:
+                conn.execute(
+                    "UPDATE local_session_csrf_tokens SET last_used_at = ? "
+                    "WHERE session_id = ? AND token_hash = ?",
+                    (now, str(row["session_id"]), supplied),
+                )
         if not allow_rotation_due and float(row["rotation_due_at"]) <= now:
             raise LocalIdentityError(
                 "session_rotation_required",

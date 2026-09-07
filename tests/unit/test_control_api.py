@@ -8,10 +8,11 @@ import pytest
 
 
 @pytest.fixture
-def client():
+def client(authenticate_dashboard_client):
     from work_buddy.dashboard.service import app
     app.config["TESTING"] = True
     with app.test_client() as c:
+        authenticate_dashboard_client(c)
         yield c
 
 
@@ -75,10 +76,14 @@ def test_control_graph_node_structure(client):
 
 
 @pytest.mark.unit
-def test_reprobe_endpoint_blocked_in_read_only(client):
-    with patch("work_buddy.dashboard.service._is_read_only", return_value=True):
+def test_reprobe_endpoint_blocked_in_read_only(client, monkeypatch):
+    from work_buddy.dashboard import service
+    monkeypatch.setitem(service._cfg, "dashboard", {"read_only": True})
+    with patch("work_buddy.tools.probe_all") as probe:
         resp = client.post("/api/control/reprobe")
     assert resp.status_code == 403
+    assert resp.get_json()["code"] == "read_only"
+    probe.assert_not_called()
 
 
 @pytest.mark.unit
@@ -126,13 +131,17 @@ def test_control_preference_rejects_empty_body(client):
 
 
 @pytest.mark.unit
-def test_control_preference_blocked_in_read_only(client):
-    with patch("work_buddy.dashboard.service._is_read_only", return_value=True):
+def test_control_preference_blocked_in_read_only(client, monkeypatch):
+    from work_buddy.dashboard import service
+    monkeypatch.setitem(service._cfg, "dashboard", {"read_only": True})
+    with patch("work_buddy.health.preferences.apply_preference_updates") as apply:
         resp = client.post(
             "/api/control/preference",
             json={"updates": {"telegram": {"wanted": False}}},
         )
     assert resp.status_code == 403
+    assert resp.get_json()["code"] == "read_only"
+    apply.assert_not_called()
 
 
 @pytest.mark.unit

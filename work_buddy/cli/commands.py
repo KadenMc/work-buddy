@@ -368,6 +368,7 @@ def cmd_harness(args) -> int:
                 "enabled": h.id in cfg.enabled,
                 "primary": h.id == cfg.primary,
                 "rulesync_target": h.rulesync_target,
+                "browser_surface": h.browser_surface,
                 "features": list(h.features),
                 "description": h.description,
                 "support_tier": h.support_tier,
@@ -473,6 +474,7 @@ def cmd_harness(args) -> int:
                     "stderr": res.stderr,
                     "warnings": res.warnings,
                     "backup_dir": str(res.backup_dir) if res.backup_dir else None,
+                    "toolchain_versions": res.data.get("toolchain_versions", {}),
                 },
                 indent=2,
             ))
@@ -480,6 +482,8 @@ def cmd_harness(args) -> int:
         print(f"targets: {', '.join(res.targets)}")
         print(f"input: {res.input_root}")
         print(f"output: {res.output_root}")
+        for tool, version in res.data.get("toolchain_versions", {}).items():
+            print(f"{tool}: {version}")
         if res.generated_paths:
             print("paths:")
             for path in res.generated_paths:
@@ -715,6 +719,9 @@ def _print_dashboard_url(prefix: str = "") -> None:
 
 
 def cmd_dashboard(args) -> int:
+    if getattr(args, "read_only", False):
+        from work_buddy.dashboard.read_only import serve
+        return serve(port=args.port)
     url = _dashboard_url()
     print(url)
     if getattr(args, "open", False):

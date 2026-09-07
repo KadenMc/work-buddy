@@ -21,3 +21,5 @@ work-buddy is tested per surface, not by one command. The Python package has a p
 Two things are worth establishing before reaching for any of them. A passing run proves only what that runner covered: the surfaces are independent, and green on one says nothing about the others. And a test that reaches a running work-buddy process reaches the user's real data unless it explicitly selected a fixture or an isolated root, so every surface has to document how it stays off production state.
 
 Automated testing is distinct from live testing, which drives an in-progress change through the real running system with the user in the loop. See `dev/live-testing-directions` for that, and `dev/testing/react-dashboard` for the dashboard's five test surfaces.
+
+For browser-driven dashboard exploration and scenario verification, load `dev/dashboard/verification-directions`. It selects an environment and the caller's browser recipe before regression tests are authored.

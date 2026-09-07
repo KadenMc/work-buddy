@@ -234,7 +234,7 @@ def test_api_costs_all_includes_both_sources(monkeypatch, tmp_path,
     assert body["claude_code"]["session_count"] == 2
 
 
-def test_api_costs_rescan_route(monkeypatch, tmp_path, projects_tree):
+def test_api_costs_rescan_route(monkeypatch, tmp_path, projects_tree, authenticate_dashboard_client):
     db = tmp_path / "tx.db"
     monkeypatch.setattr(scanner, "get_db_path", lambda: db)
 
@@ -248,7 +248,7 @@ def test_api_costs_rescan_route(monkeypatch, tmp_path, projects_tree):
         _fake_rescan,
     )
     from work_buddy.dashboard.service import app
-    client = app.test_client()
+    client = authenticate_dashboard_client(app.test_client())
     resp = client.post("/api/costs/rescan")
     assert resp.status_code == 200
     body = resp.get_json()

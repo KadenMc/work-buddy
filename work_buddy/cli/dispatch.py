@@ -78,6 +78,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_dash = sub.add_parser("dashboard", help="print the dashboard URL")
     p_dash.add_argument("--open", action="store_true", help="open it in a browser")
+    p_dash.add_argument("--read-only", action="store_true", help="serve a separate read-only process")
+    p_dash.add_argument("--port", type=int, help="explicit port for the read-only process")
 
     sub.add_parser(
         "launch",

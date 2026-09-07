@@ -19,6 +19,9 @@ steps:
       units_read: list
       files_read: list
       wrappers_found: list
+      affected_surfaces: list
+      required_reviews: list
+      review_scope: list
     min_items:
       units_read: 1
       files_read: 1
@@ -59,13 +62,18 @@ Before touching code, orient on the subsystem you are about to modify. The defau
 
 4. **Open the relevant code files** — not just headers, read them. Identify existing wrappers, classes, or functions that already solve part of the problem. If the subsystem has tests, at least skim their shape.
 
+   When the change affects a dashboard user task, navigation, control, information presentation, feedback, recovery, or user-visible behavior, load `dev/dashboard/ux-directions` before deciding the interaction design and `dev/dashboard/verification-directions` before opening a browser. Include Python changes that alter generated surfaces, such as health registrations that appear in Settings. Populate optional `affected_surfaces`, `required_reviews`, and `review_scope` lists. Reassess when scope changes. For unrelated work leave these lists empty and do not perform a dashboard review. Reading dashboard code for an unrelated investigation does not itself require a review.
+
 5. **Advance this step** via `wb_advance` with a dict in this exact shape. Empty or trivial lists are a signal you have not oriented — go deeper and try again:
 
    ```
    {
      "units_read":     ["<path/to/unit>", ...],
      "files_read":     ["<repo-relative/or/absolute/path>", ...],
-     "wrappers_found": ["<existing function/class/capability>", ...]
+     "wrappers_found": ["<existing function/class/capability>", ...],
+     "affected_surfaces": ["dashboard:cowork"],
+     "required_reviews": ["dashboard-ux"],
+     "review_scope": ["Create a document, correct its title, and find it after reload"]
    }
    ```
 

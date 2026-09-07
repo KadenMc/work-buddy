@@ -155,7 +155,7 @@ def _build_doc(
 
     # Resolve placeholders so referenced content is indexed
     if store is not None and full and "<<wb:" in full:
-        full = _resolve_placeholders(full, store)
+        full = _resolve_placeholders(full, store, all_harnesses=True)
 
     # --- full_text: BM25 corpus (all searchable surfaces, incl. aliases) ---
     full_parts = [meta_text]

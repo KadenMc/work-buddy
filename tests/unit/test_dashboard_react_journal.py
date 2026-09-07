@@ -13,9 +13,10 @@ from work_buddy.dashboard import service as dash_service
 
 
 @pytest.fixture
-def client():
+def client(authenticate_dashboard_client):
     dash_service.app.config["TESTING"] = True
     with dash_service.app.test_client() as test_client:
+        authenticate_dashboard_client(test_client)
         yield test_client
 
 

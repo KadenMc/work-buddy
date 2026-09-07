@@ -644,6 +644,18 @@ def _read_value(setting_id: str, observed_at: datetime):
         )
     conn = store.get_connection()
     try:
+        from work_buddy.storage.read_only import process_read_only
+        if process_read_only():
+            row = conn.execute(
+                "SELECT * FROM setting_value_state WHERE setting_id = ? AND scope = 'profile' AND scope_id = ?",
+                (setting_id, registry.PROFILE_SCOPE_ID),
+            ).fetchone()
+            if row is None:
+                raise SettingsError(
+                    "setting_uninitialized", "This setting requires initialization by a write-capable process.", status_code=503,
+                )
+            # Pending transitions remain a persisted fact until a writer applies them.
+            return _record_from_row(row, observed_at), None
         conn.execute("BEGIN IMMEDIATE")
         row = _ensure_row(conn, setting_id, observed_at)
         row, promoted = _promote_if_due(conn, row, observed_at)

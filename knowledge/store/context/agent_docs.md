@@ -43,6 +43,10 @@ parameters:
     type: int
     description: Cap on placeholder recursion depth at depth='full'. -1 (default) = mode default (unlimited in 'default' mode, 10 in 'all' mode). 0 = no recursion (same as recursive='none' in effect). Positive ints set an exact cap. Layers with the size budget and the per-unit-occurrence cap.
     required: false
+  harness:
+    type: str
+    description: Explicit harness id for full-depth placeholder previews. Overrides the originating session and environment. Missing harness variants use the default child.
+    required: false
 tags:
 - context
 - agent

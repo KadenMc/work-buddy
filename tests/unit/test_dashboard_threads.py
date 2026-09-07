@@ -39,9 +39,9 @@ def fresh_threads_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(fresh_threads_db):
+def client(fresh_threads_db, authenticate_dashboard_client):
     from work_buddy.dashboard.service import app
-    yield app.test_client()
+    yield authenticate_dashboard_client(app.test_client())
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +343,7 @@ def _make_child_under(parent, fsm_state="awaiting_confirmation"):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("declared_thread_action_registry")
 class TestActionOptionsEndpoint:
     """The per-thread action library endpoint backs the inner-thread
     action switcher (a child opened directly has no group grid to

@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { beginCustomize, openJournal, widget } from "./helpers";
 
-test("Hover help explains view purposes and primitives without permanent copy", async ({
+test("Hover help explains view purposes and primitives without permanent copy", { tag: "@ci" }, async ({
   page,
 }) => {
   await openJournal(page);

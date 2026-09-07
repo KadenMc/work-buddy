@@ -87,6 +87,56 @@ describe("CoworkYdocPersistence", () => {
     expect(transport.docSha256).toBe(shaBefore);
   });
 
+  it("keeps replayed status subscriptions when earlier disposal awaits device durability", async () => {
+    const transport = new InMemoryCoworkYdocTransport();
+    await seedTransport(transport, (doc) => doc.getText("t").insert(0, "base"));
+    const backing = new InMemoryCoworkYdocOutboxBackingStore();
+    const append = backing.append.bind(backing);
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    let appendStarted!: () => void;
+    const pendingAppend = new Promise<void>((resolve) => {
+      appendStarted = resolve;
+    });
+    vi.spyOn(backing, "append").mockImplementationOnce(async (...args) => {
+      appendStarted();
+      await appendGate;
+      return append(...args);
+    });
+    const outbox = new DurableCoworkYdocOutbox("store:effect-replay", backing);
+    const document = new Y.Doc();
+    const persistence = new CoworkYdocPersistence(document, transport, { outbox });
+    await persistence.hydrate();
+    const oldStatus = vi.fn();
+    persistence.subscribeStatus(oldStatus);
+    persistence.start();
+    humanEdit(document, () => document.getText("t").insert(4, " first"));
+    await pendingAppend;
+
+    // StrictMode replays effects on the same resource before async cleanup settles.
+    const disposing = persistence.dispose();
+    const replayedStatus = vi.fn();
+    persistence.subscribeStatus(replayedStatus);
+    persistence.start();
+    releaseAppend();
+    await disposing;
+    await persistence.flush();
+    expect(await outbox.list()).toMatchObject([{ acknowledged: true }]);
+    oldStatus.mockClear();
+    replayedStatus.mockClear();
+
+    humanEdit(document, () => document.getText("t").insert(10, " second"));
+    await persistence.flush();
+    expect(replayedStatus).toHaveBeenLastCalledWith("clean");
+    expect(oldStatus).not.toHaveBeenCalled();
+    const fresh = new Y.Doc();
+    await new CoworkYdocPersistence(fresh, transport).hydrate();
+    expect(fresh.getText("t").toString()).toBe("base first second");
+    await persistence.dispose();
+  });
+
   it("applies remote batches through an offset-sliced pull", async () => {
     const transport = new InMemoryCoworkYdocTransport();
     await seedTransport(transport, (doc) => doc.getText("t").insert(0, "base"));

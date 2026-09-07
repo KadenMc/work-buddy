@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from work_buddy.storage.read_only import process_read_only
 from typing import Any, Callable, Iterator, Mapping
 
 from work_buddy.backups.source_foundation_restore import (
@@ -165,7 +166,7 @@ class DocumentCausalityStore:
     def __init__(self, truth_sidecar: str | Path) -> None:
         root = Path(truth_sidecar).expanduser().resolve()
         self.path = root / "document-causality.db"
-        if source_foundation_read_only():
+        if source_foundation_read_only() or process_read_only():
             if not self.path.is_file():
                 raise DocumentCausalityError(
                     "document_causality_missing_during_restore_reconciliation"
@@ -176,10 +177,10 @@ class DocumentCausalityStore:
             self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        read_only = source_foundation_read_only()
+        read_only = source_foundation_read_only() or process_read_only()
         conn = sqlite3.connect(
             (
-                f"file:{self.path.resolve()}?mode=ro"
+                self.path.resolve().as_uri() + "?mode=ro"
                 if read_only
                 else str(self.path)
             ),
@@ -395,7 +396,7 @@ class DocumentCausalityStore:
 
     def _validate_existing(self) -> None:
         try:
-            conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+            conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
             try:
                 integrity = conn.execute("PRAGMA integrity_check").fetchall()
                 row = conn.execute(

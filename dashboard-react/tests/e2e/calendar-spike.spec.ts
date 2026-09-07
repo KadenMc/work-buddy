@@ -16,7 +16,7 @@ async function selectFieldOption(page: Page, label: string, option: RegExp) {
   await page.getByRole("option", { name: option }).click();
 }
 
-test("keeps one intentional scroller and opens one inspector per activation key", async ({
+test("keeps one intentional scroller and opens one inspector per activation key", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -54,7 +54,7 @@ test("keeps one intentional scroller and opens one inspector per activation key"
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
-test("resolves distinct and capability-gated actions for records, plans, and calendars", async ({
+test("resolves distinct and capability-gated actions for records, plans, and calendars", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -91,7 +91,7 @@ test("resolves distinct and capability-gated actions for records, plans, and cal
   await expect(page.getByRole("button", { name: "Remove calendar event" })).toBeVisible();
 });
 
-test("separates range from presentation and removes the duplicate Agenda mode", async ({
+test("separates range from presentation and removes the duplicate Agenda mode", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -112,7 +112,7 @@ test("separates range from presentation and removes the duplicate Agenda mode", 
   await expect(page.locator(".fc-list-day")).toContainText("July 11, 2026");
 });
 
-test("uses compact short-event content and FullCalendar's overflow popover", async ({
+test("uses compact short-event content and FullCalendar's overflow popover", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -148,7 +148,7 @@ test("uses compact short-event content and FullCalendar's overflow popover", asy
   await expect(page.locator(".fc-popover")).toContainText("Captured during overlap");
 });
 
-test("uses semantic Work Buddy skins and passes the serious axe gate", async ({ page }) => {
+test("uses semantic Work Buddy skins and passes the serious axe gate", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await openCalendarSpike(page);
 
@@ -196,7 +196,7 @@ test("uses semantic Work Buddy skins and passes the serious axe gate", async ({ 
   expect(violations).toEqual([]);
 });
 
-test("keeps presentation discoverable at narrow size and opens list items through the shared inspector", async ({
+test("keeps presentation discoverable at narrow size and opens list items through the shared inspector", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -251,7 +251,7 @@ test("keeps presentation discoverable at narrow size and opens list items throug
   await expect(inspector.getByText(/authored elsewhere/)).toBeVisible();
 });
 
-test("reverts a rejected drag through the Work Buddy intent result", async ({ page }) => {
+test("reverts a rejected drag through the Work Buddy intent result", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await openCalendarSpike(page);
   await selectFieldOption(page, "Mutation response", /^Reject and revert$/);

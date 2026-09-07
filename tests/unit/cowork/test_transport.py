@@ -23,6 +23,33 @@ def test_frame_round_trips_multiple_segments():
     assert transport.unframe_segments(body) == segments
 
 
+def test_process_read_only_pull_preserves_bytes_without_writer_locks(seeded, monkeypatch):
+    from work_buddy.storage import read_only
+    expected = transport.pull_ydoc(seeded["store"], seeded["document"])
+    monkeypatch.setattr(read_only, "_enabled", True)
+    monkeypatch.setattr(ydoc_store, "document_lock", lambda *args, **kwargs: pytest.fail("Read-only pull acquired a write lock"))
+    assert transport.pull_ydoc(seeded["store"], seeded["document"]) == expected
+
+
+@pytest.mark.parametrize("change", ["database", "log", "active_writer"])
+def test_read_only_snapshot_discards_overlapping_writer(seeded, change):
+    from work_buddy.truth.read_snapshot import document_read_snapshot, ReadSnapshotBusy
+    from work_buddy.utils.index_lock import _lock_path
+    store = seeded["store"]
+    document = seeded["document"]
+    with pytest.raises(ReadSnapshotBusy):
+        with document_read_snapshot(store, document.id):
+            if change == "database":
+                with store.connect() as writer:
+                    writer.execute("CREATE TABLE snapshot_concurrency_probe (id TEXT)")
+            elif change == "log":
+                ydoc_store.append_update(store, document_id=document.id, update=b"concurrent-batch")
+            else:
+                marker = _lock_path(store.paths.sidecar / "runtime" / "locks" / "store")
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("active writer", encoding="utf-8")
+
+
 def test_unframe_rejects_truncated_body():
     body = _PREFIX.pack(10) + b"short"
     with pytest.raises(InvariantViolation):

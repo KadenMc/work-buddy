@@ -4,7 +4,7 @@ import { beginCustomize, openJournal, openWidgetMenu, widget } from "./helpers";
 
 test.setTimeout(120_000);
 
-test("Quick Capture restores its exact semantic draft and exposes a truthful clear action", async ({
+test("Quick Capture restores its exact semantic draft and exposes a truthful clear action", { tag: "@ci" }, async ({
   page,
 }) => {
   await openJournal(page);
@@ -47,7 +47,7 @@ test("Quick Capture restores its exact semantic draft and exposes a truthful cle
   await expect(widget(page, "Quick Capture").getByRole("textbox", { name: "Capture text" })).toHaveValue("");
 });
 
-test("Journal drafts survive Customize remounts and Running Notes edits survive refresh", async ({
+test("Journal drafts survive Customize remounts and Running Notes edits survive refresh", { tag: "@ci" }, async ({
   page,
 }) => {
   await openJournal(page);

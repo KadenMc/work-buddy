@@ -347,6 +347,9 @@ def check_anthropic_api_key() -> dict[str, Any]:
 def check_data_writable() -> dict[str, Any]:
     """Check that the data/ directory exists and is writable."""
     from work_buddy.paths import data_dir
+    from work_buddy.storage.read_only import process_read_only
+    if process_read_only():
+        return {"ok": False, "detail": "Write probes are unavailable in the read-only dashboard process"}
 
     try:
         d = data_dir("runtime")

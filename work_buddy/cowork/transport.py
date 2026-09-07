@@ -106,7 +106,10 @@ def pull_ydoc(
     # the same lock used by append and compaction. Otherwise a concurrent
     # append can make the header describe bytes absent from this response, or a
     # compaction can pair a stale DocumentRecord pointer with a new epoch.
-    with ydoc_store.document_lock(store, document.id):
+    from work_buddy.storage.read_only import process_read_only
+    from work_buddy.truth.read_snapshot import document_read_snapshot
+    barrier = document_read_snapshot if process_read_only() else ydoc_store.document_lock
+    with barrier(store, document.id):
         current = documents.get_document(store, document.id)
         snapshot_sha256 = current.ydoc_snapshot_sha256
         if snapshot_sha256 is None:

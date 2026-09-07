@@ -41,12 +41,19 @@ from work_buddy.dashboard.api import (
 )
 from work_buddy.dashboard import views as workflow_views
 from work_buddy.dashboard.frontend import render_page
+from work_buddy.dashboard.read_only import (
+    guard_dashboard_request,
+    is_read_only as _is_read_only,
+    reject_read_only as _reject_read_only,
+)
 
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.before_request(guard_dashboard_request)
 
 _cfg = load_config()
+app.extensions["dashboard_read_only"] = lambda: _cfg.get("dashboard", {}).get("read_only", False)
 
 
 @app.after_request
@@ -59,18 +66,6 @@ def _deny_dashboard_framing(response: Response) -> Response:
     )
     response.headers.setdefault("X-Frame-Options", "DENY")
     return response
-
-
-def _is_read_only() -> bool:
-    """Check if the dashboard is in read-only mode (no mutating actions)."""
-    return _cfg.get("dashboard", {}).get("read_only", False)
-
-
-def _reject_read_only():
-    """Return a 403 response if read-only mode is active, else None."""
-    if _is_read_only():
-        return jsonify({"error": "Dashboard is in read-only mode"}), 403
-    return None
 
 
 @app.before_request
@@ -270,10 +265,9 @@ def internal_bus():
     persisted, and an event that arrives while no browser is subscribed is
     simply dropped.
 
-    Gated to loopback callers. The dashboard has no auth and can be bound to
-    0.0.0.0 / published over Tailscale, so a remote caller must never be able
-    to inject bus events. Exempt from the read-only gate — UI-refresh events
-    must keep flowing even when the dashboard is display-only.
+    In read-only mode the central host-callback policy rejects unauthenticated
+    browser and proxy traffic. This handler also requires a loopback peer. Its exception is
+    limited to the in-memory bus; no domain callbacks execute on publication.
     """
     if request.remote_addr not in ("127.0.0.1", "::1"):
         return jsonify({"error": "loopback only"}), 403
@@ -297,12 +291,14 @@ def index():
     # Pre-warm the embeddings snapshot on a background thread so the first
     # Settings › Embeddings open serves instantly instead of paying the cold aggregate.
     try:
+        from work_buddy.storage.read_only import process_read_only
         from work_buddy.dashboard.api import (
             _kick_embeddings_refresh,
             _kick_fleet_refresh,
         )
-        _kick_embeddings_refresh()
-        _kick_fleet_refresh()
+        if not process_read_only():
+            _kick_embeddings_refresh()
+            _kick_fleet_refresh()
     except Exception:
         pass
     resp = Response(render_page(), content_type="text/html; charset=utf-8")

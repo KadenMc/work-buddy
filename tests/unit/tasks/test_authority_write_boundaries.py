@@ -211,6 +211,7 @@ def test_work_item_stale_legacy_route_rechecks_authority_before_markdown_write(
 )
 def test_dashboard_sync_stale_legacy_route_fails_before_reconcile(
     monkeypatch,
+    authenticate_dashboard_client,
     boundary,
     status,
     code,
@@ -240,7 +241,7 @@ def test_dashboard_sync_stale_legacy_route_fails_before_reconcile(
         lambda: (_ for _ in ()).throw(AssertionError("legacy reconcile reached")),
     )
 
-    response = service.app.test_client().post("/api/task_sync")
+    response = authenticate_dashboard_client(service.app.test_client()).post("/api/task_sync")
 
     assert response.status_code == status
     assert response.get_json()["error"]["code"] == code

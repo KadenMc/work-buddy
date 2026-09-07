@@ -202,6 +202,7 @@ def session_status():
             cookie_token=token,
             boundary=boundary_for_request(),
             allow_rotation_due=True,
+            touch=False,
         )
         return jsonify(_session_payload(principal))
     except LocalIdentityError as exc:
@@ -300,6 +301,7 @@ def authenticate_request_session(
     authority: LocalIdentityAuthority | None = None,
     require_csrf: bool = False,
     allow_rotation_due: bool = False,
+    touch: bool = True,
 ) -> LocalPrincipal:
     """Migration seam for a route that needs the canonical local principal."""
 
@@ -310,6 +312,7 @@ def authenticate_request_session(
         require_csrf=require_csrf,
         boundary=boundary_for_request(),
         allow_rotation_due=allow_rotation_due,
+        touch=touch and request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"},
     )
 
 

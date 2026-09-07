@@ -72,13 +72,13 @@ class TestRedirectActionEndpoint:
     """``POST /api/threads/<id>/redirect_action``."""
 
     @pytest.fixture
-    def client(self, fresh_db):
+    def client(self, fresh_db, authenticate_dashboard_client):
         # Disable real LLM hookup; the redirect endpoint should not
         # trigger an actual inference call in a unit test (the state-
         # entry handler is wired by bootstrap which we don't fire).
         from work_buddy.dashboard.service import app
         app.testing = True
-        return app.test_client()
+        return authenticate_dashboard_client(app.test_client())
 
     def test_records_feedback_event_and_transitions(self, fresh_db, client):
         t = _thread_with_pending_action({
@@ -315,6 +315,7 @@ class TestRedirectFeedbackBlock:
         assert self._build(t) != ""
 
 
+@pytest.mark.usefixtures("declared_thread_action_registry")
 class TestActionCatalogRequiredMarking:
     """The action catalog injected into the inference prompt marks
     required params so the model fills them."""

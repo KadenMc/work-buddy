@@ -9,7 +9,7 @@ const openJournal = async (page: Page) => {
   );
 };
 
-test("dashboard canvas remains fluid while page and widget insets survive the reset", async ({
+test("dashboard canvas remains fluid while page and widget insets survive the reset", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -77,7 +77,7 @@ test("dashboard canvas remains fluid while page and widget insets survive the re
   expect(Math.abs(wideGeometry.rightmostEdge - wideGeometry.gridRight)).toBeLessThan(1.5);
 });
 
-test("Customize mode explains placement policy and uses an engine-aligned guide", async ({
+test("Customize mode explains placement policy and uses an engine-aligned guide", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });

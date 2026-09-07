@@ -12,7 +12,7 @@ import { openCowork } from "./cowork-helpers";
 
 const SUBMIT = /Submit sitting/;
 
-test("drives the queue sitting with j/k and Enter", async ({ page }) => {
+test("drives the queue sitting with j/k and Enter", { tag: "@no-ci" }, async ({ page }) => {
   await openCowork(page);
 
   // Enter queue mode, the keyboard focus layout.

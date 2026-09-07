@@ -405,16 +405,21 @@ export const useCoworkBridge = (
     };
   }, [applyProvenanceLoad, core]);
 
-  useEffect(
-    () => () => {
+  const mountedCore = useRef<typeof core | null>(null);
+  useEffect(() => {
+    mountedCore.current = core;
+    return () => {
+      mountedCore.current = null;
       core.ledgerProjector.detach();
       core.passageHighlighter.dispose();
       // The editor and rail unsubscribe during the same unmount. Defer final destruction so
-      // their cleanups can detach observers from an intact document first.
-      queueMicrotask(() => core.doc.destroy());
-    },
-    [core],
-  );
+      // their cleanups can detach observers from an intact document first. Effect replay
+      // remounts the same core before this task runs, so that document must stay alive.
+      queueMicrotask(() => {
+        if (mountedCore.current !== core) core.doc.destroy();
+      });
+    };
+  }, [core]);
 
   const editorProps = useMemo<CoworkBridgeEditorMountProps>(
     () => ({

@@ -240,7 +240,7 @@ def _search_units_via_consolidated(queries: list[str]) -> list[dict[str, Any]] |
 
     Returns per-query results in the SAME shape as ``knowledge.search.search_many``
     (so the downstream RRF + slim path is byte-unchanged), or ``None`` to signal
-    "use the live in-process index" — when the service is unreachable, the response
+    "use the scored lexical fallback" when the service is unreachable, the response
     shape is unexpected, or the consolidated ``knowledge`` partition is empty/stale
     (zero hits across all queries). System-scope only, matching the live path's
     ``knowledge_scope="system"``.
@@ -256,12 +256,12 @@ def _search_units_via_consolidated(queries: list[str]) -> list[dict[str, Any]] |
         # partition indexes system+personal, so this filter is load-bearing.
         filters={"scope": "system"},
         timeout_s=_QUERY_EMBED_TIMEOUT_S,
-        # Cold knowledge matrix → wait once for the background warm and retry, rather
-        # than degrading to the live index on the first (lexical-only) pass.
-        warm_retry=True,
+        # A cold-matrix retry has its own 90s budget, exceeding this scan's
+        # workflow deadline. Accept the first lexical result while it warms.
+        warm_retry=False,
     )
     if raw is None or len(raw) != len(queries):
-        return None  # service down or shape mismatch → fall back to the live index
+        return None  # Service down or shape mismatch: use the lexical fallback.
 
     store = load_store(scope="system")  # system-only hydration: a 2nd guard vs leak
     results: list[dict[str, Any]] = []
@@ -283,7 +283,7 @@ def _search_units_via_consolidated(queries: list[str]) -> list[dict[str, Any]] |
         )
 
     if total == 0:
-        return None  # empty/stale consolidated partition → fall back to the live index
+        return None  # Empty/stale consolidated partition: use the lexical fallback.
     return results
 
 
@@ -315,9 +315,9 @@ def _search_units_via_rag(
         success, or ``None`` if the batched search could not run at all
         (exception) or the structural query errored. ``None`` is the signal
         for ``scan_changes`` to fall back to the scored grep path. A
-        contended embedding service does NOT trigger ``None`` — ``search_many``
-        degrades to BM25 (lexical) and still returns ranked candidates;
-        per-docstring errors are logged and skipped.
+        failed consolidated request returns ``None`` without building a local
+        dense index. With consolidation disabled, ``search_many`` retains its
+        BM25 degradation behavior. Per-docstring errors are logged and skipped.
     """
     if not (changed_files or slugs):
         return []
@@ -344,20 +344,23 @@ def _search_units_via_rag(
     if not queries:
         return []
 
-    # Route to the resident consolidated index when activated (``index.enabled``);
-    # on ANY failure/empty, fall through to the live in-process knowledge index. The
-    # live path's contract is preserved exactly (``None`` → grep fallback below).
+    # A failed consolidated request must not start a cold local dense build:
+    # its per-batch timeout can exceed the entire workflow deadline. Returning
+    # None selects the existing lexical matcher and canonical force-includes.
     results: list[dict[str, Any]] | None = None
     try:
         from work_buddy.index.config import load_index_config
 
         if load_index_config().enabled:
             results = _search_units_via_consolidated(queries)
+            if results is None:
+                logger.warning("Consolidated scan search unavailable; falling back to grep.")
+                return None
     except Exception as exc:  # noqa: BLE001 — consolidated is best-effort
         logger.warning(
-            "consolidated scan search failed (%s); using the live index.", exc,
+            "Consolidated scan search failed (%s); falling back to grep.", exc,
         )
-        results = None
+        return None
 
     if results is None:
         try:

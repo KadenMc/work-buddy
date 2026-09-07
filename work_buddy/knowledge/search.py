@@ -116,6 +116,7 @@ def search(
     dev: bool = False,
     recursive: str = "default",
     max_depth: int | None = None,
+    harness: str | None = None,
 ) -> dict[str, Any]:
     """Unified search and navigation over the knowledge store.
 
@@ -144,7 +145,7 @@ def search(
     if path is not None:
         return _lookup(
             path, depth, knowledge_scope,
-            dev=dev, recursive=recursive, max_depth=max_depth,
+            dev=dev, recursive=recursive, max_depth=max_depth, harness=harness,
         )
 
     # Mode 2: Browse subtree (no query) or filter-only (category/severity without query)
@@ -152,12 +153,14 @@ def search(
         return _browse(
             scope or "", kind, depth, knowledge_scope,
             category, severity, dev=dev, recursive=recursive, max_depth=max_depth,
+            harness=harness,
         )
 
     # Mode 3/4: Search (optionally scoped)
     return _search(
         query, scope, kind, depth, top_n, knowledge_scope,
         category, severity, dev=dev, recursive=recursive, max_depth=max_depth,
+        harness=harness,
     )
 
 
@@ -260,6 +263,7 @@ def _lookup(
     dev: bool = False,
     recursive: str = "default",
     max_depth: int | None = None,
+    harness: str | None = None,
 ) -> dict[str, Any]:
     """Direct lookup by exact path."""
     # For path lookup, search across all scopes if not found in requested scope
@@ -282,6 +286,7 @@ def _lookup(
         "unit": unit.tier(
             depth, store=full_store, dev=dev,
             recursive_mode=recursive, max_depth=max_depth,
+            harness=harness,
         ),
     }
 
@@ -296,6 +301,7 @@ def _browse(
     dev: bool = False,
     recursive: str = "default",
     max_depth: int | None = None,
+    harness: str | None = None,
 ) -> dict[str, Any]:
     """Browse all units under a path prefix, or all units if scope is empty."""
     store = load_store(scope=knowledge_scope)
@@ -322,6 +328,7 @@ def _browse(
         {"path": p, **u.tier(
             depth, store=full_store, dev=dev,
             recursive_mode=recursive, max_depth=max_depth,
+            harness=harness,
         )}
         for p, u in sorted(units.items())
     ]
@@ -346,6 +353,7 @@ def _search(
     dev: bool = False,
     recursive: str = "default",
     max_depth: int | None = None,
+    harness: str | None = None,
 ) -> dict[str, Any]:
     """Hybrid search over the store using the persistent knowledge index.
 
@@ -390,6 +398,7 @@ def _search(
                 **exact.tier(
                     depth, store=full_store, dev=dev,
                     recursive_mode=recursive, max_depth=max_depth,
+                    harness=harness,
                 ),
             }],
         }
@@ -427,6 +436,7 @@ def _search(
                 **unit.tier(
                     depth, store=full_store, dev=dev,
                     recursive_mode=recursive, max_depth=max_depth,
+                    harness=harness,
                 ),
             })
             if len(results) >= top_n:
@@ -447,6 +457,7 @@ def _search(
     return _keyword_search(
         query, candidates_units, candidates_texts, depth, top_n,
         full_store, dev=dev, recursive=recursive, max_depth=max_depth,
+        harness=harness,
     )
 
 
@@ -460,6 +471,7 @@ def _keyword_search(
     dev: bool = False,
     recursive: str = "default",
     max_depth: int | None = None,
+    harness: str | None = None,
 ) -> dict[str, Any]:
     """Keyword fallback when embedding service is unavailable."""
     query_lower = query.lower()
@@ -483,6 +495,7 @@ def _keyword_search(
             **unit.tier(
                 depth, store=full_store, dev=dev,
                 recursive_mode=recursive, max_depth=max_depth,
+                harness=harness,
             ),
         })
 

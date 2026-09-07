@@ -57,6 +57,33 @@ def get_originating_session() -> str | None:
     return _originating_session.get()
 
 
+def get_originating_harness() -> str:
+    """Resolve the caller's harness from its manifest, then the environment.
+
+    Lookup never registers a session or repairs an unreadable manifest. The
+    full native session id must match, including when directory prefixes collide.
+    """
+    session_id = get_originating_session()
+    if session_id:
+        try:
+            candidates = get_agents_dir().glob(f"*_{session_id[:8]}/manifest.json")
+            for manifest_path in candidates:
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(manifest, dict) or manifest.get("session_id") != session_id:
+                    continue
+                harness = manifest.get("harness_id")
+                if isinstance(harness, str) and harness.strip():
+                    return harness.strip()
+        except OSError:
+            pass
+    return os.environ.get("WORK_BUDDY_HARNESS_ID", "").strip() or (
+        "codexcli" if os.environ.get("CODEX_THREAD_ID") else "unknown"
+    )
+
+
 def _get_session_id() -> str:
     """Get the current native agent session ID from environment.
 
@@ -215,7 +242,9 @@ def get_consent_requests_dir() -> Path:
     Telegram, etc.) and all backend processes (MCP server, sidecar).
     """
     requests_dir = get_agents_dir() / "consent" / "requests"
-    requests_dir.mkdir(parents=True, exist_ok=True)
+    from work_buddy.storage.read_only import process_read_only
+    if not process_read_only():
+        requests_dir.mkdir(parents=True, exist_ok=True)
     return requests_dir
 
 

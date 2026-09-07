@@ -173,6 +173,9 @@ If `mcp__work-buddy__wb_init` is not in your tool list, **stop immediately and t
 
 ## Running Python in this repo
 
+When planning or implementing changes that affect dashboard user tasks or user-visible behavior, load `dev/dashboard/ux-directions` and `dev/dashboard/verification-directions` before deciding the interaction design or opening a browser.
+Do not perform a dashboard review for unrelated work.
+
 work-buddy's functionality is reached through the MCP tools (see above) — reach for those first. But some tasks legitimately need raw Python: running the test suite, a one-off debug script, or a `scripts/` utility.
 
 When you do, run it through **uv** from the repo root. `uv run` executes in the project's `.venv` (built by `uv sync` from `uv.lock`), which carries every dependency, so a bare or partial Python that dies partway through with `ModuleNotFoundError` is not a concern. It needs no shell activation and works cross-platform:

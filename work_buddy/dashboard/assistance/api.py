@@ -55,6 +55,15 @@ def create_assistance_blueprint(
         @wraps(function)
         def wrapped(*args, **kwargs):
             try:
+                from work_buddy.storage.read_only import process_read_only
+                if process_read_only() and function.__name__ not in {"availability", "schemas"}:
+                    # Polling reconciles expired sessions and dead agent leases.
+                    # It requires a writer even though its HTTP method is GET.
+                    raise AssistanceError(
+                        "assistance_requires_writer",
+                        "Form assistance requires the ordinary dashboard process.",
+                        503,
+                    )
                 if (
                     request.method != "GET"
                     and function.__name__ not in {"stop", "end"}

@@ -122,6 +122,7 @@ def agent_docs(
     dev: bool = False,
     recursive: str = "default",
     max_depth: int = -1,
+    harness: str | None = None,
 ) -> dict[str, Any]:
     """Unified search and navigation over all agent documentation.
 
@@ -140,6 +141,8 @@ def agent_docs(
         depth: Content depth: "index" (navigation), "summary" (default), "full".
         top_n: Max results for search mode.
         dev: Include dev_notes in full-depth results.
+        harness: Explicit harness id for placeholder previews. Overrides the
+            originating session and environment; missing variants use default.
         recursive: Placeholder recursion at ``depth="full"``. ``"default"``
             (per-placeholder ``--recursive`` flag wins — the historical
             behaviour), ``"all"`` (force transitive expansion, capped at
@@ -188,6 +191,7 @@ def agent_docs(
         dev=dev,
         recursive=recursive,
         max_depth=effective_max_depth,
+        harness=harness,
     )
 
 

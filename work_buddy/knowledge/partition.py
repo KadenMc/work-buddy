@@ -56,7 +56,7 @@ def _content_text(unit: Any, store: dict | None) -> str:
     full = content.get("full", "") or summary
     if store is not None and full and "<<wb:" in full:
         try:
-            full = _resolve_placeholders(full, store)
+            full = _resolve_placeholders(full, store, all_harnesses=True)
         except Exception:  # resolution must never break indexing
             pass
     parts = [_spaced(getattr(unit, "name", "")), getattr(unit, "description", "") or ""]

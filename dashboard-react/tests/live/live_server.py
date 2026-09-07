@@ -1,4 +1,4 @@
-"""Minimal process host for the real dashboard Flask app in Co-work live E2E.
+"""Process host for the real dashboard Flask app on disposable live-test roots.
 
 This intentionally imports the production ``service.app`` rather than constructing a
 test Flask application.  It skips unrelated sidecar pollers and pre-warm threads from
@@ -7,7 +7,10 @@ test Flask application.  It skips unrelated sidecar pollers and pre-warm threads
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import sys
 import threading
 from pathlib import Path
 
@@ -19,21 +22,96 @@ def _required(name: str) -> str:
     return value
 
 
-root = Path(_required("COWORK_LIVE_ROOT")).resolve()
-marker = root / ".cowork-live-harness"
+root = Path(_required("WB_LIVE_ROOT")).resolve()
+marker = root / ".wb-live-harness"
 if not marker.is_file():
-    raise RuntimeError("refusing to start outside a marked Co-work live temp root")
+    raise RuntimeError("refusing to start outside a marked live temp root")
 
 data_root = Path(_required("WORK_BUDDY_DATA_DIR")).resolve()
 config_root = Path(_required("WORK_BUDDY_CONFIG_DIR")).resolve()
-if root not in data_root.parents or root not in config_root.parents:
-    raise RuntimeError("Co-work live data and config must be contained by the temp root")
+host_root = Path(_required("WB_LIVE_HOST_ROOT")).resolve()
+if any(root not in item.parents for item in (data_root, config_root, host_root)):
+    raise RuntimeError("live data and config must be contained by the temp root")
 
-port = int(_required("COWORK_LIVE_BACKEND_PORT"))
+port = int(_required("WB_LIVE_BACKEND_PORT"))
 if port == 5127:
     raise RuntimeError("the live E2E backend must never use the normal dashboard port")
 
 from flask import jsonify, request  # noqa: E402
+
+from work_buddy.cowork import native_folder_chooser  # noqa: E402
+
+
+def _refuse_native_dialog(*_args, **_kwargs):
+    raise native_folder_chooser.NativeFolderChooserError(
+        "Native dialogs are disabled in the isolated live harness.",
+        code="harness_native_dialog_forbidden",
+        retryable=False,
+    )
+
+
+def _guard_native_picker_process(event, args):
+    if event != "subprocess.Popen":
+        return
+    command = args[1]
+    text = " ".join(map(str, command)) if isinstance(command, (list, tuple)) else str(command)
+    if "work_buddy.cowork.folder_picker_helper" in text or re.search(
+        r'(?i)(?:^|[\\/\s"])(?:folder_picker_helper\.py|osascript|zenity(?:\.exe)?)(?:$|[\s"])',
+        text,
+    ):
+        raise PermissionError("Native picker processes are disabled in the isolated live harness")
+
+
+# Fail closed even if a future route retains a native chooser instead of using
+# the injected blueprint. This is process-local and leaves the product unchanged.
+native_folder_chooser._run_dialog = _refuse_native_dialog
+sys.addaudithook(_guard_native_picker_process)
+
+from work_buddy.cowork import folder_api  # noqa: E402
+
+
+def _contained_fixture_path(value: str | Path) -> Path:
+    if not marker.is_file():
+        raise RuntimeError("live picker requires the marked temp root")
+    selected = Path(value).resolve(strict=True)
+    if host_root not in selected.parents:
+        raise RuntimeError("live picker selection must be contained by the fixture host root")
+    return selected
+
+
+def _picker_fixture() -> dict:
+    fixture_path = Path(_required("WB_LIVE_FIXTURE_FILE")).resolve(strict=True)
+    if root not in fixture_path.parents:
+        raise RuntimeError("live picker manifest must be contained by the temp root")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    if fixture.get("format") != "wb-live-fixture/v1" or Path(fixture.get("root", "")).resolve() != root:
+        raise RuntimeError("live picker manifest must describe this marked root")
+    return fixture
+
+
+def _choose_fixture_folder():
+    return _contained_fixture_path(_picker_fixture()["initialized"]["path"])
+
+
+def _choose_fixture_file(start_directory):
+    selected_root = _contained_fixture_path(start_directory)
+    source = _contained_fixture_path(_picker_fixture()["source"]["path"])
+    return source if selected_root in source.parents else None
+
+
+def _choose_fixture_location(start_directory):
+    return _contained_fixture_path(start_directory)
+
+
+if "work_buddy.dashboard.service" in sys.modules:
+    raise RuntimeError("live picker injection must precede dashboard service import")
+folder_api.cowork_folder_blueprint = folder_api.create_folder_blueprint(
+    chooser=_choose_fixture_folder,
+    import_chooser=_choose_fixture_file,
+    markdown_chooser=_choose_fixture_file,
+    location_chooser=_choose_fixture_location,
+    access_policy=folder_api.FolderAccessPolicy((host_root,)),
+)
 
 from work_buddy.conversations.store import add_message, get_conversation  # noqa: E402
 from work_buddy.cowork import api as cowork_api  # noqa: E402
@@ -118,12 +196,12 @@ if hasattr(cowork_api, "inspect_document_agent"):
 
 
 def _harness_control_allowed() -> bool:
-    return request.headers.get("X-WB-Cowork-Live-Control") == _required(
-        "COWORK_LIVE_HARNESS_NONCE"
+    return request.headers.get("X-WB-Live-Control") == _required(
+        "WB_LIVE_HARNESS_NONCE"
     )
 
 
-@app.post("/api/_cowork-live/agent-control")
+@app.post("/api/_live/agent-control")
 def _agent_control():
     """Set deterministic fake-agent behavior for the next product request."""
 
@@ -152,7 +230,7 @@ def _agent_control():
     return jsonify({"ok": True, "mode": mode})
 
 
-@app.get("/api/_cowork-live/agent-state")
+@app.get("/api/_live/agent-state")
 def _agent_state():
     """Expose fake spawn observations without touching production state."""
 
@@ -169,13 +247,13 @@ def _agent_state():
         )
 
 
-@app.post("/api/_cowork-live/identity-bootstrap")
+@app.post("/api/_live/identity-bootstrap")
 def _identity_bootstrap():
     """Mint one isolated, exact-Origin browser bootstrap for live UI coverage.
 
     Production deliberately has no HTTP mint route. This nonce-gated route exists
     only in the throwaway live-harness process, and its authority database is under
-    ``COWORK_LIVE_ROOT`` so teardown removes the token and resulting session.
+    ``WB_LIVE_ROOT`` so teardown removes the token and resulting session.
     """
 
     if not _harness_control_allowed():
@@ -210,13 +288,13 @@ def _identity_bootstrap():
 
 @app.after_request
 def _identify_harness(response):
-    response.headers["X-WB-Cowork-Live-Harness"] = _required(
-        "COWORK_LIVE_HARNESS_NONCE"
+    response.headers["X-WB-Live-Harness"] = _required(
+        "WB_LIVE_HARNESS_NONCE"
     )
     return response
 
 
-@app.post("/api/_cowork-live/seed-proposal")
+@app.post("/api/_live/seed-proposal")
 def _seed_proposal():
     """Author one real proposal in the isolated store for browser lifecycle coverage.
 
@@ -225,8 +303,8 @@ def _seed_proposal():
     ledger, export, and review contracts against throwaway data.
     """
 
-    if request.headers.get("X-WB-Cowork-Live-Control") != _required(
-        "COWORK_LIVE_HARNESS_NONCE"
+    if request.headers.get("X-WB-Live-Control") != _required(
+        "WB_LIVE_HARNESS_NONCE"
     ):
         return jsonify({"ok": False, "error": "harness control denied"}), 403
     payload = request.get_json(silent=True)
@@ -260,9 +338,9 @@ def _seed_proposal():
         tldr="Use the reviewed wording.",
         actor=Actor(
             "agent_run",
-            "cowork-live-proposal-author",
+            "wb-live-proposal-author",
             {
-                "model": "cowork-live-fixture",
+                "model": "wb-live-fixture",
                 "harness": "playwright-live",
                 "surface": "cowork",
                 "session_id": _required("WORK_BUDDY_SESSION_ID"),
@@ -279,18 +357,18 @@ def _seed_proposal():
     )
 
 
-@app.post("/api/_cowork-live/conversation-reply")
+@app.post("/api/_live/conversation-reply")
 def _conversation_reply():
     """Append one agent turn through the production conversation store.
 
-    The browser test uses this harness-only seam after exercising the real R9
+    The browser test uses this harness-only seam after exercising the real
     feedback route. It avoids launching an external model while still proving
     that the UI follows the opaque server-issued conversation id, observes a
     later agent turn, and restores the same transcript after reload.
     """
 
-    if request.headers.get("X-WB-Cowork-Live-Control") != _required(
-        "COWORK_LIVE_HARNESS_NONCE"
+    if request.headers.get("X-WB-Live-Control") != _required(
+        "WB_LIVE_HARNESS_NONCE"
     ):
         return jsonify({"ok": False, "error": "harness control denied"}), 403
     payload = request.get_json(silent=True)

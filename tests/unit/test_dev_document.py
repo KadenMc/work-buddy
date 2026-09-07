@@ -41,8 +41,8 @@ def _default_consolidated_off(monkeypatch):
 
     The consolidated-index route requires a running embedding service AND
     ``index.enabled`` — a dependency a unit test must not have. On a dev machine where
-    the index is live it would otherwise intercept the mocked ``search_many`` (and, with
-    the cold-start warm-retry, block on real sleeps), so tests that pin the live/grep
+    the index is live it would otherwise intercept the mocked ``search_many`` and
+    perform real network requests, so tests that pin the live/grep
     behaviour would flake. Tests that exercise the consolidated path re-enable it
     explicitly; their own ``load_index_config`` patch overrides this one."""
     from work_buddy.index.config import IndexConfig
@@ -325,8 +325,12 @@ def test_scan_skips_files_without_docstrings(fake_git):
 # ---------------------------------------------------------------------------
 
 class _FakeUnit:
-    def __init__(self, name, desc):
+    def __init__(self, name, desc, *, full="", entry_points=()):
         self._n, self._d = name, desc
+        self.name, self.description = name, desc
+        self.content = {"full": full}
+        self.entry_points = entry_points
+        self.tags = []
 
     def tier(self, depth, **kw):
         return {"name": self._n, "description": self._d}
@@ -374,13 +378,34 @@ def test_consolidated_helper_passes_system_filter(monkeypatch):
     assert seen.get("partitions") == ["knowledge"]
 
 
+def test_consolidated_cold_response_uses_lexical_hits_without_extending_deadline(monkeypatch):
+    from work_buddy.embedding import client
+
+    calls = []
+    hit = {"doc_id": "knowledge:x", "score": 1.0, "metadata": {"path": "x"}}
+
+    def request(method, path, payload, *, timeout):
+        calls.append((method, path, payload, timeout))
+        return {"results": [[hit]], "warming": ["knowledge"], "retry_after_s": 30}
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(client.time, "sleep", lambda seconds: pytest.fail("scan must not wait for dense warmup"))
+    monkeypatch.setattr(dev_document, "load_store", lambda **k: {"x": _FakeUnit("X", "x")})
+
+    result = dev_document._search_units_via_consolidated(["q1"])
+    assert result[0]["results"][0]["path"] == "x"
+    assert len(calls) == 1
+    assert calls[0][3] == dev_document._QUERY_EMBED_TIMEOUT_S == 25
+    assert "block_until_warm" not in calls[0][2]
+
+
 def test_consolidated_helper_none_when_service_down(monkeypatch):
     monkeypatch.setattr("work_buddy.embedding.client.index_search_many", lambda *a, **k: None)
     assert dev_document._search_units_via_consolidated(["q1"]) is None
 
 
 def test_consolidated_helper_none_when_empty(monkeypatch):
-    """Empty/stale consolidated partition → None → caller falls back to live."""
+    """Empty/stale consolidated results select the lexical fallback."""
     monkeypatch.setattr("work_buddy.embedding.client.index_search_many", lambda *a, **k: [[]])
     monkeypatch.setattr(dev_document, "load_store", lambda **k: {})
     assert dev_document._search_units_via_consolidated(["q1"]) is None
@@ -420,33 +445,46 @@ def test_scan_flag_on_uses_consolidated(fake_git, monkeypatch):
     assert "services/dashboard" in {c["path"] for c in result["candidate_units"]}
 
 
-def test_scan_flag_on_falls_back_when_helper_returns_none(fake_git, monkeypatch):
-    """Service down / empty consolidated (None) → fall through to the live index."""
+@pytest.mark.parametrize("response", [None, [], [[]]])
+def test_scan_flag_on_falls_back_without_cold_build(fake_git, monkeypatch, response):
+    """Unavailable, malformed and empty responses preserve lexical and canonical hits."""
     fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
     fake_git["untracked"] = []
     monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: _cfg(True))
-    monkeypatch.setattr(dev_document, "_search_units_via_consolidated", lambda queries: None)
-    with patch("work_buddy.knowledge.search.search_many", side_effect=_fake_search_many_success), \
+    monkeypatch.setattr("work_buddy.embedding.client.index_search_many", lambda *a, **k: response)
+    store = {
+        "services/dashboard": _FakeUnit("Dashboard", "", full="work_buddy/dashboard/forms.py"),
+        "architecture/platform": _FakeUnit("Platform", "", entry_points=("work_buddy",)),
+    }
+    monkeypatch.setattr(dev_document, "load_store", lambda **k: store)
+    with patch("work_buddy.knowledge.search.search_many") as local_search, \
          patch("work_buddy.dev.document._read_module_docstring", return_value=""):
         result = dev_document.scan_changes()
-    assert result["_source"] == "rag"  # live fallback still RAG (not grep)
-    assert "services/dashboard" in {c["path"] for c in result["candidate_units"]}
+    local_search.assert_not_called()
+    assert result["_source"] == "grep_fallback"
+    assert {c["path"] for c in result["candidate_units"]} == set(store)
+    canonical = next(c for c in result["candidate_units"] if c["path"] == "architecture/platform")
+    assert "canonical entry_points" in canonical["why"]
 
 
 def test_scan_flag_on_falls_back_when_helper_raises(fake_git, monkeypatch):
-    """Any exception in the consolidated path must not break the scan → live fallback."""
+    """A failed request goes to lexical matching without another network/index path."""
     fake_git["tracked"] = ["work_buddy/dashboard/forms.py"]
     fake_git["untracked"] = []
     monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: _cfg(True))
 
     def _boom(queries):
-        raise RuntimeError("consolidated exploded")
+        raise TimeoutError("consolidated request timed out")
 
     monkeypatch.setattr(dev_document, "_search_units_via_consolidated", _boom)
-    with patch("work_buddy.knowledge.search.search_many", side_effect=_fake_search_many_success), \
+    monkeypatch.setattr(dev_document, "load_store", lambda **k: {
+        "services/dashboard": _FakeUnit("Dashboard", "", full="work_buddy/dashboard/forms.py"),
+    })
+    with patch("work_buddy.knowledge.search.search_many") as local_search, \
          patch("work_buddy.dev.document._read_module_docstring", return_value=""):
         result = dev_document.scan_changes()
-    assert result["_source"] == "rag"
+    local_search.assert_not_called()
+    assert result["_source"] == "grep_fallback"
     assert "services/dashboard" in {c["path"] for c in result["candidate_units"]}
 
 

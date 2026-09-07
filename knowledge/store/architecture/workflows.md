@@ -221,7 +221,7 @@ Reasoning steps can declare a `result_schema` that validates the agent's `wb_adv
 ```
 
 - `required_keys` — every key must be present on the result dict; missing keys fail validation.
-- `key_types` — each listed key must be of the named Python type (`str`, `int`, `float`, `bool`, `list`, `dict`).
+- `key_types`: each listed key, when present, must match the named type (`str`, `int`, `float`, `bool`, `list`, `dict`, `str | null`). The nullable string type accepts a string or JSON null; `required_keys` separately determines whether omission is allowed.
 - `min_items` — each listed key's value must have `len(value) >= min_count`. Applies to lists, dicts, and strings. Useful when a step exists specifically to produce content (e.g., a citation list) and empty submission would bypass the step's intent.
 
 Validation failures return `type: "validation_error"` with a specific message; the step stays in progress until the agent advances with a conformant result. When the result is an empty dict — the shape the conductor receives when an agent passes no `step_result` at all, or names the kwarg incorrectly (e.g. `result=`, which FastMCP silently drops) — the `error` and `hint` both name `step_result` explicitly instead of the generic dict-shape framing. See `work_buddy.mcp_server.conductor._validate_step_result`.

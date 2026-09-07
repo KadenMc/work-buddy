@@ -176,6 +176,22 @@ def probe_all(force: bool = False) -> dict[str, dict[str, Any]]:
     Probes are ordered so that dependencies run first (via ``depends_on``).
     """
     global _TOOL_STATUS
+    from work_buddy.storage.read_only import process_read_only
+    if process_read_only():
+        try:
+            cached = json.loads(_TOOL_STATUS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cached = {}
+        if not isinstance(cached, dict):
+            cached = {}
+        _TOOL_STATUS = {
+            tool_id: cached[tool_id] if isinstance(cached.get(tool_id), dict) and isinstance(cached[tool_id].get("available"), bool) else {
+                "available": False, "probe_ms": 0, "config_enabled": True,
+                "reason": "Live probes are disabled in the read-only dashboard process; no cached status is available.",
+            }
+            for tool_id in _TOOL_PROBES
+        }
+        return _TOOL_STATUS
     if _TOOL_STATUS is not None and not force:
         return _TOOL_STATUS
 

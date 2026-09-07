@@ -124,6 +124,8 @@ Each service follows the pattern: `work_buddy/<service>/service.py` with Flask a
 4. Sidecar auto-starts, health-checks, and restarts it.
 
 ### Dashboard
+For dashboard user tasks and visible behavior, load `dev/dashboard` and its UX and verification directions. Apply them proportionally, including to generated surfaces changed by Python code.
+
 `work_buddy/dashboard/` — web UI on port 5127. See `services/dashboard` knowledge unit for the tab-adding pattern.
 
 ## Dev workflow

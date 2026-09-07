@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("keeps the development Widget Lab off navigation while mounting real widgets", async ({
+test("keeps the development Widget Lab off navigation while mounting real widgets", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await page.goto("/app/__widget-lab?count=50");
@@ -21,7 +21,7 @@ test("keeps the development Widget Lab off navigation while mounting real widget
   );
 });
 
-test("reports the shared forced-colors and reduced-motion theme hooks", async ({
+test("reports the shared forced-colors and reduced-motion theme hooks", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });

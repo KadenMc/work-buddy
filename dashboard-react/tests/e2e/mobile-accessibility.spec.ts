@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { openJournal } from "./helpers";
 
-test("mobile uses canonical one-column DOM and visual order without mounting RGL", async ({
+test("mobile uses canonical one-column DOM and visual order without mounting RGL", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -29,7 +29,7 @@ test("mobile uses canonical one-column DOM and visual order without mounting RGL
   expect(positions).toEqual([...positions].sort((left, right) => left - right));
 });
 
-test("the rendered Journal has no serious or critical axe violations", async ({ page }) => {
+test("the rendered Journal has no serious or critical axe violations", { tag: "@ci" }, async ({ page }) => {
   await openJournal(page);
   await page.addScriptTag({ path: "node_modules/axe-core/axe.min.js" });
 
@@ -71,7 +71,7 @@ test("the rendered Journal has no serious or critical axe violations", async ({ 
   expect(violations).toEqual([]);
 });
 
-test("Journal exposes textual timeline semantics and stable page landmarks", async ({ page }) => {
+test("Journal exposes textual timeline semantics and stable page landmarks", { tag: "@ci" }, async ({ page }) => {
   await openJournal(page);
 
   await expect(page.getByRole("navigation", { name: "Dashboard navigation" })).toBeVisible();
@@ -83,7 +83,7 @@ test("Journal exposes textual timeline semantics and stable page landmarks", asy
   await expect(page.getByRole("button", { name: /past — protected/ }).first()).toBeVisible();
 });
 
-test("the integrated page avoids uncaught runtime and layout-loop errors", async ({ page }) => {
+test("the integrated page avoids uncaught runtime and layout-loop errors", { tag: "@ci" }, async ({ page }) => {
   const pageErrors: string[] = [];
   const suspiciousConsole: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

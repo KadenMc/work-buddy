@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { openJournal, widget } from "./helpers";
 
-test("Journal uses the calendar surface and Log capture creates a point record", async ({
+test("Journal uses the calendar surface and Log capture creates a point record", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 1000 });

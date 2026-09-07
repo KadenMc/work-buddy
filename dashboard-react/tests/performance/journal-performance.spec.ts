@@ -76,7 +76,7 @@ async function collectBrowserMetrics(page: Page) {
   });
 }
 
-test("records representative three-widget Journal navigation and bundle evidence", async ({
+test("records representative three-widget Journal navigation and bundle evidence", { tag: "@no-ci" }, async ({
   page,
   browserName,
 }) => {
@@ -101,7 +101,7 @@ test("records representative three-widget Journal navigation and bundle evidence
   expect(metrics.longTaskCount).toBeLessThan(JOURNAL_BROWSER_BUDGET.longTaskCount);
 });
 
-test("mounts and budgets a synthetic trace of exactly 50 real widget hosts", async ({
+test("mounts and budgets a synthetic trace of exactly 50 real widget hosts", { tag: "@no-ci" }, async ({
   page,
   browserName,
 }) => {

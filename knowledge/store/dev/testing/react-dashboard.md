@@ -1,89 +1,88 @@
 ---
 name: React Dashboard Testing
 kind: concept
-description: The five test surfaces of dashboard-react, how each one stays off the user's real data, the authentication boundary an agent must not try to cross, and what a green continuous-integration run actually proves.
-summary: 'dashboard-react has five independent test surfaces: a vitest component suite, a Playwright end-to-end suite, an isolated Co-work live harness, a document-kernel determinism check, and a separate projection-fidelity package. The end-to-end suite proxies to the developer''s real dashboard by default and avoids live data only through explicit fixture query parameters, so anything that writes belongs in the live harness.'
+description: Dashboard test runners, isolated environments, authentication, and the evidence each verification surface provides.
+summary: Component, browser, isolated live, document-kernel determinism, and projection-fidelity tests are independent surfaces. Persisted writes use the disposable live harness.
+parents:
+- dev/testing
+- services/dashboard/react
 tags:
 - dev
-- developmental
 - testing
 - dashboard
 - react
 - vitest
 - playwright
 - isolation
-- continuous-integration
 aliases:
 - dashboard-react tests
-- Co-work live harness
+- dashboard live harness
 - Playwright dashboard specs
-- dashboard test isolation
-- how to test the React dashboard
-parents:
-- dev/testing
-- services/dashboard/react
 ---
 
-`dashboard-react/` carries five test surfaces. They share a package root and nothing else: separate runners, separate configuration files, separate isolation stories, and separate coverage in continuous integration. Running one of them proves nothing about the other four, so a report on dashboard testing has to name which surface was exercised.
+`dashboard-react/` has five independent verification surfaces. Name the runner and environment in each report. A passing result covers only the behavior that runner exercised.
 
-## The five surfaces
+## Test surfaces
 
-**Component tests.** `npm test` runs `vitest run` under `dashboard-react/vitest.config.ts`: a jsdom environment, the setup file `src/test/setup.ts`, and roughly 250 co-located `*.test.ts` and `*.test.tsx` files collected from `src/`. The setup file installs a no-op `ResizeObserver` that jsdom lacks, and exports `expectNoAccessibilityViolations(container)`, an axe wrapper that shared widgets are expected to call from both their ready and non-ready state tests instead of inventing local accessibility assertions.
+| Surface | Command from the repository root | Coverage |
+|---|---|---|
+| Component | `npm --prefix dashboard-react test` | Vitest with jsdom and co-located `src/**/*.test.ts(x)`. Shared widget tests use `expectNoAccessibilityViolations` from `src/test/setup.ts`. |
+| Browser end-to-end | `npm --prefix dashboard-react run test:e2e -- --workers=1` | Chromium and Firefox under `playwright.config.ts`, including ordinary e2e and performance specs. Fixtures select in-memory providers. |
+| Isolated live harness | `npm --prefix dashboard-react run test:e2e:live -- --app cowork` | Real Flask application, disposable roots, domain-seeded data, production bundle, and persistence/authority regression under `playwright.live.config.ts`. |
+| Document-kernel determinism | `npm --prefix dashboard-react run test:document-kernel-build` | Two builds of the document worker, compared by sha256. |
+| Projection fidelity | `npm --prefix dashboard-react/tests/fidelity ci`, then `npm --prefix dashboard-react/tests/fidelity test` | Separate package and Vitest config with byte-fidelity corpus. Root `npm test` does not collect it. |
 
-**Browser end-to-end.** `npm run test:e2e` runs Playwright under `dashboard-react/playwright.config.ts`, which matches about twenty specs across `tests/e2e/` and `tests/performance/`. It starts its own front end: the `webServer` entry runs `npm run dev` bound to loopback on port 4173, overridable with `PLAYWRIGHT_PORT`, and reuses an already-listening server on that port outside continuous integration. Two projects are declared, chromium and firefox, and neither filters the spec set, so a full local run executes every spec twice.
+The ordinary Playwright configuration can run in parallel, but use `--workers=1` on machines with limited browser capacity and establish a main-branch baseline before attributing a failure. The live configuration is always serial with one worker and retains a Firefox smoke project dependent on the Chromium project.
 
-**The Co-work live harness.** `npm run test:e2e:cowork-live` runs `tests/live/run-cowork-live.mjs`, a process orchestrator rather than a Playwright entry point. It creates a temporary root holding a `.cowork-live-harness` marker, draws two random loopback ports and redraws them until neither one is 5127, seeds a fixture folder tree, typechecks and builds the production bundle, starts a Flask backend from `tests/live/cowork_live_server.py` against an isolated config root and data root, serves the built app through `vite preview`, and only then invokes Playwright with `playwright.cowork-live.config.ts`. That config pins `workers: 1` and `fullyParallel: false`. Teardown removes the temporary root only after confirming both the expected path prefix and the marker file, and treats a failed cleanup as a failed run. The `--interactive` flag, wrapped as `npm run test:e2e:cowork-live:interactive`, builds the same isolated stack, skips Playwright entirely, prints a live URL into the isolated dashboard, and holds everything open for a bounded window until it expires or receives an interrupt.
+## Isolation is chosen when opening the app
 
-**Document-kernel determinism.** `npm run test:document-kernel-build` runs `scripts/verify-document-kernel-determinism.mjs`, which builds the document-kernel worker twice and compares the sha256 of the emitted `worker.mjs`, failing when the two builds disagree.
+The ordinary Playwright Vite server defaults to port 4173 and proxies `/api` to `WB_DASHBOARD_PROXY_TARGET`, which defaults to the user's dashboard on port 5127. Running Playwright does not isolate the data. Journal's `openJournal` helper appends `?provider=demo`; Co-work's `openCowork` appends `?cowork_fixture=demo`. Those in-memory providers are the presentation fixture boundary.
 
-**Projection fidelity.** `dashboard-react/tests/fidelity/` is a separate npm package, `@work-buddy/cowork-fidelity`, with its own `package.json`, lockfile, and vitest config. No root script reaches it, and the root vitest config collects only under `src/`, so `npm test` never runs it. Run `npm ci && npm test` from inside that directory. Its `.gitattributes` marks `corpus/** -text` because the corpus is a byte-fidelity fixture and a line-ending rewrite would invalidate the recorded digests.
+Use demo fixture routes for layout, theme, accessibility, keyboard, and responsive exploration. Use the isolated live harness for every persisted create, import, edit, save, remove, review, recovery, or authority check. An explicit isolated proxy target also protects requests outside fixture providers. Read `dev/dashboard/verification-directions` before opening a browser.
 
-## Isolation is a fixture choice, not a sandbox
+Real-data reads are a last resort when fixtures cannot answer the question. Use the separate opt-in `--read-only` dashboard process on an explicit non-service port only after the isolated GET survey is clean, as specified in `services/dashboard`. Review per-route failures and coverage gaps; a successful survey exit alone is insufficient. Record authoritative counts or revisions before and after the browser read and a refused non-safe request according to `dev/live-testing-directions`. Never mint a session or use real items as fixtures, and report unavailable external-provider panes.
 
-This is the section to read before pointing any browser at the dashboard.
+## Shared live harness
 
-The Vite dev server that the end-to-end suite starts proxies `/api` to `WB_DASHBOARD_PROXY_TARGET`, which defaults to loopback port 5127. On a developer machine that is the real Flask dashboard, backed by the user's real notes, tasks, and Co-work Folders. Nothing about running Playwright puts a boundary between the specs and that data.
+`tests/live/run-live.mjs --app cowork` owns the entire disposable application stack. It creates a temporary root with a `.wb-live-harness` marker, allocates non-5127 loopback ports, redirects `WORK_BUDDY_DATA_DIR` and `WORK_BUDDY_CONFIG_DIR`, and seeds through production domain code in `tests/live/seeds/cowork.py`. The seeder is idempotent. Co-work is the supported App seeder.
 
-What keeps the specs off it is an explicit fixture selection in every navigation. Journal specs go through `openJournal` in `tests/e2e/helpers.ts`, which loads `/app/journal?provider=demo`. Co-work specs go through `openCowork` in `tests/e2e/cowork-helpers.ts`, which loads `/app/cowork?cowork_fixture=demo`. Both parameters swap in in-memory providers. A spec, or an agent, that navigates without one of them is driving the user's live dashboard.
+`tests/live/live_server.py` imports the real `work_buddy.dashboard.service.app`. It refuses a missing marker, roots outside the harness root, and port 5127. It supplies nonce-gated `/api/_live/` host controls and skips normal sidecar pollers. Teardown rechecks the path and marker before deletion and treats failed cleanup as a failed run.
 
-The rule that follows is simple: reads and local presentation state can run against the proxied dashboard with a demo parameter, and anything that must write goes through the live harness, which owns its own ports, config root, data root, and folder tree and deletes all of it on teardown. `services/dashboard/react` already states this constraint in its dev notes as a standing rule for browser specifications. The parameters and the harness above are the mechanisms that implement it.
+The live host injects deterministic picker callbacks through the production folder blueprint. Open folder selects the seeded Reference Folder, Choose Location keeps the active contained fixture folder, and import selects the manifest's source only when it belongs to the active folder, otherwise returning cancellation. Native picker adapters and picker child processes are refused. Harness browser testing must never open native dialogs on the user's desktop; the normal dashboard's picker behavior is unchanged.
 
-## The authentication boundary
+Regression builds and previews the production bundle before running `tests/live/cowork.spec.ts`. Interactive exploration uses:
 
-`work_buddy/dashboard/local_identity_api.py` states in its module docstring that there is intentionally no HTTP bootstrap-mint route. A trusted host launch path calls `LocalIdentityAuthority.mint_bootstrap` in process and places the one-time grant in a browser URL fragment. Nothing reachable over the network can ask the real dashboard for a session.
+```bash
+npm --prefix dashboard-react run test:e2e:live:interactive -- --app cowork
+```
 
-The live harness needs a browser session, so its throwaway server adds one that production does not have: `/api/_cowork-live/identity-bootstrap` in `tests/live/cowork_live_server.py`, gated on the harness nonce and on an exact match between the requested origin and the observed `Origin` header, minting into an authority database that lives under the harness temporary root and disappears with it.
+Interactive mode implies `--dev`, which starts Vite with the isolated backend as `WB_DASHBOARD_PROXY_TARGET`. Source edits reload live. `--build` uses the production bundle instead, so source edits require restart and rebuild. Both modes announce this in the banner and `interactive-session.json`. `--frontend-port` supports browser attachment on a chosen port. `--dev` without the interactive flag also hosts an exploration session. The host stays open for a bounded window and cleans up on expiry or interruption.
 
-Stated plainly, because it is the mistake worth preventing: do not attempt to mint a session against the real dashboard. The route is absent by design, and its absence is not a gap to route around. When browser-driven work needs an authenticated session, start the interactive harness and use the URL it prints.
+Open the complete authenticated URL the runner prints, including its `#wb-bootstrap=...` fragment. It records that URL as `frontend_url`, plus backend URL, nonce, roots, mode, and expiry in `dashboard-react/test-results/live/interactive-session.json`. The bootstrap is single-use and the resulting cookie survives reloads. A fresh browser context can mint another grant through the sanctioned harness route using the recorded nonce. See `dev/testing/browser-surface` and its selected child for the exact recipe.
 
-The same boundary has a consequence inside the live suite. Creating a document, importing one, editing it, submitting feedback, reviewing a proposal, and removing a document each issue an exact human-authority gesture before their request, and the gesture is only mintable from the backend origin. A live test that exercises any of those has to open through the authenticated helper rather than the plain one. Getting this wrong is easy to misdiagnose: the request never leaves the browser, so nothing appears in the server log and the failure surfaces as a message inside the dialog reading that an authenticated local session is required. That reads as a broken feature when it is a test opening the wrong way. Only the tests about the unauthenticated surface itself, production-preview isolation and the launcher, should open plainly.
+The `.claude/launch.json` `dashboard-live-dev` entry starts this isolated dev harness. `wb-dashboard` is only a keepalive stub for the sidecar's existing 5127 process. It starts no dashboard server.
 
-Browser-local writing is origin-scoped in the same way. A recovered draft lives in IndexedDB under whichever origin created it, so a test that seeds one and then reads it from a different origin finds nothing and reports an empty launcher rather than a seeding failure.
+## Authentication and exploration
 
-## Driving the browser pane
+A session cookie and an operation-bound gesture authorize mutations. Neither detects human presence. Production deliberately has no HTTP bootstrap mint route. The disposable server's `/api/_live/identity-bootstrap` checks `X-WB-Live-Control` against the harness nonce and requires exact agreement between the body origin and the Origin header.
 
-For read-only inspection of dashboard UI, open the demo fixture routes against whatever dev server is already running: `/app/journal?provider=demo` and `/app/cowork?cowork_fixture=demo`. Real components render against in-memory providers, so clicking through them cannot reach the user's data.
+Missing authentication can appear as dialog text without a server request. Authenticate before diagnosing a mutation. Browser-local drafts are origin-scoped, so seeding IndexedDB on one origin and reading on another does not test recovery.
 
-For anything that writes, meaning creating a Folder, saving a document, or exercising persistence, recovery, or the review loop, run `npm run test:e2e:cowork-live:interactive` and drive the URL it prints. That is the only browser surface where a write is both meaningful and safe.
+Explore with the interactive browser, then encode regression. Do not append probes to specs or relax existing assertions to reach a later test. The live spec shares state in a serial group. `WB_LIVE_PLAYWRIGHT_GREP` selects tests but does not reconstruct prerequisites, so it cannot reliably isolate a later scenario. Use the interactive harness for one-off exploration.
 
-The `wb-dashboard` entry in `.claude/launch.json` starts no dashboard. Its command is a Node process that does nothing but stay alive, a keepalive placeholder so the preview attaches to port 5127, where the sidecar-hosted dashboard the user already runs is listening. Starting that entry does not produce a server, and stopping it does not stop one.
+## Runner details
 
-## Gotchas
+- `WB_LIVE_SKIP_BUILD=1` skips typecheck/build and serves existing assets. Use only while iterating on specs, never to judge a `src/` change. Dev mode is the source-edit path.
+- `dashboard-react/test-results/` is gitignored. Save scoped evidence before artifacts are replaced by another run.
+- `npm run build` emits the worker into `work_buddy/document_kernel/runtime_dist/`. A sidecar preflight can contend for the build lock, so coordinate builds and restarts.
+- Co-work URLs use a unique identity prefix when possible. API comparisons must resolve it to the authoritative full identity.
+- Confirm that a control exists in the current UI before treating a stale locator as a product regression. Automatic chat recovery, for example, does not imply a restart button.
+- Vitest's `--reporter=verbose` is useful when test console output is needed.
 
-- The live specification is one `test.describe.serial` block of sixteen tests that share module-level store and document identifiers built up by earlier tests. A single failure skips every test after it, so only the first red result carries information. Narrowing to one test with `--grep`, exposed as `COWORK_LIVE_PLAYWRIGHT_GREP`, usually fails outright, because the prerequisites that create its Folder and its documents never ran.
-- Pass `--reporter=verbose` to vitest when you need to read `console` output from a test. The default reporter is not a reliable place to look for it.
-- `dashboard-react/test-results/` is gitignored. Harness logs, the run summary, traces, videos, and screenshots land there and cannot be recovered from version control, so read them in the same session that produced them.
-- `npm run build` writes outside `dashboard-react/`. The document-kernel step emits into `work_buddy/document_kernel/runtime_dist/` with `emptyOutDir` set, so a dashboard build modifies a Python-package directory. That is intended, and that emitted worker is what the determinism check hashes.
-- `COWORK_LIVE_SKIP_BUILD=1` skips the production typecheck and the production build and only confirms that `dist/index.html` exists. The run then serves whatever that directory already held, so a source fix appears not to work and a fixed defect appears to return. Use it to iterate on the specification, never to judge a change under `src/`.
-- The Co-work route carries store and document identity in presentation form: a unique eight-character prefix when the Folder catalog admits one, and the full identity otherwise. Every API route resolves those identities exactly, so a value lifted out of the URL has to be widened back to a registered identity before it is sent anywhere or compared against a value that came from a payload. Storing the prefix instead relocates the failure into a later test.
-- An assertion that names a control can rot without the product breaking. A specification waiting on a control the workspace does not offer fails as though the behavior were gone, when the behavior has only moved: Co-work's chat lifecycle is automatic, so a failed agent start exposes no restart affordance and is recovered by the next authored turn. Confirm the named control still exists under `src/` before treating a live failure as a regression.
+## Continuous integration
 
-## What a green continuous-integration run proves
+The dashboard job runs the component suite, checks CI decisions with `npx playwright test --list --reporter=./scripts/check-spec-tags.mjs`, selects the exact `@ci` token with `--grep '(^|\s)@ci(?=\s|$)'`, and builds production assets. Each test in the twenty ordinary browser specs declares exactly one of `@ci` or `@no-ci`, verified from Playwright's collected metadata. The guard inventories spec files throughout `tests/`, including files outside the configured collection directories. An uncollected spec must have an exact entry in the checker's separate-configuration registry with an existing configuration and an exclusion reason. The registered `tests/live/cowork.spec.ts` declares an encompassing `@live` and `@no-ci` suite, verified from TypeScript syntax. Comments do not count as decisions, and an extra live spec needs its own declaration.
 
-The `dashboard-test` job in `.github/workflows/tests.yml` installs dependencies, runs `npm test`, installs chromium and firefox, runs an explicit allowlist of eleven Playwright specs, and builds the production assets.
+CI-selected specs cover Journal, shell routing, layout, themes, and mobile/settings accessibility. Co-work specs, visual regression, widget lab, calendar spike, and performance specs explicitly opt out with `@no-ci`. The live harness, fidelity package, and document-kernel determinism runner require separate local execution.
 
-The allowlist covers the Journal specs, shell routing, the layout contract, themes, and the mobile and settings accessibility specs. It omits the five `cowork-*.spec.ts` specs, `visual.spec.ts`, `widget-lab.spec.ts`, `calendar-spike.spec.ts`, and everything under `tests/performance/`. The live harness, the fidelity package, and the document-kernel determinism check appear in no workflow at all. Continuous integration also installs no pandoc, so the Python render tests that require it skip on every run.
-
-So "continuous integration is green" means: the component suite passed, eleven browser specs passed in two browsers against demo providers, and the production bundle compiled. It does not mean Co-work works, that persistence or recovery hold, that the document kernel builds reproducibly, that Markdown projection is byte-faithful, or that any code was exercised against a real backend. Those claims require running the matching surface locally, and a report that makes one should say which surface was run.
-
-See `services/dashboard/react` for the hosting, provider, and network contract these tests exercise, `dev/live-testing-directions` for user-in-the-loop verification across the running multi-process system, and the `cowork/` scope for the document lifecycle the live harness covers.
+A green CI result does not establish persistence, recovery, live backend behavior, projection fidelity, or reproducible worker output. Report the surface that supports each claim. See `services/dashboard/react` for the hosting and provider contracts.

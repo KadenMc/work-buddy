@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("the app root resolves to the default registered view", async ({ page }) => {
+test("the app root resolves to the default registered view", { tag: "@ci" }, async ({ page }) => {
   await page.goto("/app/?provider=demo", { waitUntil: "domcontentloaded" });
 
   await expect(page).toHaveURL(/\/app\/journal\?provider=demo$/);
@@ -32,7 +32,7 @@ test("the app root resolves to the default registered view", async ({ page }) =>
   expect(mark.height).toBeGreaterThan(0);
 });
 
-test("the shared loading indicator has stable geometry and honors reduced motion", async ({
+test("the shared loading indicator has stable geometry and honors reduced motion", { tag: "@ci" }, async ({
   page,
 }) => {
   let releaseJournalRequest: (() => void) | undefined;
@@ -98,7 +98,7 @@ test("the shared loading indicator has stable geometry and honors reduced motion
   }
 });
 
-test("the Journal view supports direct navigation and refresh", async ({ page }) => {
+test("the Journal view supports direct navigation and refresh", { tag: "@ci" }, async ({ page }) => {
   await page.goto("/app/journal?provider=demo", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("region", { name: "Day Timeline", exact: true })).toBeVisible();
 
@@ -108,7 +108,7 @@ test("the Journal view supports direct navigation and refresh", async ({ page })
   await expect(page.getByRole("region", { name: "Running Notes", exact: true })).toBeVisible();
 });
 
-test("Quick Capture persists exact text and updates bound sibling input through the provider", async ({
+test("Quick Capture persists exact text and updates bound sibling input through the provider", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.goto("/app/journal?provider=demo", { waitUntil: "domcontentloaded" });

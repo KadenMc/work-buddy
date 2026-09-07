@@ -263,6 +263,14 @@ class MigrationRunner:
         Cheap when already at latest (one PRAGMA + one hash-verify pass).
         Safe to call on every connection open.
         """
+        from work_buddy.storage.read_only import process_read_only
+        if process_read_only():
+            current = self._get_user_version(conn)
+            if current > self.target_version:
+                raise SchemaVersionTooNew(f"{self.name}: database schema is newer than this application")
+            if current != self.target_version:
+                raise MigrationError(f"{self.name}: schema requires a write-capable process")
+            return
         # ── Setup: version probe + downgrade guard + hash audit.
         #   All under one write transaction so two concurrent processes
         #   can't race past the version check.

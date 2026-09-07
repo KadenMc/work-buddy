@@ -2800,7 +2800,35 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     await persistence.flush();
     assertCanonicalCoworkEditorState(currentEditor);
     await persistence.compact();
-  }, [persistence]);
+    if (
+      props.canMaterialize !== false &&
+      props.storeId !== undefined &&
+      props.documentId !== undefined
+    ) {
+      const lifecycle = await provenanceClient.inspectDrift(
+        props.storeId,
+        props.documentId,
+      );
+      const fileSha256 = expectedFileSha256.current;
+      // Recompaction can change the structured snapshot without changing Markdown.
+      // Reflect the server's save requirement so a refused lifecycle operation can
+      // recover through an explicit Save after its confirmation is cancelled.
+      if (
+        lifecycle.unmaterializedStructuredEdits &&
+        fileSha256 !== null &&
+        materializationStateRef.current.kind === "up_to_date"
+      ) {
+        publishMaterializationState({ kind: "unsaved", fileSha256 });
+      }
+    }
+  }, [
+    persistence,
+    props.canMaterialize,
+    props.documentId,
+    props.storeId,
+    provenanceClient,
+    publishMaterializationState,
+  ]);
 
   const materializationController = useMemo<CoworkMaterializationController>(
     () => ({ save, retrySync, settleForLifecycle }),

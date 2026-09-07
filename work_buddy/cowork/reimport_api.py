@@ -8,6 +8,7 @@ import hashlib
 from flask import Blueprint, Response, jsonify, request
 
 from work_buddy.cowork import reimport
+from work_buddy.dashboard.read_only import reject_read_only as _reject_read_only
 from work_buddy.security.local_identity import LocalIdentityError
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import sha256_text
@@ -45,15 +46,6 @@ def _human_actor(*, operation: str, store_id: str, document_id: str, body: dict)
     )[1]
 
 
-def _reject_read_only():
-    from work_buddy.cowork.api import _is_read_only
-
-    if _is_read_only():
-        raise reimport.ReimportError(
-            "read_only", "Co-work is view-only right now.", status=403
-        )
-
-
 def _error(exc: reimport.ReimportError):
     return (
         jsonify(
@@ -74,7 +66,8 @@ def _error(exc: reimport.ReimportError):
 @reimport_blueprint.post("/api/truth/doc/<document_id>/reimport")
 def api_prepare_reimport(document_id: str):
     try:
-        _reject_read_only()
+        if blocked := _reject_read_only():
+            return blocked
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             raise reimport.ReimportError(
@@ -171,7 +164,8 @@ def api_reimport_source(document_id: str, intent_id: str):
 @reimport_blueprint.put("/api/truth/doc/<document_id>/reimport/<intent_id>/commit")
 def api_commit_reimport(document_id: str, intent_id: str):
     try:
-        _reject_read_only()
+        if blocked := _reject_read_only():
+            return blocked
         if request.mimetype != "multipart/form-data":
             raise reimport.ReimportError(
                 "multipart_required",
@@ -242,7 +236,8 @@ def api_commit_reimport(document_id: str, intent_id: str):
 @reimport_blueprint.delete("/api/truth/doc/<document_id>/reimport/<intent_id>")
 def api_cancel_reimport(document_id: str, intent_id: str):
     try:
-        _reject_read_only()
+        if blocked := _reject_read_only():
+            return blocked
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.reimport"):

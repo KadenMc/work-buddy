@@ -478,7 +478,7 @@ async function requireSuccess(response: Response): Promise<unknown> {
   if (response.ok) return payload;
   if (isRecord(payload)) {
     throw new SettingsServerError(
-      optionalString(payload, "error") ?? `http_${response.status}`,
+      optionalString(payload, "code") ?? optionalString(payload, "error") ?? `http_${response.status}`,
       optionalString(payload, "message") ?? `Settings request failed (${response.status})`,
       payload.value === undefined ? undefined : normalizeEffectiveValue(payload.value),
     );

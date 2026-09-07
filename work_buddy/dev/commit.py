@@ -127,7 +127,99 @@ def assess_state() -> dict[str, Any]:
         "changed_files": changed,
         "classified": classified,
         "test_candidates": test_candidates,
+        "dashboard": _dashboard_test_guidance(changed),
         "warnings": warnings,
+    }
+
+
+def _dashboard_test_guidance(changed_files: list[str]) -> dict[str, Any]:
+    """Suggest dashboard verification from affected files and generated surfaces."""
+    repo = repo_root()
+    changed = [path.replace("\\", "/") for path in changed_files]
+    dashboard_files = [path for path in changed if path.startswith("dashboard-react/")]
+    generated = [path for path in changed if path in {
+        "work_buddy/health/components.py",
+        "work_buddy/health/requirements.py",
+        "work_buddy/health/preferences.py",
+        "work_buddy/health/fixers.py",
+        "work_buddy/control/graph.py",
+    }]
+    specs: set[str] = set()
+    component = False
+    live = False
+    reasons: set[str] = set()
+    for path in dashboard_files:
+        relative = path.removeprefix("dashboard-react/")
+        parts = PurePosixPath(relative).parts
+        if relative.startswith("src/"):
+            source = repo / path
+            stem = source.with_suffix("")
+            component |= ".test." in source.name or any(
+                stem.with_name(stem.name + suffix).exists()
+                for suffix in (".test.ts", ".test.tsx")
+            )
+            if len(parts) > 3 and parts[:2] == ("src", "apps"):
+                app = parts[2]
+                specs.update(
+                    candidate.relative_to(repo / "dashboard-react").as_posix()
+                    for candidate in (repo / "dashboard-react/tests/e2e").glob(f"{app}-*.spec.ts")
+                )
+                reasons.add(f"{app} application changed")
+            # HTTP clients/providers and identity grants can affect persistence.
+            if any(term in relative.lower() for term in ("client", "http", "apicontract", "security/")):
+                live = True
+                reasons.add("a transport or mutation authority path changed")
+        if relative.startswith("tests/live/") or relative == "playwright.live.config.ts":
+            live = True
+            reasons.add("isolated live harness changed")
+        if relative.startswith("tests/e2e/") and relative.endswith(".spec.ts"):
+            specs.add(relative)
+    if generated:
+        component = True
+        settings_spec = repo / "dashboard-react/tests/e2e/settings-accessibility.spec.ts"
+        if settings_spec.exists():
+            specs.add("tests/e2e/settings-accessibility.spec.ts")
+        reasons.add("health registry generates the Settings surface")
+    if dashboard_files and not reasons:
+        reasons.add("dashboard package changed; select surfaces for the affected behavior")
+    return {
+        "changed": bool(dashboard_files or generated),
+        "component": component,
+        "e2e_specs": sorted(specs),
+        "live": live,
+        "reason": "; ".join(sorted(reasons)),
+    }
+
+
+def review_dashboard_evidence(test_result: dict[str, Any]) -> dict[str, Any]:
+    """Record missing dashboard evidence without blocking the commit workflow.
+
+    Reassess the diff so scope added after orientation is covered as well.
+    The workflow carries these warnings into its commit message and record.
+    """
+    dashboard = assess_state()["dashboard"]
+    surfaces = test_result.get("surfaces_run", [])
+    dashboard_surfaces = {"component", "e2e", "live", "visual"}
+    recognized_surfaces = {
+        surface for surface in surfaces
+        if isinstance(surface, str) and surface in dashboard_surfaces
+    }
+    rationale = test_result.get("rationale")
+    warnings = []
+    if dashboard["changed"] and not recognized_surfaces and not (
+        isinstance(rationale, str) and rationale.strip()
+    ):
+        warnings.append(
+            "Dashboard changes have no dashboard verification surface or rationale. "
+            "Record the missing coverage in the commit body."
+        )
+    return {
+        "dashboard": dashboard,
+        "surfaces_run": surfaces,
+        "ux_review_ref": test_result.get("ux_review_ref"),
+        "rationale": rationale,
+        "warnings": warnings,
+        "blocking": False,
     }
 
 

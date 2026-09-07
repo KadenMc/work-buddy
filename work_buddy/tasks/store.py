@@ -45,6 +45,9 @@ class TaskStore:
         self.timeout = timeout
 
     def connect(self) -> sqlite3.Connection:
+        from work_buddy.storage.read_only import process_read_only
+        if process_read_only():
+            return self.connect_readonly()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(
             str(self.path),

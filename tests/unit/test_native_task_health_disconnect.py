@@ -137,7 +137,7 @@ def test_unavailable_dashboard_authority_does_not_open_task_store(monkeypatch):
     assert result["error"] == "Task data is temporarily unavailable."
 
 
-def test_native_dashboard_sync_is_retired_before_legacy_import(monkeypatch):
+def test_native_dashboard_sync_is_retired_before_legacy_import(monkeypatch, authenticate_dashboard_client):
     from work_buddy.dashboard import service
     from work_buddy.obsidian.tasks import sync as legacy_sync
     from work_buddy.tasks import runtime
@@ -151,13 +151,13 @@ def test_native_dashboard_sync_is_retired_before_legacy_import(monkeypatch):
 
     monkeypatch.setattr(legacy_sync, "task_sync", called_legacy_sync)
 
-    response = service.app.test_client().post("/api/task_sync")
+    response = authenticate_dashboard_client(service.app.test_client()).post("/api/task_sync")
 
     assert response.status_code == 410
     assert response.get_json()["error"]["code"] == "task_legacy_sync_retired"
 
 
-def test_unavailable_dashboard_sync_fails_closed(monkeypatch):
+def test_unavailable_dashboard_sync_fails_closed(monkeypatch, authenticate_dashboard_client):
     from work_buddy.dashboard import service
     from work_buddy.tasks import runtime
 
@@ -168,7 +168,7 @@ def test_unavailable_dashboard_sync_fails_closed(monkeypatch):
 
     monkeypatch.setattr(runtime, "native_authority_active", unavailable)
 
-    response = service.app.test_client().post("/api/task_sync")
+    response = authenticate_dashboard_client(service.app.test_client()).post("/api/task_sync")
 
     assert response.status_code == 503
     assert response.get_json()["error"]["code"] == "task_authority_unavailable"

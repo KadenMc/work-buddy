@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from flask import Blueprint, jsonify, request
+from work_buddy.dashboard.read_only import reject_read_only as _reject_read_only
 
 from work_buddy.cowork import (
     conversations,
@@ -206,19 +207,11 @@ def _error(exc: sitting_lifecycle.SittingError):
     )
 
 
-def _reject_read_only():
-    from work_buddy.cowork.api import _is_read_only
-
-    if _is_read_only():
-        raise sitting_lifecycle.SittingError(
-            "read_only", "Co-work is read-only right now.", status=403
-        )
-
-
 @sitting_blueprint.post("/api/truth/doc/<document_id>/sitting/prepare")
 def api_prepare_sitting(document_id: str):
     try:
-        _reject_read_only()
+        if blocked := _reject_read_only():
+            return blocked
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             raise sitting_lifecycle.SittingError(
@@ -328,7 +321,8 @@ def _commit_parts() -> tuple[dict, bytes | None, str | None]:
 )
 def api_commit_sitting(document_id: str, intent_id: str):
     try:
-        _reject_read_only()
+        if blocked := _reject_read_only():
+            return blocked
         metadata, snapshot, markdown = _commit_parts()
         store = _store()
         from work_buddy.cowork.api import _require_human_action
@@ -400,7 +394,8 @@ def api_commit_sitting(document_id: str, intent_id: str):
 @sitting_blueprint.delete("/api/truth/doc/<document_id>/sitting/<intent_id>")
 def api_cancel_sitting(document_id: str, intent_id: str):
     try:
-        _reject_read_only()
+        if blocked := _reject_read_only():
+            return blocked
         from work_buddy.consent import user_initiated
 
         store = _store()

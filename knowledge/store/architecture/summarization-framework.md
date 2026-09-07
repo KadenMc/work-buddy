@@ -18,6 +18,10 @@ aliases:
 parents:
 - architecture
 dev_notes: |-
+  ### Protected dashboard reads
+
+  In the opt-in dashboard read-only process, `summarization.db.get_connection()` opens only an existing database with the normal row factory and skips WAL configuration and schema initialization. `ensure_queue_table()` does not create tables in this process. Missing databases or incompatible schemas remain unavailable until their writable owner initializes them. The standalone dashboard does not start the summarization worker. Normal writable composition and worker behavior are unchanged. See `services/dashboard` for the process boundary.
+
   ### Adding a new Store
 
   Store implementations must guarantee `is_fresh` and `select_stale` use the same private staleness predicate — otherwise the orchestrator's "check fresh, then save with same token" cycle can race. `DurableSummaryStore._is_stale_row` is the canonical pattern.

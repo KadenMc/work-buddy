@@ -129,7 +129,7 @@ class _FakeUnit:
     def search_phrases(self):
         return [self.path]
 
-    def tier(self, depth, store=None, dev=False, recursive_mode="default", max_depth=None):
+    def tier(self, depth, store=None, dev=False, recursive_mode="default", max_depth=None, harness=None):
         return {"name": self.path, "description": "", "kind": self.kind}
 
 

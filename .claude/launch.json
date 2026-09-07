@@ -3,6 +3,7 @@
   "configurations": [
     {
       "name": "wb-dashboard",
+      "description": "Keepalive stub for the sidecar dashboard on port 5127. Starts no dashboard server.",
       "runtimeExecutable": "node",
       "runtimeArgs": ["-e", "setInterval(()=>{}, 1000); console.log('keepalive for sidecar dashboard on 5127')"],
       "port": 5127
@@ -13,6 +14,14 @@
       "runtimeArgs": ["--prefix", "dashboard-react", "run", "dev"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "dashboard-live-dev",
+      "description": "Isolated live dashboard with disposable data and source hot reload. Use the authenticated URL printed by the harness.",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["dashboard-react/tests/live/run-live.mjs", "--app", "cowork", "--interactive", "--dev", "--frontend-port", "5188"],
+      "port": 5188,
+      "autoPort": false
     }
   ]
 }

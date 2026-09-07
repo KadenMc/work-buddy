@@ -301,7 +301,8 @@ def data_dir(category: str = "") -> Path:
     """
     root = _data_base()
     target = root / category if category else root
-    target.mkdir(parents=True, exist_ok=True)
+    if not _read_only_process():
+        target.mkdir(parents=True, exist_ok=True)
     return target
 
 
@@ -327,5 +328,11 @@ def resolve(resource_id: str) -> Path:
     rel = RESOURCES[resource_id]
     root = _data_base()
     target = root / rel
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if not _read_only_process():
+        target.parent.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def _read_only_process() -> bool:
+    from work_buddy.storage.read_only import process_read_only
+    return process_read_only()

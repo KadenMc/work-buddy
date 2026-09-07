@@ -140,12 +140,13 @@ def _build_placeholder_parser() -> _PlaceholderParser:
     """Build an argparse parser for placeholder flags.
 
     Positional: unit path (required).
-    Flags: --recursive (opt-in transitive resolution).
+    Flags: --recursive (opt-in transitive resolution), --harness (child selection).
     Extensible: --depth, --section, etc. can be added later.
     """
     parser = _PlaceholderParser(prog="wb-placeholder", add_help=False)
     parser.add_argument("path", type=str)
     parser.add_argument("--recursive", action="store_true", default=False)
+    parser.add_argument("--harness", action="store_true", default=False)
     return parser
 
 
@@ -155,6 +156,8 @@ def _resolve_placeholders(
     *,
     recursive_mode: str = "default",
     max_depth: int | None = None,
+    harness: str | None = None,
+    all_harnesses: bool = False,
     _budget: list[int] | None = None,
     _depth: int = 0,
     _seen: set[str] | None = None,
@@ -170,6 +173,11 @@ def _resolve_placeholders(
     - ``recursive_mode="none"``: every placeholder is left literal
       (``<<wb:...>>``) — useful for editing/inspection where embedded
       foundations would obscure the unit's own prose.
+
+    ``--harness`` selects ``path/<harness>`` or ``path/default``. An explicit
+    harness overrides session detection. Index callers set ``all_harnesses``
+    to include every direct variant with a harness label, independent of the
+    caller. Variant bodies share the ordinary recursion and deduplication caps.
 
     Bounded by three layered safety mechanisms (see module-level docs):
     per-unit-occurrence cap via ``_seen`` (always on), depth cap via
@@ -209,12 +217,39 @@ def _resolve_placeholders(
             args, _unknown = parser.parse_known_args(inner.split())
         except (ValueError, SystemExit, Exception):
             # Malformed placeholder — treat entire inner text as path, no flags
-            args = argparse.Namespace(path=inner.split()[0] if inner else "", recursive=False)
+            args = argparse.Namespace(
+                path=inner.split()[0] if inner else "", recursive=False, harness=False,
+            )
 
         path = args.path
         if not path:
             return match.group(0)  # leave as-is
 
+        if args.harness:
+            if all_harnesses:
+                variants = sorted(
+                    candidate for candidate in store
+                    if candidate.rpartition("/")[0] == path
+                )
+                if not variants:
+                    return f"<!-- wb: {path}/default not found -->"
+                return "\n".join(
+                    f"<!-- wb: harness {variant.rsplit('/', 1)[-1]} -->\n"
+                    + _expand(variant, args.recursive)
+                    for variant in variants
+                )
+            if harness is None:
+                from work_buddy.agent_session import get_originating_harness
+
+                selected = get_originating_harness()
+            else:
+                selected = harness
+            candidate = f"{path}/{selected}"
+            path = candidate if candidate in store else f"{path}/default"
+
+        return _expand(path, args.recursive)
+
+    def _expand(path: str, recursive: bool) -> str:
         ref = store.get(path)
         if ref is None:
             return f"<!-- wb: {path} not found -->"
@@ -235,7 +270,7 @@ def _resolve_placeholders(
         # Decide whether to recurse on this particular ref.
         wants_recurse = (
             recursive_mode == "all"
-            or (recursive_mode == "default" and args.recursive)
+            or (recursive_mode == "default" and recursive)
         )
 
         # Depth gate. If recursion is wanted but we've already hit the
@@ -266,6 +301,8 @@ def _resolve_placeholders(
                 store,
                 recursive_mode=recursive_mode,
                 max_depth=max_depth,
+                harness=harness,
+                all_harnesses=all_harnesses,
                 _budget=_budget,
                 _depth=_depth + 1,
                 _seen=_seen,
@@ -317,6 +354,7 @@ class KnowledgeUnit:
         *,
         recursive_mode: str = "default",
         max_depth: int | None = None,
+        harness: str | None = None,
     ) -> dict[str, Any]:
         """Return unit data at the requested depth.
 
@@ -339,6 +377,8 @@ class KnowledgeUnit:
                 / ``-1`` selects the mode default (unlimited in ``default``
                 mode, 10 in ``all`` mode). ``0`` disables recursion entirely.
                 Positive integers cap at exactly that depth.
+            harness: Explicit harness id for variant placeholders. None detects
+                the originating session; unknown variants select the default child.
         """
         base: dict[str, Any] = {
             "path": self.path,
@@ -369,6 +409,7 @@ class KnowledgeUnit:
                 store,
                 recursive_mode=recursive_mode,
                 max_depth=max_depth,
+                harness=harness,
             )
             if dev and self.dev_notes:
                 base["dev_notes"] = self.dev_notes
@@ -381,6 +422,8 @@ class KnowledgeUnit:
         *,
         recursive_mode: str = "default",
         max_depth: int | None = None,
+        harness: str | None = None,
+        all_harnesses: bool = False,
         _budget: list[int] | None = None,
         _depth: int = 0,
         _seen: set[str] | None = None,
@@ -436,6 +479,8 @@ class KnowledgeUnit:
             store,
             recursive_mode=recursive_mode,
             max_depth=effective_max_depth,
+            harness=harness,
+            all_harnesses=all_harnesses,
             _budget=_budget,
             _depth=_depth,
             _seen=_seen,

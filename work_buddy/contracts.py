@@ -97,7 +97,9 @@ def _contracts_dir(contracts_dir: Path | None) -> Path:
             return d
     else:
         d = contracts_dir
-    d.mkdir(parents=True, exist_ok=True)
+    from work_buddy.storage.read_only import process_read_only
+    if not process_read_only():
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 

@@ -21,7 +21,7 @@ test.describe("Co-work persistence across visits", () => {
     await resetCoworkStorage(page);
   });
 
-  test("a launcher-created local document survives reload", async ({
+  test("a launcher-created local document survives reload", { tag: "@no-ci" }, async ({
     page,
   }) => {
     const scratchId = await openCoworkScratch(page);
@@ -54,7 +54,7 @@ test.describe("Co-work persistence across visits", () => {
     ).toContainText(EDITOR_MARKER, { timeout: 60_000 });
   });
 
-  test("the dev-only demo fixture route still renders the seeded scene", async ({
+  test("the dev-only demo fixture route still renders the seeded scene", { tag: "@no-ci" }, async ({
     page,
   }) => {
     // openCowork targets ?cowork_fixture=demo and waits for the seeded review rail. On the dev
@@ -69,7 +69,7 @@ test.describe("Co-work persistence across visits", () => {
     ).toContainText("Context bundle cache");
   });
 
-  test("keeps the side-panel tabs pinned while a long Chat transcript scrolls", async ({
+  test("keeps the side-panel tabs pinned while a long Chat transcript scrolls", { tag: "@no-ci" }, async ({
     page,
   }) => {
     await openCowork(page);
@@ -118,7 +118,7 @@ test.describe("Co-work persistence across visits", () => {
     expect(metrics.transcriptScrollTop).toBeGreaterThan(0);
   });
 
-  test("editor and Review positions survive leaving the workspace", async ({ page }) => {
+  test("editor and Review positions survive leaving the workspace", { tag: "@no-ci" }, async ({ page }) => {
     // A shorter viewport guarantees both the seeded document and its review list have a
     // meaningful scroll range. The positions are deliberately different so accidentally
     // sharing one persistence key cannot pass the round trip.
@@ -166,7 +166,7 @@ test.describe("Co-work persistence across visits", () => {
       .toBeCloseTo(restoredReviewTop, 0);
   });
 
-  test("filtered and Queue views do not replace the canonical Review position", async ({
+  test("filtered and Queue views do not replace the canonical Review position", { tag: "@no-ci" }, async ({
     page,
   }) => {
     await openCowork(page);

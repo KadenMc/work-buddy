@@ -61,6 +61,16 @@ const serverRegistryPayload = {
 };
 
 describe("server settings normalization", () => {
+  it.each([
+    { code: "read_only", error: "Dashboard is in read-only mode", message: "Dashboard is in read-only mode" },
+    { error: "read_only", message: "Dashboard is in read-only mode" },
+  ])("preserves the refusal code for shared and settings-specific responses", async (payload) => {
+    const fetchImpl = async () => Response.json(payload, { status: 403 });
+    await expect(previewSettingValue(
+      "wb.journal.day-boundary", "04:00", "value:0", fetchImpl as typeof fetch,
+    )).rejects.toMatchObject({ code: "read_only", message: "Dashboard is in read-only mode" });
+  });
+
   it("normalizes the shared execution-profile control without turning it into tier options", () => {
     const payload = { ...serverRegistryPayload, definitions: [{ ...serverRegistryPayload.definitions[0], default_value: { provider_id: "claude-code", model_id: "sonnet" }, presentation: { control: "execution-profile", apply_behavior: "immediate" } }] };
     expect(normalizeServerRegistry(payload).contribution.definitions[0].control).toEqual({ kind: "execution-profile" });
