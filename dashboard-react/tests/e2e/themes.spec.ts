@@ -6,7 +6,7 @@ import {
   THEME_KEY,
 } from "./helpers";
 
-test("the inline bootstrap resolves an explicit light scheme before React executes", async ({
+test("the inline bootstrap resolves an explicit light scheme before React executes", { tag: "@ci" }, async ({
   page,
 }) => {
   await installThemePreference(page, "light");
@@ -28,7 +28,7 @@ test("the inline bootstrap resolves an explicit light scheme before React execut
   await expect(page.locator("#root")).toBeEmpty();
 });
 
-test("system and explicit preferences persist across page reloads", async ({ page }) => {
+test("system and explicit preferences persist across page reloads", { tag: "@ci" }, async ({ page }) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await installThemePreference(page, "system");
   await openJournal(page);
@@ -52,7 +52,7 @@ test("system and explicit preferences persist across page reloads", async ({ pag
   await expect(page.getByRole("region", { name: "Quick Capture", exact: true })).toBeVisible();
 });
 
-test("the Appearance control persists scheme, product skin, and density", async ({ page }) => {
+test("the Appearance control persists scheme, product skin, and density", { tag: "@ci" }, async ({ page }) => {
   await openJournal(page);
 
   await page.getByRole("button", { name: "Appearance" }).click();
@@ -80,7 +80,7 @@ test("the Appearance control persists scheme, product skin, and density", async 
   await expect(page.locator("html")).toHaveAttribute("data-wb-density", "compact");
 });
 
-test("the adversarial validated skin supplies real semantic values in both schemes", async ({
+test("the adversarial validated skin supplies real semantic values in both schemes", { tag: "@ci" }, async ({
   page,
 }) => {
   await installThemePreference(page, "dark", "wb.conformance-stress");
@@ -116,7 +116,7 @@ test("the adversarial validated skin supplies real semantic values in both schem
   expect(lightSurface).toBe("#fff7ed");
 });
 
-test("reduced motion collapses public motion tokens", async ({ page }) => {
+test("reduced motion collapses public motion tokens", { tag: "@ci" }, async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openJournal(page);
 
@@ -129,7 +129,7 @@ test("reduced motion collapses public motion tokens", async ({ page }) => {
   ).toBe("0ms");
 });
 
-test("forced colors override semantic surfaces", async ({ page, browserName }) => {
+test("forced colors override semantic surfaces", { tag: "@ci" }, async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "Playwright forced-colors emulation is Chromium-only here");
   await page.emulateMedia({ forcedColors: "active" });
   await openJournal(page);

@@ -8,7 +8,7 @@ import {
   widget,
 } from "./helpers";
 
-test("required widget menus protect view purpose while optional widgets remain hideable", async ({
+test("required widget menus protect view purpose while optional widgets remain hideable", { tag: "@ci" }, async ({
   page,
 }) => {
   await openJournal(page);
@@ -40,7 +40,7 @@ test("required widget menus protect view purpose while optional widgets remain h
   expect(await readPersonalization(page)).toBeNull();
 });
 
-test("the focused drag handle provides keyboard layout control and friendly rejection feedback", async ({
+test("the focused drag handle provides keyboard layout control and friendly rejection feedback", { tag: "@ci" }, async ({
   page,
 }) => {
   await openJournal(page);
@@ -70,7 +70,7 @@ test("the focused drag handle provides keyboard layout control and friendly reje
   await page.getByRole("button", { name: "Cancel" }).click();
 });
 
-test("Arrange is inert while interaction Preview is functional and disposable", async ({ page }) => {
+test("Arrange is inert while interaction Preview is functional and disposable", { tag: "@ci" }, async ({ page }) => {
   await openJournal(page);
   await beginCustomize(page);
 
@@ -107,7 +107,7 @@ test("Arrange is inert while interaction Preview is functional and disposable", 
   await expect(widget(page, "Day Timeline").getByRole("radio", { name: "Timeline" })).toBeChecked();
 });
 
-test("pointer drag and resize preserve unrelated widget geometry", async ({ page }) => {
+test("pointer drag and resize preserve unrelated widget geometry", { tag: "@ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 1800 });
   await openJournal(page);
   await beginCustomize(page);
@@ -196,7 +196,7 @@ test("pointer drag and resize preserve unrelated widget geometry", async ({ page
   await page.getByRole("button", { name: "Cancel" }).click();
 });
 
-test("undo, cancel, done, reload, and reset preserve the personal-patch lifecycle", async ({
+test("undo, cancel, done, reload, and reset preserve the personal-patch lifecycle", { tag: "@ci" }, async ({
   page,
 }) => {
   await openJournal(page);
@@ -237,7 +237,7 @@ test("undo, cancel, done, reload, and reset preserve the personal-patch lifecycl
   expect(patch).toBeNull();
 });
 
-test("desktop drag-and-drop persists canonical mobile DOM order", async ({ page }) => {
+test("desktop drag-and-drop persists canonical mobile DOM order", { tag: "@ci" }, async ({ page }) => {
   await openJournal(page);
   await beginCustomize(page);
   await page.getByRole("button", { name: "Mobile order" }).click();
@@ -270,7 +270,7 @@ test("desktop drag-and-drop persists canonical mobile DOM order", async ({ page 
   ]);
 });
 
-test("resize handles are Customize-only and every card edge has a usable constraint", async ({
+test("resize handles are Customize-only and every card edge has a usable constraint", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -333,7 +333,7 @@ test("resize handles are Customize-only and every card edge has a usable constra
   await expect(page.locator(".wb-widget-resize-handle")).toHaveCount(0);
 });
 
-test("an interrupted resize cannot survive pointer loss or Customize exit", async ({ page }) => {
+test("an interrupted resize cannot survive pointer loss or Customize exit", { tag: "@ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await openJournal(page);
   await beginCustomize(page);
@@ -366,7 +366,7 @@ test("an interrupted resize cannot survive pointer loss or Customize exit", asyn
   await expect(page.locator(".react-grid-item.resizing")).toHaveCount(0);
 });
 
-test("resizing Quick Capture cannot remove its shared scroll boundary", async ({ page }) => {
+test("resizing Quick Capture cannot remove its shared scroll boundary", { tag: "@ci" }, async ({ page }) => {
   await openJournal(page);
   await beginCustomize(page);
 
@@ -403,7 +403,7 @@ test("resizing Quick Capture cannot remove its shared scroll boundary", async ({
   await page.getByRole("button", { name: "Cancel" }).click();
 });
 
-test("wheel gestures over a fitting widget continue scrolling the page", async ({ page }) => {
+test("wheel gestures over a fitting widget continue scrolling the page", { tag: "@ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 500 });
   await openJournal(page);
 
@@ -427,7 +427,7 @@ test("wheel gestures over a fitting widget continue scrolling the page", async (
   }
 });
 
-test("a scrollable widget owns available movement and exposes the native boundary policy", async ({
+test("a scrollable widget owns available movement and exposes the native boundary policy", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 500 });

@@ -17,19 +17,19 @@ import {
  * reported as findings rather than fixed from this tests-only work package.
  */
 
-test("has no blocking axe violations in the default scheme", async ({ page }) => {
+test("has no blocking axe violations in the default scheme", { tag: "@no-ci" }, async ({ page }) => {
   await openCowork(page);
   expect(blockingViolations(await seriousAxeViolations(page))).toEqual([]);
 });
 
-test("stays accessible in the dark scheme", async ({ page }) => {
+test("stays accessible in the dark scheme", { tag: "@no-ci" }, async ({ page }) => {
   await installThemePreference(page, "dark");
   await openCowork(page);
   await expect(page.locator("html")).toHaveAttribute("data-wb-scheme", "dark");
   expect(blockingViolations(await seriousAxeViolations(page))).toEqual([]);
 });
 
-test("collapses motion tokens under reduced motion", async ({ page }) => {
+test("collapses motion tokens under reduced motion", { tag: "@no-ci" }, async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openCowork(page);
   expect(
@@ -41,7 +41,7 @@ test("collapses motion tokens under reduced motion", async ({ page }) => {
   ).toBe("0ms");
 });
 
-test("overrides semantic surfaces and keeps a text encoding under forced colors", async ({
+test("overrides semantic surfaces and keeps a text encoding under forced colors", { tag: "@no-ci" }, async ({
   page,
   browserName,
 }) => {

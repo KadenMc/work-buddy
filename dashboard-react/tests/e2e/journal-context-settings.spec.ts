@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("the Journal contextual settings launcher remains discoverable on mobile", async ({
+test("the Journal contextual settings launcher remains discoverable on mobile", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });

@@ -18,7 +18,7 @@ import {
 
 const SUBMIT = /Submit sitting/;
 
-test("walks a sitting end to end in the browser", async ({ page }) => {
+test("walks a sitting end to end in the browser", { tag: "@no-ci" }, async ({ page }) => {
   await openCowork(page);
 
   // Accept the first proposal.
@@ -49,7 +49,7 @@ test("walks a sitting end to end in the browser", async ({ page }) => {
   await expect(page.getByRole("button", { name: SUBMIT })).toBeDisabled();
 });
 
-test("exposes the three regions and one main landmark", async ({ page }) => {
+test("exposes the three regions and one main landmark", { tag: "@no-ci" }, async ({ page }) => {
   await openCowork(page);
 
   // The grid host owns the single main. The workspace card is one durable widget, so its

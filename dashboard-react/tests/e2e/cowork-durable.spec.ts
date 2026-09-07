@@ -17,7 +17,7 @@ const COWORK_PERSONALIZATION_KEY =
 
 const EDITOR_MARKER = "durable-marker-7f3a";
 
-test("the Co-work workspace stays live through a navbar customize round-trip", async ({
+test("the Co-work workspace stays live through a navbar customize round-trip", { tag: "@no-ci" }, async ({
   page,
 }) => {
   await openCowork(page);

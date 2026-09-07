@@ -111,7 +111,7 @@ test.beforeEach(({ browserName }) => {
   test.skip(process.platform !== "win32", "Canonical visual baselines use Windows");
 });
 
-test("default dark desktop Journal visual baseline", async ({ page }) => {
+test("default dark desktop Journal visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark");
   await openJournal(page);
@@ -125,7 +125,7 @@ test("default dark desktop Journal visual baseline", async ({ page }) => {
   });
 });
 
-test("default light desktop Journal visual baseline", async ({ page }) => {
+test("default light desktop Journal visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "light");
   await openJournal(page);
@@ -139,7 +139,7 @@ test("default light desktop Journal visual baseline", async ({ page }) => {
   });
 });
 
-test("default light Accessibility settings visual baseline", async ({ page }) => {
+test("default light Accessibility settings visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "light");
   await page.goto("/app/settings/accessibility", { waitUntil: "domcontentloaded" });
@@ -153,7 +153,7 @@ test("default light Accessibility settings visual baseline", async ({ page }) =>
   });
 });
 
-test("maximum-text dark Accessibility settings visual baseline", async ({ page }) => {
+test("maximum-text dark Accessibility settings visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark");
   await page.addInitScript(() => {
@@ -173,7 +173,7 @@ test("maximum-text dark Accessibility settings visual baseline", async ({ page }
   });
 });
 
-test("Calm Workshop dark desktop Journal visual baseline", async ({ page }) => {
+test("Calm Workshop dark desktop Journal visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark", "wb.calm-workshop");
   await openJournal(page);
@@ -187,7 +187,7 @@ test("Calm Workshop dark desktop Journal visual baseline", async ({ page }) => {
   });
 });
 
-test("default dark widget catalog visual baseline", async ({ page }) => {
+test("default dark widget catalog visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark");
   await openJournal(page);
@@ -202,7 +202,7 @@ test("default dark widget catalog visual baseline", async ({ page }) => {
   });
 });
 
-test("default dark mobile-order editor visual baseline", async ({ page }) => {
+test("default dark mobile-order editor visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark");
   await openJournal(page);
@@ -223,7 +223,7 @@ test("default dark mobile-order editor visual baseline", async ({ page }) => {
   });
 });
 
-test("adversarial skin desktop Journal visual baseline", async ({ page }) => {
+test("adversarial skin desktop Journal visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark", "wb.conformance-stress");
   await openJournal(page);
@@ -237,7 +237,7 @@ test("adversarial skin desktop Journal visual baseline", async ({ page }) => {
   });
 });
 
-test("mobile one-column Journal visual baseline", async ({ page }) => {
+test("mobile one-column Journal visual baseline", { tag: "@no-ci" }, async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installThemePreference(page, "dark");
   await openJournal(page);
@@ -270,7 +270,7 @@ test("mobile one-column Journal visual baseline", async ({ page }) => {
 test.describe("Co-work launcher visuals", () => {
   test.use({ locale: "en-US", timezoneId: "America/New_York" });
 
-  test("Co-work Folder-neutral launcher visual baseline", async ({ page }) => {
+  test("Co-work Folder-neutral launcher visual baseline", { tag: "@no-ci" }, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await installThemePreference(page, "light");
     await installCoworkVisualState(page);
@@ -289,7 +289,7 @@ test.describe("Co-work launcher visuals", () => {
     });
   });
 
-  test("Co-work active Folder launcher visual baseline", async ({ page }) => {
+  test("Co-work active Folder launcher visual baseline", { tag: "@no-ci" }, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await installThemePreference(page, "light");
     await installCoworkVisualState(page);
@@ -310,7 +310,7 @@ test.describe("Co-work launcher visuals", () => {
     });
   });
 
-  test("Co-work active Folder mobile toolbar visual baseline", async ({ page }) => {
+  test("Co-work active Folder mobile toolbar visual baseline", { tag: "@no-ci" }, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await installThemePreference(page, "light");
     await installCoworkVisualState(page);

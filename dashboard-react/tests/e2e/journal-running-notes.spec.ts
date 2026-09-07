@@ -4,7 +4,7 @@ import { openJournal, widget } from "./helpers";
 
 test.setTimeout(120_000);
 
-test("Running Notes supports edit, cancel-safe deletion, and active-list removal", async ({
+test("Running Notes supports edit, cancel-safe deletion, and active-list removal", { tag: "@ci" }, async ({
   page,
 }) => {
   await openJournal(page);

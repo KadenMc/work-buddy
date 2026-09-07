@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("Dashboard AI aligns the execution-profile picker with its setting content", async ({
+test("Dashboard AI aligns the execution-profile picker with its setting content", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.route("**/api/settings/**", async (route) => {
@@ -79,7 +79,7 @@ test("Dashboard AI aligns the execution-profile picker with its setting content"
   await expectAligned();
 });
 
-test("system accessibility settings scale and persist dashboard typography", async ({
+test("system accessibility settings scale and persist dashboard typography", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.goto("/app/journal?settings-return-probe=1");
@@ -153,7 +153,7 @@ test("system accessibility settings scale and persist dashboard typography", asy
   );
 });
 
-test("Journal uses one App settings page with App-only navigation and scoped search", async ({
+test("Journal uses one App settings page with App-only navigation and scoped search", { tag: "@ci" }, async ({
   page,
 }) => {
   await page.goto(
@@ -221,7 +221,7 @@ test("Journal uses one App settings page with App-only navigation and scoped sea
   await expect(page.getByText(/example\.missing/)).toBeVisible();
 });
 
-test("Journal day-boundary save waits for the latest authoritative preview", async ({
+test("Journal day-boundary save waits for the latest authoritative preview", { tag: "@ci" }, async ({
   page,
 }) => {
   const previewRequests: string[] = [];
