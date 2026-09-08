@@ -3,7 +3,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CoworkLedgerDecorations } from "../editor/ledgerDecorations";
-import type { ReviewRailData } from "../rail/contracts";
+import type { ReviewExpression, ReviewRailData } from "../rail/contracts";
 import type {
   ProvenanceAttestation,
   ProvenanceData,
@@ -101,9 +101,13 @@ const data: ReviewRailData = {
       spanId: "span-1",
       nodeIdHint: null,
       quote: "Claim passage",
-      claimRef: "claim-1",
+      claimRef: "wb-truth://store/claim/11111111111111111111111111111111",
       claimStatus: "confirmed",
       claimKind: "fact",
+      isFact: true,
+      stale: null,
+      proposition: "A claim",
+      evidenceCount: 2,
     },
   ],
   provenanceSpans: [
@@ -118,19 +122,6 @@ const data: ReviewRailData = {
         surface: "cowork",
       },
       approvalGestureId: "gesture-1",
-    },
-  ],
-  claims: [
-    {
-      claimId: "claim-1",
-      proposition: "A claim",
-      status: "confirmed",
-      claimKind: "fact",
-      canonicalSha256: "canonical-claim",
-      rationale: "",
-      receipts: [],
-      anchorLabel: "paragraph 1",
-      documentOrder: 2,
     },
   ],
 };
@@ -214,6 +205,13 @@ afterEach(() => {
 });
 
 describe("ledgerDecorationProjectionFromReview", () => {
+  it("projects status and stale fields while treating missing authoritative fact flags conservatively", () => {
+    const legacy = { ...data.expressions[0], isFact: undefined } as unknown as ReviewExpression;
+    const projection = ledgerDecorationProjectionFromReview({ ...data, expressions: [legacy] });
+    expect(projection.expressions[0]).toMatchObject({ claimStatus: "confirmed", isFact: false, evidenceCount: 2, proposition: "A claim", stale: null });
+    expect(ledgerDecorationProjectionFromReview({ ...data, expressions: [{ ...data.expressions[0], stale: "claim_changed", isFact: false }] }).expressions[0]).toMatchObject({ stale: "claim_changed", isFact: false });
+  });
+
   it("maps flags, expressions, expression-backed claims, and provenance from one R2 pull", () => {
     expect(ledgerDecorationProjectionFromReview(data)).toEqual({
       edits: [
@@ -235,13 +233,17 @@ describe("ledgerDecorationProjectionFromReview", () => {
           expressionId: "expression-1",
           spanId: "span-1",
           quote: "Claim passage",
-          claimRef: "claim-1",
+          claimRef: "wb-truth://store/claim/11111111111111111111111111111111",
           claimStatus: "confirmed",
+          isFact: true,
+          stale: null,
+          proposition: "A claim",
+          evidenceCount: 2,
         },
       ],
       claims: [
         {
-          claimId: "claim-1",
+          claimId: "11111111111111111111111111111111",
           expressionId: "expression-1",
           spanId: "span-1",
           quote: "Claim passage",

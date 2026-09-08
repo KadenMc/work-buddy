@@ -71,10 +71,10 @@ describe("Co-work keyboard-driven sitting", () => {
     const user = userEvent.setup();
     renderQueue();
 
-    // The queue opens on the first of the five demo items, all undecided.
+    // Review contains four proposals; claim decisions belong to Truth.
     await waitFor(() => expect(screen.getByText(/Item 1/)).toBeVisible());
-    expect(screen.getByText(/of 5/)).toBeVisible();
-    expect(screen.getByText("5 undecided")).toBeVisible();
+    expect(screen.getByText(/of 4/)).toBeVisible();
+    expect(screen.getByText("4 undecided")).toBeVisible();
 
     // The controls are in the tab order (keyboard-reachable, not pointer-only).
     document.body.focus();
@@ -134,6 +134,6 @@ describe("Co-work keyboard-driven sitting", () => {
     submitButton().focus();
     await user.keyboard("{Enter}");
     await waitFor(() => expect(submitButton()).toBeDisabled());
-    expect(screen.getByText(/of 3/)).toBeVisible();
+    expect(screen.getByText(/of 2/)).toBeVisible();
   }, 20_000);
 });

@@ -114,12 +114,16 @@ export interface ReviewExpression {
   readonly claimRef: string;
   readonly claimStatus: ExpressionClaimStatus | null;
   readonly claimKind: string | null;
+  readonly isFact: boolean;
+  readonly stale: "claim_changed" | "claim_terminal" | "span_missing" | null;
+  readonly proposition: string;
+  readonly evidenceCount: number;
 }
 
 /** The three v1 provenance states enumerable from the ledger (PRD section 7). */
 export type TrustState = "human" | "ai_confirmed" | "ai_proposed";
 
-/** One provenance span for the inspector, re-anchored by quote (I12). */
+/** One provenance span, re-anchored by quote (I12). */
 export interface ProvenanceSpan {
   readonly spanId: string;
   readonly quote: string;
@@ -127,44 +131,6 @@ export interface ProvenanceSpan {
   readonly trustState: TrustState;
   readonly producer: ProposalProducer | null;
   readonly approvalGestureId: string | null;
-}
-
-/** Authorship and review are deliberately separate provenance dimensions. */
-
-/** Claim lifecycle status shown on a claim-review card (kernel claim states). */
-export type ClaimStatus =
-  | "proposed"
-  | "confirmed"
-  | "challenged"
-  | "rejected"
-  | "superseded"
-  | "retracted"
-  | "expired";
-
-/** One active evidence receipt shown with a claim (kernel review receipt). */
-export interface ClaimReceipt {
-  readonly evidenceId: string;
-  readonly quote: string;
-  readonly sourceLocator: string;
-  readonly trustClass: string;
-}
-
-/**
- * One claim for the claims tab. Delivered through the review provider seam (a
- * live provider maps the kernel review payloads onto it), so the shape carries
- * just what the card and the six claim verbs need.
- */
-export interface ReviewClaim {
-  readonly claimId: string;
-  readonly proposition: string;
-  readonly status: ClaimStatus;
-  readonly claimKind: string;
-  readonly canonicalSha256: string;
-  readonly rationale: string;
-  readonly receipts: readonly ClaimReceipt[];
-  /** Document-order anchor label so a claim card can point back into the prose. */
-  readonly anchorLabel: string;
-  readonly documentOrder: number;
 }
 
 /** Capability negotiation for the additive Co-work Verify + Co-think contract. */
@@ -539,7 +505,6 @@ export interface ReviewRailData {
   readonly proposals: readonly ReviewProposal[];
   readonly expressions: readonly ReviewExpression[];
   readonly provenanceSpans: readonly ProvenanceSpan[];
-  readonly claims: readonly ReviewClaim[];
 }
 
 /** A shipped proposal or flag gesture-kind name (S1, the R5 wire verb). */
@@ -553,15 +518,6 @@ export type ProposalVerbKind =
   | "defer"
   | "endorse"
   | "dismiss";
-
-/** The six committed claim verbs (kernel truth_claim_* capabilities). */
-export type ClaimVerbKind =
-  | "propose"
-  | "confirm"
-  | "reject"
-  | "challenge"
-  | "supersede"
-  | "redact";
 
 /**
  * One staged proposal or flag decision, the R5 item shape (section 1.5). It is
@@ -581,13 +537,6 @@ export interface StagedDecision {
   readonly negationText?: string;
   /** reject_as_preference only, the human's verbatim preferred phrasing (FA-1). */
   readonly preferenceText?: string;
-}
-
-/** One staged claim decision, carried on the same sitting submission. */
-export interface StagedClaimDecision {
-  readonly claimId: string;
-  readonly verb: ClaimVerbKind;
-  readonly canonicalSha256: string;
 }
 
 /** Per-item R5 result vocabulary (S4). Each verb maps to exactly one result. */

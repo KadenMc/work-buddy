@@ -16,19 +16,20 @@ import {
  * halves join once the live transports wire in behind the provider seams.
  */
 
-const SUBMIT = /Submit sitting/;
+const SUBMIT = /Apply decisions/;
 
 test("walks a sitting end to end in the browser", { tag: "@no-ci" }, async ({ page }) => {
   await openCowork(page);
+  await expect(page.locator(".wb-cowork-rail__card")).toHaveCount(4);
 
   // Accept the first proposal.
   await page.getByText(COWORK_FIRST_PROPOSAL).click();
   await expect(page.getByRole("region", { name: "Decide" })).toBeVisible();
   await page.getByRole("button", { name: "Accept" }).click();
   await expect(page.getByRole("button", { name: SUBMIT })).toHaveText(
-    "Submit sitting (1)",
+    "Apply decisions (1)",
   );
-  await expect(page.getByText("Staged: Accept")).toBeVisible();
+  await expect(page.getByText("Decision: Accept")).toBeVisible();
 
   // Reject the second proposal as a preference, recording verbatim phrasing.
   await page.getByText(COWORK_SECOND_PROPOSAL).click();
@@ -38,7 +39,7 @@ test("walks a sitting end to end in the browser", { tag: "@no-ci" }, async ({ pa
     .fill("Keep the original wording here.");
   await page.getByRole("button", { name: "Stage" }).click();
   await expect(page.getByRole("button", { name: SUBMIT })).toHaveText(
-    "Submit sitting (2)",
+    "Apply decisions (2)",
   );
 
   // Submit. The accepted and rejected proposals leave the open set and the submit
@@ -47,6 +48,7 @@ test("walks a sitting end to end in the browser", { tag: "@no-ci" }, async ({ pa
   await expect(page.getByText(COWORK_FIRST_PROPOSAL)).toHaveCount(0);
   await expect(page.getByText(COWORK_SECOND_PROPOSAL)).toHaveCount(0);
   await expect(page.getByRole("button", { name: SUBMIT })).toBeDisabled();
+  await expect(page.locator(".wb-cowork-rail__card")).toHaveCount(2);
 });
 
 test("exposes the three regions and one main landmark", { tag: "@no-ci" }, async ({ page }) => {

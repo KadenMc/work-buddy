@@ -41,9 +41,8 @@ export class CoworkPasteProvenanceExactLimitError extends Error {
 /**
  * A local paste remains here until the provenance endpoint confirms its
  * receipt. `frozenRequest` is immutable across ambiguous transport failures.
- * It is cleared only after an explicit rejected-target recovery or when the
- * server proves that the acting identity changed and every pending
- * determination must be revisited.
+ * It is cleared only after a definite rejection, an invalid actorless request,
+ * or an explicit rejected-target recovery. Ambiguous outcomes replay exactly.
  */
 export interface CoworkPasteProvenanceOutboxEntry {
   readonly id: number;
@@ -85,6 +84,16 @@ export interface CoworkPasteProvenanceCapture {
   >;
 }
 
+/** Older direct-entry rows can predate mandatory capture-time actor binding. */
+export const coworkDirectEntryActorBindingMissing = (
+  entry: CoworkPasteProvenanceOutboxEntry,
+): boolean =>
+  entry.sourceKind === "direct_entry" &&
+  (entry.frozenRequest === undefined
+    ? entry.capturedActor === undefined
+    : !entry.frozenRequest.expectedActorRef?.trim() ||
+      entry.frozenRequest.expectedActorIdentityStatus === undefined);
+
 export interface CoworkPasteProvenanceOutbox {
   list(): Promise<readonly CoworkPasteProvenanceOutboxEntry[]>;
   append(
@@ -111,12 +120,15 @@ export interface CoworkPasteProvenanceOutbox {
    * Preserve an automatic typing capture that cannot be bound to its
    * capture-time actor. It becomes an explicit legacy determination instead
    * of disappearing or being attributed to whichever actor arrives later.
+   * A valid frozen request requires a definite validation rejection for its
+   * current key; uncertain outcomes cannot discard their replay authority.
    */
   deferDirectEntry(
     id: number,
     idempotencyKey: string,
     determination: CoworkProvenanceDetermination,
     failure: CoworkPasteProvenanceFailure,
+    rejection?: { readonly idempotencyKey: string; readonly status: 400 | 422 },
   ): Promise<CoworkPasteProvenanceOutboxEntry>;
   updateDetermination(
     id: number,
@@ -525,7 +537,9 @@ const normalizedCapture = (
       frozenRequest.basisKind !== basisKind ||
       !portableEqual(frozenRequest.anchor, anchor) ||
       !portableEqual(frozenRequest.attestation, determination) ||
-      (frozenRequest.sourceKind !== "paste" &&
+      // Keep old malformed direct-entry requests recoverable. They cannot
+      // pass server validation and must become explicit determinations.
+      (frozenRequest.sourceKind === "legacy" &&
         (frozenRequest.expectedActorRef === undefined ||
           frozenRequest.expectedActorIdentityStatus === undefined)) ||
       (capturedActor != null &&
@@ -1403,6 +1417,7 @@ export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenance
     idempotencyKey: string,
     determination: CoworkProvenanceDetermination,
     failure: CoworkPasteProvenanceFailure,
+    rejection?: { readonly idempotencyKey: string; readonly status: 400 | 422 },
   ): Promise<CoworkPasteProvenanceOutboxEntry> {
     if (idempotencyKey.length === 0 || idempotencyKey.length > 200) {
       return Promise.reject(
@@ -1412,13 +1427,23 @@ export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenance
     let priorIdempotencyKey = idempotencyKey;
     return this.#replace(id, (entry) => {
       priorIdempotencyKey = entry.idempotencyKey;
+      const unsentCapture =
+        entry.status === "capturing" && entry.frozenRequest === undefined;
+      const pendingRequest =
+        entry.status === "ready" || entry.status === "retryable_failure";
+      const rejectedRequest =
+        rejection?.idempotencyKey === entry.idempotencyKey &&
+        (rejection.status === 400 || rejection.status === 422);
       if (
         entry.sourceKind !== "direct_entry" ||
-        entry.status !== "capturing" ||
-        entry.frozenRequest !== undefined
+        (!unsentCapture &&
+          !(pendingRequest &&
+            (coworkDirectEntryActorBindingMissing(entry) || rejectedRequest))) ||
+        (entry.frozenRequest !== undefined &&
+          idempotencyKey === entry.idempotencyKey)
       ) {
         throw new Error(
-          "Only an unfrozen direct-entry capture can require a determination.",
+          "Only unsent, actorless, or definitively rejected direct entry can require a fresh determination.",
         );
       }
       return {
@@ -1456,9 +1481,7 @@ export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenance
           entry.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED ||
           (entry.sourceKind === "legacy" &&
             entry.status === "awaiting_determination" &&
-            entry.requiresExplicitDetermination === true &&
-            entry.failure?.code ===
-              "provenance_actor_unavailable_at_capture")
+            entry.requiresExplicitDetermination === true)
             ? entry.failure
             : undefined,
       };

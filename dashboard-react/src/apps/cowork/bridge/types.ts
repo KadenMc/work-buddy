@@ -83,6 +83,10 @@ export interface R2Expression {
     | "expired"
     | null;
   readonly claim_kind: string | null;
+  readonly is_fact?: boolean;
+  readonly proposition?: string | null;
+  readonly evidence_count?: number;
+  readonly stale?: "claim_changed" | "claim_terminal" | "span_missing" | null;
 }
 
 /** One provenance span for the inspector, re-anchored by quote (I12). */

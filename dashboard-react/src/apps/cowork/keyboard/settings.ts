@@ -48,11 +48,11 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
         trustTier: "native",
         label: "Built into Co-work",
       },
-      title: "Review keyboard shortcuts",
+      title: "Co-work keyboard shortcuts",
       summary:
-        "Choose the keys used to move through and decide Queue items.",
+        "Choose the keys for opening claims and reviewing Queue items.",
       details:
-        "These shortcuts are active only while Queue is visible. They never take over while you are typing.",
+        "Open the claim under the caret works in the editor. Review shortcuts are active while Queue is visible and do not take over while you are typing.",
       valueSchema: coworkShortcutValueSchema(),
       defaultValue: DEFAULT_COWORK_SHORTCUT_BINDINGS,
       allowedScopes: ["profile"],
@@ -80,6 +80,8 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
         "k",
         "vim",
         "review",
+        "truth",
+        "claim",
       ],
     },
   ],
@@ -100,8 +102,8 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
       sections: [
         {
           sectionId: "review-keyboard",
-          label: "Review keyboard",
-          description: "How the keyboard moves through and decides Queue items.",
+          label: "Co-work keyboard",
+          description: "Keyboard access to claims and Queue decisions.",
           order: 10,
         },
       ],

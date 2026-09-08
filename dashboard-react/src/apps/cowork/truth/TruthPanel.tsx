@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -16,9 +17,11 @@ import {
 
 import { HelpTarget, type HelpContent } from "../../../dashboard/help";
 import type { ChatExecutionControl } from "../../../widget-library/chat";
+import type { CoworkCapturedActionSnapshot } from "../targets";
 
 import type {
   TruthClaimDecisionRequest,
+  TruthClaimDetail,
   TruthAnalysisCandidate,
   TruthAnalysisCandidateDecisionRequest,
   TruthAnalysisProvider,
@@ -30,14 +33,16 @@ import type {
   TruthScrollIntegration,
   TruthViewScope,
 } from "./contracts";
+import { orderTruthPassages } from "./contracts";
 import { TruthClaimCard } from "./TruthClaimCard";
 import { TruthClaimDetails } from "./TruthClaimDetails";
 import { TruthAnalysisReview } from "./TruthAnalysisReview";
-import { TruthSelectionComposer } from "./TruthSelectionComposer";
+import { TruthSelectionComposer, type TruthSelectionComposerProps } from "./TruthSelectionComposer";
 import {
   createPersistedTruthStore,
   TruthStore,
   useTruthState,
+  type TruthActionController,
 } from "./store";
 import { useTruthClaimDetail, useTruthData } from "./useTruthData";
 import { useTruthAnalysis } from "./useTruthAnalysis";
@@ -110,6 +115,7 @@ export function TruthPanel({
   const filter = useTruthState(store, (state) => state.filter);
   const selectedClaimId = useTruthState(store, (state) => state.selectedClaimId);
   const composer = useTruthState(store, (state) => state.composer);
+  const requestedDecision = useTruthState(store, (state) => state.requestedDecision);
   const { data, status, error, reload } = useTruthData(provider, { scope, filter });
   const analysisData = useTruthAnalysis(analysis?.provider ?? null);
   const claimDetail = useTruthClaimDetail(provider, selectedClaimId);
@@ -162,7 +168,7 @@ export function TruthPanel({
 
   const readOnly = forcedReadOnly || data?.readOnly === true;
   const canModify =
-    !forcedReadOnly && data?.capabilities.canModify === true;
+    !readOnly && data?.capabilities.canModify === true;
   const analysisExecution = analysis?.execution?.snapshot?.selection;
   const analysisProviderCapability =
     analysisExecution === undefined
@@ -208,10 +214,11 @@ export function TruthPanel({
   };
   const allowedClaimKinds = data?.capabilities.allowedClaimKinds ?? [];
   const composerCaptureRef = useRef<Promise<TruthSelectionCapture> | null>(null);
+  const [composerInitialClaim, setComposerInitialClaim] = useState<TruthSelectionComposerProps["initialClaim"]>();
   const controlsLocked =
     composer !== null || selectedClaimId !== null || decisionBusy;
   const analyzeBlockedReason = controlsLocked
-    ? "Return to the claims list first."
+    ? "Analysis and claim creation are available from the claims list."
     : analysisStarting || analysisRunActive
       ? "The current analysis is still running."
       : analysisData.status === "loading"
@@ -223,6 +230,8 @@ export function TruthPanel({
             : !canModify
               ? data?.capabilities.mutationUnavailableReason ??
                 "Truth analysis is unavailable for this document."
+              : analysis === undefined
+                ? "Passage analysis is not available in this workspace."
               : pendingAnalysisCandidateCount > 0
                 ? "Add, connect, or skip the prepared claims before analyzing another passage."
                 : data?.capabilities.canObserve !== true
@@ -307,18 +316,31 @@ export function TruthPanel({
     }
   };
 
-  const openComposer = (mode: "propose" | "connect"): void => {
-    if (editor === undefined) return;
-    const capture = editor.captureSelection();
+  const manualBlockedReason = controlsLocked
+    ? "Analysis and claim creation are available from the claims list."
+    : analysisStarting
+      ? "The current analysis is starting."
+      : readOnly
+        ? "Adding claims is unavailable in read-only mode."
+      : !canModify
+        ? data?.capabilities.mutationUnavailableReason ?? "Adding claims is unavailable for this document."
+        : editor === undefined
+          ? "The editor cannot capture a passage right now."
+          : null;
+
+  const openComposer = (mode: "propose" | "connect", frozen?: TruthSelectionCapture): void => {
+    if (editor === undefined || manualBlockedReason !== null) return;
+    const capture = frozen === undefined ? editor.captureSelection() : Promise.resolve(frozen);
     // The composer subscribes after this event update commits. Mark an
     // immediate planning rejection handled during that short handoff while
     // preserving the original promise for the composer's visible error state.
     void capture.catch(() => undefined);
     composerCaptureRef.current = capture;
+    setComposerInitialClaim(undefined);
     store.openComposer(mode);
   };
 
-  const analyzePassage = (): void => {
+  const analyzePassage = (capture?: CoworkCapturedActionSnapshot): void => {
     if (
       analysis === undefined ||
       editor?.captureAnalysisTarget === undefined ||
@@ -335,7 +357,7 @@ export function TruthPanel({
     setAnalysisError(null);
     const captureAnalysisTarget = editor.captureAnalysisTarget;
     void Promise.resolve()
-      .then(() => captureAnalysisTarget("current_selection"))
+      .then(() => capture ?? captureAnalysisTarget("current_selection"))
       .then((frozen) =>
         analysis.provider.start({
           targetChoice: "current_selection",
@@ -357,6 +379,28 @@ export function TruthPanel({
         analysisStartingRef.current = false;
         setAnalysisStarting(false);
       });
+  };
+
+  // Keep callbacks current without re-registering on unrelated panel renders.
+  const actionHandlers = useRef({ analyzePassage, openComposer });
+  actionHandlers.current = { analyzePassage, openComposer };
+  const actionController = useMemo<TruthActionController>(() => ({
+    analyzeBlockedReason,
+    manualBlockedReason,
+    analyzePassage: (capture) => actionHandlers.current.analyzePassage(capture),
+    openComposer: (mode, capture) => actionHandlers.current.openComposer(mode, capture),
+  }), [analyzeBlockedReason, manualBlockedReason]);
+  useLayoutEffect(() => store.registerActions(actionController), [actionController, store]);
+
+  const addCorrectedClaim = (claim: TruthClaimDetail): void => {
+    const connection = (editor?.orderPassages?.(claim.connections) ?? orderTruthPassages(claim.connections))
+      .find((item) => item.currentDocument);
+    if (connection === undefined || editor?.capturePassage === undefined || !canModify) return;
+    const capture = editor.capturePassage(connection);
+    void capture.catch(() => undefined);
+    composerCaptureRef.current = capture;
+    setComposerInitialClaim({ proposition: claim.proposition, claimKind: claim.claimKind, role: connection.role });
+    store.openComposer("propose");
   };
 
   const decideAnalysisCandidate = async (
@@ -465,6 +509,7 @@ export function TruthPanel({
         provider={provider}
         editor={editor}
         initialCapture={composerCaptureRef.current ?? undefined}
+        initialClaim={composerInitialClaim}
         allowedClaimKinds={allowedClaimKinds}
         onCancel={cancelComposer}
         onComplete={completeComposer}
@@ -489,10 +534,13 @@ export function TruthPanel({
         error={decisionError}
         refreshError={claimDetail.error}
         active={active}
+        requestedDecision={requestedDecision}
+        orderPassages={editor?.orderPassages}
         onClose={closeTransientView}
         onRetryRefresh={claimDetail.reload}
         onRevealPassage={editor?.revealPassage}
         onDecide={decide}
+        onAddCorrectedClaim={canModify && editor?.capturePassage !== undefined ? addCorrectedClaim : undefined}
       />
     );
   } else if (status === "loading") {
@@ -550,7 +598,10 @@ export function TruthPanel({
           <TruthClaimCard
             key={claim.claimId}
             claim={claim}
-            onSelect={() => store.selectClaim(claim.claimId)}
+            onSelect={() => {
+              store.selectClaim(claim.claimId);
+              editor?.revealClaimIfOutsideViewport?.(claim.claimId);
+            }}
             onRevealPassage={editor?.revealPassage}
           />
         ))}
@@ -589,7 +640,7 @@ export function TruthPanel({
                   type="button"
                   className="is-primary"
                   aria-disabled={analyzeBlockedReason === null ? undefined : true}
-                  onClick={analyzePassage}
+                  onClick={() => actionController.analyzePassage()}
                 >
                   {analysisStarting || analysisRunActive
                     ? "Analyzing…"
@@ -608,7 +659,7 @@ export function TruthPanel({
                     ref={moreButtonRef}
                     isDisabled={controlsLocked || analysisStarting}
                   >
-                    Add manually
+                    Add or connect claim
                   </AriaButton>
                 </HelpTarget>
                 <Popover
@@ -619,7 +670,7 @@ export function TruthPanel({
                     className="wb-cowork-truth__more-menu"
                     aria-label="Manual Truth actions"
                     onAction={(key: Key) =>
-                      openComposer(key === "connect" ? "connect" : "propose")
+                      actionController.openComposer(key === "connect" ? "connect" : "propose")
                     }
                   >
                     <MenuItem
@@ -643,6 +694,9 @@ export function TruthPanel({
           </div>
         ) : null}
       </div>
+      {analysis !== undefined && analyzeBlockedReason !== null ? (
+        <p className="wb-cowork-truth__action-reason" role="status">{analyzeBlockedReason}</p>
+      ) : null}
       <div className="wb-cowork-truth__filters" role="group" aria-label="Filter claims">
         {FILTERS.map((item) => (
           <button key={item.value} type="button" disabled={controlsLocked} aria-pressed={filter === item.value} onClick={() => changeFilter(item.value)}>

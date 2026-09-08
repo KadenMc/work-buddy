@@ -96,6 +96,89 @@ def test_seed_manifest_must_remain_inside_marked_root(harness_env, tmp_path):
     assert not (tmp_path / "outside.json").exists()
 
 
+def test_truth_panel_seed_has_reviewable_claims_and_preserves_reseeded_state(harness_env):
+    harness_env["WB_LIVE_SCENARIO"] = "truth-panel"
+    seeder = LIVE_ROOT / "seeds" / "cowork.py"
+    first = run_python([seeder], harness_env)
+    assert first.returncode == 0, first.stdout + first.stderr
+    manifest_path = Path(harness_env["WB_LIVE_FIXTURE_FILE"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fixture = manifest["truth_panel"]
+    assert len(fixture["claim_ids"]) == 5
+    assert fixture["app_path"].endswith(f"document_id={fixture['document_id']}")
+    script = """
+import base64, json, os, subprocess
+from pathlib import Path
+from flask import Flask
+from work_buddy.cowork import api
+from work_buddy.document_kernel.client import DocumentKernelClient
+from work_buddy.truth import documents, ydoc_store
+from work_buddy.truth.registry import TruthStoreRegistry
+fixture = json.loads(Path(os.environ['WB_LIVE_FIXTURE_FILE']).read_text())['truth_panel']
+store = TruthStoreRegistry().open_store(fixture['store_id'])
+record = documents.get_document(store, fixture['document_id'])
+snapshot = ydoc_store.read_snapshot(store, snapshot_sha256=record.ydoc_snapshot_sha256)
+head = ydoc_store.current_structured_head(store, document_id=record.id, snapshot_sha256=record.ydoc_snapshot_sha256)
+with DocumentKernelClient() as kernel:
+    projected = kernel.request({'kind': 'project_markdown', 'snapshotBase64': snapshot,
+        'updatesBase64': [], 'expectedBaseStructuredHeadSha256': head})
+    assert projected.projection is not None
+fidelity_script = "import * as Y from 'yjs'; let raw=''; for await(const chunk of process.stdin) raw+=chunk; const doc=new Y.Doc(); Y.applyUpdate(doc, Buffer.from(raw,'base64')); process.stdout.write(String(doc.getMap('wb-cowork:fidelity').get('schema'))); doc.destroy();"
+fidelity = subprocess.run(['node', '--input-type=module', '-e', fidelity_script],
+    input=base64.b64encode(snapshot).decode(), cwd='dashboard-react', capture_output=True,
+    text=True, timeout=30, check=True,
+    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+assert fidelity.stdout == 'cowork-fidelity/v1'
+app = Flask(__name__)
+app.config['TESTING'] = True
+api.register_routes(app)
+url = f"/api/truth/doc/{fixture['document_id']}?store_id={store.store_id}"
+with app.test_client() as client:
+    response = client.get(url)
+    assert response.status_code == 200, response.get_json()
+    document = response.get_json()
+    assert document['initialization_state'] == 'ready'
+    assert document['truth_projection_included'] is True
+    assert len(document['expressions']) == 6
+    assert sum(item['is_fact'] for item in document['expressions']) == 1
+    assert all(item['stale'] is None for item in document['expressions'])
+    listed = client.get(f"/api/truth/doc/{fixture['document_id']}/truth?store_id={store.store_id}").get_json()
+    claims = {item['claim_id']: item for item in listed['claims']}
+    by_case = {case: claims[claim_id] for case, claim_id in fixture['claim_ids'].items()}
+    assert by_case['with_evidence']['receipt_count'] == 1
+    assert by_case['without_evidence']['receipt_count'] == 0
+    assert by_case['confirmed']['is_fact'] is True
+    assert by_case['needs_review']['needs_review'] is True
+    assert by_case['multiple']['connection_count'] == 2
+    assert 'confirm' in by_case['with_evidence']['available_actions']
+    detail = client.get(f"/api/truth/doc/{fixture['document_id']}/truth/claims/{fixture['claim_ids']['with_evidence']}?store_id={store.store_id}").get_json()
+    assert detail['support']['quarantined_only'] is False
+    receipt_path = Path(os.environ['WB_LIVE_ROOT']) / 'evidence/truth-panel/with_evidence.txt'
+    assert detail['receipts'][0]['source_locator'] == receipt_path.as_uri()
+    assert detail['receipts'][0]['integrity']['state'] == 'valid'
+    assert fixture['passages']['with_evidence'] in receipt_path.read_text(encoding='utf-8')
+    with store._read_connection() as conn:
+        counts = {table: conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+                  for table in ('documents', 'claims', 'expressions', 'evidence', 'claim_links', 'gestures')}
+    print(json.dumps(counts, sort_keys=True))
+"""
+    observed = run_python(["-c", script], harness_env)
+    assert observed.returncode == 0, observed.stdout + observed.stderr
+    source = Path(manifest["initialized"]["path"]) / fixture["path"]
+    initial_text = source.read_text(encoding="utf-8")
+    assert initial_text.index(fixture["passages"]["multiple_second"]) - initial_text.index(
+        fixture["passages"]["multiple_first"]
+    ) > 1_000
+    source.write_text("Edited throwaway source remains intact.\n", encoding="utf-8")
+    repeated = run_python([seeder], harness_env)
+    assert repeated.returncode == 0, repeated.stdout + repeated.stderr
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
+    assert source.read_text(encoding="utf-8") == "Edited throwaway source remains intact.\n"
+    observed_again = run_python(["-c", script], harness_env)
+    assert observed_again.returncode == 0, observed_again.stdout + observed_again.stderr
+    assert observed.stdout.splitlines()[-1] == observed_again.stdout.splitlines()[-1]
+
+
 def test_harness_identity_requires_nonce_and_exact_origin_and_redeems_once(harness_env):
     script = """
 import runpy

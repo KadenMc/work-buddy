@@ -9,6 +9,7 @@ import {
 describe("Co-work review shortcut bindings", () => {
   it("ships one complete, collision-free default map", () => {
     expect(DEFAULT_COWORK_SHORTCUT_BINDINGS).toEqual({
+      openClaim: "Alt+Enter",
       previous: "j",
       next: "k",
       accept: "a",
@@ -19,11 +20,12 @@ describe("Co-work review shortcut bindings", () => {
     expect(Object.keys(DEFAULT_COWORK_SHORTCUT_BINDINGS).sort()).toEqual(
       COWORK_SHORTCUT_COMMANDS.map((command) => command.commandId).sort(),
     );
-    expect(new Set(Object.values(DEFAULT_COWORK_SHORTCUT_BINDINGS)).size).toBe(6);
+    expect(new Set(Object.values(DEFAULT_COWORK_SHORTCUT_BINDINGS)).size).toBe(7);
   });
 
   it("accepts a complete configured map atomically", () => {
     const configured = {
+      openClaim: "Alt+Shift+Enter",
       previous: "ArrowUp",
       next: "ArrowDown",
       accept: "Mod+Enter",
@@ -32,6 +34,13 @@ describe("Co-work review shortcut bindings", () => {
       defer: "d",
     };
     expect(resolveCoworkShortcutBindings(configured)).toEqual(configured);
+  });
+
+  it("preserves every legacy configured Review binding when adding the editor shortcut", () => {
+    const legacy = { previous: "ArrowUp", next: "ArrowDown", accept: "Mod+Enter", amend: "m", reject: "r", defer: "d" };
+    expect(resolveCoworkShortcutBindings(legacy)).toEqual({ ...legacy, openClaim: "Alt+Enter" });
+    const occupied = { ...legacy, accept: "Alt+Enter" };
+    expect(resolveCoworkShortcutBindings(occupied)).toEqual({ ...occupied, openClaim: "Alt+Shift+Enter" });
   });
 
   it("remains defensive around v1 preset values during rolling upgrades", () => {

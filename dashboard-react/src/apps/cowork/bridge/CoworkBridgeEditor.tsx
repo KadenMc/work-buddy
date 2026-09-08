@@ -49,10 +49,9 @@ import type {
   ProvenanceSelectionAction,
 } from "../provenance/view/contracts";
 import type { FeedbackCapture } from "../chat";
-import {
-  CoworkFeedbackAffordance,
-  type CoworkFeedbackTransport,
-} from "../feedback";
+import type { CoworkFeedbackTransport } from "../feedback";
+import { CoworkDocumentContextMenu } from "../menus/CoworkDocumentContextMenu"
+import type { CoworkDocumentActions } from "../menus/documentActions"
 import {
   prepareCoworkSittingDocument,
   type CoworkSittingWorkspace,
@@ -69,9 +68,9 @@ import {
   type CoworkActionSnapshotController,
 } from "../targets";
 import { CoworkWorkingTargetProjector } from "./CoworkWorkingTargetProjector";
+import { coworkDirectEntryActorBindingMissing } from "../provenance/CoworkPasteProvenanceOutbox";
 import {
   CoworkProvenanceDeterminationDialog,
-  CoworkProvenanceSelectionAffordance,
   COWORK_PROVENANCE_ACTOR_CHANGED,
   COWORK_PROVENANCE_EXACT_MAX_CHARS,
   COWORK_PROVENANCE_TARGET_CHANGED,
@@ -150,6 +149,7 @@ export interface CoworkBridgeEditorProps {
   readonly feedbackTransport?: CoworkFeedbackTransport;
   /** The active view lens controls contextual selection actions. */
   readonly activeLens?: CoworkEditorLens;
+  readonly documentActions?: CoworkDocumentActions
   /** Authoritative projection used by Provenance selection actions. */
   readonly provenanceProvider?: ProvenanceProvider;
   /** Whether the stable Provenance rail can receive selection actions. */
@@ -284,6 +284,7 @@ function MountedBridgeEditor({
   onFeedbackCaptured,
   feedbackTransport,
   activeLens,
+  documentActions,
   provenanceProvider,
   provenanceSelectionActionsActive,
   onProvenanceSelectionAction,
@@ -511,6 +512,8 @@ function MountedBridgeEditor({
       setBusyPasteIds((current) => new Set(current).add(entryId));
       const run = async (): Promise<void> => {
         let stored: CoworkPasteProvenanceOutboxEntry | undefined;
+        let recorderValidationRejection: 400 | 422 | undefined;
+        let recorderConfirmedReceipt = false;
         try {
           stored = (await resolvedPasteProvenanceOutbox.list()).find(
             (entry) => entry.id === entryId,
@@ -519,6 +522,20 @@ function MountedBridgeEditor({
             stored === undefined ||
             (stored.status !== "ready" && stored.status !== "retryable_failure")
           ) {
+            return;
+          }
+
+          if (coworkDirectEntryActorBindingMissing(stored)) {
+            await resolvedPasteProvenanceOutbox.deferDirectEntry(
+              entryId,
+              pasteIdempotencyKey(),
+              unknownCoworkProvenanceDetermination(),
+              {
+                code: "provenance_actor_unavailable_at_capture",
+                message: "No enrolled local actor was available when this text was entered.",
+                kind: "terminal",
+              },
+            );
             return;
           }
 
@@ -584,7 +601,14 @@ function MountedBridgeEditor({
 
           // A resolved recorder call is the confirmed server receipt boundary.
           // Until then the complete frozen request remains replayable.
-          const receipt = await recorder(request);
+          const receipt = await recorder(request).catch((error: unknown) => {
+            const status = asCoworkApiError(error).status;
+            if (status === 400 || status === 422) {
+              recorderValidationRejection = status;
+            }
+            throw error;
+          });
+          recorderConfirmedReceipt = true;
           // Keep the immutable request until the authoritative view includes
           // the receipt. Manual Record must not close into an empty/stale lens.
           if (provenanceProvider !== undefined) {
@@ -630,16 +654,40 @@ function MountedBridgeEditor({
                 })),
               );
               onProvenanceActorChanged?.();
+            } else if (
+              stored?.sourceKind === "direct_entry" &&
+              recorderValidationRejection !== undefined
+            ) {
+              // Validation rejected this attempt before a receipt. Keep the
+              // passage, but require a fresh explicit authorship decision.
+              await resolvedPasteProvenanceOutbox.deferDirectEntry(
+                entryId,
+                pasteIdempotencyKey(),
+                unknownCoworkProvenanceDetermination(),
+                {
+                  code: "provenance_direct_entry_rejected",
+                  message: apiError.message,
+                  kind: "terminal",
+                },
+                {
+                  idempotencyKey: stored.idempotencyKey,
+                  status: recorderValidationRejection,
+                },
+              );
             } else if (stored !== undefined) {
               await resolvedPasteProvenanceOutbox.markFailure(entryId, {
                 code: apiError.code,
                 message: apiError.message,
                 kind:
-                  apiError.code === COWORK_PROVENANCE_TARGET_CHANGED
-                    ? "stale_target"
-                    : stored.sourceKind === "direct_entry" || apiError.retryable
-                      ? "retryable"
-                      : "terminal",
+                  recorderConfirmedReceipt
+                    ? "retryable"
+                    : apiError.code === COWORK_PROVENANCE_TARGET_CHANGED
+                      ? "stale_target"
+                      : apiError.retryable ||
+                          (stored.sourceKind === "direct_entry" &&
+                            apiError.status === 409)
+                        ? "retryable"
+                        : "terminal",
               });
               if (stored.sourceKind !== "paste") {
                 setOutboxError(
@@ -1530,7 +1578,9 @@ function MountedBridgeEditor({
     entry.sourceKind === "legacy" &&
     entry.status === "awaiting_determination" &&
     entry.requiresExplicitDetermination === true &&
-    entry.failure?.code === "provenance_actor_unavailable_at_capture" &&
+    (entry.failure?.code === "provenance_actor_unavailable_at_capture" ||
+      entry.failure?.code === "provenance_direct_entry_rejected" ||
+      entry.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED) &&
     !manualRecordEntryIds.has(entry.id);
   const dismissedDeterminationEntries = pasteEntries.filter(
     (entry) =>
@@ -2229,28 +2279,22 @@ function MountedBridgeEditor({
           </Button>
         </InlineAlert>
       ) : null}
-      {editor !== null &&
-      !provenanceSelectionAffordanceActive &&
-      !readOnly &&
-      onFeedbackCaptured !== undefined &&
-      documentId !== undefined ? (
-        <CoworkFeedbackAffordance
+      {editor !== null ? (
+        <CoworkDocumentContextMenu
           editor={editor}
+          activeLens={activeLens ?? "neutral"}
+          actions={documentActions}
+          readOnly={readOnly}
           documentId={documentId}
           storeId={storeId}
-          onCaptured={onFeedbackCaptured}
-          transport={feedbackTransport}
-        />
-      ) : null}
-      {editor !== null && provenanceSelectionAffordanceActive ? (
-        <CoworkProvenanceSelectionAffordance
-          editor={editor}
-          active={provenanceSelectionActionsActive ?? true}
-          provider={provenanceProvider}
-          currentUserIdentity={resolvedProvenanceActor}
-          readOnly={readOnly}
-          onRecord={recordSelectedProvenance}
-          onAction={onProvenanceSelectionAction}
+          onFeedbackCaptured={onFeedbackCaptured}
+          feedbackTransport={feedbackTransport}
+          provenance={provenanceSelectionAffordanceActive ? {
+            provider: provenanceProvider,
+            currentUserIdentity: resolvedProvenanceActor,
+            onRecord: recordSelectedProvenance,
+            onAction: onProvenanceSelectionAction,
+          } : undefined}
         />
       ) : null}
       {visiblePasteEntry !== null && resolvedProvenanceActor !== undefined ? (
@@ -2260,7 +2304,9 @@ function MountedBridgeEditor({
           currentUserIdentity={resolvedProvenanceActor}
           title={
             visibleDirectEntryRecovery
-              ? "Recent typing needs attribution"
+              ? visiblePasteActorChanged
+                ? "Passage needs attribution"
+                : "Recent typing needs attribution"
               : undefined
           }
           passageExcerpt={visiblePasteEntry.passageExcerpt}

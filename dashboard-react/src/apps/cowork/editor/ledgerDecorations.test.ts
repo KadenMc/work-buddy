@@ -7,11 +7,15 @@ import { buildEditorExtensions } from "./extensions";
 import {
   clearCoworkLedgerAnchorFocus,
   CoworkLedgerDecorations,
+  coworkExpressionTargets,
+  coworkTruthLegendCounts,
   focusCoworkLedgerAnchor,
   projectCoworkLedgerDecorations,
   readCoworkLedgerDecorationState,
   setCoworkEditorLens,
   setCoworkPendingProvenance,
+  type CoworkExpressionDecoration,
+  type CoworkLedgerDecorationProjection,
 } from "./ledgerDecorations";
 
 const CONTENT =
@@ -39,6 +43,114 @@ afterEach(() => {
   editor = null;
   host?.remove();
   host = null;
+});
+
+const truthProjection = (expressions: readonly CoworkExpressionDecoration[]): CoworkLedgerDecorationProjection => ({
+  edits: [], flags: [], expressions,
+  claims: expressions.map((expression) => ({ claimId: expression.claimRef, expressionId: expression.expressionId, spanId: expression.spanId, quote: expression.quote })),
+  provenance: [],
+});
+
+const expressionFixture = (overrides: Partial<CoworkExpressionDecoration> = {}): CoworkExpressionDecoration => ({
+  expressionId: "expression", spanId: "span", quote: "Claim passage", claimRef: "claim", claimStatus: "proposed",
+  proposition: "A bounded proposition.", evidenceCount: 2, isFact: false, stale: null,
+  ...overrides,
+});
+
+describe("Truth expression projection", () => {
+  it("carries authoritative fact, proposition, evidence and stale fields without inferring facts from confirmation", () => {
+    const current = mountEditor("<p>Claim passage. Another passage. Third passage.</p>");
+    const projection = truthProjection([
+      expressionFixture({ claimStatus: "confirmed", isFact: undefined }),
+      expressionFixture({ expressionId: "fact", spanId: "fact-span", claimRef: "fact-claim", quote: "Another passage", claimStatus: "confirmed", isFact: true, evidenceCount: 3 }),
+      expressionFixture({ expressionId: "attention", spanId: "attention-span", claimRef: "review-claim", quote: "Third passage", claimStatus: "needs_review", stale: "claim_changed" }),
+    ]);
+    projectCoworkLedgerDecorations(current, projection);
+    setCoworkEditorLens(current, "truth");
+    expect(current.view.dom.querySelector('[data-wb-expression-id="expression"]')).toHaveAttribute("data-wb-is-fact", "false");
+    const fact = current.view.dom.querySelector('[data-wb-expression-id="fact"]');
+    expect(fact).toHaveAttribute("data-wb-is-fact", "true");
+    expect(fact).toHaveAttribute("data-wb-proposition", "A bounded proposition.");
+    expect(fact).toHaveAttribute("data-wb-evidence-count", "3");
+    expect(current.view.dom.querySelector('[data-wb-expression-id="attention"]')).toHaveAttribute("data-wb-stale", "claim_changed");
+    expect(coworkTruthLegendCounts(current)).toEqual({ claims: 3, facts: 1, toJudge: 1, missing: 0 });
+  });
+
+  it("deduplicates multi-passage claims and excludes terminal marks while retaining on-demand history targets", () => {
+    const current = mountEditor("<p>Claim passage. Another passage.</p>");
+    const first = expressionFixture();
+    const second = expressionFixture({ expressionId: "second", spanId: "second-span", quote: "Another passage" });
+    projectCoworkLedgerDecorations(current, truthProjection([first, second]));
+    setCoworkEditorLens(current, "truth");
+    expect(coworkTruthLegendCounts(current)).toEqual({ claims: 1, facts: 0, toJudge: 1, missing: 0 });
+    focusCoworkLedgerAnchor(current, { id: "claim", kind: "claim" });
+    expect(current.view.dom.querySelectorAll(".wb-cowork-anchor--active")).toHaveLength(2);
+    const before = current.getJSON();
+    const selection = current.state.selection.toJSON();
+    for (const status of ["rejected", "expired", "superseded", "retracted"]) {
+      projectCoworkLedgerDecorations(current, truthProjection([first, second].map((item) => ({ ...item, claimStatus: status, isFact: false }))));
+      expect(current.view.dom.querySelector("[data-wb-expression-id]")).toBeNull();
+      expect(coworkExpressionTargets(current)).toEqual([]);
+      expect(coworkExpressionTargets(current, { includeTerminal: true })).toHaveLength(2);
+      expect(coworkTruthLegendCounts(current)).toEqual({ claims: 0, facts: 0, toJudge: 0, missing: 0 });
+    }
+    projectCoworkLedgerDecorations(current, truthProjection([{ ...first, claimStatus: "confirmed", isFact: false, stale: "claim_terminal" }]));
+    expect(current.view.dom.querySelector("[data-wb-expression-id]")).toBeNull();
+    expect(current.getJSON()).toEqual(before);
+    expect(current.state.selection.toJSON()).toEqual(selection);
+  });
+
+  it("retains the precisely mapped stale passage through edits, projection refresh and lens switches", () => {
+    const current = mountEditor("<p>Claim passage.</p>");
+    const projection = truthProjection([expressionFixture()]);
+    projectCoworkLedgerDecorations(current, projection);
+    setCoworkEditorLens(current, "truth");
+    const original = coworkExpressionTargets(current)[0];
+    current.view.dispatch(current.state.tr.insertText("changed ", original.from + 6));
+    expect(coworkExpressionTargets(current)[0]).toMatchObject({ stale: "span_missing", from: original.from });
+    const changed = current.getJSON();
+    const selection = current.state.selection.toJSON();
+    projectCoworkLedgerDecorations(current, { ...projection });
+    setCoworkEditorLens(current, "neutral");
+    expect(current.view.dom.querySelector("[data-wb-expression-id]")).toBeNull();
+    setCoworkEditorLens(current, "truth");
+    const mark = current.view.dom.querySelector("[data-wb-expression-id]");
+    expect(mark).toHaveTextContent("Claim changed passage");
+    expect(mark).toHaveAttribute("data-wb-stale", "span_missing");
+    expect(current.getJSON()).toEqual(changed);
+    expect(current.state.selection.toJSON()).toEqual(selection);
+    const retained = coworkExpressionTargets(current)[0];
+    current.view.dispatch(current.state.tr.insertText("Claim passage", retained.from, retained.to));
+    expect(coworkExpressionTargets(current)[0].stale).toBeNull();
+  });
+
+  it("keeps a locally changed first occurrence from jumping to the remaining duplicate", () => {
+    const current = mountEditor("<p>First repeated phrase here. Second repeated phrase there.</p>");
+    const projection = truthProjection([expressionFixture({ quote: "repeated phrase", quoteAnchor: { exact: "repeated phrase", prefix: "First ", suffix: " here. Second " } })]);
+    projectCoworkLedgerDecorations(current, projection);
+    const original = coworkExpressionTargets(current)[0];
+    current.view.dispatch(current.state.tr.insertText("changed phrase", original.from, original.to));
+    projectCoworkLedgerDecorations(current, { ...projection });
+    setCoworkEditorLens(current, "truth");
+    expect(coworkExpressionTargets(current)[0]).toMatchObject({ from: original.from, stale: "span_missing" });
+    expect(current.view.dom.querySelector("[data-wb-expression-id]")).toHaveTextContent("changed phrase");
+  });
+
+  it("never guesses a stale range after a whole-document replacement or an ambiguous initial read", () => {
+    const current = mountEditor("<p>Before. Claim passage. After.</p>");
+    const projection = truthProjection([expressionFixture()]);
+    projectCoworkLedgerDecorations(current, projection);
+    setCoworkEditorLens(current, "truth");
+    current.commands.setContent("<p>Completely different text.</p>");
+    projectCoworkLedgerDecorations(current, projection);
+    expect(coworkExpressionTargets(current)).toEqual([]);
+    expect(current.view.dom.querySelector("[data-wb-expression-id]")).toBeNull();
+    expect(coworkTruthLegendCounts(current).missing).toBe(1);
+    current.commands.setContent("<p>Claim passage. Claim passage.</p>");
+    projectCoworkLedgerDecorations(current, projection);
+    expect(coworkExpressionTargets(current)).toEqual([]);
+    expect(current.view.dom.querySelector("[data-wb-expression-id]")).toBeNull();
+  });
 });
 
 describe("CoworkLedgerDecorations", () => {
@@ -90,7 +202,7 @@ describe("CoworkLedgerDecorations", () => {
     expect(current.state.selection.toJSON()).toEqual(beforeSelection);
   });
 
-  it("creates no Yjs structs or updates when projecting an edit", () => {
+  it("creates no Yjs structs or updates when projecting edits or changing Truth lens and claim focus", () => {
     const collaborativeDocument = new Y.Doc();
     host = document.createElement("div");
     document.body.append(host);
@@ -121,10 +233,15 @@ describe("CoworkLedgerDecorations", () => {
         },
       ],
       flags: [],
-      expressions: [],
-      claims: [],
+      expressions: [expressionFixture({ quote: "Canonical passage" })],
+      claims: [{ claimId: "claim", expressionId: "expression", spanId: "span", quote: "Canonical passage" }],
       provenance: [],
     });
+
+    setCoworkEditorLens(editor, "truth");
+    focusCoworkLedgerAnchor(editor, { id: "claim", kind: "claim" });
+    setCoworkEditorLens(editor, "neutral");
+    setCoworkEditorLens(editor, "review");
 
     expect(updateCount).toBe(0);
     expect(Y.encodeStateVector(collaborativeDocument)).toEqual(stateBefore);

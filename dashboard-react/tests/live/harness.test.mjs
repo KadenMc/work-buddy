@@ -36,6 +36,9 @@ test("Playwright output cleanup cannot contain live session metadata or another 
 
 test("interactive development reloads source; an explicit build serves the bundle", () => {
   assert.equal(parseOptions([]).dev, false);
+  assert.equal(parseOptions([]).scenario, "lifecycle");
+  assert.equal(parseOptions(["--scenario", "truth-panel"]).scenario, "truth-panel");
+  assert.throws(() => parseOptions(["--scenario", "missing"]), /Unknown scenario/);
   assert.equal(parseOptions(["--interactive"]).dev, true);
   assert.equal(parseOptions(["--dev"]).interactive, true);
   const built = parseOptions(["--interactive", "--dev", "--build", "--app", "cowork"]);

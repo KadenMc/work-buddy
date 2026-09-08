@@ -14,11 +14,8 @@ function baseProps() {
     items,
     index: 0,
     decisions: {},
-    claimDecisions: {},
-    inspectSpanByClaim: new Map<string, string>(),
     onNavigate: vi.fn(),
     onActivate: vi.fn(),
-    onInspect: vi.fn(),
   };
 }
 
@@ -26,8 +23,8 @@ describe("QueueView", () => {
   it("shows the progress indicator for the focused item", () => {
     render(<QueueView {...baseProps()} />);
     expect(screen.getByText("Item 1")).toBeVisible();
-    expect(screen.getByText(/of 5/)).toBeVisible();
-    expect(screen.getByText("5 undecided")).toBeVisible();
+    expect(screen.getByText(/of 4/)).toBeVisible();
+    expect(screen.getByText("4 undecided")).toBeVisible();
   });
 
   it("navigates with the inverted j and k binding", async () => {
@@ -95,7 +92,7 @@ describe("QueueView", () => {
 
   it("names modification proposals accurately in the all-items list", () => {
     const first = items[0];
-    if (first === undefined || first.kind === "claim") {
+    if (first === undefined) {
       throw new Error("The first demo item must be a proposal.");
     }
     const modificationItems = [

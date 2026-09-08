@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { demoReviewData } from "./InMemoryReviewProvider";
 import {
-  claimRefMatchesId,
   filterCounts,
   groupOf,
   matchesFilter,
@@ -10,34 +9,20 @@ import {
   visibleItems,
 } from "./items";
 
-describe("claimRefMatchesId", () => {
-  it("matches local and canonical URI refs without accepting substrings", () => {
-    expect(claimRefMatchesId("claim-1", "claim-1")).toBe(true);
-    expect(
-      claimRefMatchesId("wb-truth://store/claim/claim-1", "claim-1"),
-    ).toBe(true);
-    expect(claimRefMatchesId("not-claim-1", "claim-1")).toBe(false);
-    expect(
-      claimRefMatchesId("wb-truth://store/claim/not-claim-1", "claim-1"),
-    ).toBe(false);
-  });
-});
-
 describe("review item derivation", () => {
-  it("orders proposals and claims by document order", () => {
+  it("orders proposals by document order", () => {
     const items = orderedItems(demoReviewData());
     const orders = items.map((item) => item.documentOrder);
     const sorted = [...orders].sort((a, b) => a - b);
     expect(orders).toEqual(sorted);
   });
 
-  it("counts suggestions, flags, and claims to match the SP-6 scene", () => {
-    // Two insertions plus one deletion are suggestions, one flag, one claim.
+  it("counts suggestions and flags", () => {
+    // Two insertions plus one deletion are suggestions, one flag.
     expect(filterCounts(demoReviewData())).toEqual({
-      all: 5,
+      all: 4,
       suggestions: 3,
       flags: 1,
-      claims: 1,
     });
   });
 
@@ -46,21 +31,18 @@ describe("review item derivation", () => {
     const flag = items.find(
       (item) => item.kind === "proposal" && item.proposal.kind === "flag",
     );
-    const claim = items.find((item) => item.kind === "claim");
     const edit = items.find(
       (item) => item.kind === "proposal" && item.proposal.kind === "edit",
     );
     expect(flag && groupOf(flag)).toBe("flags");
-    expect(claim && groupOf(claim)).toBe("claims");
     expect(edit && groupOf(edit)).toBe("suggestions");
   });
 
   it("filters to a single group with the lens", () => {
     const data = demoReviewData();
-    expect(visibleItems(data, "all")).toHaveLength(5);
+    expect(visibleItems(data, "all")).toHaveLength(4);
     expect(visibleItems(data, "suggestions")).toHaveLength(3);
     expect(visibleItems(data, "flags")).toHaveLength(1);
-    expect(visibleItems(data, "claims")).toHaveLength(1);
   });
 
   it("matchesFilter passes everything under all", () => {

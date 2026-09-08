@@ -18,6 +18,16 @@ aliases:
 - dashboard-react tests
 - dashboard live harness
 - Playwright dashboard specs
+dev_notes: |-
+  The truth-panel scenario bootstraps the Y.Doc snapshot and fidelity metadata
+  through the production document kernel from the fixture's Markdown paragraph
+  sequence and requires a lossless projection. Its manifest truth_panel object
+  records the store, document, named claim IDs, passage quotes, and app_path.
+  Re-seeding preserves record identities and later review or prose edits.
+  Seed decisions consume the isolated local authority's exact gestures; the
+  seed session is revoked before completion. Reject unmarked roots and the
+  normal dashboard port. Receipt files and supported file: locators remain
+  inside the marked throwaway root.
 ---
 
 `dashboard-react/` has five independent verification surfaces. Name the runner and environment in each report. A passing result covers only the behavior that runner exercised.
@@ -46,15 +56,38 @@ Real-data reads are a last resort when fixtures cannot answer the question. Use 
 
 `tests/live/run-live.mjs --app cowork` owns the entire disposable application stack. It creates a temporary root with a `.wb-live-harness` marker, allocates non-5127 loopback ports, redirects `WORK_BUDDY_DATA_DIR` and `WORK_BUDDY_CONFIG_DIR`, and seeds through production domain code in `tests/live/seeds/cowork.py`. The seeder is idempotent. Co-work is the supported App seeder.
 
+The Co-work seeder accepts `--scenario lifecycle` and `--scenario truth-panel`.
+Lifecycle is the default. Truth-panel supplies one ready throwaway document
+with five claims and six connected passages: proposed with a human-authored
+receipt, proposed without evidence, confirmed, a claim expressed in two
+separated passages, and confirmed with a needs-review overlay. Receipts refer
+to actual throwaway text files. Context paragraphs separate connected passages
+by more than one editor viewport for navigation checks. Use this scenario for
+Truth state, evidence, correction, decision, and passage-navigation behavior.
+
 `tests/live/live_server.py` imports the real `work_buddy.dashboard.service.app`. It refuses a missing marker, roots outside the harness root, and port 5127. It supplies nonce-gated `/api/_live/` host controls and skips normal sidecar pollers. Teardown rechecks the path and marker before deletion and treats failed cleanup as a failed run.
 
 The live host injects deterministic picker callbacks through the production folder blueprint. Open folder selects the seeded Reference Folder, Choose Location keeps the active contained fixture folder, and import selects the manifest's source only when it belongs to the active folder, otherwise returning cancellation. Native picker adapters and picker child processes are refused. Harness browser testing must never open native dialogs on the user's desktop; the normal dashboard's picker behavior is unchanged.
 
-Regression builds and previews the production bundle before running `tests/live/cowork.spec.ts`. Interactive exploration uses:
+Regression builds and previews the production bundle before running the
+scenario's registered spec: `tests/live/cowork.spec.ts` for lifecycle or
+`tests/live/cowork-truth.spec.ts` for truth-panel. Interactive exploration uses:
 
 ```bash
 npm --prefix dashboard-react run test:e2e:live:interactive -- --app cowork
 ```
+
+For the Truth fixture, add `--scenario truth-panel`:
+
+```bash
+npm --prefix dashboard-react run test:e2e:live:interactive -- --app cowork --scenario truth-panel
+```
+
+Run its production-bundle regression with
+`npm --prefix dashboard-react run test:e2e:live -- --app cowork --scenario truth-panel`.
+The demo route also has an in-memory Truth provider for presentation and shared
+menu checks; its local mutations synchronize rail details and editor marks.
+It does not establish server authority or persisted behavior.
 
 Interactive mode implies `--dev`, which starts Vite with the isolated backend as `WB_DASHBOARD_PROXY_TARGET`. Source edits reload live. `--build` uses the production bundle instead, so source edits require restart and rebuild. Both modes announce this in the banner and `interactive-session.json`. `--frontend-port` supports browser attachment on a chosen port. `--dev` without the interactive flag also hosts an exploration session. The host stays open for a bounded window and cleans up on expiry or interruption.
 
@@ -81,7 +114,7 @@ Explore with the interactive browser, then encode regression. Do not append prob
 
 ## Continuous integration
 
-The dashboard job runs the component suite, checks CI decisions with `npx playwright test --list --reporter=./scripts/check-spec-tags.mjs`, selects the exact `@ci` token with `--grep '(^|\s)@ci(?=\s|$)'`, and builds production assets. Each test in the twenty ordinary browser specs declares exactly one of `@ci` or `@no-ci`, verified from Playwright's collected metadata. The guard inventories spec files throughout `tests/`, including files outside the configured collection directories. An uncollected spec must have an exact entry in the checker's separate-configuration registry with an existing configuration and an exclusion reason. The registered `tests/live/cowork.spec.ts` declares an encompassing `@live` and `@no-ci` suite, verified from TypeScript syntax. Comments do not count as decisions, and an extra live spec needs its own declaration.
+The dashboard job runs the component suite, checks CI decisions with `npx playwright test --list --reporter=./scripts/check-spec-tags.mjs`, selects the exact `@ci` token with `--grep '(^|\s)@ci(?=\s|$)'`, and builds production assets. Each ordinary browser test declares exactly one of `@ci` or `@no-ci`, verified from Playwright's collected metadata. The guard inventories spec files throughout `tests/`, including files outside the configured collection directories. An uncollected spec must have an exact entry in the checker's separate-configuration registry with an existing configuration and an exclusion reason. The registered `tests/live/cowork.spec.ts` and `tests/live/cowork-truth.spec.ts` each declare an encompassing `@live` and `@no-ci` suite, verified from TypeScript syntax. Comments do not count as decisions, and an extra live spec needs its own declaration.
 
 CI-selected specs cover Journal, shell routing, layout, themes, and mobile/settings accessibility. Co-work specs, visual regression, widget lab, calendar spike, and performance specs explicitly opt out with `@no-ci`. The live harness, fidelity package, and document-kernel determinism runner require separate local execution.
 

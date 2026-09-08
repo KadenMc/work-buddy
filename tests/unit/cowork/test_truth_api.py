@@ -70,6 +70,53 @@ def _url(seeded, suffix: str = "", **query: str) -> str:
     return f"/api/truth/doc/{document_id}/truth{suffix}?{encoded}"
 
 
+@pytest.mark.parametrize(
+    ("operation", "expected_digest"),
+    [
+        ("propose", "8a89f25d8e8bb94796f5ef33d4aebddf0998355d76fcca0d9ab5f42c42698b6b"),
+        ("connect", "63063b8ab1613d1f55708f1438e40e5cdfefd8c9fb40c2071227acb1ca3c7241"),
+    ],
+)
+def test_truth_mutation_gesture_preserves_exact_passage_whitespace(
+    operation, expected_digest,
+):
+    # Shared digest vectors also exercise the real HTTP client serializer.
+    selector = {
+        "kind": "text_quote",
+        "exact": "Selected  source\ntext",
+        "prefix": "\nBefore \t",
+        "suffix": " after\r\n",
+        "start": 10,
+        "end": 30,
+    }
+    payload = {
+        "expected_structured_head_sha256": "a" * 64,
+        "expected_ydoc_generation_sha256": "b" * 64,
+        "expected_projection_sha256": "c" * 64,
+        "selector": selector,
+        "role": "quote",
+        "claim": (
+            {"proposition": "A precise claim.", "claim_kind": "fact"}
+            if operation == "propose" else None
+        ),
+        "claim_id": None if operation == "propose" else "claim-2",
+    }
+
+    def digest(value):
+        return truth_api.truth_mutation_context_sha256(
+            operation=operation,
+            store_id="store-1",
+            document_id="doc-1",
+            payload=value,
+        )
+
+    assert digest(payload) == expected_digest
+    for field in ("exact", "prefix", "suffix"):
+        normalized = " ".join(selector[field].split())
+        changed = {**payload, "selector": {**selector, field: normalized}}
+        assert digest(changed) != expected_digest
+
+
 def _activation_body(policy_payload, head_sha256: str, **overrides):
     policy = policy_payload["policy"]
     value = {
@@ -204,6 +251,123 @@ def _confirm(client, seeded, claim_id: str) -> None:
         },
     )
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("status", "claim_kind", "valid_to", "expected_fact", "expected_stale"),
+    [
+        ("proposed", "fact", None, False, None),
+        ("confirmed", "preference", None, True, None),
+        ("needs_review", "fact", None, False, None),
+        ("confirmed", "fact", NOW, False, None),
+        ("rejected", "fact", None, False, "claim_terminal"),
+    ],
+)
+def test_expression_read_matches_truth_fact_and_receipt_classification(
+    client, seeded, status, claim_kind, valid_to, expected_fact, expected_stale
+):
+    store = seeded["store"]
+    claim = store.propose_claim(
+        proposition="The fixture records a checkable statement.",
+        claim_kind=claim_kind,
+        valid_to=valid_to,
+        actor=AGENT,
+    ).claim
+    span = expressions.ensure_document_span(
+        store,
+        document_id=seeded["document"].id,
+        selector=CompositeSelector(exact=DOC_QUOTE),
+        quote_exact=DOC_QUOTE,
+        actor=AGENT,
+    )
+    expression = expressions.mark_expression(
+        store, document_span_id=span.id, claim_ref=claim.id, role="quote", actor=AGENT
+    )
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///throwaway-truth-receipt.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content="A separate fixture receipt supports the statement.",
+    )
+    receipt = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(exact="A separate fixture receipt supports the statement."),
+        actor=HUMAN,
+    )
+    store.add_link(
+        from_claim_id=claim.id,
+        link_type="supports_span",
+        to_kind="evidence_span",
+        to_ref=receipt.id,
+        actor=HUMAN,
+    )
+    if status in {"confirmed", "needs_review"}:
+        _confirm(client, seeded, claim.id)
+    if status == "needs_review":
+        TruthLifecycle(store).mark_needs_review(
+            claim_id=claim.id,
+            actor=Actor("system", "truth-expression-test"),
+            basis_kind="sweep",
+            basis_ref="fixture-review",
+        )
+    if status == "rejected":
+        binding = client.get(_url(seeded, f"/claims/{claim.id}")).get_json()["decision_binding"]
+        rejected = client.post(
+            _url(seeded, f"/claims/{claim.id}/decisions"),
+            json={
+                "action": "reject",
+                "expected_canonical_sha256": binding["payload_sha256"],
+                "expected_context_sha256": binding["context_sha256"],
+            },
+        )
+        assert rejected.status_code == 200
+
+    projected = client.get(
+        f"/api/truth/doc/{seeded['document'].id}?store_id={seeded['store_id']}"
+    ).get_json()["expressions"][0]
+    listed = client.get(_url(seeded)).get_json()["claims"][0]
+    assert projected["expression_id"] == expression.id
+    assert projected["proposition"] == claim.proposition
+    assert projected["is_fact"] == listed["is_fact"] == expected_fact
+    assert projected["evidence_count"] == listed["receipt_count"] == 1
+    assert projected["stale"] == listed["document_connections"][0]["stale"] == expected_stale
+
+
+def test_expression_drift_is_projected_from_canonical_fingerprints(client, seeded):
+    from dataclasses import replace
+
+    from work_buddy.cowork.truth_surface import expression_stale_reason
+
+    store = seeded["store"]
+    claim = store.propose_claim(
+        proposition="The fixture's passage can change.", claim_kind="fact", actor=AGENT
+    ).claim
+    span = expressions.ensure_document_span(
+        store, document_id=seeded["document"].id,
+        selector=CompositeSelector(exact=DOC_QUOTE), quote_exact=DOC_QUOTE, actor=AGENT,
+    )
+    expression = expressions.mark_expression(
+        store, document_span_id=span.id, claim_ref=claim.id, role="quote", actor=AGENT
+    )
+    with store._read_connection() as conn:
+        assert expression_stale_reason(store, conn, expression) is None
+        assert expression_stale_reason(
+            store, conn, replace(expression, claim_canonical_sha256="0" * 64)
+        ) == "claim_changed"
+        assert expression_stale_reason(
+            store, conn, replace(expression, span_sha256="0" * 64)
+        ) == "span_missing"
+    documents.record_materialization(
+        store, document_id=seeded["document"].id,
+        content_sha256=sha256_bytes(b"Edited throwaway passage."), actor=HUMAN,
+    )
+    projected = client.get(
+        f"/api/truth/doc/{seeded['document'].id}?store_id={seeded['store_id']}"
+    ).get_json()["expressions"][0]
+    listed = client.get(_url(seeded)).get_json()["claims"][0]
+    assert projected["stale"] == "span_missing"
+    assert listed["document_connections"][0]["stale"] == "span_missing"
 
 
 def test_truth_list_separates_document_connections_from_folder_truth(

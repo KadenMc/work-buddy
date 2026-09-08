@@ -320,6 +320,130 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     expect(readied.failure).toBeUndefined();
   });
 
+  it("recovers actorless ready and older frozen typing without discarding its passage", async () => {
+    const key = "store:actorless-ready";
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const stage = new InMemoryCoworkPasteProvenanceIntentStage();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(key, backing, stage);
+    const ready = await outbox.append({
+      anchor,
+      idempotencyKey: "actorless-ready",
+      substantial: false,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: unknownCoworkProvenanceDetermination(),
+      status: "ready",
+    });
+    await expect(outbox.freezeRequest(ready.id, {
+      storeId: "store",
+      documentId: "document",
+      expectedStructuredHeadSha256: "a".repeat(64),
+    })).rejects.toThrow("capture-time actor binding");
+
+    // An older client could already have persisted this malformed request.
+    await backing.mutate(key, (record) => ({
+      record: {
+        ...record,
+        entries: record.entries.map((entry) => ({
+          ...entry,
+          status: "retryable_failure" as const,
+          frozenRequest: {
+            storeId: "store",
+            documentId: "document",
+            expectedStructuredHeadSha256: "a".repeat(64),
+            anchor: entry.anchor,
+            idempotencyKey: entry.idempotencyKey,
+            sourceKind: entry.sourceKind,
+            basisKind: entry.basisKind,
+            attestation: entry.determination,
+          },
+        })),
+      },
+      result: undefined,
+    }));
+    const reopened = new DurableCoworkPasteProvenanceOutbox(key, backing, stage);
+    expect(await reopened.list()).toHaveLength(1);
+    await reopened.deferDirectEntry(ready.id, "explicit-ready", unknownCoworkProvenanceDetermination(), {
+      code: "provenance_actor_unavailable_at_capture",
+      message: "No actor was captured.",
+      kind: "terminal",
+    });
+    const [recovered] = await new DurableCoworkPasteProvenanceOutbox(key, backing, stage).list();
+    expect(recovered).toMatchObject({
+      id: ready.id,
+      anchor,
+      passageExcerpt: ready.passageExcerpt,
+      capturedAt: ready.capturedAt,
+      sourceKind: "legacy",
+      basisKind: "user_attestation",
+      idempotencyKey: "explicit-ready",
+      status: "awaiting_determination",
+      requiresExplicitDetermination: true,
+    });
+    expect(recovered?.capturedActor).toBeUndefined();
+    expect(recovered?.frozenRequest).toBeUndefined();
+  });
+
+  it("requires a definite rejection of the current frozen attempt before deferring only that row", async () => {
+    const key = "store:rejected-direct";
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const stage = new InMemoryCoworkPasteProvenanceIntentStage();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(key, backing, stage);
+    const entry = await outbox.append({
+      anchor,
+      idempotencyKey: "rejected-attempt",
+      substantial: false,
+      capturedActor: actorIdentity,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: humanDetermination(),
+      status: "ready",
+    });
+    const unrelated = await outbox.append({
+      anchor: { ...anchor, exact: "another passage" },
+      idempotencyKey: "unrelated-paste",
+      substantial: true,
+      basisKind: "user_attestation",
+      determination: humanDetermination(),
+      status: "awaiting_determination",
+    });
+    const frozen = await outbox.freezeRequest(entry.id, {
+      storeId: "store",
+      documentId: "document",
+      expectedStructuredHeadSha256: "a".repeat(64),
+    });
+    const failure = {
+      code: "provenance_direct_entry_rejected",
+      message: "Invalid attribution payload.",
+      kind: "terminal" as const,
+    };
+    await expect(outbox.deferDirectEntry(entry.id, "fresh-attribution", unknownCoworkProvenanceDetermination(), failure)).rejects.toThrow("definitively rejected");
+    await expect(outbox.deferDirectEntry(entry.id, "fresh-attribution", unknownCoworkProvenanceDetermination(), failure, { idempotencyKey: "another-attempt", status: 400 })).rejects.toThrow("definitively rejected");
+    await expect(outbox.deferDirectEntry(entry.id, entry.idempotencyKey, unknownCoworkProvenanceDetermination(), failure, { idempotencyKey: entry.idempotencyKey, status: 400 })).rejects.toThrow("fresh determination");
+    expect((await outbox.list())[0]?.frozenRequest).toEqual(frozen.frozenRequest);
+
+    await outbox.deferDirectEntry(entry.id, "fresh-attribution", unknownCoworkProvenanceDetermination(), failure, { idempotencyKey: entry.idempotencyKey, status: 400 });
+    await outbox.updateDetermination(entry.id, humanDetermination());
+    const rows = await new DurableCoworkPasteProvenanceOutbox(key, backing, stage).list();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      id: entry.id,
+      anchor,
+      capturedAt: entry.capturedAt,
+      passageExcerpt: entry.passageExcerpt,
+      sourceKind: "legacy",
+      basisKind: "user_attestation",
+      idempotencyKey: "fresh-attribution",
+      status: "awaiting_determination",
+      requiresExplicitDetermination: true,
+      determination: { authorship: { kind: "human" } },
+      failure,
+    });
+    expect(rows[0]?.frozenRequest).toBeUndefined();
+    expect(rows[0]?.capturedActor).toBeUndefined();
+    expect(rows[1]).toEqual(unrelated);
+  });
+
   it("never lets a stale open-stage row overwrite a ready frozen request", async () => {
     const key = "store:frozen-stage";
     const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();

@@ -1070,7 +1070,7 @@
   text-underline-offset: 3px;
 }
 
-/* Expression claim-chip: a violet dashed underline, read-path only. */
+/* Truth status uses line patterns as well as color. */
 .wb-cowork-expression-mark,
 .wb-cowork-claim-anchor {
   text-decoration-line: underline;
@@ -1078,6 +1078,49 @@
   text-decoration-color: var(--wb-color-data-4);
   text-decoration-thickness: 1.5px;
   text-underline-offset: 3px;
+}
+
+.wb-cowork-expression-mark { cursor: pointer; }
+.wb-cowork-expression-mark[data-wb-is-fact="true"], .wb-cowork-truth-legend__fact {
+  text-decoration: underline solid var(--wb-color-status-success) 1.5px;
+  text-underline-offset: 3px;
+}
+.wb-cowork-truth-legend__proposed { text-decoration: underline dashed var(--wb-color-data-4) 1.5px; text-underline-offset: 3px; }
+.wb-cowork-expression-mark[data-claim-status="needs_review"],
+.wb-cowork-expression-mark[data-claim-status="challenged"], .wb-cowork-truth-legend__attention {
+  text-decoration: underline dotted var(--wb-color-status-warning) 2px;
+  text-underline-offset: 3px;
+}
+.wb-cowork-expression-mark[data-claim-status="needs_review"]::after,
+.wb-cowork-expression-mark[data-claim-status="challenged"]::after { content: " !"; font-size: .7em; vertical-align: super; }
+.wb-cowork-expression-mark[data-wb-stale]:not([data-wb-stale=""]), .wb-cowork-truth-legend__stale {
+  text-decoration: underline wavy var(--wb-color-status-warning) 1.5px;
+  text-underline-offset: 3px;
+}
+.wb-cowork-truth-legend { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 8px 16px; font-size: 12px; line-height: 1.8; }
+.wb-cowork-truth-hover {
+  position: fixed;
+  z-index: 90;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 16px));
+  padding: 12px;
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  color: var(--wb-color-text-primary);
+  background: var(--wb-color-surface-overlay);
+  box-shadow: var(--wb-shadow-overlay);
+}
+.wb-cowork-truth-hover p { margin: 6px 0; }
+.wb-cowork-truth-hover section + section { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--wb-color-border-default); }
+.wb-cowork-truth-hover button { font: inherit; color: var(--wb-color-text-primary); background: var(--wb-color-surface-raised); border: 1px solid var(--wb-color-border-default); border-radius: var(--wb-radius-control); padding: 6px 10px; cursor: pointer; }
+.wb-cowork-truth-hover button:focus-visible { outline: 2px solid var(--wb-color-focus-ring); outline-offset: 2px; }
+@media (forced-colors: active) {
+  .wb-cowork-expression-mark { text-decoration-color: CanvasText !important; }
+  .wb-cowork-truth-hover, .wb-cowork-document-menu, .wb-cowork-passage-handle { border-color: CanvasText; }
+  .wb-cowork-truth-hover, .wb-cowork-truth-hover button { color: CanvasText; background: Canvas; }
 }
 
 /*

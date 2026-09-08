@@ -19,7 +19,6 @@ import {
   provenanceSourceDetails,
   provenanceSourceFingerprint,
 } from "../provenance/view/semantics";
-import { claimRefMatchesId } from "../rail/items";
 
 const EMPTY_LEDGER_PROJECTION: CoworkLedgerDecorationProjection = {
   edits: [],
@@ -75,13 +74,13 @@ export const ledgerDecorationProjectionFromReview = (
       : { quoteAnchor: expression.quoteAnchor }),
     claimRef: expression.claimRef,
     claimStatus: expression.claimStatus,
+    isFact: expression.isFact ?? false,
+    proposition: expression.proposition ?? "",
+    evidenceCount: expression.evidenceCount ?? 0,
+    stale: expression.stale ?? null,
   })),
   claims: data.expressions.flatMap((expression) => {
-    const reviewClaim = data.claims.find((candidate) =>
-      claimRefMatchesId(expression.claimRef, candidate.claimId),
-    );
-    const claimId =
-      reviewClaim?.claimId ?? claimIdFromReference(expression.claimRef);
+    const claimId = claimIdFromReference(expression.claimRef);
     return claimId === null
       ? []
       : [

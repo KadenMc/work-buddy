@@ -1,7 +1,7 @@
 /**
  * The Review tab. Composes the drift strip, the filter lens, the stream or queue
- * mode, the mark bar for the current target, the read-only inspector, and the
- * sitting submit. It reads its local state from the RailStore through selectors
+ * mode, the mark bar for the current target, and the sitting submit. It reads
+ * its local state from the RailStore through selectors
  * (so a card re-renders only on its own slice) and its review data from the
  * provider seam. The staged sitting survives a reload through the draft
  * persistence, and a dirty sitting arms the route-change guard.
@@ -18,7 +18,6 @@ import {
 } from "react";
 
 import type { CoworkShortcutBindings } from "../keyboard";
-import { Inspector } from "./Inspector";
 import { VerificationAttentionFeed } from "./VerificationAttentionFeed";
 import { FilterLens } from "./FilterLens";
 import { MarkBar, type MarkBarTarget } from "./MarkBar";
@@ -28,13 +27,11 @@ import { StreamView } from "./StreamView";
 import type {
   CothinkItem,
   EvaluationResult,
-  StagedClaimDecision,
   StagedDecision,
   VerificationRecheckIntent,
 } from "./contracts";
 import { useDraftPersistence, useUnsavedChangesGuard } from "./dirty";
 import {
-  claimRefMatchesId,
   filterCounts,
   isSelectedItem,
   visibleItems,
@@ -57,7 +54,6 @@ interface ReviewApplyBlocker {
 
 interface ReviewApplyAttempt {
   readonly proposalDecisions: readonly StagedDecision[];
-  readonly claimDecisions: readonly StagedClaimDecision[];
   readonly retainedBlockers: readonly ReviewApplyBlocker[];
   /** The complete Review selection when this exact request was confirmed. */
   readonly selectionFingerprint: string;
@@ -91,12 +87,6 @@ const proposalDecisionTuple = (decision: StagedDecision) => [
   decision.preferenceText ?? null,
 ] as const;
 
-const claimDecisionTuple = (decision: StagedClaimDecision) => [
-  decision.claimId,
-  decision.verb,
-  decision.canonicalSha256,
-] as const;
-
 const sameProposalDecision = (
   left: StagedDecision | undefined,
   right: StagedDecision,
@@ -107,15 +97,11 @@ const sameProposalDecision = (
 
 const decisionsFingerprint = (
   decisions: Readonly<Record<string, StagedDecision>>,
-  claimDecisions: Readonly<Record<string, StagedClaimDecision>>,
 ): string =>
   JSON.stringify({
     proposals: Object.values(decisions)
       .sort((left, right) => left.proposalId.localeCompare(right.proposalId))
       .map(proposalDecisionTuple),
-    claims: Object.values(claimDecisions)
-      .sort((left, right) => left.claimId.localeCompare(right.claimId))
-      .map(claimDecisionTuple),
   });
 
 const mergeBlockers = (
@@ -149,7 +135,7 @@ export interface ReviewPanelProps {
   readonly onRecheckIntent?: (
     intent: VerificationRecheckIntent,
   ) => void | Promise<void>;
-  /** Actionable Truth claims cross-listed without reusing Review's old claim verbs. */
+  /** Actionable Truth claims cross-listed through their domain review surface. */
   readonly truthAttention?: ReactNode;
   onSubmitted?(): void;
 }
@@ -175,12 +161,10 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const selectedKind = useRailState(store, (state) => state.selectedKind);
   const queueIndex = useRailState(store, (state) => state.queueIndex);
   const decisions = useRailState(store, (state) => state.decisions);
-  const claimDecisions = useRailState(store, (state) => state.claimDecisions);
-  const inspectorSpanId = useRailState(store, (state) => state.inspectorSpanId);
   const dirty = useRailState(store, isDirty);
   const decisionFingerprint = useMemo(
-    () => decisionsFingerprint(decisions, claimDecisions),
-    [decisions, claimDecisions],
+    () => decisionsFingerprint(decisions),
+    [decisions],
   );
   const activeRecovery =
     applyNotice?.kind === "recovery" &&
@@ -201,21 +185,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
     [data, filter],
   );
   const counts = useMemo(
-    () => (data === null ? { all: 0, suggestions: 0, flags: 0, claims: 0 } : filterCounts(data)),
+    () => (data === null ? { all: 0, suggestions: 0, flags: 0 } : filterCounts(data)),
     [data],
   );
-  const spanByClaim = useMemo(() => {
-    const map = new Map<string, string>();
-    if (data === null) return map;
-    for (const claim of data.claims) {
-      const expression = data.expressions.find((candidate) =>
-        claimRefMatchesId(candidate.claimRef, claim.claimId),
-      );
-      if (expression !== undefined) map.set(claim.claimId, expression.spanId);
-    }
-    return map;
-  }, [data]);
-
   const clampedIndex = Math.min(queueIndex, Math.max(0, visible.length - 1));
   const selectedVisibleItem =
     selectedId === null || selectedKind === null
@@ -361,10 +333,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
         const next = fromIndex + offset;
         if (next >= visible.length) break;
         const item = visible[next];
-        const decided =
-          item.kind === "claim"
-            ? claimDecisions[item.id] !== undefined
-            : decisions[item.id] !== undefined;
+        const decided = decisions[item.id] !== undefined;
         if (!decided) {
           store.setQueueIndex(next);
           activateReviewTarget(item.id, item.kind);
@@ -372,7 +341,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
         }
       }
     },
-    [visible, decisions, claimDecisions, store, activateReviewTarget],
+    [visible, decisions, store, activateReviewTarget],
   );
 
   const stageProposal = useCallback(
@@ -380,16 +349,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
       if (submitting) return;
       setApplyNotice(null);
       store.stageDecision(decision);
-      if (mode === "queue") advanceToNextUndecided(clampedIndex);
-    },
-    [store, mode, advanceToNextUndecided, clampedIndex, submitting],
-  );
-
-  const stageClaim = useCallback(
-    (decision: StagedClaimDecision) => {
-      if (submitting) return;
-      setApplyNotice(null);
-      store.stageClaimDecision(decision);
       if (mode === "queue") advanceToNextUndecided(clampedIndex);
     },
     [store, mode, advanceToNextUndecided, clampedIndex, submitting],
@@ -417,16 +376,10 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const submit = useCallback(async (requestedAttempt?: ReviewApplyAttempt) => {
     if (data === null || submitting) return;
     const state = store.getState();
-    const selectionFingerprint = decisionsFingerprint(
-      state.decisions,
-      state.claimDecisions,
-    );
+    const selectionFingerprint = decisionsFingerprint(state.decisions);
     const attempt: ReviewApplyAttempt =
       requestedAttempt ?? {
         proposalDecisions: Object.values(state.decisions).map((decision) => ({
-          ...decision,
-        })),
-        claimDecisions: Object.values(state.claimDecisions).map((decision) => ({
           ...decision,
         })),
         retainedBlockers: [],
@@ -434,8 +387,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
       };
     if (
       attempt.selectionFingerprint !== selectionFingerprint ||
-      (attempt.proposalDecisions.length === 0 &&
-        attempt.claimDecisions.length === 0)
+      attempt.proposalDecisions.length === 0
     ) {
       return;
     }
@@ -445,7 +397,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
       const result = await props.provider.submitSitting({
         baseDocSha256: data.drift.currentFileSha256 ?? "",
         proposalDecisions: attempt.proposalDecisions,
-        claimDecisions: attempt.claimDecisions,
       });
       const failed = result.results.filter(
         (item) => item.result === "error" || item.result === "rejected_stale_view",
@@ -614,12 +565,10 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const markTarget: MarkBarTarget | undefined =
     targetItem === undefined
       ? undefined
-      : targetItem.kind === "claim"
-        ? { kind: "claim", claim: targetItem.claim }
-        : { kind: "proposal", proposal: targetItem.proposal };
+      : { kind: "proposal", proposal: targetItem.proposal };
 
   const pendingCount =
-    Object.keys(decisions).length + Object.keys(claimDecisions).length;
+    Object.keys(decisions).length;
   const proposalLabel = (proposalId: string) =>
     data.proposals.find((proposal) => proposal.proposalId === proposalId)?.tldr ??
     "Suggestion no longer shown";
@@ -792,11 +741,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
                     proposalDecisions: Object.values(current.decisions)
                       .filter((decision) => available.has(decision.proposalId))
                       .map((decision) => ({ ...decision })),
-                    claimDecisions: [],
                     retainedBlockers: activeRecovery.blockers,
                     selectionFingerprint: decisionsFingerprint(
                       current.decisions,
-                      current.claimDecisions,
                     ),
                   });
                 }}
@@ -889,62 +836,33 @@ export function ReviewPanel(props: ReviewPanelProps) {
             selectedId={selectedId}
             selectedKind={selectedKind}
             decisions={decisions}
-            claimDecisions={claimDecisions}
-            inspectSpanByClaim={spanByClaim}
             onActivate={activateReviewTarget}
             onScrollToAnchor={flashReviewTarget}
-            onInspect={(spanId) => store.openInspector(spanId)}
           />
         ) : (
           <QueueView
             items={visible}
             index={clampedIndex}
             decisions={decisions}
-            claimDecisions={claimDecisions}
-            inspectSpanByClaim={spanByClaim}
             bindings={props.shortcutBindings}
             keyboardNavigationEnabled={props.active ?? true}
             onNavigate={navigate}
             onActivate={activateReviewTarget}
             onScrollToAnchor={flashReviewTarget}
-            onInspect={(spanId) => store.openInspector(spanId)}
           />
         )}
       </div>
-
-      {inspectorSpanId !== null ? (
-        <Inspector
-          spanId={inspectorSpanId}
-          data={data}
-          onClose={() => store.closeInspector()}
-        />
-      ) : null}
 
       {markTarget !== undefined ? (
         <MarkBar
           disabled={submitting}
           target={markTarget}
-          stagedProposal={
-            markTarget.kind === "proposal"
-              ? decisions[markTarget.proposal.proposalId]
-              : undefined
-          }
-          stagedClaim={
-            markTarget.kind === "claim"
-              ? claimDecisions[markTarget.claim.claimId]
-              : undefined
-          }
+          stagedProposal={decisions[markTarget.proposal.proposalId]}
           onStageProposal={stageProposal}
-          onStageClaim={stageClaim}
           onClearProposal={(id) => {
             if (submitting) return;
             setApplyNotice(null);
             store.clearDecision(id);
-          }}
-          onClearClaim={(id) => {
-            if (submitting) return;
-            setApplyNotice(null);
-            store.clearClaimDecision(id);
           }}
           showHotkeys={mode === "queue"}
           bindings={props.shortcutBindings}

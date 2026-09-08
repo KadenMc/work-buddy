@@ -1,8 +1,7 @@
 /**
  * The mark bar. It renders the verb set for the selected item and stages one
  * per-item decision (section 1.5). Edit proposals get the seven edit verbs,
- * flags get Endorse / Dismiss / Redirect, claims get the six committed claim
- * verbs. When an edit's original passage cannot be placed, only Accept and
+ * flags get Endorse / Dismiss / Redirect. When an edit's original passage cannot be placed, only Accept and
  * Amend are disabled with a stated reason. Verbs that
  * need a replacement, a redirect note, or a verbatim negation collect it inline
  * before staging (S3), so a durable decision is never minted from a mis-click.
@@ -21,15 +20,11 @@ import {
   shouldIgnoreShortcutEvent,
 } from "../../../settings/keybindings";
 import type {
-  ClaimVerbKind,
   ProposalVerbKind,
-  ReviewClaim,
   ReviewProposal,
-  StagedClaimDecision,
   StagedDecision,
 } from "./contracts";
 import {
-  CLAIM_VERBS,
   isVerbDecidable,
   rejectAsFalseNeedsNegation,
   verbsForProposal,
@@ -37,18 +32,16 @@ import {
   type VerbTone,
 } from "./verbs";
 
-export type MarkBarTarget =
-  | { readonly kind: "proposal"; readonly proposal: ReviewProposal }
-  | { readonly kind: "claim"; readonly claim: ReviewClaim };
+export interface MarkBarTarget {
+  readonly kind: "proposal";
+  readonly proposal: ReviewProposal;
+}
 
 export interface MarkBarProps {
   readonly target: MarkBarTarget;
   readonly stagedProposal?: StagedDecision;
-  readonly stagedClaim?: StagedClaimDecision;
   onStageProposal(decision: StagedDecision): void;
-  onStageClaim(decision: StagedClaimDecision): void;
   onClearProposal(proposalId: string): void;
-  onClearClaim(claimId: string): void;
   /** Freeze every staging control while Review is applying a confirmed request. */
   readonly disabled?: boolean;
   /** Show the single-key hint on each verb (queue mode). */
@@ -92,10 +85,8 @@ export function MarkBar(props: MarkBarProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fieldId = useId();
   const bindings = props.bindings ?? DEFAULT_COWORK_SHORTCUT_BINDINGS;
-  const targetIdentity =
-    target.kind === "proposal"
-      ? `proposal:${target.proposal.proposalId}:${target.proposal.canonicalSha256}`
-      : `claim:${target.claim.claimId}:${target.claim.canonicalSha256}`;
+
+  const targetIdentity = `proposal:${target.proposal.proposalId}:${target.proposal.canonicalSha256}`;
 
   useEffect(() => {
     setInputVerb(null);
@@ -106,19 +97,9 @@ export function MarkBar(props: MarkBarProps) {
     if (inputVerb !== null) inputRef.current?.focus();
   }, [inputVerb]);
 
-  const contextLabel =
-    target.kind === "proposal"
-      ? `${target.proposal.kind === "flag" ? "Flag" : verbNoun(target.proposal)}, "${target.proposal.tldr}"`
-      : `Claim, "${truncate(target.claim.proposition)}"`;
-  const hashLabel =
-    target.kind === "proposal"
-      ? target.proposal.canonicalSha256
-      : target.claim.canonicalSha256;
-
-  const stagedVerb =
-    target.kind === "proposal"
-      ? props.stagedProposal?.verb
-      : props.stagedClaim?.verb;
+  const contextLabel = `${target.proposal.kind === "flag" ? "Flag" : verbNoun(target.proposal)}, "${target.proposal.tldr}"`;
+  const hashLabel = target.proposal.canonicalSha256;
+  const stagedVerb = props.stagedProposal?.verb;
 
   const openInput = useCallback((verb: ProposalVerbKind, prefill: string) => {
     if (props.disabled) return;
@@ -193,29 +174,10 @@ export function MarkBar(props: MarkBarProps) {
     cancelInput();
   };
 
-  const commitClaimVerb = useCallback((claim: ReviewClaim, verb: ClaimVerbKind) => {
-    if (props.disabled) return;
-    if (stagedVerb === verb) {
-      props.onClearClaim(claim.claimId);
-      return;
-    }
-    props.onStageClaim({
-      claimId: claim.claimId,
-      verb,
-      canonicalSha256: claim.canonicalSha256,
-    });
-  }, [
-    props.disabled,
-    props.onClearClaim,
-    props.onStageClaim,
-    stagedVerb,
-  ]);
-
   const targetUnavailable =
-    target.kind === "proposal" &&
-    ((target.proposal.applicability !== undefined &&
+    (target.proposal.applicability !== undefined &&
       target.proposal.applicability.status !== "applicable") ||
-      (target.proposal.applicability === undefined && !target.proposal.baseOk));
+    (target.proposal.applicability === undefined && !target.proposal.baseOk);
 
   useEffect(() => {
     if (!(props.keyboardShortcutsEnabled ?? false) || inputVerb !== null) {
@@ -223,26 +185,18 @@ export function MarkBar(props: MarkBarProps) {
     }
     const handler = (event: KeyboardEvent) => {
       if (event.repeat || shouldIgnoreShortcutEvent(event)) return;
-      const options =
-        target.kind === "proposal"
-          ? verbsForProposal(target.proposal.kind)
-          : CLAIM_VERBS;
+      const options = verbsForProposal(target.proposal.kind);
       for (const option of options) {
         if (option.shortcut === undefined) continue;
         if (!shortcutMatchesEvent(bindings[option.shortcut], event)) continue;
         if (
           props.disabled ||
-          (target.kind === "proposal" &&
-            !isVerbDecidable(target.proposal, option.verb as ProposalVerbKind))
+          !isVerbDecidable(target.proposal, option.verb)
         ) {
           return;
         }
         event.preventDefault();
-        if (target.kind === "proposal") {
-          commitProposalVerb(target.proposal, option.verb as ProposalVerbKind);
-        } else {
-          commitClaimVerb(target.claim, option.verb as ClaimVerbKind);
-        }
+        commitProposalVerb(target.proposal, option.verb);
         return;
       }
     };
@@ -250,7 +204,6 @@ export function MarkBar(props: MarkBarProps) {
     return () => window.removeEventListener("keydown", handler);
   }, [
     bindings,
-    commitClaimVerb,
     commitProposalVerb,
     inputVerb,
     props.disabled,
@@ -279,62 +232,36 @@ export function MarkBar(props: MarkBarProps) {
       ) : null}
 
       <div className="wb-cowork-rail__verbs" role="group" aria-label="Verbs">
-        {target.kind === "proposal"
-          ? withSeparators(verbsForProposal(target.proposal.kind)).map(
-              (entry, index) =>
-                entry === "sep" ? (
-                  <span
-                    key={`sep-${index}`}
-                    className="wb-cowork-rail__verb-sep"
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <VerbButton
-                    key={entry.verb + entry.label}
-                    option={entry}
-                    disabled={
-                      (props.disabled ?? false) ||
-                      !isVerbDecidable(target.proposal, entry.verb)
-                    }
-                    staged={stagedVerb === entry.verb}
-                    showHotkey={props.showHotkeys ?? false}
-                    shortcut={
-                      entry.shortcut === undefined
-                        ? undefined
-                        : bindings[entry.shortcut]
-                    }
-                    onClick={() =>
-                      commitProposalVerb(target.proposal, entry.verb)
-                    }
-                  />
-                ),
-            )
-          : withSeparators(CLAIM_VERBS).map((entry, index) =>
-              entry === "sep" ? (
-                <span
-                  key={`sep-${index}`}
-                  className="wb-cowork-rail__verb-sep"
-                  aria-hidden="true"
-                />
-              ) : (
-                <VerbButton
-                  key={entry.verb + entry.label}
-                  option={entry}
-                  disabled={props.disabled ?? false}
-                  staged={stagedVerb === entry.verb}
-                  showHotkey={props.showHotkeys ?? false}
-                  shortcut={
-                    entry.shortcut === undefined
-                      ? undefined
-                      : bindings[entry.shortcut]
-                  }
-                  onClick={() => commitClaimVerb(target.claim, entry.verb)}
-                />
-              ),
-            )}
+        {withSeparators(verbsForProposal(target.proposal.kind)).map(
+          (entry, index) =>
+            entry === "sep" ? (
+              <span
+                key={`sep-${index}`}
+                className="wb-cowork-rail__verb-sep"
+                aria-hidden="true"
+              />
+            ) : (
+              <VerbButton
+                key={entry.verb + entry.label}
+                option={entry}
+                disabled={
+                  (props.disabled ?? false) ||
+                  !isVerbDecidable(target.proposal, entry.verb)
+                }
+                staged={stagedVerb === entry.verb}
+                showHotkey={props.showHotkeys ?? false}
+                shortcut={
+                  entry.shortcut === undefined
+                    ? undefined
+                    : bindings[entry.shortcut]
+                }
+                onClick={() => commitProposalVerb(target.proposal, entry.verb)}
+              />
+            ),
+        )}
       </div>
 
-      {inputVerb !== null && target.kind === "proposal" ? (
+      {inputVerb !== null ? (
         <form
           className="wb-cowork-rail__verb-input"
           onSubmit={(event) => {
@@ -421,10 +348,6 @@ function verbNoun(proposal: ReviewProposal): string {
   if (proposal.changeType === "deletion") return "Deletion";
   if (proposal.changeType === "modification") return "Modification";
   return "Insertion";
-}
-
-function truncate(text: string, max = 48): string {
-  return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
 function shortHash(hash: string): string {

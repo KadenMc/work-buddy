@@ -325,6 +325,7 @@ describe("HttpCoworkTruthClient", () => {
             span_id: "span-1",
             document_id: "doc-1",
             document_title: "Draft",
+            stale: "span_missing",
             role: "quote",
             quote: "Selected source text",
             selector: { exact: "Selected source text", prefix: "", suffix: "", start: 10, end: 30 },
@@ -347,9 +348,11 @@ describe("HttpCoworkTruthClient", () => {
       kind: "text_quote",
       exact: "Selected source text",
     });
+    expect(snapshot.claims[0].connections[0].stale).toBe("span_missing");
 
     const detail = await client.loadClaim("claim-1");
     expect(detail.connections).toHaveLength(1);
+    expect(detail.connections[0].stale).toBeNull();
     expect(detail.lifecycle[0]).toMatchObject({ eventId: "event-1", actorKind: "agent" });
     expect(detail.receipts[0]).toMatchObject({ authorKind: "human", authorRef: "owner" });
     expect(detail.decisionBinding).toEqual({
@@ -428,6 +431,43 @@ describe("HttpCoworkTruthClient", () => {
       "cowork.truth.connect",
       "cowork.truth.claim_decision",
     ]);
+  });
+
+  it.each([
+    ["propose", "8a89f25d8e8bb94796f5ef33d4aebddf0998355d76fcca0d9ab5f42c42698b6b"],
+    ["connect", "63063b8ab1613d1f55708f1438e40e5cdfefd8c9fb40c2071227acb1ca3c7241"],
+  ] as const)("binds %s gestures to exact passage whitespace", async (operation, expectedDigest) => {
+    const fetchImpl = authenticatedFetch(async () => jsonResponse({
+      ok: true,
+      claim_id: "claim-2",
+      expression_id: "expression-1",
+    }));
+    const client = new HttpCoworkTruthClient({ storeId: "store-1", documentId: "doc-1", fetchImpl });
+    const exactCapture = {
+      ...capture,
+      selector: {
+        ...capture.selector,
+        exact: "Selected  source\ntext",
+        prefix: "\nBefore \t",
+        suffix: " after\r\n",
+      },
+    };
+
+    if (operation === "propose") {
+      await client.proposeClaim({ capture: exactCapture, proposition: "A precise claim.", claimKind: "fact", role: "quote" });
+    } else {
+      await client.connectClaim({ capture: exactCapture, claimId: "claim-2", role: "quote" });
+    }
+
+    const gestureRequest = fetchImpl.mock.calls.find(([input]) =>
+      String(input) === "/api/local-identity/gestures",
+    );
+    expect(JSON.parse(String(gestureRequest?.[1]?.body))).toMatchObject({
+      subject: `cowork-truth:${operation}:store-1:doc-1`,
+      context_sha256: expectedDigest,
+    });
+    const mutation = fetchImpl.mock.calls.find(([input]) => String(input).startsWith("/api/truth/"));
+    expect(JSON.parse(String(mutation?.[1]?.body)).selector).toEqual(exactCapture.selector);
   });
 
   it("preserves idempotency flags from connection receipts", async () => {

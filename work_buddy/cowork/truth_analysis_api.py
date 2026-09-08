@@ -237,7 +237,10 @@ def api_current_truth_analysis(document_id: str):
         return error
     runs = truth_analysis_runtime.runs_for_document(store.store_id, document.id)
     if not runs:
-        return _fail("No Truth analysis run exists for this document.", 404)
+        # An unanalyzed document is the ordinary state, not a missing
+        # resource: answer it explicitly so the browser does not log a failed
+        # request every time such a document opens.
+        return jsonify({"ok": True, "current": None})
     return jsonify(truth_analysis.analysis_run_view(runs[-1], store=store))
 
 

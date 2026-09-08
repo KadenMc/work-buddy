@@ -25,7 +25,6 @@ const staged = (proposalId: string, verb: DecisionItem["verb"] = "confirm") => (
 const submission = (items = [staged("p1")]): SittingSubmission => ({
   baseDocSha256: "f".repeat(64),
   proposalDecisions: items,
-  claimDecisions: [],
 });
 
 const itemResult = (
@@ -264,35 +263,6 @@ describe("submitCoworkSitting two-phase choreography", () => {
     expect(transport.commit).not.toHaveBeenCalled();
   });
 
-  it("defensively rejects mixed claim decisions before synchronization or transport", async () => {
-    const synchronize = vi.fn();
-    const transport: CoworkSittingTransport = {
-      prepare: vi.fn(),
-      commit: vi.fn(),
-      cancel: vi.fn(),
-    };
-    await expect(
-      submitCoworkSitting({
-        documentId: "doc",
-        storeId: "store",
-        submission: {
-          ...submission(),
-          claimDecisions: [
-            { claimId: "claim-1", verb: "confirm", canonicalSha256: "claim-sha" },
-          ],
-        },
-        workspace: {
-          ...workspace([]),
-          synchronize,
-        },
-        transport,
-        idempotencyKeyFor: vi.fn(),
-      }),
-    ).rejects.toThrow(/No sitting decisions were submitted/u);
-    expect(synchronize).not.toHaveBeenCalled();
-    expect(transport.prepare).not.toHaveBeenCalled();
-    expect(transport.commit).not.toHaveBeenCalled();
-  });
 });
 
 describe("routingDeliveriesFrom", () => {

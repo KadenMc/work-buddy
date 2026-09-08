@@ -382,11 +382,13 @@ def test_candidate_decision_fails_closed_without_local_identity(
     assert truth_analysis_runtime.candidate_decisions_for_run(run.run_id) == ()
 
 
-def test_current_returns_404_when_document_has_no_analysis(analysis_api_env):
+def test_current_answers_no_run_explicitly_when_document_has_no_analysis(
+    analysis_api_env,
+):
     response = analysis_api_env["client"].get(_url(analysis_api_env, "/current"))
 
-    assert response.status_code == 404
-    assert response.get_json()["ok"] is False
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "current": None}
 
 
 def test_start_requires_write_authority_while_existing_runs_remain_readable(
@@ -410,8 +412,8 @@ def test_start_requires_write_authority_while_existing_runs_remain_readable(
 
     assert blocked.status_code == 403
     assert blocked.get_json()["error"] == "Dashboard is in read-only mode"
-    assert observable.status_code == 404
-    assert "No Truth analysis run" in observable.get_json()["error"]
+    assert observable.status_code == 200
+    assert observable.get_json()["current"] is None
     assert env["enqueued"] == []
 
 

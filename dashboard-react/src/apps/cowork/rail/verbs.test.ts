@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import type { ReviewProposal } from "./contracts";
 import {
-  CLAIM_VERBS,
-  CLAIM_VERB_LABEL,
   EDIT_VERBS,
   FLAG_VERBS,
   PROPOSAL_VERB_LABEL,
@@ -63,24 +61,10 @@ describe("verb label to gesture-kind mapping (section 1.5)", () => {
     });
   });
 
-  it("carries the six committed claim verbs", () => {
-    expect(CLAIM_VERBS.map((verb) => verb.verb)).toEqual([
-      "confirm",
-      "reject",
-      "challenge",
-      "supersede",
-      "redact",
-      "propose",
-    ]);
-    expect(CLAIM_VERBS).toHaveLength(6);
-  });
 
-  it("round-trips every proposal and claim verb through its label map", () => {
+  it("round-trips every proposal verb through its label map", () => {
     for (const verb of [...EDIT_VERBS, ...FLAG_VERBS]) {
       expect(PROPOSAL_VERB_LABEL[verb.verb]).toBe(verb.label);
-    }
-    for (const verb of CLAIM_VERBS) {
-      expect(CLAIM_VERB_LABEL[verb.verb]).toBe(verb.label);
     }
   });
 

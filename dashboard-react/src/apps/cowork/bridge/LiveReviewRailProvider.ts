@@ -135,11 +135,6 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
   }
 
   async submitSitting(submission: SittingSubmission): Promise<SittingResult> {
-    if (submission.claimDecisions.length > 0) {
-      throw new Error(
-        "Live claim review is not available yet. No sitting decisions were submitted.",
-      );
-    }
     const workspace = this.#options.getSittingWorkspace();
     if (workspace === null) {
       throw new Error("the editor is not ready, so the sitting cannot be prepared");

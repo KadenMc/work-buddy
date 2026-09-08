@@ -172,11 +172,6 @@ export interface SubmitCoworkSittingParams {
 export const submitCoworkSitting = async (
   params: SubmitCoworkSittingParams,
 ): Promise<RailSittingResult> => {
-  if (params.submission.claimDecisions.length > 0) {
-    throw new Error(
-      "Live claim review is not available yet. No sitting decisions were submitted.",
-    );
-  }
   const items = params.submission.proposalDecisions.map(toDecisionItem);
   const preflight = await params.workspace.synchronize();
   const fingerprint = JSON.stringify({

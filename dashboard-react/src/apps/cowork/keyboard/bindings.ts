@@ -1,10 +1,16 @@
 import type { KeybindingCommandDefinition } from "../../../settings/contracts";
 import {
   coerceKeybindingMap,
+  validateKeybindingMap,
   type KeybindingMap,
 } from "../../../settings/keybindings";
 
 export const COWORK_SHORTCUT_COMMANDS = [
+  {
+    commandId: "openClaim",
+    label: "Open the claim under the caret",
+    description: "Open Truth for the claim at the editor cursor.",
+  },
   {
     commandId: "previous",
     label: "Previous review item",
@@ -45,6 +51,7 @@ export type CoworkShortcutBindings = Readonly<
 >;
 
 export const DEFAULT_COWORK_SHORTCUT_BINDINGS: CoworkShortcutBindings = {
+  openClaim: "Alt+Enter",
   previous: "j",
   next: "k",
   accept: "a",
@@ -65,6 +72,17 @@ export function resolveCoworkShortcutBindings(
 ): CoworkShortcutBindings {
   if (value === "vim") return LEGACY_VIM_BINDINGS;
   if (value === "inverted") return DEFAULT_COWORK_SHORTCUT_BINDINGS;
+  const reviewCommands = COWORK_SHORTCUT_COMMANDS.filter((command) => command.commandId !== "openClaim");
+  if (validateKeybindingMap(value, reviewCommands).length === 0) {
+    const existing = value as Record<string, string>;
+    // Every existing configured key retains its meaning during this additive
+    // upgrade. Seven distinct candidates guarantee room beside six bindings.
+    const openClaim = [
+      "Alt+Enter", "Alt+Shift+Enter", "Mod+Alt+Enter", "Mod+Alt+Shift+Enter",
+      "Mod+Shift+Enter", "Shift+Enter", "Mod+Enter",
+    ].find((chord) => !Object.values(existing).includes(chord))!;
+    return { ...existing, openClaim } as CoworkShortcutBindings;
+  }
   return coerceKeybindingMap(
     value,
     DEFAULT_COWORK_SHORTCUT_BINDINGS,

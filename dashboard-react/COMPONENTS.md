@@ -40,6 +40,15 @@ Reusable conversational surface for any view that mounts a house conversation. K
 | AssistedDraftRuntimeProvider, useAssistedDraft, AssistDraftButton | `src/dashboard/assistance/` | Opt-in assistance for declared widget drafts, using the existing `ConversationChat` surface; typed field patches, focused-field suggestions, revision fencing, persisted receipts, conditional Undo, and reset-generation cancellation. Not a placeable widget. See `services/dashboard/react/assisted-drafts` |
 | TaskDraftFields | `src/apps/tasks/composer/TaskDraftFields.tsx` | One App-owned field renderer shared by Quick Add and durable proposal review; supports focus/assistance markers without owning submission |
 
+## Co-work passage actions
+
+| Component | Location | Contract |
+|---|---|---|
+| CoworkDocumentContextMenu | `src/apps/cowork/menus/` | Lens-aware passage actions shared by right-click, keyboard, and the selection handle. Captures the target at opening and delegates Truth decisions to the rail. See `cowork/truth-surface` |
+| CoworkPassageRequest | `src/apps/cowork/feedback/` | Verbatim change request anchored to a frozen passage, with draft retention after failure and a Chat handoff |
+| TruthHoverCard, TruthLegend | `src/apps/cowork/truth/view/` | Truth-lens explanation and status legend from the expression projection. Hover is read-only and Open in Truth selects the claim |
+| TruthPanel, TruthStore | `src/apps/cowork/truth/` | Authoritative claim list, passage connections, evidence and two-stage human decisions. Shared action registration keeps passage menus and panel controls consistent |
+
 ## Adding an entry
 
 New reusable components add a row (or a new family section) in the same landing that creates them, with the knowledge unit cross-referenced when one exists. Entries describe the current contract, never the change history.

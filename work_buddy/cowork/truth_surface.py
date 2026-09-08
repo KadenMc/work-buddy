@@ -35,7 +35,7 @@ from work_buddy.truth.source_provenance import (
     record_candidate_decision,
     validate_actor_ref_json,
 )
-from work_buddy.truth.store import ClaimRecord, DocumentRecord, TruthStore
+from work_buddy.truth.store import ClaimRecord, DocumentRecord, ExpressionRecord, TruthStore
 
 
 _LIST_FILTERS = frozenset(
@@ -368,6 +368,38 @@ def _provenance_wire(
     }
 
 
+def expression_stale_reason(
+    store: TruthStore,
+    conn: sqlite3.Connection,
+    expression: ExpressionRecord,
+) -> str | None:
+    """Project the kernel's expression drift without changing its captured link."""
+
+    try:
+        claim_side_stale = expressions._claim_side_stale_locked(store, conn, expression)
+    except ValueError:
+        # Malformed portable references must not hide the rest of the document.
+        return "claim_changed"
+    if claim_side_stale:
+        claim_id = _local_claim_id(
+            store, expression.claim_ref_kind, expression.claim_ref
+        )
+        claim = None if claim_id is None else store._get_claim_locked(conn, claim_id)
+        status = (
+            None
+            if claim_id is None
+            else store._latest_status_locked(conn, claim_id, include_overlay=False)
+        )
+        if (claim is not None and claim.redacted_at is not None) or (
+            status is not None and status.status in TERMINAL_STATUSES
+        ):
+            return "claim_terminal"
+        return "claim_changed"
+    if expressions._span_side_stale_locked(store, conn, expression):
+        return "span_missing"
+    return None
+
+
 def _connections(
     store: TruthStore,
     conn: sqlite3.Connection,
@@ -382,6 +414,9 @@ def _connections(
     ).fetchall()
     by_claim: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
+        expression = ExpressionRecord(
+            **{field: row[field] for field in ExpressionRecord.__dataclass_fields__}
+        )
         claim_id = _local_claim_id(
             store,
             str(row["claim_ref_kind"]),
@@ -400,6 +435,7 @@ def _connections(
                 "quote": row["quote_exact"] or "",
                 "selector": _selector_wire(row["selector_json"]),
                 "claim_canonical_sha256": row["claim_canonical_sha256"],
+                "stale": expression_stale_reason(store, conn, expression),
                 "created_at": row["created_at"],
                 "created_by": {
                     "kind": row["created_by_kind"],

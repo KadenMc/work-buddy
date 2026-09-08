@@ -75,7 +75,7 @@ from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
-from work_buddy.truth.identity import parse_truth_uri, sha256_text
+from work_buddy.truth.identity import parse_truth_uri, sha256_text, utc_now
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import (
     DocumentRecord,
@@ -347,12 +347,20 @@ def _local_expression_claim_id(store: TruthStore, expression) -> str | None:
 
 def _expression_entries(
     store: TruthStore,
+    conn: sqlite3.Connection,
     expr_records,
     span_by_id,
     claim_states,
 ) -> list[dict]:
     if not expr_records:
         return []
+    from work_buddy.cowork.truth_surface import _receipt_counts, expression_stale_reason
+
+    fact_ids = frozenset(
+        state.claim_id
+        for state in queries.current_claims(store, valid_at=utc_now(), conn=conn)
+    )
+    receipt_counts = _receipt_counts(conn)
     state_by_id = {state.claim.id: state for state in claim_states}
     entries: list[dict] = []
     for expression in expr_records:
@@ -384,6 +392,14 @@ def _expression_entries(
                 "claim_kind": (
                     None if claim_state is None else claim_state.claim.claim_kind
                 ),
+                "is_fact": local_claim_id in fact_ids,
+                "proposition": (
+                    None
+                    if claim_state is None or claim_state.claim.redacted_at is not None
+                    else claim_state.claim.proposition
+                ),
+                "evidence_count": receipt_counts.get(local_claim_id, 0),
+                "stale": expression_stale_reason(store, conn, expression),
             }
         )
     return entries
@@ -585,6 +601,13 @@ def api_doc_get(document_id: str):
             if expr_records
             else ()
         )
+        expression_entries = _expression_entries(
+            store,
+            conn,
+            expr_records,
+            {row["id"]: row for row in span_rows},
+            claim_states,
+        )
         lifecycle = documents.current_lifecycle(
             store,
             document.id,
@@ -630,7 +653,6 @@ def api_doc_get(document_id: str):
             ],
             conn=conn,
         )
-    span_by_id = {row["id"]: row for row in span_rows}
     observed_source_sha256 = _current_file_sha256(store, document)
     current_file_sha256 = (
         document.content_sha256
@@ -686,12 +708,7 @@ def api_doc_get(document_id: str):
             )
             for item in open_props
         ],
-        "expressions": _expression_entries(
-            store,
-            expr_records,
-            span_by_id,
-            claim_states,
-        ),
+        "expressions": expression_entries,
         "provenance_spans": _provenance_spans(span_rows),
         "authorship_attestations": authorship_attestations,
         "provenance": provenance_view,

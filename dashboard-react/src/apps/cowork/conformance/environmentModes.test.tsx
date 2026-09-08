@@ -3,14 +3,15 @@
  * cannot evaluate as CSS: forced-colors and reduced-motion. The proof drives each
  * signal through a controllable matchMedia and reads it back off the shared theme
  * runtime, so the surface is shown to OBSERVE the environment. For forced-colors
- * it then asserts the redundant non-colour encoding the CSS relies on: every
- * trust, drift, kind, and status state names itself in text and on a data
+ * it then asserts the redundant non-colour encoding the CSS relies on: drift,
+ * proposal kind, and staged decisions name themselves in text and on a data
  * attribute, so meaning survives when the palette is replaced by system colours
  * (SP-6 G3, C1 section 5.4). The pixel-level rendering under the real @media
  * blocks is proven in the browser e2e specs, not in jsdom.
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ThemeProvider, useTheme } from "../../../theme/ThemeProvider";
@@ -95,7 +96,8 @@ describe("Co-work environment modes", () => {
     vi.unstubAllGlobals();
   });
 
-  it("observes forced-colors and keeps a non-colour encoding for every state", async () => {
+  it("observes forced-colors and keeps drift, proposal kinds, and decisions readable", async () => {
+    const user = userEvent.setup();
     setMedia(FORCED_COLORS_QUERY, true);
     const { container } = renderRail();
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
@@ -111,17 +113,20 @@ describe("Co-work environment modes", () => {
     expect(drift?.textContent?.trim().length ?? 0).toBeGreaterThan(0);
     expect(screen.getByText(/In sync, no drift/)).toBeVisible();
 
-    // Kind: the insertion card names its type in text, not only by colour.
-    const kinded = container.querySelector('.wb-cowork-rail__card[data-kind]');
-    expect(kinded).not.toBeNull();
-    expect(screen.getAllByText(/Insertion|Deletion|Flag/).length).toBeGreaterThan(
-      0,
-    );
+    for (const [kind, label] of [
+      ["insertion", "Insertion"], ["deletion", "Deletion"], ["flag", "Flag"],
+    ] as const) {
+      const card = container.querySelector(`.wb-cowork-rail__card[data-kind="${kind}"]`);
+      expect(card).not.toBeNull();
+      expect(card).toHaveTextContent(label);
+    }
 
-    // Claim status: the confirmed claim carries a text label and a data attribute.
-    const status = container.querySelector("[data-status]");
-    expect(status).not.toBeNull();
-    expect(screen.getByText("Confirmed")).toBeVisible();
+    // A staged decision remains readable when its background colour disappears.
+    await user.click(screen.getByRole("button", { name: S1_TLDR }));
+    await user.click(screen.getByRole("button", { name: "Accept" }));
+    const staged = container.querySelector('.wb-cowork-rail__card[data-staged="true"]');
+    expect(staged).not.toBeNull();
+    expect(staged).toHaveTextContent("Decision: Accept");
 
     await expectNoAccessibilityViolations(container);
   });

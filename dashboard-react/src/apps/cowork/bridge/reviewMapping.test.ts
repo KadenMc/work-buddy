@@ -104,6 +104,52 @@ describe("deriveAnchorLabel", () => {
 });
 
 describe("mapR2ToReview", () => {
+  it("preserves claim classification and passage staleness in expressions", () => {
+    const mapped = mapR2ToReview({
+      ...payload([]),
+      expressions: [{
+        expression_id: "expression-1",
+        span_id: "span-1",
+        node_id_hint: null,
+        quote: "The passage expresses the claim.",
+        claim_ref: "wb-truth://store/claim/claim-1",
+        claim_status: "needs_review",
+        claim_kind: "measurement",
+        is_fact: false,
+        stale: "claim_changed",
+        proposition: "A measured proposition.",
+        evidence_count: 2,
+      }],
+    });
+    expect(mapped.railData.expressions[0]).toMatchObject({
+      isFact: false,
+      stale: "claim_changed",
+      proposition: "A measured proposition.",
+      evidenceCount: 2,
+    });
+  });
+
+  it("does not infer fact authority from a confirmed status on older payloads", () => {
+    const mapped = mapR2ToReview({
+      ...payload([]),
+      expressions: [{
+        expression_id: "expression-1",
+        span_id: "span-1",
+        node_id_hint: null,
+        quote: "A quoted passage.",
+        claim_ref: "wb-truth://store/claim/claim-1",
+        claim_status: "confirmed",
+        claim_kind: "measurement",
+      }],
+    });
+    expect(mapped.railData.expressions[0]).toMatchObject({
+      isFact: false,
+      stale: null,
+      proposition: "",
+      evidenceCount: 0,
+    });
+  });
+
   it("projects one payload into rail cards and proposal inputs from one array", () => {
     const mapped = mapR2ToReview(
       payload([

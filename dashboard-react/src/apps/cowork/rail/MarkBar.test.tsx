@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import { DEFAULT_COWORK_SHORTCUT_BINDINGS } from "../keyboard";
 import { MarkBar, type MarkBarProps } from "./MarkBar";
-import type { ReviewClaim, ReviewProposal } from "./contracts";
+import type { ReviewProposal } from "./contracts";
 
 function proposal(overrides: Partial<ReviewProposal> = {}): ReviewProposal {
   return {
@@ -31,30 +31,13 @@ function proposal(overrides: Partial<ReviewProposal> = {}): ReviewProposal {
   };
 }
 
-function claim(overrides: Partial<ReviewClaim> = {}): ReviewClaim {
-  return {
-    claimId: "cl1",
-    proposition: "Latency dropped after prewarming.",
-    status: "confirmed",
-    claimKind: "measurement",
-    canonicalSha256: "canon-cl1",
-    rationale: "Measured.",
-    receipts: [],
-    anchorLabel: "paragraph 6",
-    documentOrder: 6,
-    ...overrides,
-  };
-}
-
 function handlers(): Pick<
   MarkBarProps,
-  "onStageProposal" | "onStageClaim" | "onClearProposal" | "onClearClaim"
+  "onStageProposal" | "onClearProposal"
 > {
   return {
     onStageProposal: vi.fn(),
-    onStageClaim: vi.fn(),
     onClearProposal: vi.fn(),
-    onClearClaim: vi.fn(),
   };
 }
 
@@ -445,47 +428,7 @@ describe("MarkBar flag verbs", () => {
   });
 });
 
-describe("MarkBar claim verbs", () => {
-  it("renders the six committed claim verbs and stages a claim confirm", async () => {
-    const cbs = handlers();
-    render(<MarkBar target={{ kind: "claim", claim: claim() }} {...cbs} />);
-    for (const label of [
-      "Confirm",
-      "Reject",
-      "Challenge",
-      "Supersede",
-      "Redact",
-      "Propose",
-    ]) {
-      expect(screen.getByRole("button", { name: label })).toBeVisible();
-    }
-    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
-    expect(cbs.onStageClaim).toHaveBeenCalledWith({
-      claimId: "cl1",
-      verb: "confirm",
-      canonicalSha256: "canon-cl1",
-    });
-  });
-
-  it("maps the positive and negative Queue shortcuts to claim verbs", async () => {
-    const cbs = handlers();
-    render(
-      <MarkBar
-        target={{ kind: "claim", claim: claim() }}
-        keyboardShortcutsEnabled
-        {...cbs}
-      />,
-    );
-    await userEvent.keyboard("a");
-    expect(cbs.onStageClaim).toHaveBeenLastCalledWith(
-      expect.objectContaining({ verb: "confirm" }),
-    );
-    await userEvent.keyboard("x");
-    expect(cbs.onStageClaim).toHaveBeenLastCalledWith(
-      expect.objectContaining({ verb: "reject" }),
-    );
-  });
-
+describe("MarkBar accessibility", () => {
   it("has no accessibility violations", async () => {
     const cbs = handlers();
     const { container } = render(

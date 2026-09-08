@@ -2,7 +2,7 @@
 name: Co-work Truth surface
 kind: system
 description: First-class Co-work rail surface for observing and managing the claims, expressions, evidence, decision provenance, and lifecycle beneath a document or Folder.
-summary: Truth is the AI-assisted domain workspace for discovering, grounding, deciding, and maintaining claims, expressions, evidence, decision provenance, and lifecycle beneath a document or Folder. Document source, authorship, and human-review attestations have their own Provenance rail and editor lens. Analyze passage prepares atomic claims and may perform bounded guarded web research; Review cross-lists attention, Chat remains a peer interaction surface, and Verify remains criteria evaluation.
+summary: Truth is the AI-assisted domain workspace for discovering, grounding, deciding, and maintaining claims, expressions, evidence, decision provenance, and lifecycle beneath a document or Folder. Its editor marks, hover, passage navigation, and shared document menu lead to the same claim detail and exact human decisions. Document source, authorship, and human-review attestations have their own Provenance rail and editor lens. Analyze passage prepares atomic claims and may perform bounded guarded web research; Review owns document-change decisions, Chat remains a peer interaction surface, and Verify remains criteria evaluation.
 entry_points:
 - work_buddy.truth.queries
 - work_buddy.truth.expressions
@@ -39,6 +39,21 @@ dev_notes: |-
   base_status separate from the needs_review overlay. SSE is only an
   invalidation nudge followed by an authoritative repull.
 
+  Expression enrichment uses the document read's existing transaction snapshot,
+  the canonical current-claim predicate used by the Facts filter, and the
+  panel's positive-receipt classification. The client must not infer fact
+  status from confirmed alone. The shared staleness helper gives claim_terminal
+  precedence over claim_changed, then span_missing, then null. Its span-side
+  check includes the captured document content fingerprint; it does not rewrite
+  expressions or infer replacement connections.
+
+  Locally mapped expression ranges preserve stale placement through editor
+  edits and projection refresh while that location remains provable. Discard
+  continuity when a replacement deletes the range or the selector changes.
+  Reload never guesses a stale range. Terminal expressions are omitted from
+  persistent marks; explicit navigation may resolve their selector uniquely
+  and use a temporary highlight without restoring the persistent mark.
+
   Provenance likewise owns a dedicated typed provider and panel projection. It
   may share the authoritative open-document snapshot source, but Review and
   Truth do not become general provenance transports. Its Mark reviewed path
@@ -68,9 +83,12 @@ dev_notes: |-
   hashes server-side. This staging boundary is mandatory while expressions
   have no safe correction/retraction lifecycle.
 
-  Truth owns the full candidate/evidence review. Review cross-lists durable
-  claim attention and may offer a compact analysis-ready handoff. Starting,
-  steering, or explaining Truth analysis through Chat is a later extension;
+  Truth owns the full candidate/evidence review. Review's TruthAttentionFeed
+  passively cross-lists proposed, challenged, and active needs-review claims
+  through the same TruthRailProvider. Activating an item selects its permanent
+  claim ID in TruthStore and opens Truth. This does not restore ReviewClaim or
+  its six-verb decision path. A compact analysis-ready handoff remains reserved.
+  Starting, steering, or explaining Truth analysis through Chat is a later extension;
   when built, it cannot implicitly accept or confirm. Verify remains
   exact-target criteria evaluation. Any prose change goes to Review as an
   ordinary immutable proposal.
@@ -81,6 +99,19 @@ dev_notes: |-
   separate states. Disclose actual provider, content egress, source classes,
   fallback, and cost behavior; never claim execution was local unless the
   authorization guarantees it.
+
+  Header and document-menu creation actions share the Truth action controller.
+  Freeze the explicit passage at menu opening, recheck document identity before
+  dispatch, and pass the same capture into the canonical action. The menu opens
+  staged claim decisions in Truth rather than performing a decision itself.
+  Decision drafts reset when the claim fingerprint or contextSha256 changes;
+  receipt-only refreshes therefore require another explicit review.
+
+  Truth mutation gesture digests serialize exact request values with sorted
+  keys and compact JSON while preserving string whitespace, matching the
+  browser. Do not use semantic claim canonicalization for authority digests:
+  quote-selector boundary whitespace and multiline selections are part of the
+  authorized context.
 ---
 
 # Co-work Truth surface
@@ -89,7 +120,7 @@ Truth is a first-class user surface within Co-work. The rail tabs are
 **Review | Provenance | Truth | Chat**:
 
 - **Review** answers “What needs my decision?” and remains the inbox for edit
-  proposals, flags, evaluation results, and cross-listed claim attention.
+  proposals, flags, and evaluation results. Claim attention belongs to Truth.
 - **Provenance** answers “Where did these words come from, who is said to have
   written them, and what human review is recorded?” It owns document-level and
   exact-span source/authorship/review attestations.
@@ -120,6 +151,14 @@ why the claim is believed. A selected or matching passage does not become
 evidence automatically. The needs-review overlay is also separate from the
 claim's base lifecycle status.
 
+Document API expression records expose `is_fact` for current fact status,
+`proposition` for readable claim text, `evidence_count` for positive recorded
+receipts, and `stale` for connection health. Redacted propositions are absent.
+`stale` is `null`, `claim_terminal`, `claim_changed`, or `span_missing`; Truth
+passage connections carry the same value. A span-side warning can reflect a
+changed document version even when the quote still resolves, so it calls for
+review rather than proving that the passage disappeared.
+
 A **candidate claim** is a proposition prepared by an analysis run and is not
 yet a ledger claim or fact. An **evidence candidate** is a retrieved source
 passage which has not yet been selected and captured as an immutable evidence
@@ -131,13 +170,20 @@ Folder's complete claim ledger, including claims expressed elsewhere and
 unconnected claims. Routine UI says Folder, not bare scope.
 
 Available state filters are **All claims**, **Facts**, **Proposed**, **Needs
-review**, **Challenged**, and **Unconnected**. The detail view shows the exact
-proposition, base and overlay state, claim kind, validity, creator, all
-expressions and roles, receipts/provenance, and lifecycle history. Each
-expression has its own exact passage-navigation action. Activating an
-expression in another document opens that document by its full identity and
-reveals the selected expression exactly once; later refreshes may restore
-emphasis but must not replay the scroll.
+review**, **Challenged**, and **Unconnected**. Claim detail leads with the exact
+proposition and a plain-language state, then passages, evidence, and the
+applicable decision. Source trust and preparation are explained beside the
+record they describe. **History and record details** keeps lifecycle history,
+separate status dimensions, structured metadata, and fingerprints available
+without competing with that decision. Preparation and human addition remain
+separate; an addition time does not stand in for an unavailable analysis time.
+
+**Passages** groups connections by document, puts the open document first, and
+orders resolvable passages as they appear in that document. Missing or ambiguous
+locations follow deterministically. Each connection has its own **Show in
+document** action, and **Next passage** cycles through the same order. A passage
+in another document opens that document and reveals the selected passage once.
+Refresh can restore emphasis but never repeats navigation.
 
 ## User jobs and staged workflows
 
@@ -159,7 +205,9 @@ would materially help assess a factual claim. Each run may issue three queries,
 admit five lead-only hits per query, and fetch only its own server-issued hit
 IDs. The user receives prepared cards rather than a verbatim copy in a manual
 form. **Add claim manually** and **Connect selection manually** stay available
-under a secondary Add or overflow affordance.
+under **Add or connect claim**. When Analyze passage is unavailable, its reason
+is visible beside the controls. Analysis and claim creation are available from
+the claims list; claim detail retains its own decision flow.
 
 The exact selected passage is capped at 32 KiB of UTF-8. Existing Truth context
 is capped at 32 KiB serialized, including at most 200 claims and 200 recorded
@@ -181,22 +229,23 @@ the later workflow or an unqueried source class already ran.
 
 ## Review cross-listing
 
-Only claims requiring attention are cross-listed into Review: proposed,
-challenged, and active needs-review claims. Ordinary confirmed facts and
-terminal history remain observable in Truth without filling the modification
-inbox. Both projections use the same permanent claim ID, so a legitimate
-decision refreshes both surfaces.
+Review passively cross-lists the current document's proposed, challenged, and
+active needs-review claims under **Truth needs attention**. Activating an item
+opens that exact claim in Truth, where its evidence and applicable decisions
+are available. Review does not offer a separate claim decision bar. Ordinary
+confirmed facts and terminal history remain observable in Truth.
 
 Truth owns the complete domain review for prepared claims, inferred
 expressions, evidence candidates and receipts, support assessments, conflicts,
-and lifecycle decisions. Review may carry one compact handoff when an analysis
-is ready, but it does not duplicate that workspace. Any prose correction
+and lifecycle decisions. A compact analysis-ready handoff remains reserved and
+must not duplicate that workspace. Any prose correction
 prepared while grounding or maintaining a claim becomes an ordinary immutable
 proposal in Review.
 
-Cross-listed Truth attention belongs inside Review's existing scroll body. An
-unbounded claim list must never sit above that body and compress the proposal
-workspace.
+The attention feed sits inside Review's existing scroll body and reads the
+same Truth provider as the domain panel. A claim decision refreshes that shared
+projection. The feed does not create a separate scroll region above Review or
+compress the proposal workspace.
 
 Truth does not host edit proposals, Verify setup, Co-think controls, or a second
 conversation. Starting, steering, or explaining Truth analysis through Chat is
@@ -219,9 +268,33 @@ Review selects the review lens, Provenance selects the provenance lens, Truth
 selects the truth lens, and Chat selects neutral. Temporary Working on and Chat
 passage highlights remain independent. A lens switch replaces decorations only
 and clears incompatible focus; it never changes content, selection, scroll, or
-persisted document state. Clicking a claim or one of its expressions issues one
-present-user navigation command. Refresh may restore emphasis but never replay
-that reveal.
+persisted document state. Truth marks distinguish current facts from claims
+that still need judgment through text, underline patterns, and glyphs. Stale
+connections have a separate treatment, and the legend explains the meanings
+and reports claims in view, facts, claims to judge, and unlocated passages.
+Terminal claims retain history in Truth without persistent editor marks.
+
+Hover explains the proposition, state, and recorded evidence count and offers
+**Open in Truth**. It does not change the claim. Expanded text selection
+suppresses hover, and Escape, scrolling, focus changes, or leaving the lens
+dismiss it. Clicking a marked passage opens its claim detail. The shared
+**Passage actions** menu offers Truth actions for that exact passage; **Show
+claim** opens detail, while **Confirm claim…** and **Reject claim…** open the
+same staged decision used by detail. An unmarked selection can be analyzed,
+connected, or added through the same actions as the Truth header.
+
+Selecting a claim card highlights all its located passages. When the editor is
+visible beside Truth and none of those passages is in its viewport, that click
+reveals the first passage in document order; when any passage is visible, the
+editor stays put. Passive selection and refresh only restore emphasis.
+**Show in document** and **Next passage** remain
+explicit navigation, including for terminal history through a temporary
+highlight when the exact passage still resolves. Missing or ambiguous passages
+report that they could not be located instead of jumping to a guessed range.
+On narrow screens, explicit navigation opens the Editor before revealing.
+A stale connection can still resolve: its warning asks the user to review the
+connection against the current document version rather than asserting that
+the passage disappeared.
 
 Truth still explains provenance attached to Truth-domain records: who prepared
 or decided a candidate, how evidence was acquired, and what source occurrence a
@@ -260,13 +333,19 @@ Mutations call canonical Truth/Co-work operations. Agents may propose and
 humans retain confirmation authority over exact content and displayed context.
 That decision context includes lifecycle and review state, support and premise
 assessment, conflicts and derivations, source-integrity state, and prose
-connections—not only the claim text and receipt rows. Any drift requires a
-fresh review.
+connections as well as claim text and receipt rows. Any drift requires a fresh
+review, and a changed claim or decision context dismisses an open confirmation.
 
 Only an exact human decision can confirm a claim. Editing a candidate changes
 the payload and requires a fresh binding. Surrounding context may resolve a
 reference but cannot silently widen the expression span. There is no Confirm
 all; each confirmed proposition has its own exact gesture.
+
+Rejecting a proposed claim records that it was rejected without implying it
+had been a confirmed fact. **Add a corrected claim** starts the ordinary
+proposal form with the rejected proposition, kind, and passage role filled in.
+It captures the exact connected passage again and requires an explicit add;
+it neither edits prose nor rewrites the rejected claim's history.
 
 Provenance keeps preparation separate from addition. Candidate output is
 AI-prepared and bound to its run, provider/model authorization, and hashes. A
@@ -337,8 +416,8 @@ List scroll is independent from transient claim details and selection forms.
 Entering a drill-in starts it at the top without overwriting the saved list
 position; returning restores the list. Scope and filter changes deliberately
 reset the new list to the top. Paginated backend reads are exhausted by the
-provider so Folder claims, connection candidates, and Review cross-listing are
-never silently capped at the first page.
+provider so Folder claims and connection candidates are never silently capped
+at the first page.
 
 Analysis progress, prepared candidates, and review position survive refresh,
 tab changes, and sidecar restart without replaying editor navigation. A changed

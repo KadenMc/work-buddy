@@ -7,7 +7,7 @@
 
 import { useEffect } from "react";
 
-import type { StagedClaimDecision, StagedDecision } from "./contracts";
+import type { StagedDecision } from "./contracts";
 import { isDirty } from "./store";
 import type { RailStore } from "./store";
 
@@ -16,7 +16,6 @@ const DRAFT_VERSION = 1;
 interface DraftPayload {
   readonly version: number;
   readonly decisions: Record<string, StagedDecision>;
-  readonly claimDecisions: Record<string, StagedClaimDecision>;
 }
 
 /** The localStorage key for one document's sitting draft. */
@@ -28,7 +27,7 @@ export function draftStorageKey(documentId: string): string {
 export function loadDraft(
   storage: Storage,
   documentId: string,
-): Pick<DraftPayload, "decisions" | "claimDecisions"> | null {
+): Pick<DraftPayload, "decisions"> | null {
   let raw: string | null = null;
   try {
     raw = storage.getItem(draftStorageKey(documentId));
@@ -41,7 +40,6 @@ export function loadDraft(
     if (parsed.version !== DRAFT_VERSION) return null;
     return {
       decisions: parsed.decisions ?? {},
-      claimDecisions: parsed.claimDecisions ?? {},
     };
   } catch {
     return null;
@@ -53,12 +51,9 @@ export function saveDraft(
   storage: Storage,
   documentId: string,
   decisions: Readonly<Record<string, StagedDecision>>,
-  claimDecisions: Readonly<Record<string, StagedClaimDecision>>,
 ): void {
   const key = draftStorageKey(documentId);
-  const empty =
-    Object.keys(decisions).length === 0 &&
-    Object.keys(claimDecisions).length === 0;
+  const empty = Object.keys(decisions).length === 0;
   try {
     if (empty) {
       storage.removeItem(key);
@@ -67,7 +62,6 @@ export function saveDraft(
     const payload: DraftPayload = {
       version: DRAFT_VERSION,
       decisions: { ...decisions },
-      claimDecisions: { ...claimDecisions },
     };
     storage.setItem(key, JSON.stringify(payload));
   } catch {
@@ -97,11 +91,11 @@ export function useDraftPersistence(
   useEffect(() => {
     const draft = loadDraft(storage, documentId);
     if (draft !== null) {
-      store.hydrateDecisions(draft.decisions, draft.claimDecisions);
+      store.hydrateDecisions(draft.decisions);
     }
     const persist = () => {
       const state = store.getState();
-      saveDraft(storage, documentId, state.decisions, state.claimDecisions);
+      saveDraft(storage, documentId, state.decisions);
     };
     const unsubscribe = store.subscribe(persist);
     return () => {

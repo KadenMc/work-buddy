@@ -22,7 +22,10 @@ import type {
 } from "./contracts";
 import { TruthAttentionFeed } from "./TruthAttentionFeed";
 import { TruthPanel } from "./TruthPanel";
+import { TruthClaimDetails } from "./TruthClaimDetails";
 import { TruthStore } from "./store";
+import { InMemoryTruthProvider } from "./InMemoryTruthProvider";
+import { orderTruthPassages } from "./contracts";
 import truthStyles from "./styles.css?raw";
 
 const connection = {
@@ -363,7 +366,7 @@ const setupAnalysis = () => {
 const openManualAction = async (
   name: "Add claim manually" | "Connect selection manually",
 ): Promise<void> => {
-  await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add or connect claim" }));
   await userEvent.click(await screen.findByRole("menuitem", { name }));
 };
 
@@ -770,9 +773,10 @@ describe("TruthPanel", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: summary.proposition }),
     );
-    expect(screen.getAllByText(/Prepared by/u)).toHaveLength(2);
-    expect(screen.getByText("Added by")).toBeVisible();
-    expect(screen.getAllByText(/claude-code/u)).toHaveLength(2);
+    expect(screen.getByText(/Prepared by an analysis/u)).toBeVisible();
+    expect(screen.getByText(/Added .* by a person/u)).toBeVisible();
+    expect(screen.getByText("Added by")).not.toBeVisible();
+    expect(screen.getAllByText(/claude-code/u)).toHaveLength(3);
     expect(screen.queryByText("Created by")).not.toBeInTheDocument();
   });
 
@@ -1197,6 +1201,205 @@ describe("TruthPanel", () => {
     );
     await screen.findByText(summary.proposition);
     await expectNoAccessibilityViolations(container);
+  });
+
+  it("scrolls on card activation only, never when an external selection or refresh restores the claim", async () => {
+    const store = new TruthStore();
+    const revealClaimIfOutsideViewport = vi.fn();
+    const { editor } = setupEditor();
+    const provider = setupProvider();
+    render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={store} editor={{ ...editor, revealClaimIfOutsideViewport }} />);
+    await userEvent.click(await screen.findByRole("button", { name: summary.proposition }));
+    await screen.findByRole("region", { name: "Claim details" });
+    expect(revealClaimIfOutsideViewport).toHaveBeenCalledExactlyOnceWith(summary.claimId);
+    act(() => store.selectClaim(null));
+    act(() => store.selectClaim(summary.claimId));
+    await screen.findByRole("region", { name: "Claim details" });
+    expect(revealClaimIfOutsideViewport).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the same two-stage decision from a captured document action", async () => {
+    const store = new TruthStore();
+    const provider = setupProvider();
+    render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={store} />);
+    await screen.findByRole("button", { name: summary.proposition });
+    act(() => store.requestDecision(summary.claimId, "confirm"));
+    await screen.findByText("Confirm this exact claim?");
+    expect(provider.decideClaim).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm claim" }));
+    expect(provider.decideClaim).toHaveBeenCalledWith(expect.objectContaining({
+      action: "confirm", expectedCanonicalSha256: "payload-hash", expectedContextSha256: "context-hash", gestureKind: "confirm",
+    }));
+  });
+
+  it("requires a fresh decision stage after receipts or their bound context change", async () => {
+    const onDecide = vi.fn();
+    const request = { requestId: 1, claimId: detail.claimId, action: "confirm" as const };
+    const rendered = render(<TruthClaimDetails claim={detail} requestedDecision={request} onClose={vi.fn()} onDecide={onDecide} />);
+    expect(await screen.findByText("Confirm this exact claim?")).toBeVisible();
+    const refreshed = { ...detail,
+      receipts: [{ ...detail.receipts[0], quote: "Updated support" }],
+      decisionBinding: { ...detail.decisionBinding!, contextSha256: "updated-context" },
+    };
+    rendered.rerender(<TruthClaimDetails claim={refreshed} requestedDecision={request} onClose={vi.fn()} onDecide={onDecide} />);
+    await waitFor(() => expect(screen.queryByText("Confirm this exact claim?")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeVisible();
+    expect(screen.getByText("Updated support")).toBeVisible();
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it("uses the menu's frozen capture through the same manual controller as the header", async () => {
+    const store = new TruthStore();
+    const provider = setupProvider();
+    const { editor, captureSelection } = setupEditor();
+    render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={store} editor={editor} />);
+    await screen.findByRole("button", { name: summary.proposition });
+    expect(store.getActions()?.manualBlockedReason).toBeNull();
+    const frozen = { ...capturedSelection, captureId: "menu-capture" };
+    act(() => store.getActions()?.openComposer("propose", frozen));
+    await screen.findByRole("textbox", { name: "Claim" });
+    expect(captureSelection).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Propose and connect" }));
+    expect(provider.proposeClaim).toHaveBeenCalledWith(expect.objectContaining({ capture: frozen }));
+  });
+
+  it("starts analysis with the document menu's frozen target without recapturing the editor", async () => {
+    const store = new TruthStore();
+    const { provider, execution } = setupAnalysis();
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(async () => capturedAnalysisTarget);
+    render(<TruthPanel provider={setupProvider()} storeId="store-1" documentId="doc-1" store={store} editor={{ ...editor, captureAnalysisTarget }} analysis={{ provider, execution }} />);
+    await waitFor(() => expect(store.getActions()?.analyzeBlockedReason).toBeNull());
+    const frozen = { ...capturedAnalysisTarget, captureId: "menu-analysis-capture" };
+    act(() => store.getActions()?.analyzePassage(frozen));
+    await waitFor(() => expect(provider.start).toHaveBeenCalledWith(expect.objectContaining({ capture: frozen })));
+    expect(captureAnalysisTarget).not.toHaveBeenCalled();
+  });
+
+  it("prefills a corrected proposition, kind, role, and freshly captured rejected passage", async () => {
+    const rejected = { ...detail, baseStatus: "rejected" as const, availableActions: ["redact" as const], claimKind: "decision", connections: [{ ...connection, role: "paraphrase" as const }] };
+    const provider = setupProvider([rejected], rejected);
+    const { editor, captureSelection } = setupEditor();
+    const capturePassage = vi.fn(async () => capturedSelection);
+    render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={new TruthStore()} editor={{ ...editor, capturePassage }} />);
+    await userEvent.click(await screen.findByRole("button", { name: summary.proposition }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add a corrected claim" }));
+    expect(await screen.findByRole("textbox", { name: "Claim" })).toHaveValue(summary.proposition);
+    expect(screen.getByRole("combobox", { name: "Kind" })).toHaveValue("decision");
+    expect(screen.getByRole("combobox", { name: "How the passage expresses the claim" })).toHaveValue("paraphrase");
+    expect(capturePassage).toHaveBeenCalledWith(rejected.connections[0]);
+    expect(captureSelection).not.toHaveBeenCalled();
+  });
+
+  it("completes rejection and re-adds the edited correction as a separate proposed claim", async () => {
+    const provider = new InMemoryTruthProvider({ storeId: "store-1", documentId: "doc-1", claims: [] });
+    const original = await provider.proposeClaim({ capture: capturedSelection, proposition: summary.proposition, claimKind: "fact", role: "quote" });
+    const { editor } = setupEditor();
+    render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={new TruthStore()} editor={{ ...editor, capturePassage: async () => capturedSelection }} />);
+    await userEvent.click(await screen.findByRole("button", { name: summary.proposition }));
+    await userEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect((await provider.loadClaim(original.claimId!)).baseStatus).toBe("proposed");
+    expect(screen.getByText(/It was not a confirmed fact/u)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Reject claim" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add a corrected claim" }));
+    const claimInput = await screen.findByRole("textbox", { name: "Claim" });
+    await userEvent.clear(claimInput);
+    await userEvent.type(claimInput, "The document has two headings.");
+    await userEvent.click(screen.getByRole("button", { name: "Propose and connect" }));
+    await screen.findByRole("heading", { name: "The document has two headings." });
+    const claims = (await provider.load({ scope: "document", filter: "all" })).claims;
+    expect(claims.map((claim) => claim.baseStatus)).toEqual(["rejected", "proposed"]);
+    expect(claims.every((claim) => !claim.isFact && claim.evidenceCount === 0)).toBe(true);
+    expect(claims[1].claimId).not.toBe(original.claimId);
+  });
+
+  it("orders passages, cycles Next passage, and keeps history behind a disclosure after decisions", async () => {
+    const later = { ...connection, expressionId: "later", quote: "Later passage", selector: { ...connection.selector, exact: "Later passage", start: 50 } };
+    const multi = { ...detail, connections: [later, connection], connectionCount: 2 };
+    const { editor, revealPassage } = setupEditor();
+    render(<TruthPanel provider={setupProvider([multi], multi)} storeId="store-1" documentId="doc-1" store={new TruthStore()} editor={editor} />);
+    await userEvent.click(await screen.findByRole("button", { name: summary.proposition }));
+    const next = await screen.findByRole("button", { name: "Next passage" });
+    await userEvent.click(next);
+    await userEvent.click(next);
+    await userEvent.click(next);
+    expect(revealPassage.mock.calls.map(([item]) => item.expressionId)).toEqual(["expression-1", "later", "expression-1"]);
+    const history = screen.getByText("History and record details").closest("details");
+    expect(history).not.toHaveAttribute("open");
+    expect(screen.getByRole("button", { name: "Confirm" }).compareDocumentPosition(history!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.getByText("context-hash")).not.toBeVisible();
+  });
+
+  it("uses current editor positions for offset-free passage order and follows the last passage after reordering", async () => {
+    const passage = (expressionId: string, quote: string) => ({
+      ...connection, expressionId, quote,
+      selector: { kind: "text_quote" as const, exact: quote, prefix: "", suffix: "" },
+    });
+    const first = passage("first", "First passage");
+    const later = passage("later", "Later passage");
+    const missing = passage("missing", "Unresolved passage");
+    const foreign = { ...passage("foreign", "Foreign passage"), documentId: "doc-other", currentDocument: false };
+    const claim = { ...detail, connections: [foreign, missing, later, first], connectionCount: 4 };
+    const provider = setupProvider([claim], claim);
+    const store = new TruthStore({ selectedClaimId: claim.claimId });
+    const { editor, revealPassage } = setupEditor();
+    const orderPassages = vi.fn(() => [first, later, missing, foreign]);
+    const rendered = render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={store} editor={{ ...editor, orderPassages }} />);
+    const details = await screen.findByRole("region", { name: "Claim details" });
+    expect([...details.querySelectorAll(".wb-cowork-truth__connection-list q")].map((element) => element.textContent)).toEqual(["First passage", "Later passage", "Unresolved passage", "Foreign passage"]);
+    expect(orderPassages).toHaveBeenCalledWith(claim.connections);
+    expect(revealPassage).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Next passage" }));
+    expect(revealPassage).toHaveBeenLastCalledWith(first);
+    rendered.rerender(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={store} editor={{ ...editor, orderPassages: () => [later, first, missing, foreign] }} />);
+    expect(revealPassage).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "Next passage" }));
+    expect(revealPassage).toHaveBeenLastCalledWith(missing);
+  });
+
+  it("keeps fallback order deterministic with current passages first and missing offsets last within each document", () => {
+    const missing = { ...connection, expressionId: "z-missing", selector: { ...connection.selector, start: undefined } };
+    const missingEarlierId = { ...missing, expressionId: "a-missing" };
+    const foreign = { ...connection, expressionId: "foreign", documentId: "doc-other", currentDocument: false };
+    expect(orderTruthPassages([foreign, missing, missingEarlierId, connection]).map((item) => item.expressionId)).toEqual(["expression-1", "a-missing", "z-missing", "foreign"]);
+  });
+
+  it("shows the Analyze passage reason without requiring Hover Help", async () => {
+    const { provider, execution } = setupAnalysis();
+    const { editor } = setupEditor();
+    render(<TruthPanel provider={setupProvider()} storeId="store-1" documentId="doc-1" store={new TruthStore()} editor={editor} analysis={{ provider, execution }} />);
+    expect(await screen.findByText("The editor cannot capture a passage right now.")).toBeVisible();
+  });
+
+  it("explains list-only analysis and creation without directing the reader away from a claim decision", async () => {
+    const { provider: analysisProvider, execution } = setupAnalysis();
+    const provider = setupProvider();
+    const { editor } = setupEditor();
+    const store = new TruthStore({ selectedClaimId: summary.claimId });
+    render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={store} editor={{ ...editor, captureAnalysisTarget: async () => capturedAnalysisTarget }} analysis={{ provider: analysisProvider, execution }} />);
+    await screen.findByRole("region", { name: "Claim details" });
+    const reason = "Analysis and claim creation are available from the claims list.";
+    expect(screen.getByText(reason)).toBeVisible();
+    expect(store.getActions()).toMatchObject({ analyzeBlockedReason: reason, manualBlockedReason: reason });
+    act(() => {
+      store.getActions()?.analyzePassage(capturedAnalysisTarget);
+      store.getActions()?.openComposer("propose", capturedSelection);
+    });
+    expect(analysisProvider.start).not.toHaveBeenCalled();
+    expect(provider.proposeClaim).not.toHaveBeenCalled();
+    expect(store.getState()).toMatchObject({ selectedClaimId: summary.claimId, composer: null });
+  });
+
+  it("explains document-version staleness without claiming the exact passage disappeared or disabling navigation", async () => {
+    const staleConnection = { ...connection, stale: "span_missing" as const };
+    const stale = { ...detail, connections: [staleConnection] };
+    const { editor, revealPassage } = setupEditor();
+    render(<TruthPanel provider={setupProvider([stale], stale)} storeId="store-1" documentId="doc-1" store={new TruthStore({ selectedClaimId: stale.claimId })} editor={editor} />);
+    expect(await screen.findByText("This passage no longer matches the document version it was connected to. Review its location.")).toBeVisible();
+    const show = screen.getByRole("button", { name: "Show in document" });
+    expect(show).toBeEnabled();
+    await userEvent.click(show);
+    expect(revealPassage).toHaveBeenCalledWith(staleConnection);
   });
 });
 

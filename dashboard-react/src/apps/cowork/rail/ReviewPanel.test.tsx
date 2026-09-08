@@ -796,34 +796,20 @@ describe("ReviewPanel", () => {
     expect(screen.queryByLabelText("Your replacement")).not.toBeInTheDocument();
   });
 
-  it("qualifies selection by kind when proposal and claim ids collide", async () => {
-    const data = demoReviewData();
-    const proposal = { ...data.proposals[0], proposalId: "shared" };
-    const claim = { ...data.claims[0], claimId: "shared" };
-    const provider = new InMemoryReviewProvider({
-      data: {
-        ...data,
-        proposals: [proposal],
-        claims: [claim],
-        expressions: [],
-      },
-    });
-    const store = new RailStore({
-      selectedId: "shared",
-      selectedKind: "claim",
-    });
-    renderPanel({ provider, store });
 
-    await waitFor(() =>
-      expect(screen.getByText(claim.proposition)).toBeVisible(),
+  it.each(["stream", "queue"] as const)("keeps Truth attention meaningful when the %s has no proposals", async (mode) => {
+    render(
+      <ReviewPanel
+        provider={new InMemoryReviewProvider({ data: { ...demoReviewData(), proposals: [] } })}
+        store={new RailStore({ mode })}
+        documentId="demo-doc"
+        storage={new MemoryStorage()}
+        truthAttention={<p>One claim needs a decision in Truth.</p>}
+      />,
     );
-    expect(
-      screen.getByRole("button", { name: claim.proposition }),
-    ).toHaveAttribute("aria-pressed", "true");
-    expect(
-      screen.getByRole("button", { name: proposal.tldr }),
-    ).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText(/^Claim, "/)).toBeVisible();
+    expect(await screen.findByText("One claim needs a decision in Truth.")).toBeVisible();
+    expect(screen.getByText("No suggestions or flags to review.")).toBeVisible();
+    expect(screen.queryByText("Nothing to review here.")).not.toBeInTheDocument();
   });
 
   it("has no accessibility violations in the resting review state", async () => {
