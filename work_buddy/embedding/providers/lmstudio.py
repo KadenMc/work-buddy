@@ -29,42 +29,13 @@ from typing import Any
 import httpx
 import numpy as np
 
+from work_buddy.embedding.providers.lmstudio_config import resolve_base_url
 from work_buddy.llm.backends._errors import (
     LocalInferenceError,
     interpret_httpx_exception,
 )
 
 logger = logging.getLogger(__name__)
-
-# Default base URL when ``lmstudio.base_url`` isn't set in config.
-# Matches LM Studio's out-of-box server binding.
-_DEFAULT_BASE_URL = "http://localhost:1234"
-
-
-def resolve_base_url(cfg: dict[str, Any] | None = None) -> str:
-    """Return the LM Studio base URL from config, or the default.
-
-    The ``lmstudio.base_url`` config key is the single source of truth
-    for both the embedding provider and the ``work_buddy.health``
-    reachable check. The URL is the bare server root — paths like
-    ``/v1/embeddings`` and ``/v1/models`` are appended at use time.
-
-    Args:
-        cfg: Loaded config dict (from ``work_buddy.config.load_config``).
-            If None, loads lazily so this helper can be called from
-            contexts that don't want to pay the config-load cost.
-
-    Returns:
-        Base URL without trailing slash, e.g. ``http://localhost:1234``.
-    """
-    if cfg is None:
-        from work_buddy.config import load_config
-        cfg = load_config()
-    url = cfg.get("lmstudio", {}).get("base_url", _DEFAULT_BASE_URL)
-    if not isinstance(url, str) or not url:
-        url = _DEFAULT_BASE_URL
-    return url.rstrip("/")
-
 
 def _profile_name(model_id: str) -> str:
     """Broker profile name for an LM Studio embedding call.

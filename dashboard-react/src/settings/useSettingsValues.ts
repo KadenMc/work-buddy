@@ -137,7 +137,9 @@ export function useSettingsValues(
           previous ? replaceValue(previous, result.value) : previous,
         );
         setMessage(
-          result.value.pendingValue !== undefined
+          result.value.applyStatus === "restart-required"
+            ? "Saved. Restart the Embedding service to apply this choice."
+            : result.value.pendingValue !== undefined
             ? "Saved. The change is pending."
             : "Setting saved.",
         );
@@ -164,7 +166,11 @@ export function useSettingsValues(
         setSnapshot((previous) =>
           previous ? replaceValue(previous, result.value) : previous,
         );
-        setMessage("Override reset to default.");
+        setMessage(
+          result.value.applyStatus === "restart-required"
+            ? "Default saved. Restart the Embedding service to apply it."
+            : "Override reset to default.",
+        );
       } catch (reason) {
         handleMutationError(reason);
       } finally {

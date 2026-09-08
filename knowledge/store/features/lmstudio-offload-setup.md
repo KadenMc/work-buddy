@@ -28,23 +28,35 @@ parents:
 
 # LM Studio Embedding Offload — Setup
 
-One-time procedure for offloading work-buddy's document-side passage encoder to LM Studio. The default sentence-transformers path remains a fallback — this procedure is additive, not a migration.
+One-time procedure for making LM Studio available for work-buddy's document-side passage encoder. The execution policy then chooses local-only, remote-with-local-fallback, or remote-required behavior.
 
 ## What this gets you
 
-The passage encoder (`snowflake-arctic-embed-m-v1.5`, ~110M params, ~500 MB RSS) normally loads into the work-buddy embedding service on the main machine. With offload enabled, bulk document encoding routes to LM Studio's `/v1/embeddings` endpoint instead — which can forward to a remote compute device via LM Link. Net effect: ~500 MB of model RSS no longer pinned on the main machine, without touching query latency (queries stay local).
+The passage encoder (`snowflake-arctic-embed-m-v1.5`, ~110M params, approximately
+526 MB of weights) can run through LM Studio's `/v1/embeddings` endpoint, which may
+place the model on a remote compute device via LM Link. In **Require LM Studio** mode,
+the local embedding process never loads those document weights. **Prefer LM Studio**
+retains deliberate local fallback. The process-private-commit reduction is not a fixed
+526 MB: runtime buffers vary, and allocator high-water commit can remain until the
+embedding process restarts.
 
 ## What this does NOT touch
 
-- Query encoding — small, latency-sensitive, always local.
-- The online `/embed` endpoint on the work-buddy embedding service — same reason.
-- The LLM stack — LM Studio's chat endpoints are unrelated to this config.
+- Query encoding: the smaller latency-sensitive encoders remain local.
+- Search-consumer routing: this changes where document vectors are computed, not which
+  index answers a search.
+- The LLM stack: LM Studio's chat endpoints are unrelated to this policy.
+
+All document callers still use work-buddy's local `/embed` endpoint. That endpoint is
+the policy and observability boundary and then invokes either LM Studio or the local
+provider.
 
 ## Prerequisites
 
 - LM Studio installed on the machine that will serve the embeddings (main machine, or via LM Link from a remote compute device).
 - Network access to HuggingFace for the initial GGUF download.
-- The user's existing ir-index is healthy — if the current passage encoder is stalling, fix that first (task `t-ea501359` covers the ir-index cold-start checkpointing fix).
+- Enough free memory and disk for the one-time drift comparison against the local
+  sentence-transformers model.
 
 ## Procedure
 
@@ -146,9 +158,11 @@ Interpretation:
 - **`MARGINAL` (mean 0.95–0.98, or outliers)** — usually a tokenization edge case. Inspect the `LOW` pairs. Proceed only if you understand why those specific texts drift.
 - **`FAIL` (mean < 0.95)** — stop. Something is wrong. Most common causes: wrong model loaded in LM Studio; GGUF converted with bad pooling; the baseline model isn't loading correctly. Fix before continuing.
 
-### 5. Configure work-buddy
+### 5. Configure the endpoint and model alias
 
-Edit `config.yaml` (or your `config.local.yaml`):
+Edit `config.yaml` (or your `config.local.yaml`) to identify the transport and the exact
+LM Studio model. `provider` and `on_error` also supply the first-run Settings default;
+after a profile value exists, the Settings record is authoritative for execution mode.
 
 ```yaml
 # Optional top-level — defaults to http://localhost:1234 if omitted.
@@ -161,39 +175,58 @@ embedding:
       name: "MongoDB/mdbr-leaf-ir-asym"
       dims: 768
       eager: false
-      # Opt in to LM Studio for bulk document encoding.
+      # Bootstrap the Settings policy as Prefer LM Studio.
       provider: lmstudio
       lmstudio_model: "text-embedding-snowflake-arctic-embed-m-v1.5"
-      # fallback: silently fall back to sentence_transformer on LM Studio
-      #   errors. Observed drift is 0.0002 cosine, so mixed-provenance
-      #   vectors in the same index cluster correctly.
-      # fail: re-raise the error. Use for research workflows that
-      #   require single-provenance vectors.
+      # fallback -> Prefer LM Studio; fail -> Require LM Studio.
       on_error: fallback
 ```
 
-### 6. Restart the sidecar
+Then open **System → Embeddings** and choose:
 
-The embedding service reads the provider config at startup. Restart it so the new config takes effect. Watch the logs — the startup validator will print either a verification line or a WARN if LM Studio or the model id look wrong:
+- **Prefer LM Studio** to use the remote model with intentional local fallback.
+- **Require LM Studio** to prevent any local document-model load and fail document
+  embedding closed when the endpoint or an actual remote request is unavailable.
+- **Local only** to keep document execution in work-buddy.
+
+### 6. Restart the embedding service
+
+The saved choice is restart-gated. Restart the embedding service (normally by restarting
+the sidecar) and refresh the Embeddings page. The startup validator reports whether the
+endpoint is reachable and whether the configured model ID is currently advertised:
 
 ```
 LM Studio provider for embedding.models.leaf-ir verified — model
 'text-embedding-snowflake-arctic-embed-m-v1.5' is loaded at http://localhost:1234.
 ```
 
-### 7. Let ir-index-rebuild converge
+### 7. Let scheduled indexes converge
 
-The next scheduled `ir-index-rebuild` cron run (every 5 minutes by default) will start using the new provider for any new or changed documents. Existing vectors stay on disk and continue to match because the drift is negligible. There is no need for a one-shot re-encode unless you specifically want single-provenance vectors — in which case, delete `~/.claude/projects/work_buddy_ir.<source>.*.npz` and let the cron rebuild from scratch.
+Legacy IR refreshes and consolidated-index refreshes both cross the same `/embed` policy
+boundary. Their next eligible runs use the active provider for new or changed documents.
+Existing vectors remain compatible because the verified quantization drift is negligible;
+offloading does not itself require rebuilding or deleting an index.
 
 ## Verification
 
-- Settings page: LM Studio appears as a reachable external component. The embedding component shows `lmstudio` under soft dependencies with the "falls back to local sentence-transformers" note.
-- Embedding service logs: bulk encodes print `via LM Studio` instead of the `Encoded N/N documents...` progress line.
-- Task Manager / Activity Monitor: the passage encoder model is no longer loaded by the work-buddy embedding service process.
+- **System → Embeddings** reports the active policy from service health, independently
+  from the configured/effective Settings values.
+- **LM Studio** reads Reachable. **Configured remote model observation** may read
+  Advertised now; if it is not advertised, LM Studio may still load it on demand, so the
+  first actual document batch is the definitive route check.
+- After one document batch, **Last document batch** reports LM Studio with no fallback.
+- In Require mode, **Local document weights** remains Not loaded. In Prefer mode it may
+  become loaded after a remote failure, by design.
+- A model-alias configuration error or Settings-authority startup error appears as a
+  hard alert before the first batch. On an authority read failure, document execution is
+  forced remote and fail-closed so stale YAML cannot load the local passage model.
 
 ## Rollback
 
-To disable offloading, remove the three lines (`provider`, `lmstudio_model`, `on_error`) from the `leaf-ir` model config and restart the sidecar. The sentence_transformers path resumes without any other cleanup. Existing LM-Studio-sourced vectors stay valid — they're numerically compatible with the fp32 baseline, so there's no index corruption.
+Choose **Local only**, save, and restart the embedding service. The endpoint and model
+alias may remain configured for a later switch; they do not cause remote execution while
+Local only is active. Existing LM-Studio-sourced vectors remain valid because the audited
+remote model shares the local model's vector space.
 
 ## Troubleshooting
 
@@ -201,9 +234,12 @@ To disable offloading, remove the three lines (`provider`, `lmstudio_model`, `on
 
 Check: (1) `curl http://<base_url>/v1/models` — is the server actually running? (2) Did you override `lmstudio.base_url` but not point it at a reachable address? (3) On LM Studio with LM Link to a remote device: is the link connected? (LM Studio's Connections panel on the main machine will say.)
 
-### "not in LM Studio's loaded models" at startup
+### "not currently advertised by LM Studio" at startup
 
-The configured `lmstudio_model` id doesn't match what LM Studio is serving. Run `curl <base_url>/v1/models` and copy the exact id (usually prefixed `text-embedding-`) into config.
+This is an observation, not a definitive failure: LM Studio can load a configured model
+on demand. If the first document request fails, run `curl <base_url>/v1/models`, verify
+the exact model id (usually prefixed `text-embedding-`), and compare it with
+`lmstudio_model` in config.
 
 ### Drift test reports MARGINAL or FAIL
 
@@ -212,7 +248,9 @@ Do NOT proceed until you understand why. Common causes, ordered by likelihood: (
 ## Related code
 
 - `work_buddy/embedding/providers/lmstudio.py` — provider module.
-- `work_buddy/ir/dense.py::_encode_bulk_direct` — dispatch.
+- `work_buddy/index/encode.py::ProviderRouter`: policy resolution, fallback, and fail-closed routing.
+- `work_buddy/embedding/providers/lmstudio_config.py`: lightweight endpoint/model configuration for probes.
+- `work_buddy/ir/dense.py::_encode_bulk_direct`: legacy IR document caller through `/embed`.
 - `work_buddy/embedding/service.py::_validate_lmstudio_providers` — startup validator.
 - `work_buddy/health/components.py` — `lmstudio` ComponentDef and `embedding.soft_depends_on`.
 - `work_buddy/health/requirements.py` — `services/lmstudio/reachable` setup-time requirement (severity: recommended; fix_kind: agent_handoff).

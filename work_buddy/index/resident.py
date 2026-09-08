@@ -34,7 +34,10 @@ DEFAULT_EVICT_INTERVAL_S = 60.0
 
 @dataclass
 class _Cached(Generic[T]):
-    value: T
+    # ``None`` is a meaningful, cacheable result: this generation currently has
+    # no vectors.  Remembering that settled-empty state prevents every query from
+    # starting another background warm and entering the client's retry window.
+    value: T | None
     version: str
     loaded_at: float
 
@@ -44,7 +47,8 @@ class ResidentCache(Generic[T]):
 
     Args:
         loader: ``() -> T | None`` — produces the resident value (e.g. load the
-            vector matrix from SQLite blobs). ``None`` means "nothing to cache".
+            vector matrix from SQLite blobs). ``None`` records a settled-empty
+            result for the current generation.
         version_fn: ``() -> str`` — the current on-disk version; when it differs
             from the cached copy, ``get()`` reloads.
         name: label for logs.
@@ -65,29 +69,70 @@ class ResidentCache(Generic[T]):
         self._clock = clock
         self._cached: _Cached[T] | None = None
         self._lock = threading.RLock()
+        self._load_done = threading.Condition(self._lock)
+        self._load_in_progress = False
 
     def get(self) -> T | None:
         """Return the resident value, (re)loading on a version change. ``None`` if empty."""
-        try:
-            version = self._version_fn()
-        except Exception as exc:  # version source unavailable → no cache
-            logger.debug("%s: version_fn failed (%s); not caching", self._name, exc)
-            return None
-
-        with self._lock:
-            if self._cached is not None and self._cached.version == version:
-                self._cached.loaded_at = self._clock()
-                return self._cached.value
-
-        # Load OUTSIDE the lock so a slow load doesn't block readers of other caches.
-        value = self._loader()
-        with self._lock:
-            if value is None:
-                self._cached = None
+        while True:
+            try:
+                version = self._version_fn()
+            except Exception as exc:  # version source unavailable → no cache
+                logger.debug("%s: version_fn failed (%s); not caching", self._name, exc)
                 return None
-            self._cached = _Cached(value=value, version=version, loaded_at=self._clock())
-            logger.info("%s: loaded resident value (version=%s)", self._name, version)
-            return self._cached.value
+
+            with self._lock:
+                if self._cached is not None and self._cached.version == version:
+                    self._cached.loaded_at = self._clock()
+                    return self._cached.value
+                if self._load_in_progress:
+                    # Join the elected loader. Re-read the durable generation after
+                    # it finishes: the leader may have discarded a raced snapshot,
+                    # or it may have loaded an older generation than this waiter saw.
+                    self._load_done.wait()
+                    continue
+                self._load_in_progress = True
+
+            try:
+                # Load OUTSIDE the lock. Other caches remain independent, while
+                # callers for this exact cache join through ``_load_done`` above.
+                value = self._loader()
+                # Optimistic, cross-process stability check: a writer may have
+                # installed its dirty fence while the matrix loader scanned SQLite.
+                try:
+                    loaded_version = self._version_fn()
+                except Exception as exc:
+                    logger.debug(
+                        "%s: version changed to unavailable during load (%s); discarding",
+                        self._name,
+                        exc,
+                    )
+                    return None
+                if loaded_version != version:
+                    logger.debug(
+                        "%s: version changed during load (%s -> %s); discarding",
+                        self._name,
+                        version,
+                        loaded_version,
+                    )
+                    return None
+                with self._lock:
+                    self._cached = _Cached(
+                        value=value,
+                        version=loaded_version,
+                        loaded_at=self._clock(),
+                    )
+                    logger.info(
+                        "%s: loaded resident state (version=%s, empty=%s)",
+                        self._name,
+                        loaded_version,
+                        value is None,
+                    )
+                    return self._cached.value
+            finally:
+                with self._lock:
+                    self._load_in_progress = False
+                    self._load_done.notify_all()
 
     def get_if_cached(self) -> T | None:
         """Return the resident value ONLY if already loaded for the current version.
@@ -106,6 +151,23 @@ class ResidentCache(Generic[T]):
                 return self._cached.value
         return None
 
+    def is_current(self) -> bool:
+        """Whether this cache has settled the current on-disk generation.
+
+        Unlike :meth:`get_if_cached`, this distinguishes a cold cache from a
+        successfully loaded generation that contains zero vectors.  It never
+        invokes the loader.
+        """
+        try:
+            version = self._version_fn()
+        except Exception:
+            return False
+        with self._lock:
+            if self._cached is not None and self._cached.version == version:
+                self._cached.loaded_at = self._clock()
+                return True
+        return False
+
     def invalidate(self) -> None:
         """Drop the cached value (call after a rebuild bumps the version)."""
         with self._lock:
@@ -120,6 +182,7 @@ class ResidentCache(Generic[T]):
         return False
 
     def is_cached(self) -> bool:
+        """Whether a value or settled-empty result is retained in memory."""
         with self._lock:
             return self._cached is not None
 

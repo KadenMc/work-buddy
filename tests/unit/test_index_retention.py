@@ -51,7 +51,9 @@ class FakePartition:
 
 @pytest.fixture
 def store(tmp_path):
-    return IndexStore(tmp_path / "ret.db")
+    value = IndexStore(tmp_path / "ret.db")
+    value.prepare_schema()
+    return value
 
 
 def _builder(store, part, retention="track_source", ttl_days=None):
@@ -157,6 +159,27 @@ class TestPrune:
         _builder(store, part, retention="ttl", ttl_days=30).build()
         assert _state(store, "fake:recent") == "orphaned"  # within window → kept
         assert not _exists(store, "fake:old")              # past window → swept
+
+    def test_later_ttl_sweep_publishes_a_new_resident_generation(
+        self, store, monkeypatch,
+    ):
+        now = time.time()
+        part = FakePartition({"recent": {"hash": "1", "ts": now}})
+        builder = _builder(store, part, retention="ttl", ttl_days=1)
+        builder.build()
+        del part.items["recent"]
+        builder.build()
+        assert store.doc_count("fake") == 1
+        assert store.build_version("fake") == 2
+
+        monkeypatch.setattr(time, "time", lambda: now + 2 * 86400)
+        swept = builder.build()
+
+        assert swept["changed"] == 0 and swept["deleted"] == 0
+        assert store.doc_count("fake") == 0
+        assert store.build_version("fake") == 3
+        assert store.partition_mutation_in_progress("fake") is False
+        assert store.resident_version("fake") == "3"
 
 
 class TestStorePrimitives:

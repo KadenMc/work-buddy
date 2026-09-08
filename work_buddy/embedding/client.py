@@ -83,13 +83,21 @@ def _request(
         if not return_http_error:
             return None
         message = raw or f"HTTP {exc.code}"
+        parsed_error: dict[str, Any] | None = None
         if raw:
             try:
                 parsed = json.loads(raw)
-                if isinstance(parsed, dict) and parsed.get("error"):
-                    message = parsed["error"]
+                if isinstance(parsed, dict):
+                    parsed_error = parsed
+                    if parsed.get("error"):
+                        message = parsed["error"]
             except ValueError:
                 pass
+        if parsed_error is not None:
+            # Preserve structured endpoint diagnostics (for example /embed's
+            # provider route) while retaining the numeric status contract used
+            # by existing callers such as ir_index.
+            return {**parsed_error, "status": exc.code}
         return {"error": message, "status": exc.code}
     except (URLError, TimeoutError) as exc:
         logger.debug("Embedding service request failed: %s", exc)
@@ -103,6 +111,16 @@ def is_available() -> bool:
     available = result is not None and result.get("status") == "ok"
     _debug(f"Embedding health check: {available} ({time.time()-t:.2f}s)")
     return available
+
+
+def health_status(*, timeout_s: int = 3) -> dict[str, Any] | None:
+    """Return the embedding service's full health/provenance snapshot.
+
+    Unlike :func:`is_available`, this preserves per-model routing diagnostics for
+    operator surfaces. Connection failures remain ``None`` so callers can render an
+    honest unavailable state without parsing transport exceptions.
+    """
+    return _request("GET", "/health", timeout=timeout_s)
 
 
 def wait_until_available(
@@ -142,19 +160,33 @@ def wait_until_available(
     return False
 
 
-def embed(
+def embed_with_route(
     texts: list[str],
     *,
     model: str | None = None,
     prompt_name: str | None = None,
     timeout_s: int | None = None,
-) -> list[list[float]] | None:
-    """Embed texts via the shared service. Returns None if unavailable.
+    routing_role: str | None = None,
+    record_provenance: bool = True,
+    call_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Embed texts and preserve the service's provider-route diagnostics.
+
+    Returns the complete JSON response on success or structured HTTP failure,
+    and ``None`` only when the service itself is unreachable.  Most callers
+    should continue using :func:`embed`; index-maintenance paths use this form
+    so their aggregate provenance records the provider that actually ran.
 
     Args:
         texts: Texts to embed.
         model: Model key (e.g. "leaf-mt", "leaf-ir"). Defaults to service default.
         prompt_name: Prompt name for asymmetric models (e.g. "query", "document").
+        routing_role: Semantic side of the operation (``query`` or ``document``).
+            This is distinct from a model-specific prompt name and lets the service
+            apply document-provider policy to custom registered encoders.
+        record_provenance: Let the service persist one record for this call. Aggregate
+            callers that write their own batch record can disable it to avoid duplicates.
+        call_id: Optional provenance/broker correlation id supplied by an aggregate caller.
         timeout_s: Override the per-request timeout in seconds. When None,
             uses ``max(30, len(texts) * 2)``. Indexing callers should pass a
             larger value when targeting a lazy-loaded model — the first
@@ -167,12 +199,40 @@ def embed(
         payload["model"] = model
     if prompt_name:
         payload["prompt_name"] = prompt_name
+    if routing_role in {"query", "document"}:
+        payload["routing_role"] = routing_role
+    if not record_provenance:
+        payload["record_provenance"] = False
+    if isinstance(call_id, str) and call_id.strip():
+        payload["call_id"] = call_id.strip()
     if timeout_s is None:
         # Larger batches need more time (especially leaf-ir doc encoding on CPU/GPU)
         timeout = max(30, len(texts) * 2)
     else:
         timeout = timeout_s
-    result = _request("POST", "/embed", payload, timeout=timeout)
+    return _request(
+        "POST", "/embed", payload, timeout=timeout, return_http_error=True,
+    )
+
+
+def embed(
+    texts: list[str],
+    *,
+    model: str | None = None,
+    prompt_name: str | None = None,
+    timeout_s: int | None = None,
+    routing_role: str | None = None,
+    record_provenance: bool = True,
+) -> list[list[float]] | None:
+    """Embed texts via the shared service. Returns None if unavailable/failing."""
+    result = embed_with_route(
+        texts,
+        model=model,
+        prompt_name=prompt_name,
+        timeout_s=timeout_s,
+        routing_role=routing_role,
+        record_provenance=record_provenance,
+    )
     if result is None:
         return None
     return result.get("vectors")
@@ -188,14 +248,14 @@ def embed_for_ir(
 
     Query encoding uses ``leaf-ir-query`` (MongoDB/mdbr-leaf-ir, 90 MB,
     eager-loaded at startup) so search is instant.  Document encoding uses
-    ``leaf-ir`` (MongoDB/mdbr-leaf-ir-asym, 526 MB, lazy-loaded only when
-    indexing).  Both produce compatible 768-d vectors — the asymmetric model
+    ``leaf-ir`` (MongoDB/mdbr-leaf-ir-asym, 526 MB, lazy-loaded only for
+    document/passage embedding workloads). Both produce compatible 768-d vectors. The asymmetric model
     card documents this split usage pattern.
 
     Args:
         texts: Texts to embed.
-        role: "query" for search queries, "document" for indexing documents.
-        timeout_s: Override the per-request timeout. Indexing callers using
+        role: "query" for search queries, "document" for passage-like inputs.
+        timeout_s: Override the per-request timeout. Document callers using
             ``role="document"`` should pass a value large enough to absorb a
             cold ``leaf-ir`` SentenceTransformer load. See ``embed()`` for
             the underlying rationale; see
@@ -205,8 +265,20 @@ def embed_for_ir(
     if role not in ("query", "document"):
         raise ValueError(f"role must be 'query' or 'document', got '{role}'")
     if role == "query":
-        return embed(texts, model="leaf-ir-query", prompt_name="query", timeout_s=timeout_s)
-    return embed(texts, model="leaf-ir", prompt_name="document", timeout_s=timeout_s)
+        return embed(
+            texts,
+            model="leaf-ir-query",
+            prompt_name="query",
+            timeout_s=timeout_s,
+            routing_role="query",
+        )
+    return embed(
+        texts,
+        model="leaf-ir",
+        prompt_name="document",
+        timeout_s=timeout_s,
+        routing_role="document",
+    )
 
 
 def ir_search(

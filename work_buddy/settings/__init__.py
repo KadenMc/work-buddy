@@ -2,6 +2,7 @@
 
 from work_buddy.settings.broker import (
     SettingsError,
+    get_embedding_document_execution_mode,
     get_journal_day_binding,
     get_journal_day_boundary,
     get_journal_day_window,
@@ -16,6 +17,7 @@ from work_buddy.settings.broker import (
 
 __all__ = [
     "SettingsError",
+    "get_embedding_document_execution_mode",
     "get_journal_day_binding",
     "get_journal_day_boundary",
     "get_journal_day_window",

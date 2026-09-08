@@ -705,8 +705,9 @@ def _probe_lmstudio() -> bool:
     import http.client
     import socket
     from urllib.parse import urlparse
-    from work_buddy.embedding.providers.lmstudio import resolve_base_url
+
     from work_buddy.config import load_config
+    from work_buddy.embedding.providers.lmstudio_config import resolve_base_url
 
     try:
         base_url = resolve_base_url(load_config())

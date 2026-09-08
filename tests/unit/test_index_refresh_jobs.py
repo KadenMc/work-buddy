@@ -41,6 +41,12 @@ def test_index_refresh_job_well_formed(jobs_by_name, partition):
     assert job.capability == "index_rebuild"
     assert job.params.get("partition") == partition
     assert job.params.get("force") is False  # incremental, never force, on a recurring job
+    if partition == "conversation":
+        assert job.params.get("max_items") == 25
+        assert job.params.get("max_vector_batches") == 4
+    else:
+        assert "max_items" not in job.params
+        assert "max_vector_batches" not in job.params
     assert job.recurring is True
     fields = job.schedule.split()
     assert len(fields) == 5, f"index-{partition}-refresh: 5-field cron, got {job.schedule!r}"
@@ -124,3 +130,53 @@ def test_op_self_skips_when_any_build_holds_the_db_gate(tmp_path, monkeypatch):
         dt = time.time() - t0
     assert out == {"skipped": "build_in_progress", "partition": "chrome"}
     assert dt < 5.0
+
+
+def test_op_forwards_named_partition_work_budgets(tmp_path, monkeypatch):
+    from work_buddy.mcp_server.ops import index_ops
+    from work_buddy.index.config import IndexConfig
+
+    cfg = IndexConfig(enabled=True, db_path=tmp_path / "idx.db")
+    monkeypatch.setattr("work_buddy.index.config.load_index_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("work_buddy.utils.index_lock.is_locked", lambda *a, **k: False)
+    calls = []
+
+    class FakeIndex:
+        def __init__(self, *, config):
+            assert config is cfg
+
+        def build(self, name, **kwargs):
+            calls.append((name, kwargs))
+            return {"partition": name, "complete": False, "remaining": {"items": 7}}
+
+    monkeypatch.setattr("work_buddy.index.partitioned.UnifiedIndex", FakeIndex)
+    out = json.loads(
+        index_ops._index_rebuild_dispatch(
+            partition="conversation",
+            max_items=25,
+            max_vector_batches=4,
+        )
+    )
+    assert calls == [(
+        "conversation",
+        {"force": False, "max_items": 25, "max_vector_batches": 4},
+    )]
+    assert out["result"]["complete"] is False
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"partition": "conversation", "max_items": 0},
+        {"partition": "conversation", "max_vector_batches": True},
+        {"max_items": 1},
+        {"partition": "   ", "max_items": 1},
+        {"partition": "conversation", "force": True, "max_items": 1},
+        {"partition": "conversation", "force": True, "max_vector_batches": 1},
+    ],
+)
+def test_op_rejects_invalid_or_ambiguous_work_budgets(kwargs):
+    from work_buddy.mcp_server.ops import index_ops
+
+    with pytest.raises(ValueError):
+        index_ops._index_rebuild_dispatch(**kwargs)

@@ -15,6 +15,14 @@ parameters:
     type: bool
     description: Full partition backfill using the same build-verify-ack delivery boundary (default False = incremental replay/content diff)
     required: false
+  max_items:
+    type: int
+    description: Positive per-run cap on changed/deleted source items for a named incremental partition build; partial progress resumes automatically (incompatible with force)
+    required: false
+  max_vector_batches:
+    type: int
+    description: Positive per-run cap on 256-document missing-vector batches for a named incremental partition build; partial progress resumes automatically (incompatible with force)
+    required: false
 tags:
 - context
 - index

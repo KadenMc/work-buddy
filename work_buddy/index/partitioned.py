@@ -78,22 +78,22 @@ class IndexPartition:
         )
 
     def is_warm(self) -> bool:
-        """True iff every dense projection's resident matrix is loaded. Non-blocking —
-        the readiness predicate behind the warming signal, on the serving hot path, so it
-        must stay O(projections) in RAM: ``ResidentCache.is_cached()`` is a pure in-memory
-        check (no DB). A lexical-only partition (no projections) is always warm.
+        """True iff every dense projection has a current resident matrix. Non-blocking:
+        the readiness predicate never loads a matrix. It does perform the cheap generation
+        check behind ``ResidentCache.is_current()`` so a sidecar build cannot leave this
+        process treating an allocated-but-stale matrix as warm. A lexical-only partition
+        (no projections) is always warm.
 
-        A projection that legitimately has no vectors never loads, so it reads as "cold"
-        forever — a query against it costs one redundant warm-retry, then degrades
-        gracefully. That benign edge is deliberately accepted over probing vector counts
-        here: the count is a ``COUNT(DISTINCT) JOIN`` across the whole (all-partition)
-        ``doc_vectors`` table — far too heavy to run per query on the readiness path."""
+        A projection that legitimately has no vectors caches a settled-empty result for
+        the current generation. It therefore degrades immediately to lexical-only instead
+        of advertising perpetual warming, without running a heavy vector-count query on
+        the serving path."""
         schema = get_projection_schema(self._partition)
         if not schema:
             return True
         for proj in schema:
             cache = self._residents.get(f"{self.name}:{proj}")
-            if cache is None or not cache.is_cached():
+            if cache is None or not cache.is_current():
                 return False
         return True
 
@@ -108,6 +108,8 @@ class IndexPartition:
     def build(
         self, *, force: bool = False, on_progress=None,
         defer_changed_vectors: bool = False,
+        max_items: int | None = None,
+        max_vector_batches: int | None = None,
     ) -> dict[str, Any]:
         """Build, then durably acknowledge the partition's outbox snapshot.
 
@@ -128,6 +130,12 @@ class IndexPartition:
         batch = snapshot_pending_events(self._partition)
 
         def _finish_delivery(stats: dict[str, Any]) -> None:
+            if batch is not None:
+                # Delivery has not completed merely because the index commit
+                # has.  Publish the provisional state before parity/ack work so
+                # any synchronous observer sees the honest boundary.
+                stats["delivery_complete"] = False
+                stats["complete"] = False
             parity = (
                 reconciliation_evidence(self._partition, self._store)
                 if batch is not None
@@ -147,6 +155,11 @@ class IndexPartition:
             )
             if batch is not None:
                 pending_after = pending_event_count(self._partition)
+                delivery_ready = (
+                    pending_after == 0
+                    if pending_after is not None
+                    else delivered == batch.count
+                )
                 stats["outbox"] = {
                     "schema": "wb.search-outbox-delivery/v1",
                     "pending_before": batch.count,
@@ -154,7 +167,7 @@ class IndexPartition:
                     "pending_after": pending_after,
                     "mode": "backfill" if force else "incremental_replay",
                     **(parity or {}),
-                    "ready": pending_after == 0 and parity_mismatches == 0,
+                    "ready": delivery_ready and parity_mismatches == 0,
                 }
 
         return self._builder.build(
@@ -162,6 +175,8 @@ class IndexPartition:
             on_progress=on_progress,
             after_build=_finish_delivery,
             defer_changed_vectors=defer_changed_vectors,
+            max_items=max_items,
+            max_vector_batches=max_vector_batches,
         )
 
     def status(self):
@@ -223,6 +238,16 @@ class UnifiedIndex:
     def available(self) -> list[str]:
         return self._registry.names()
 
+    def _default_partitions(self) -> list[str]:
+        """Built partitions, without creating or repairing an unavailable store."""
+        from work_buddy.index.store import IndexSchemaError
+
+        try:
+            return self._store.partitions() or self.available()
+        except IndexSchemaError as exc:
+            logger.debug("consolidated index unavailable without preparation: %s", exc)
+            return []
+
     def partition(self, name: str) -> IndexPartition:
         if name not in self._partitions:
             part = self._registry.get(name)
@@ -237,9 +262,7 @@ class UnifiedIndex:
         block_until_warm: bool = True,
     ) -> list[Hit]:
         # Default: search the partitions that actually have docs in the store.
-        names = partitions if partitions is not None else (
-            self._store.partitions() or self.available()
-        )
+        names = partitions if partitions is not None else self._default_partitions()
         results: list[list[Hit]] = []
         for name in names:
             try:
@@ -265,9 +288,7 @@ class UnifiedIndex:
         """Batched federated search — one ``list[Hit]`` per query, in order. Each
         partition is searched once (batched); per query, results federate across
         partitions via RRF, exactly like :meth:`search` does for a single query."""
-        names = partitions if partitions is not None else (
-            self._store.partitions() or self.available()
-        )
+        names = partitions if partitions is not None else self._default_partitions()
         per_partition: list[list[list[Hit]]] = []
         for name in names:
             try:
@@ -296,9 +317,7 @@ class UnifiedIndex:
         """The requested (or all built) partitions whose dense matrices aren't resident
         yet — the ``warming`` set. Non-blocking. An unknown/failing partition is treated
         as warm: we never signal warming for one we can't introspect."""
-        names = partitions if partitions is not None else (
-            self._store.partitions() or self.available()
-        )
+        names = partitions if partitions is not None else self._default_partitions()
         cold: list[str] = []
         for name in names:
             try:
@@ -327,8 +346,21 @@ class UnifiedIndex:
     def hydrate(self, partition: str, hits: list[Hit], **opts) -> list[Any]:
         return self.partition(partition).hydrate(hits, **opts)
 
-    def build(self, name: str, *, force: bool = False, on_progress=None) -> dict[str, Any]:
-        return self.partition(name).build(force=force, on_progress=on_progress)
+    def build(
+        self,
+        name: str,
+        *,
+        force: bool = False,
+        on_progress=None,
+        max_items: int | None = None,
+        max_vector_batches: int | None = None,
+    ) -> dict[str, Any]:
+        return self.partition(name).build(
+            force=force,
+            on_progress=on_progress,
+            max_items=max_items,
+            max_vector_batches=max_vector_batches,
+        )
 
     def build_all(self, *, force: bool = False) -> list[dict[str, Any]]:
         out = []
@@ -341,21 +373,17 @@ class UnifiedIndex:
         return out
 
     def status(self):
-        from work_buddy.indexing.protocol import IndexStatus
-        # Report partitions present in the store (built); fall back to registered names.
-        names = self._store.partitions() or self.available()
-        parts = []
-        for name in names:
-            try:
-                parts.append(self.partition(name).status())
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.debug("status for %r failed: %s", name, exc)
-        size_mb = None
-        try:
-            size_mb = round(self._store.db_path.stat().st_size / 1024 / 1024, 2)
-        except OSError:
-            pass
-        return IndexStatus(name=self.NAME, partitions=parts, size_on_disk_mb=size_mb)
+        from work_buddy.indexing.protocol import IndexStatus, PartitionStatus
+
+        # One explicitly read-only snapshot. In particular, dashboard aggregation
+        # must never turn a status request into the forward-only FTS schema repair.
+        snapshot = self._store.status_snapshot()
+        parts = [PartitionStatus(**row) for row in snapshot["partitions"]]
+        return IndexStatus(
+            name=self.NAME,
+            partitions=parts,
+            size_on_disk_mb=snapshot.get("size_on_disk_mb"),
+        )
 
 
 # Resident-matrix load throughput used to estimate warm ETA (rows/sec). Derived from the
@@ -394,7 +422,8 @@ def prewarm_resident_matrices(
 
     ``only`` restricts warming to the named subset (still intersected with what's actually
     built) — used by the on-demand warm a cold query triggers; ``None`` warms every built
-    partition (the startup path). ``index_factory`` is an injection seam for tests;
+    partition (the explicit ``startup_prewarm: all`` path). ``index_factory`` is an
+    injection seam for tests;
     production passes the resolved config and lets it construct a :class:`UnifiedIndex`
     bound to the process-global resident registry (the one the serving path reads).
 
@@ -405,7 +434,14 @@ def prewarm_resident_matrices(
         logger.debug("index prewarm: index.enabled is false; skipping")
         return {}
     ui = index_factory(cfg) if index_factory is not None else UnifiedIndex(config=cfg)
-    built = ui.store.partitions()
+    snapshot = ui.store.status_snapshot()
+    if snapshot.get("state") != "current":
+        logger.debug(
+            "index prewarm: schema state is %s; skipping",
+            snapshot.get("state", "unknown"),
+        )
+        return {}
+    built = [str(row["key"]) for row in snapshot["partitions"]]
     if only is not None:
         wanted = set(only)
         built = [p for p in built if p in wanted]
@@ -447,8 +483,9 @@ def start_prewarm(
     """Spawn a daemon thread that runs :func:`prewarm_resident_matrices`.
 
     Non-blocking: the service must keep serving ``/health`` and queries while the
-    matrices warm. Started by the embedding-service ``main()`` (additive — pairs with
-    the idle evictor, which releases what this warms after an idle TTL).
+    matrices warm. Started by the embedding-service ``main()`` only when its configured
+    startup policy is ``all`` (additive and paired with the idle evictor, which releases
+    what this warms after an idle TTL).
     """
     def _run() -> None:
         try:
@@ -459,6 +496,34 @@ def start_prewarm(
     t = threading.Thread(target=_run, name=name, daemon=True)
     t.start()
     return t
+
+
+def start_configured_prewarm(
+    config: IndexConfig | None = None,
+    *,
+    index_factory: Callable[[IndexConfig], UnifiedIndex] | None = None,
+) -> threading.Thread | None:
+    """Apply the configured startup resident-matrix policy.
+
+    ``lazy`` deliberately starts no load: the normal cold-query warming signal
+    remains responsible for a singleflight background load and bounded retry.
+    ``all`` preserves the historical all-built-partition startup prewarm. The
+    idle evictor is independent of this choice and continues to release matrices
+    loaded by either route.
+    """
+    cfg = config or load_index_config()
+    if cfg.startup_prewarm != "all":
+        if cfg.startup_prewarm != "lazy":
+            logger.warning(
+                "index prewarm: unknown startup policy %r; using RAM-safe lazy mode",
+                cfg.startup_prewarm,
+            )
+        logger.info(
+            "index prewarm: startup policy is lazy; resident matrices will "
+            "warm on demand"
+        )
+        return None
+    return start_prewarm(cfg, index_factory=index_factory)
 
 
 def warm_partitions_async(

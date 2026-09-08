@@ -114,6 +114,22 @@ def _configured_default(setting_id: str) -> Any:
     if setting_id == registry.JOURNAL_SMART_PROCESSING_ID:
         smart = (wb_config.load_config().get("journal") or {}).get("smart_processing") or {}
         return "enabled" if isinstance(smart, dict) and smart.get("enabled") is True else "disabled"
+    if setting_id == registry.EMBEDDING_DOCUMENT_EXECUTION_ID:
+        model = (
+            ((wb_config.load_config().get("embedding") or {}).get("models") or {})
+            .get("leaf-ir", {})
+        )
+        if not isinstance(model, dict):
+            return registry.EMBEDDING_EXECUTION_LOCAL
+        provider = str(model.get("provider") or "local").strip().lower()
+        if provider != "lmstudio":
+            return registry.EMBEDDING_EXECUTION_LOCAL
+        on_error = str(model.get("on_error") or "fallback").strip().lower()
+        return (
+            registry.EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO
+            if on_error == "fail"
+            else registry.EMBEDDING_EXECUTION_PREFER_LMSTUDIO
+        )
     if setting_id in {registry.DASHBOARD_ASSISTANCE_ID, registry.DASHBOARD_ASSISTANCE_TIER_ID}:
         assistance = (wb_config.load_config().get("dashboard") or {}).get("assistance") or {}
         if not isinstance(assistance, dict):
@@ -160,7 +176,11 @@ def _definition_value_version(setting_id: str) -> int:
 def _bootstrap_source(setting_id: str) -> str:
     return (
         "config-bootstrap"
-        if setting_id in {registry.JOURNAL_DAY_BOUNDARY_ID, registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID}
+        if setting_id in {
+            registry.JOURNAL_DAY_BOUNDARY_ID,
+            registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID,
+            registry.EMBEDDING_DOCUMENT_EXECUTION_ID,
+        }
         else "registry-default"
     )
 
@@ -559,6 +579,12 @@ def _record_from_row(row, observed_at: datetime) -> dict[str, Any]:
     configured_value = pending_value if has_pending else effective_value
     configured_source = row["pending_source"] if has_pending else effective_source
 
+    apply_behavior = _apply_behavior(row["setting_id"])
+    apply_status = (
+        "restart-required"
+        if has_pending and apply_behavior == "restart-component"
+        else "pending" if has_pending else "effective"
+    )
     record = {
         "setting_id": row["setting_id"],
         "value_version": int(row["value_version"]),
@@ -572,7 +598,7 @@ def _record_from_row(row, observed_at: datetime) -> dict[str, Any]:
         "is_modified": configured_source == "profile",
         "revision": f"value:{row['revision']}",
         "pending_value": pending_value if has_pending else None,
-        "apply_status": "pending" if has_pending else "effective",
+        "apply_status": apply_status,
     }
     if row["setting_id"] != registry.JOURNAL_DAY_BOUNDARY_ID:
         record.update(
@@ -1168,6 +1194,146 @@ def _write_immediate(
     return record, _change_event(record, reason)
 
 
+def _write_restart_pending(
+    *,
+    setting_id: str,
+    target_value: Any,
+    target_source: str,
+    expected_revision: str | None,
+    observed_at: datetime,
+    read_only: bool,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Persist a desired value without claiming the running component uses it."""
+    if read_only:
+        raise SettingsError(
+            "read_only",
+            "Dashboard settings are read-only.",
+            status_code=403,
+        )
+
+    conn = store.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _ensure_row(conn, setting_id, observed_at)
+        current = _record_from_row(row, observed_at)
+        _assert_revision(expected_revision, current)
+
+        # Selecting the running value cancels an outstanding restart request. A
+        # reset must still clear an active profile override, even when its value
+        # happens to equal the frozen default.
+        already_effective = target_value == current["effective_value"] and (
+            target_source == "profile" or current["source"] == "default"
+        )
+        if already_effective:
+            if current["pending_value"] is None:
+                conn.commit()
+                return current, None
+            conn.execute(
+                """
+                UPDATE setting_value_state
+                SET pending_value_json = NULL, pending_source = NULL,
+                    pending_timezone = NULL, effective_at = NULL,
+                    revision = revision + 1, updated_at = ?
+                WHERE setting_id = ? AND scope = 'profile' AND scope_id = ?
+                """,
+                (
+                    _now_iso(observed_at),
+                    setting_id,
+                    registry.PROFILE_SCOPE_ID,
+                ),
+            )
+            row = _ensure_row(conn, setting_id, observed_at)
+            record = _record_from_row(row, observed_at)
+            conn.commit()
+            return record, _change_event(record, "restart-value-cancelled")
+
+        pending_json = json.dumps(target_value) if target_source == "profile" else None
+        if (
+            current["pending_value"] == target_value
+            and current["configured_source"] == target_source
+        ):
+            conn.commit()
+            return current, None
+        conn.execute(
+            """
+            UPDATE setting_value_state
+            SET pending_value_json = ?, pending_source = ?,
+                pending_timezone = NULL, effective_at = NULL,
+                revision = revision + 1, updated_at = ?
+            WHERE setting_id = ? AND scope = 'profile' AND scope_id = ?
+            """,
+            (
+                pending_json,
+                target_source,
+                _now_iso(observed_at),
+                setting_id,
+                registry.PROFILE_SCOPE_ID,
+            ),
+        )
+        row = _ensure_row(conn, setting_id, observed_at)
+        record = _record_from_row(row, observed_at)
+        conn.commit()
+    finally:
+        conn.close()
+    return record, _change_event(record, "restart-value-saved")
+
+
+def activate_restart_component_value(
+    setting_id: str,
+    *,
+    observed_at: datetime | None = None,
+) -> tuple[Any, dict[str, Any], dict[str, Any] | None]:
+    """Apply one restart-gated value while the owning component is starting."""
+    if _apply_behavior(setting_id) != "restart-component":
+        raise SettingsError(
+            "invalid_apply_behavior",
+            f"Setting {setting_id} is not owned by a restarting component.",
+            status_code=400,
+        )
+    now = _observed_at(observed_at)
+    conn = store.get_connection()
+    event: dict[str, Any] | None = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _ensure_row(conn, setting_id, now)
+        current = _record_from_row(row, now)
+        if row["pending_source"] is not None:
+            active_json = (
+                row["pending_value_json"]
+                if row["pending_source"] == "profile"
+                else None
+            )
+            conn.execute(
+                """
+                UPDATE setting_value_state
+                SET active_value_json = ?,
+                    pending_value_json = NULL, pending_source = NULL,
+                    pending_timezone = NULL, effective_at = NULL,
+                    applied_from_value_json = ?, applied_at = ?,
+                    revision = revision + 1, updated_at = ?
+                WHERE setting_id = ? AND scope = 'profile' AND scope_id = ?
+                """,
+                (
+                    active_json,
+                    json.dumps(current["effective_value"]),
+                    _now_iso(now),
+                    _now_iso(now),
+                    setting_id,
+                    registry.PROFILE_SCOPE_ID,
+                ),
+            )
+            row = _ensure_row(conn, setting_id, now)
+            record = _record_from_row(row, now)
+            event = _change_event(record, "restart-value-applied")
+        else:
+            record = current
+        conn.commit()
+    finally:
+        conn.close()
+    publish_change(event)
+    return record["effective_value"], record, event
+
+
 def update_value(
     setting_id: str,
     *,
@@ -1197,6 +1363,15 @@ def update_value(
         )
     if apply_behavior == "next-boundary":
         return _write_pending(
+            setting_id=setting_id,
+            target_value=value,
+            target_source="profile",
+            expected_revision=expected_revision,
+            observed_at=_observed_at(observed_at),
+            read_only=read_only,
+        )
+    if apply_behavior == "restart-component":
+        return _write_restart_pending(
             setting_id=setting_id,
             target_value=value,
             target_source="profile",
@@ -1278,6 +1453,30 @@ def preview_value(
                     else "immediate"
                 ),
                 "impact_preview": None,
+            },
+            "diagnostics": [],
+        }
+    if apply_behavior == "restart-component":
+        return {
+            "schema_version": registry.SCHEMA_VERSION,
+            "registry_revision": registry.REGISTRY_REVISION,
+            "timezone": _timezone_name(),
+            "configured_timezone": _timezone_name(),
+            "value_revision": record["revision"],
+            "preview": {
+                "setting_id": setting_id,
+                "scope": record["scope"],
+                "value": value,
+                "effective_at": None,
+                "apply_status": (
+                    "effective"
+                    if value == record["effective_value"]
+                    else "restart-required"
+                ),
+                "impact_preview": {
+                    "component": "embedding",
+                    "message": "The running embedding service keeps its current route until restart.",
+                },
             },
             "diagnostics": [],
         }
@@ -1376,6 +1575,15 @@ def reset_value(
             observed_at=now,
             read_only=read_only,
         )
+    if apply_behavior == "restart-component":
+        return _write_restart_pending(
+            setting_id=setting_id,
+            target_value=default,
+            target_source="default",
+            expected_revision=current["revision"],
+            observed_at=now,
+            read_only=read_only,
+        )
     if apply_behavior != "next-boundary":
         raise SettingsError(
             "unsupported_apply_behavior",
@@ -1409,6 +1617,26 @@ def reset_value(
         observed_at=now,
         read_only=read_only,
     )
+
+
+def get_embedding_document_execution_mode(
+    *,
+    activate_pending: bool = False,
+    observed_at: datetime | None = None,
+) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+    """Return the active document route, optionally applying a saved restart request."""
+    if activate_pending:
+        value, record, event = activate_restart_component_value(
+            registry.EMBEDDING_DOCUMENT_EXECUTION_ID,
+            observed_at=observed_at,
+        )
+    else:
+        record, event = _read_value(
+            registry.EMBEDDING_DOCUMENT_EXECUTION_ID,
+            _observed_at(observed_at),
+        )
+        value = record["effective_value"]
+    return str(value), record, event
 
 
 def get_journal_day_boundary(

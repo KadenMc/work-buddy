@@ -18,6 +18,7 @@ from work_buddy.index.partition import PartitionRegistry
 from work_buddy.index.partitioned import (
     UnifiedIndex,
     prewarm_resident_matrices,
+    start_configured_prewarm,
     start_prewarm,
     warm_partitions_async,
 )
@@ -306,6 +307,37 @@ class TestPrewarm:
         assert not t.is_alive()
         assert t.daemon
 
+    def test_configured_prewarm_is_lazy_by_default(self):
+        def factory(_cfg):
+            raise AssertionError("lazy startup must not open or load the index")
+
+        thread = start_configured_prewarm(
+            IndexConfig(enabled=True), index_factory=factory
+        )
+        assert thread is None
+
+    def test_configured_prewarm_unknown_policy_fails_safe_to_lazy(self):
+        def factory(_cfg):
+            raise AssertionError("unknown startup policy must not eagerly load the index")
+
+        thread = start_configured_prewarm(
+            IndexConfig(enabled=True, startup_prewarm="unexpected"),
+            index_factory=factory,
+        )
+        assert thread is None
+
+    def test_configured_prewarm_all_restores_eager_behavior(self, tmp_path):
+        ui = self._unified(tmp_path)
+        ui.build("p1")
+        thread = start_configured_prewarm(
+            IndexConfig(enabled=True, startup_prewarm="all"),
+            index_factory=lambda _cfg: ui,
+        )
+        assert thread is not None
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert ui._residents.get("p1:default").is_cached()
+
     def test_prewarm_only_warms_named_subset(self, tmp_path):
         ui = self._unified(tmp_path)
         ui.build("p1")
@@ -340,6 +372,50 @@ class TestWarmingSignal:
         ui.partition("proj").prewarm()
         assert ui.cold_partitions(["proj", "lex"]) == []  # warmed → no longer cold
 
+    def test_zero_vector_projection_settles_without_perpetual_warm_retry(self, tmp_path):
+        store = CountingStore(tmp_path / "uni.db")
+        ui = self._unified(tmp_path, store=store)
+        ui.build("proj")
+        # Simulate a document route that could not produce vectors. The lexical
+        # document remains useful and the empty dense generation is a stable state.
+        conn = store._connect()
+        try:
+            conn.execute("DELETE FROM doc_vectors WHERE doc_id = 'proj:a'")
+            conn.commit()
+        finally:
+            conn.close()
+        ui._residents.invalidate("proj:default")
+
+        assert ui.cold_partitions(["proj"]) == ["proj"]
+        assert ui.partition("proj").prewarm() == 0
+        assert ui.cold_partitions(["proj"]) == []
+        assert store.load_calls == 1
+        assert ui.search(
+            Query(text="alpha", top_k=5),
+            partitions=["proj"],
+            block_until_warm=False,
+        )[0].doc_id == "proj:a"
+        assert store.load_calls == 1
+
+    def test_cross_process_generation_change_marks_allocated_cache_cold(self, tmp_path):
+        ui = self._unified(tmp_path)
+        ui.build("proj")
+        ui.partition("proj").prewarm()
+        cache = ui._residents.get("proj:default")
+        assert cache is not None and cache.is_cached()
+        assert ui.cold_partitions(["proj"]) == []
+
+        # A scheduled build runs in the sidecar process, whose registry cannot
+        # invalidate this embedding-process object directly. The durable generation
+        # is therefore the authority: the still-allocated v1 matrix must be reported
+        # cold so the endpoint emits its warming signal and starts a v2 reload.
+        ui.store.begin_partition_mutation("proj")
+        ui.store.finish_partition_mutation("proj")
+
+        assert cache.is_cached()  # allocated does not imply current
+        assert cache.get_if_cached() is None
+        assert ui.cold_partitions(["proj"]) == ["proj"]
+
     def test_warm_eta_scales_with_vector_count(self, tmp_path):
         ui = self._unified(tmp_path)
         ui.build("proj")
@@ -348,7 +424,8 @@ class TestWarmingSignal:
 
     def test_readiness_check_avoids_heavy_vector_count(self, tmp_path):
         # cold_partitions runs on the serving hot path; it must NOT issue the heavy
-        # COUNT(DISTINCT) JOIN that vector_count is — only in-RAM is_cached() checks.
+        # COUNT(DISTINCT) JOIN that vector_count is. A cheap version lookup is allowed
+        # so stale cross-process residents are not mistaken for warm matrices.
         store = CountingStore(tmp_path / "uni.db")
         ui = self._unified(tmp_path, store=store)
         ui.build("proj")
@@ -393,7 +470,9 @@ class TestWarmingSignal:
 
         # Nothing in flight → it actually warms (and clears the guard afterwards).
         t = P.warm_partitions_async(
-            ["proj"], config=IndexConfig(enabled=True), index_factory=lambda cfg: ui
+            ["proj"],
+            config=IndexConfig(enabled=True, startup_prewarm="lazy"),
+            index_factory=lambda cfg: ui,
         )
         assert t is not None
         t.join(timeout=5)

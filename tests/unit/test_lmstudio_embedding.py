@@ -11,10 +11,9 @@ Covers:
 - ``work_buddy.embedding.providers.lmstudio.resolve_base_url`` honors
   the ``lmstudio.base_url`` config key and falls back to the LM Studio
   default.
-- ``work_buddy.ir.dense._encode_bulk_direct`` dispatches to the LM
-  Studio provider when a model opts in, falls back to sentence-
-  transformers on error (when ``on_error=fallback``), and re-raises
-  when ``on_error=fail``.
+- ``work_buddy.ir.dense._encode_bulk_direct`` delegates external builds
+  to the shared embedding-service policy boundary and preserves its
+  actual LM Studio/fallback/fail route provenance.
 
 No actual HTTP calls — the provider encode function is monkeypatched
 for the dispatch tests. No actual sentence-transformers load either —
@@ -27,8 +26,6 @@ machinery, so it's safe to run on CI boxes.
 """
 
 from __future__ import annotations
-
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -127,171 +124,146 @@ def test_resolve_base_url_ignores_non_string() -> None:
 # _encode_bulk_direct dispatch behavior
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def fake_cfg_lmstudio_on_error(monkeypatch):
-    """Return a factory that installs a fake load_config with configurable
-    on_error and lmstudio_model. Used by dispatch tests below."""
-    import work_buddy.config as cfg_module
-
-    def _build(on_error: str, lmstudio_model: str = "fake-model-id"):
-        def _fake():
-            return {
-                "lmstudio": {"base_url": "http://localhost:1234"},
-                "embedding": {
-                    "models": {
-                        "leaf-ir": {
-                            "name": "MongoDB/mdbr-leaf-ir-asym",
-                            "dims": 768,
-                            "eager": False,
-                            "provider": "lmstudio",
-                            "lmstudio_model": lmstudio_model,
-                            "on_error": on_error,
-                        },
-                    },
-                },
-            }
-        monkeypatch.setattr(cfg_module, "load_config", _fake)
-
-    return _build
-
-
-def test_encode_bulk_direct_routes_to_lmstudio(
-    fake_cfg_lmstudio_on_error, monkeypatch
-) -> None:
-    """Happy path: provider=lmstudio with a working endpoint routes there
-    and returns whatever the provider produces, without touching the
-    sentence-transformers fallback."""
-    fake_cfg_lmstudio_on_error(on_error="fail")
-
+def test_encode_bulk_direct_routes_external_build_through_service(monkeypatch) -> None:
+    """An external legacy build must not re-read YAML and route independently."""
     captured_kwargs: dict = {}
     fake_vecs = np.ones((3, 768), dtype=np.float32)
 
-    def _fake_encode(texts, *, model_id, base_url, batch_size):
+    def _fake_embed(
+        texts,
+        *,
+        model=None,
+        prompt_name=None,
+        timeout_s=None,
+        routing_role=None,
+        record_provenance=True,
+        call_id=None,
+    ):
         captured_kwargs["texts"] = list(texts)
-        captured_kwargs["model_id"] = model_id
-        captured_kwargs["base_url"] = base_url
-        captured_kwargs["batch_size"] = batch_size
-        return fake_vecs
+        captured_kwargs["model"] = model
+        captured_kwargs["prompt_name"] = prompt_name
+        captured_kwargs["timeout_s"] = timeout_s
+        captured_kwargs["routing_role"] = routing_role
+        captured_kwargs["record_provenance"] = record_provenance
+        captured_kwargs["call_id"] = call_id
+        return {
+            "vectors": fake_vecs.tolist(),
+            "route": {
+                "model": "leaf-ir",
+                "requested_provider": "lmstudio",
+                "provider": "lmstudio",
+                "provider_model": "fake-model-id",
+                "on_error": "fail",
+                "status": "ok",
+                "fallback": False,
+                "reason": "provider_success",
+                "at": 1.0,
+            },
+        }
 
-    import work_buddy.embedding.providers.lmstudio as prov
-    monkeypatch.setattr(prov, "encode", _fake_encode)
+    from work_buddy.embedding import client
+    monkeypatch.setattr(client, "embed_with_route", _fake_embed)
 
     # Also ensure _IN_SERVICE is False so a bug forcing the fallback path
     # would try to load SentenceTransformer — which we'd catch below.
-    import work_buddy.ir.dense as dense
+    from work_buddy.ir import dense
     monkeypatch.setattr(dense, "_IN_SERVICE", False)
-
-    def _boom(*a, **kw):
-        raise AssertionError(
-            "SentenceTransformer must not be touched on the happy LM "
-            "Studio path"
-        )
-    # Guard: if the dispatcher accidentally falls through, this trips.
-    monkeypatch.setattr(
-        "sentence_transformers.SentenceTransformer", _boom
-    )
 
     result = dense._encode_bulk_direct(["a", "b", "c"], kind="passage")
 
-    assert result is fake_vecs
-    assert captured_kwargs["model_id"] == "fake-model-id"
-    assert captured_kwargs["base_url"] == "http://localhost:1234"
+    assert np.array_equal(result, fake_vecs)
+    assert captured_kwargs["model"] == "leaf-ir"
+    assert captured_kwargs["prompt_name"] == "document"
+    assert captured_kwargs["timeout_s"] == 120
+    assert captured_kwargs["routing_role"] == "document"
+    assert captured_kwargs["record_provenance"] is False
+    assert isinstance(captured_kwargs["call_id"], str)
+    assert len(captured_kwargs["call_id"]) == 12
     assert captured_kwargs["texts"] == ["a", "b", "c"]
 
 
-def test_encode_bulk_direct_fallback_on_error(
-    fake_cfg_lmstudio_on_error, monkeypatch
-) -> None:
-    """When on_error=fallback and the provider raises, we must drop to
-    the sentence-transformers path without propagating."""
-    fake_cfg_lmstudio_on_error(on_error="fallback")
+def test_encode_bulk_direct_preserves_service_fallback_route(monkeypatch) -> None:
+    from work_buddy.embedding import client
+    from work_buddy.ir import dense
 
-    def _fake_encode(texts, **_kw):
-        raise RuntimeError("simulated LM Studio outage")
-
-    import work_buddy.embedding.providers.lmstudio as prov
-    monkeypatch.setattr(prov, "encode", _fake_encode)
-
-    import work_buddy.ir.dense as dense
     monkeypatch.setattr(dense, "_IN_SERVICE", False)
-
-    # Stub SentenceTransformer so the fallback returns deterministic
-    # vectors without loading any real weights.
     fake_vecs = np.full((2, 768), 0.5, dtype=np.float32)
-
-    class _FakeST:
-        def __init__(self, *_a, **_kw):
-            pass
-
-        def encode(self, _texts, **_kw):
-            return fake_vecs
-
-    import sentence_transformers as st_pkg
-    monkeypatch.setattr(st_pkg, "SentenceTransformer", _FakeST)
+    monkeypatch.setattr(
+        client,
+        "embed_with_route",
+        lambda *_args, **_kwargs: {
+            "vectors": fake_vecs.tolist(),
+            "route": {
+                "model": "leaf-ir",
+                "requested_provider": "lmstudio",
+                "provider": "local",
+                "provider_model": "leaf-ir",
+                "on_error": "fallback",
+                "status": "ok",
+                "fallback": True,
+                "reason": "provider_unavailable",
+                "at": 1.0,
+            },
+        },
+    )
 
     result = dense._encode_bulk_direct(["x", "y"], kind="passage")
     assert result.shape == (2, 768)
-    # Our fake was used, not the real loader
     assert np.allclose(result, 0.5)
 
 
-def test_encode_bulk_direct_fail_propagates(
-    fake_cfg_lmstudio_on_error, monkeypatch
-) -> None:
-    """on_error=fail must re-raise the provider's exception untouched."""
-    fake_cfg_lmstudio_on_error(on_error="fail")
+def test_encode_bulk_direct_propagates_service_fail_closed_route(monkeypatch) -> None:
+    from work_buddy.embedding import client
+    from work_buddy.ir import dense
 
-    class _Sentinel(Exception):
-        pass
-
-    def _fake_encode(_texts, **_kw):
-        raise _Sentinel("boom")
-
-    import work_buddy.embedding.providers.lmstudio as prov
-    monkeypatch.setattr(prov, "encode", _fake_encode)
-
-    import work_buddy.ir.dense as dense
     monkeypatch.setattr(dense, "_IN_SERVICE", False)
+    monkeypatch.setattr(
+        client,
+        "embed_with_route",
+        lambda *_args, **_kwargs: {
+            "error": "remote unavailable",
+            "code": "embedding_provider_unavailable",
+            "status": 503,
+            "route": {
+                "model": "leaf-ir",
+                "requested_provider": "lmstudio",
+                "provider": "lmstudio",
+                "provider_model": "fake-model-id",
+                "on_error": "fail",
+                "status": "error",
+                "fallback": False,
+                "reason": "provider_unavailable",
+                "at": 1.0,
+                "error": "remote unavailable",
+            },
+        },
+    )
 
-    with pytest.raises(_Sentinel):
+    from work_buddy.index.encode import ProviderRoutingError
+
+    with pytest.raises(ProviderRoutingError) as raised:
         dense._encode_bulk_direct(["x"], kind="passage")
+    assert raised.value.code == "embedding_provider_unavailable"
+    assert raised.value.route.provider == "lmstudio"
 
 
-def test_encode_bulk_direct_missing_lmstudio_model_falls_back(
-    fake_cfg_lmstudio_on_error, monkeypatch
+def test_encode_bulk_direct_accepts_legacy_service_response_without_route(
+    monkeypatch,
 ) -> None:
-    """Guard-rail: provider=lmstudio without lmstudio_model should fall
-    back (on on_error=fallback) rather than calling provider.encode with
-    an empty id."""
-    fake_cfg_lmstudio_on_error(on_error="fallback", lmstudio_model="")
+    """Rolling startup against an older service remains vector-compatible."""
+    from work_buddy.embedding import client
+    from work_buddy.ir import dense
 
-    called = SimpleNamespace(encode_ran=False)
-
-    def _fake_encode(*_a, **_kw):
-        called.encode_ran = True
-        raise AssertionError("should not be called with empty model id")
-
-    import work_buddy.embedding.providers.lmstudio as prov
-    monkeypatch.setattr(prov, "encode", _fake_encode)
-
-    import work_buddy.ir.dense as dense
     monkeypatch.setattr(dense, "_IN_SERVICE", False)
-
     fake_vecs = np.zeros((1, 768), dtype=np.float32)
-
-    class _FakeST:
-        def __init__(self, *_a, **_kw):
-            pass
-
-        def encode(self, _texts, **_kw):
-            return fake_vecs
-
-    import sentence_transformers as st_pkg
-    monkeypatch.setattr(st_pkg, "SentenceTransformer", _FakeST)
+    monkeypatch.setattr(
+        client,
+        "embed_with_route",
+        lambda *_args, **_kwargs: {"vectors": fake_vecs.tolist()},
+    )
 
     result = dense._encode_bulk_direct(["z"], kind="passage")
     assert result.shape == (1, 768)
-    assert called.encode_ran is False
 
 
 # ---------------------------------------------------------------------------

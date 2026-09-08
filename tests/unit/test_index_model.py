@@ -148,10 +148,22 @@ class TestConfig:
         assert cfg.enabled is False
         assert cfg.db_path is None
         assert cfg.partitions == {}
+        assert cfg.startup_prewarm == "lazy"
 
     def test_load_disabled_by_default_even_with_block(self):
         cfg = load_index_config({"index": {}})
         assert cfg.enabled is False
+
+    def test_startup_prewarm_accepts_all_and_defaults_invalid_to_lazy(self):
+        assert load_index_config(
+            {"index": {"startup_prewarm": "all"}}
+        ).startup_prewarm == "all"
+        assert load_index_config(
+            {"index": {"startup_prewarm": "everything"}}
+        ).startup_prewarm == "lazy"
+        assert load_index_config(
+            {"index": {"startup_prewarm": None}}
+        ).startup_prewarm == "lazy"
 
     def test_partition_fallback_for_unlisted(self):
         cfg = load_index_config({"index": {"enabled": True}})

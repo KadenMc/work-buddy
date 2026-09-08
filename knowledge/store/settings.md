@@ -22,6 +22,12 @@ dev_notes: |-
   The broker owns typed validation, authority checks, optimistic revision matching, preview, mutation, reset, immediate values, policy transitions, and event publication. React code consumes same-origin endpoints and keeps page-local lexical search controls mounted while filtering.
 
   Dashboard chat defaults use the shared execution-profile control and GET /api/settings/execution-catalog. Provider catalog reads do not resolve global defaults. Keep revisions/errors under Settings authority; do not treat a swallowed mutation failure as a successful model selection.
+
+  `wb.embedding.document-execution` uses `restart-component` semantics. The
+  Settings record owns configured, pending, and effective values; the embedding service
+  promotes the pending value only during startup. The runtime endpoint must derive
+  `policy.running` exclusively from embedding `/health`. If service health is unavailable
+  or omits routing, running stays unknown rather than borrowing the effective setting.
 ---
 
 Settings is the authority and information architecture for configurable Work Buddy behavior.
@@ -34,6 +40,11 @@ Cross-dashboard model behavior belongs under **System → Dashboard AI** at
 `/app/settings/system/dashboard-ai`, not Apps. The former
 `/app/settings/apps/dashboard` route redirects while preserving navigation
 state, query and fragment. Existing opt-in identity/value is unchanged.
+
+Document-encoding placement belongs under **System → Embeddings** at
+`/app/settings/system/embeddings`. The page combines one restart-gated setting with
+read-only evidence from the running embedding service; it does not treat a saved
+preference as proof of current execution.
 
 The canonical Journal route is `/app/settings/apps/journal`. Contextual settings launchers navigate directly to the owning page. Compatibility routes may redirect there while preserving navigation state; they do not create a second setting identity.
 
@@ -51,6 +62,38 @@ A definition may have several placements without duplicating its stored value.
 ## Authority
 
 Authority is declared per setting. Device-local settings cover presentation and accessibility behavior such as typography. Server/profile settings cover shared domain meaning, such as the Journal day boundary. Native and community contributions can use the same registry shape while receiving different trust and permission grants.
+
+## Embedding execution
+
+`wb.embedding.document-execution` controls the large document-side encoder used by
+document and passage similarity as well as indexing:
+
+- **Local only** always permits local `leaf-ir` execution.
+- **Prefer LM Studio** uses the configured remote model when available and permits an
+  intentional local fallback.
+- **Require LM Studio** fails document-vector production closed when the remote route
+  cannot run and never loads the document model locally. Index refreshes still commit
+  lexical documents and durable ledger progress, but remain incomplete while dense work
+  is pending; similarity/search consumers use their supported non-dense fallback.
+
+Interactive query encoders remain local in every mode. Saving a change creates a
+restart-required state: the selector shows the configured choice, the Settings record
+retains the currently effective choice, and the runtime panel shows the policy actually
+reported by the running service. A service restart promotes the pending choice.
+
+The same page reports endpoint reachability separately from the configured model's
+current advertisement state, local document-model residency, last route/fallback, and
+provider cooldown or error details. An absent advertisement is inconclusive because LM
+Studio may load the model on demand; an actual route result is stronger evidence. The
+approximately 526 MB local-memory figure describes model weights,
+not guaranteed private-commit savings; buffers and allocator high-water state can persist
+until the process restarts.
+
+The runtime panel also surfaces deterministic route-configuration failures (for example,
+a missing LM Studio model alias) before the first document batch. If Settings authority
+could not be read at service startup, it explains the enforced fail-closed remote route:
+query models stay available, while the document model remains non-eager and cannot fall
+back locally until the authority problem is fixed and the service restarts.
 
 ## Dashboard AI defaults
 
