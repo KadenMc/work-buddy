@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -295,6 +295,7 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
     };
     const document = new Y.Doc();
     const policyDocumentId = `policy-${Date.now()}`;
+    const syncStatuses: string[] = [];
     const editorRef: { current: import("@tiptap/core").Editor | null } = {
       current: null,
     };
@@ -309,6 +310,7 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
         initialDriftState="clean"
         canMaterialize
         readOnly={readOnly}
+        onSyncStatus={(status) => syncStatuses.push(status)}
         {...(feedback ? { onFeedbackCaptured: vi.fn() } : {})}
         onReady={(context) => {
           editorRef.current = context.editor;
@@ -330,14 +332,28 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
       suffix: " brown",
     });
     if (range === null) throw new Error("selection anchor unavailable");
+    vi.spyOn(mountedEditor.view, "coordsAtPos").mockReturnValue({
+      left: 20, right: 40, top: 20, bottom: 40,
+    });
+    const openPassageMenu = async () => {
+      // Feedback-only policy updates can leave the current menu open. Sending
+      // another opening key would race its focus-driven dismissal.
+      if (screen.queryByRole("menu", { name: "Actions for this passage" }) === null) {
+        fireEvent.keyDown(mountedEditor.view.dom, { key: "F10", shiftKey: true });
+      }
+      return screen.findByRole("menuitem", { name: /^Request a change here/ });
+    };
+    await waitFor(() => expect(syncStatuses[syncStatuses.length - 1]).toBe("clean"));
     act(() => mountedEditor.commands.setTextSelection(range));
-    expect(await screen.findByRole("button", { name: "Give feedback" })).toBeVisible();
+    expect(await openPassageMenu()).not.toHaveAttribute("aria-disabled", "true");
 
     view.rerender(renderEditor(true, false));
     expect(mountedEditor.isEditable).toBe(false);
     expect(textbox).toHaveAttribute("contenteditable", "false");
     expect(textbox).toHaveAttribute("aria-readonly", "true");
-    expect(screen.queryByRole("button", { name: "Give feedback" })).toBeNull();
+    await waitFor(() => expect(syncStatuses[syncStatuses.length - 1]).toBe("read_only"));
+    expect(await openPassageMenu()).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("menuitem", { name: /^Request a change here/ })).toHaveAccessibleDescription(/This document is read-only/);
     act(() => {
       document.transact(() => {
         const paragraph = document.getXmlFragment("default").get(0);
@@ -348,12 +364,20 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 400));
     expect(pushes).toHaveLength(0);
 
-    view.rerender(renderEditor(false, true));
+    view.rerender(renderEditor(false, false));
     expect(mountedEditor.isEditable).toBe(true);
     expect(textbox).toHaveAttribute("contenteditable", "true");
     expect(textbox).toHaveAttribute("aria-readonly", "false");
-    act(() => mountedEditor.commands.setTextSelection(range));
-    expect(await screen.findByRole("button", { name: "Give feedback" })).toBeVisible();
+    await waitFor(() => expect(syncStatuses[syncStatuses.length - 1]).toBe("clean"));
+    const currentRange = resolveQuoteAnchor(mountedEditor.state.doc, {
+      exact: "quick", prefix: "The ", suffix: " brown",
+    });
+    if (currentRange === null) throw new Error("selection anchor unavailable after policy recovery");
+    act(() => mountedEditor.commands.setTextSelection(currentRange));
+    expect(await openPassageMenu()).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("menuitem", { name: /^Request a change here/ })).toHaveAccessibleDescription(/Change requests are unavailable/);
+    view.rerender(renderEditor(false, true));
+    expect(await openPassageMenu()).not.toHaveAttribute("aria-disabled", "true");
     act(() => {
       document.transact(() => {
         const paragraph = document.getXmlFragment("default").get(0);

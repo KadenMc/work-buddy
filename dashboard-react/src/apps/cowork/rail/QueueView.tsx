@@ -14,9 +14,8 @@ import {
   shortcutMatchesEvent,
   shouldIgnoreShortcutEvent,
 } from "../../../settings/keybindings";
-import { ClaimCard } from "./ClaimCard";
 import { ProposalCard } from "./ProposalCard";
-import type { StagedClaimDecision, StagedDecision } from "./contracts";
+import type { StagedDecision } from "./contracts";
 import { groupOf, railItemKey, type RailItem } from "./items";
 import type { RailSelectionKind } from "./store";
 
@@ -35,8 +34,6 @@ export interface QueueViewProps {
   readonly items: readonly RailItem[];
   readonly index: number;
   readonly decisions: Readonly<Record<string, StagedDecision>>;
-  readonly claimDecisions: Readonly<Record<string, StagedClaimDecision>>;
-  readonly inspectSpanByClaim: ReadonlyMap<string, string>;
   readonly bindings?: QueueBindings;
   /** Whether this visible Review surface may handle its window-level shortcuts. */
   readonly keyboardNavigationEnabled?: boolean;
@@ -44,21 +41,16 @@ export interface QueueViewProps {
   /** A present-user activation of the currently focused card. */
   onActivate(id: string, kind: RailSelectionKind): void;
   onScrollToAnchor?(id: string, kind: RailSelectionKind): void;
-  onInspect(spanId: string): void;
 }
 
 function isDecided(
   item: RailItem,
   decisions: Readonly<Record<string, StagedDecision>>,
-  claimDecisions: Readonly<Record<string, StagedClaimDecision>>,
 ): boolean {
-  return item.kind === "claim"
-    ? claimDecisions[item.id] !== undefined
-    : decisions[item.id] !== undefined;
+  return decisions[item.id] !== undefined;
 }
 
 function itemLabel(item: RailItem): string {
-  if (item.kind === "claim") return `Claim, ${item.claim.proposition}`;
   const noun =
     item.proposal.kind === "flag"
       ? "Flag"
@@ -78,7 +70,7 @@ export function QueueView(props: QueueViewProps) {
   const clampedIndex = Math.min(props.index, Math.max(0, total - 1));
   const focused = props.items[clampedIndex];
   const undecided = props.items.filter(
-    (item) => !isDecided(item, props.decisions, props.claimDecisions),
+    (item) => !isDecided(item, props.decisions),
   ).length;
 
   useEffect(() => {
@@ -107,7 +99,7 @@ export function QueueView(props: QueueViewProps) {
   if (focused === undefined) {
     return (
       <div className="wb-cowork-rail__queue" role="status">
-        <p className="wb-cowork-rail__empty">Nothing to review here.</p>
+        <p className="wb-cowork-rail__empty">No suggestions or flags to review.</p>
       </div>
     );
   }
@@ -140,7 +132,7 @@ export function QueueView(props: QueueViewProps) {
               data-state={
                 position === clampedIndex
                   ? "current"
-                  : isDecided(item, props.decisions, props.claimDecisions)
+                  : isDecided(item, props.decisions)
                     ? "done"
                     : "todo"
               }
@@ -151,25 +143,13 @@ export function QueueView(props: QueueViewProps) {
 
       <div className="wb-cowork-rail__queue-focus">
         <ul className="wb-cowork-rail__card-list">
-          {focused.kind === "claim" ? (
-            <ClaimCard
-              claim={focused.claim}
-              selected
-              staged={props.claimDecisions[focused.id]}
-              onSelect={() => props.onActivate(focused.id, "claim")}
-              inspectSpanId={props.inspectSpanByClaim.get(focused.id)}
-              onInspect={props.onInspect}
-              onScrollToAnchor={scrollTo}
-            />
-          ) : (
-            <ProposalCard
-              proposal={focused.proposal}
-              selected
-              staged={props.decisions[focused.id]}
-              onSelect={() => props.onActivate(focused.id, "proposal")}
-              onScrollToAnchor={scrollTo}
-            />
-          )}
+          <ProposalCard
+            proposal={focused.proposal}
+            selected
+            staged={props.decisions[focused.id]}
+            onSelect={() => props.onActivate(focused.id, "proposal")}
+            onScrollToAnchor={scrollTo}
+          />
         </ul>
       </div>
 
@@ -191,11 +171,7 @@ export function QueueView(props: QueueViewProps) {
         </p>
         <ul className="wb-cowork-rail__allitems-list">
           {props.items.map((item, position) => {
-            const decided = isDecided(
-              item,
-              props.decisions,
-              props.claimDecisions,
-            );
+            const decided = isDecided(item, props.decisions);
             return (
               <li key={railItemKey(item)}>
                 <button

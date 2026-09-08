@@ -25,7 +25,7 @@ aliases:
 - authorship attestation
 - human review attestation
 - document provenance attestation
-dev_notes: >-
+dev_notes: |-
   The browser pending projection is derived from synchronous staged captures,
   mounted-page volatile captures, and durable outbox rows; authoritative
   receipt coverage wins before local cleanup. Selection request identities must
@@ -33,6 +33,21 @@ dev_notes: >-
   persists across lens changes. Review-batch slot keys bind the ordered
   predecessor IDs plus expected structured head and require an exact slot set;
   both the panel and server revalidate the frozen reviewer binding.
+
+  Direct-entry recovery checks actor fields before delivering restored ready
+  or frozen rows. Actorless rows become source=legacy, basis=user_attestation,
+  status=awaiting_determination without posting an invalid automatic request.
+  Preserve the selector, capture time, and row identity. Invalidate any frozen
+  invalid attempt and rotate its idempotency key; a recovered actor may attest
+  explicitly but must never become the inferred capture-time author.
+
+  A definite HTTP 400 or 422 from attestation recording converts only the
+  rejected direct-entry row to that explicit determination state. Snapshot
+  refresh cannot automatically requeue it; confirmation captures the current
+  trusted actor and sends a fresh attempt. Keep non-target 409 recovery on its
+  exact frozen request. Network uncertainty and projection-refresh errors
+  after a confirmed receipt also retain the immutable request and key so
+  reconciliation cannot create another attestation.
 parents:
 - cowork
 ---
@@ -124,10 +139,11 @@ action for one present-user reveal. The panel also exposes **Complete provenance
 history**, so old or malformed records without safe current geometry remain
 inspectable without receiving a guessed range.
 
-The generic **Give feedback** selection bubble belongs to the other lenses and
-is suppressed in Provenance. A selected passage instead gets exactly one
-coverage-aware action: **Record provenance** when uncovered, **Mark as
-reviewed** when the selection fully contains at least one current AI/mixed
+The shared **Passage actions** menu is available in Provenance as in the other
+lenses; its shared conversation and working-target actions are described in
+`cowork`. Provenance contributes four coverage-aware actions, with an
+explanation when an action does not apply: **Record provenance** when uncovered,
+**Mark as reviewed** when the selection fully contains at least one current AI/mixed
 target which the current enrolled user has not reviewed, **View provenance**
 for one healthy record, or **Inspect provenance** for stale, ambiguous, or
 conflicting coverage. A selection can review several fully contained span
@@ -136,7 +152,7 @@ that its whole passage was reviewed. A document-version fallback is eligible
 from the selection action only when all document text is selected. Review by
 another person does not suppress the current user's action.
 
-The floating action routes review to a stable confirmation card rather than
+The menu routes review to a stable confirmation card rather than
 mutating immediately. If a selected target disappears, conflicts, or becomes
 ineligible before confirmation, that card stays visible, disables the write,
 and receives focus with a reselect-and-inspect explanation. Recording
@@ -150,8 +166,8 @@ expires, the Provenance selection affordance remains available for inspection;
 the editor shows a reconnect action, and the stable panel keeps review controls
 visible but disabled with the same reconnect reason. If identity becomes
 unavailable while a routed review is focused, focus moves to that review's
-status card. The generic **Give feedback** action is not substituted because it
-also records a human-authority mutation.
+status card. Shared menu actions keep their own authority checks and do not
+substitute for a provenance determination.
 
 Provenance has a dedicated typed provider and panel projection. It can share the
 authoritative open-document snapshot source with other rails, but it does not
@@ -251,7 +267,8 @@ structured head. The server records `source=direct_entry`, human authorship by
 the capture-time enrolled local actor, review `not_applicable`, and
 `basis=automatic_direct_entry_attribution`. The capture-time actor is never
 replaced by whichever identity happens to exist after a crash or reload. A
-changed or unavailable actor requires an explicit honest determination.
+proven actor change requires an explicit determination; temporary session
+unavailability keeps an already actor-bound capture pending.
 
 Between synchronous capture and the authoritative server receipt, the
 Provenance lens projects the uniquely resolved exact local capture range as
@@ -275,21 +292,29 @@ snapshot automatically replays and reconciles the frozen request, so receipt
 visibility does not depend on another user gesture.
 
 Typing observed without a capture-time actor, or whose actor changes before
-the automatic request can be frozen, is not discarded. Its exact selector
-stays durable in the document outbox as `source=legacy`,
-`basis=user_attestation`, and `status=awaiting_determination`, with no actor
-attached. After a trusted identity session is available, Co-work surfaces
+the automatic request can be frozen, is not discarded. Its exact passage stays
+durable for an explicit legacy determination, with no author inferred. After a
+trusted identity session is available, Co-work surfaces
 **Recent typing needs attribution** and requires the user to choose authorship
 and review explicitly. **Keep for later** closes the prompt without deleting or
 duplicating the durable row, and **Review pending attribution** reopens it.
 Reloading must rediscover the same recovery row even after an in-progress form
 edit. Selecting that same exact passage through the manual action also reuses
-the row rather than creating an overlapping claim. A later actor is never
+the row rather than creating an overlapping attestation. A later actor is never
 retroactively claimed as the author merely because identity recovered; that
 actor supplies the explicit attestation. Conversely, when a capture already
 has an immutable actor and only the current browser session is temporarily
 unavailable, the actor-bound capture remains pending for trusted session
 recovery rather than being downgraded or dropped.
+
+Recovered queued captures which lack the required capture-time actor use the
+same determination before sending. A definite rejection of a direct-entry
+attribution also retains the exact passage and stops automatic attempts until
+the user confirms a fresh determination. Only the rejected capture changes;
+other queued passages keep their own state. **Keep for later**, **Review pending
+attribution**, and a reloaded form preserve that same passage. Delivery
+uncertainty remains a retry of the original attempt rather than a reason to
+create another attestation.
 
 The synchronous recovery journal retains the newest coalesced burst over an
 older unfrozen `capturing` row. It never overwrites a ready or frozen request.
@@ -437,10 +462,11 @@ The server revalidates the frozen binding when an import, paste, direct-entry,
 manual-selection, or review attestation is recorded. If the acting identity
 changed, the determination is rejected instead of being reassigned. A queued
 paste can be reset to unknown authorship for a fresh explicit determination.
-A direct-entry capture instead retains its capture-time determination and is
-never rewritten to whichever actor happens to be current after a crash or
-reload. Nothing is resent under a changed actor without a fresh honest user
-decision.
+A pending direct-entry capture retains its capture-time actor while the browser
+session is temporarily unavailable. When the server proves that the actor
+changed, it becomes an explicit legacy determination with unknown authorship
+and review. Its passage is retained, and nothing is resent under the changed
+actor until the user confirms a fresh determination.
 
 The enrolled local actor ref is durable within this installation and stronger
 than an arbitrary request header, but it is not a verified remote multi-user

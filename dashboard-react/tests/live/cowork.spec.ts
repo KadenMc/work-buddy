@@ -298,6 +298,12 @@ const waitForEditor = async (page: Page): Promise<ReturnType<Page["getByRole"]>>
   return editor;
 };
 
+const waitForWritableEditor = async (page: Page): Promise<ReturnType<Page["getByRole"]>> => {
+  const editor = await waitForEditor(page);
+  await expect(editor).toHaveAttribute("contenteditable", "true", { timeout: 60_000 });
+  return editor;
+};
+
 /**
  * Read the store and document identities out of the current Co-work route.
  *
@@ -751,12 +757,13 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
-    await waitForEditor(page);
+    await waitForWritableEditor(page);
     await page.getByText(quote, { exact: true }).selectText();
-    await page.getByRole("button", { name: "Give feedback", exact: true }).click();
+    await page.getByRole("button", { name: "Passage actions", exact: true }).click();
+    await page.getByRole("menuitem", { name: /^Request a change here/ }).click();
     await page
       .getByRole("textbox", {
-        name: "Feedback on the selected passage",
+        name: "Change request",
         exact: true,
       })
       .fill(feedback);
@@ -767,7 +774,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
           `/api/truth/doc/${importedDocumentId}/feedback` &&
         response.request().method() === "POST",
     );
-    await page.getByRole("button", { name: "Send feedback", exact: true }).click();
+    await page.getByRole("button", { name: "Send change request", exact: true }).click();
     const feedbackResponse = await feedbackResponsePromise;
     expect(feedbackResponse.ok()).toBe(true);
     const feedbackPayload = (await feedbackResponse.json()) as {
@@ -910,7 +917,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
-    const editor = await waitForEditor(page);
+    const editor = await waitForWritableEditor(page);
     const verifyTrigger = page.getByRole("button", {
       name: "Verify",
       exact: true,
@@ -1061,14 +1068,13 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
-    await waitForEditor(page);
+    await waitForWritableEditor(page);
     await page.getByText(quote, { exact: true }).selectText();
-    await page
-      .getByRole("button", { name: "Give feedback", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Passage actions", exact: true }).click();
+    await page.getByRole("menuitem", { name: /^Request a change here/ }).click();
     await page
       .getByRole("textbox", {
-        name: "Feedback on the selected passage",
+        name: "Change request",
         exact: true,
       })
       .fill(feedback);
@@ -1080,7 +1086,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
         response.request().method() === "POST",
     );
     await page
-      .getByRole("button", { name: "Send feedback", exact: true })
+      .getByRole("button", { name: "Send change request", exact: true })
       .click();
     const feedbackResponse = await feedbackResponsePromise;
     expect(feedbackResponse.ok()).toBe(true);
@@ -1142,18 +1148,18 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
           `/api/truth/doc/${importedDocumentId}/feedback` &&
         response.request().method() === "POST",
     );
+    await waitForWritableEditor(page);
     await page.getByText(quote, { exact: true }).selectText();
-    await page
-      .getByRole("button", { name: "Give feedback", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Passage actions", exact: true }).click();
+    await page.getByRole("menuitem", { name: /^Request a change here/ }).click();
     await page
       .getByRole("textbox", {
-        name: "Feedback on the selected passage",
+        name: "Change request",
         exact: true,
       })
       .fill(secondFeedback);
     await page
-      .getByRole("button", { name: "Send feedback", exact: true })
+      .getByRole("button", { name: "Send change request", exact: true })
       .click();
     expect((await retryResponse).ok()).toBe(true);
     await expect(page.getByText(secondFeedback, { exact: true })).toBeVisible({
@@ -1348,7 +1354,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     expect(bootstrapSourceRequest.postDataJSON()).toEqual({
       bootstrap_id: decodeURIComponent(bootstrapSourceMatch![1]),
     });
-    const editor = await waitForEditor(page);
+    const editor = await waitForWritableEditor(page);
     await expect(editor).toHaveAttribute("aria-readonly", "false");
     await expect(editor.locator("p")).toHaveCount(1);
     await expect(editor.locator("p").first()).toHaveText(existingParagraph);
@@ -1387,17 +1393,38 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       }
     });
 
-    await editor.click();
-    await page.keyboard.press(
-      process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home",
-    );
+    const focusDocumentStart = async () => {
+      await expect(async () => {
+        await expect(editor).toHaveAttribute("contenteditable", "true");
+        await editor.focus();
+        await expect(editor).toBeFocused();
+        await editor.press(
+          process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home",
+        );
+        expect(await editor.evaluate((element) => {
+          const selection = window.getSelection();
+          const firstParagraph = element.querySelector("p");
+          if (
+            document.activeElement !== element ||
+            !selection?.isCollapsed ||
+            !selection.anchorNode ||
+            !firstParagraph?.contains(selection.anchorNode)
+          ) return false;
+          const preceding = document.createRange();
+          preceding.selectNodeContents(firstParagraph);
+          preceding.setEnd(selection.anchorNode, selection.anchorOffset);
+          return preceding.toString() === "";
+        })).toBe(true);
+      }).toPass({ timeout: 10_000 });
+    };
+
+    // Establish the caret before either edit; navigation can race editor setup.
+    await focusDocumentStart();
     await page.keyboard.press("Enter");
     await expect(editor.locator("p")).toHaveCount(2);
     await expect(editor.locator("p").first()).toHaveText("");
     await expect(editor.locator("p").nth(1)).toHaveText(existingParagraph);
-    await page.keyboard.press(
-      process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home",
-    );
+    await focusDocumentStart();
 
     // Create the block boundary before the direct-entry burst, then type the
     // sentence through normal keyboard input. This gives the attestation a
@@ -1408,9 +1435,9 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     await expect(editor.locator("p").nth(1)).toHaveText(existingParagraph);
 
     // Entering Provenance finalizes the active typing burst. The stable rail owns
-    // inspection while the contextual editor action becomes provenance-specific.
+    // inspection while passage actions use the provenance lens.
     await page.getByRole("tab", { name: "Provenance", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Give feedback", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menu", { name: "Actions for this passage", exact: true })).toHaveCount(0);
 
     const projectionUrl =
       `${backendBaseURL}/api/truth/doc/${documentId}` +
@@ -1500,7 +1527,8 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
       .toBe(directEntry);
     await expect(page.getByRole("tooltip")).toHaveCount(0);
-    const provenanceAction = page.getByRole("button", {
+    await page.getByRole("button", { name: "Passage actions", exact: true }).click();
+    const provenanceAction = page.getByRole("menuitem", {
       name: "View provenance",
       exact: true,
     });
@@ -1584,7 +1612,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       page,
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
-    const editor = await waitForEditor(page);
+    const editor = await waitForWritableEditor(page);
     const file = path.join(
       fixture.ordinary.path,
       "drafts",
@@ -1598,9 +1626,14 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       "claims.jsonl",
     );
     expect(await readFile(file, "utf-8")).toBe("");
-    // Opening this blank document created a legitimate structural update tail. The
-    // recovery export must stay absent until a later compaction can represent it.
-    expect(await exists(recoveryExport)).toBe(false);
+    const readRecoveryExport = async (): Promise<Buffer | null> => {
+      try {
+        return await readFile(recoveryExport);
+      } catch (error) {
+        if ((error as { code?: string }).code === "ENOENT") return null;
+        throw error;
+      }
+    };
 
     let rejectedPushes = 0;
     const ydocRoute = new RegExp(
@@ -1615,6 +1648,9 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       await route.continue();
     };
     await page.route(ydocRoute, rejectPush);
+    // A compaction-backed commit may already have published an export. Browser-only
+    // edits must neither create one nor change an existing recovery projection.
+    const exportBeforeOffline = await readRecoveryExport();
 
     const firstOfflineEdit = "Offline recovery marker";
     const laterOfflineEdit = " plus later write";
@@ -1644,7 +1680,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       .poll(() => rejectedPushes, { timeout: 30_000 })
       .toBeGreaterThan(0);
     expect(await readFile(file, "utf-8")).toBe("");
-    expect(await exists(recoveryExport)).toBe(false);
+    expect(await readRecoveryExport()).toEqual(exportBeforeOffline);
 
     await page.reload({ waitUntil: "domcontentloaded" });
     const recoveredEditor = await waitForEditor(page);
@@ -1660,6 +1696,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     expect(reopenedOutbox?.entries.some((entry) => !entry.acknowledged)).toBe(true);
     await expect(recoveredEditor).toHaveText(`${firstOfflineEdit}${laterOfflineEdit}`);
     expect(await readFile(file, "utf-8")).toBe("");
+    expect(await readRecoveryExport()).toEqual(exportBeforeOffline);
 
     await page.unroute(ydocRoute, rejectPush);
     await page.getByRole("button", { name: "Sync now" }).click();
@@ -1668,6 +1705,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       { timeout: 30_000 },
     );
     expect(await readFile(file, "utf-8")).toBe("");
+    // The acknowledged update tail invalidates the export until Save compacts it.
     expect(await exists(recoveryExport)).toBe(false);
 
     await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -1688,6 +1726,22 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     const recoveredHash = digest(Buffer.from(recoveredText, "utf-8"));
     expect(document.hashes.current_file_sha256).toBe(recoveredHash);
     expect(document.hashes.last_materialized_sha256).toBe(recoveredHash);
+    const exportRecords = (await readFile(recoveryExport, "utf-8"))
+      .trim()
+      .split("\n")
+      .map((line): unknown => JSON.parse(line));
+    expect(exportRecords).toContainEqual(expect.objectContaining({
+      record_type: "document",
+      record: expect.objectContaining({
+        id: firstDocumentId,
+        content_sha256: recoveredHash,
+      }),
+    }));
+    expect(exportRecords).toContainEqual(expect.objectContaining({
+      record_type: "blob",
+      content_sha256: recoveredHash,
+      content_base64: Buffer.from(recoveredText, "utf-8").toString("base64"),
+    }));
   });
 
   test("AC-15: a real proposal is reviewed and applied through one sitting", async ({
@@ -1700,6 +1754,8 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     );
     const quote = "A line preserved exactly.";
     const replacement = "A line accepted through live review.";
+    const sourceBefore = await readFile(fixture.source.path);
+    expect(digest(sourceBefore)).toBe(fixture.source.sha256);
     const seeded = await request.post("/api/_live/seed-proposal", {
       headers: { "X-WB-Live-Control": expectedHarnessNonce },
       data: {
@@ -1734,7 +1790,9 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     expect(beforeDocumentResponse.ok()).toBe(true);
     const beforeDocument = (await beforeDocumentResponse.json()) as {
       structured_head_sha256: string;
+      source_writeback: string;
     };
+    expect(beforeDocument.source_writeback).toBe("never");
 
     const openedAt = Date.now();
     const unexpectedPushes: Array<Promise<Record<string, unknown>>> = [];
@@ -1836,7 +1894,30 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     await proposal.locator(".wb-cowork-rail__card-select").click();
     await page.getByRole("button", { name: "Accept", exact: true }).click();
     await expect(proposal).toContainText("Decision: Accept");
+    const committed = page.waitForResponse((response) => {
+      const pathname = new URL(response.url()).pathname;
+      return response.request().method() === "PUT" &&
+        pathname.startsWith(`/api/truth/doc/${importedDocumentId}/sitting/`) &&
+        pathname.endsWith("/commit");
+    });
     await page.getByRole("button", { name: "Apply decisions (1)" }).click();
+    const commitResponse = await committed;
+    const commit = (await commitResponse.json()) as {
+      source_writeback: string;
+      materialization_intent_id: string | null;
+      new_file_sha256: string;
+      structured_head_sha256: string;
+      results: readonly { proposal_id: string; verb: string; result: string; gesture_id: string }[];
+    };
+    expect(commitResponse.ok(), JSON.stringify(commit)).toBe(true);
+    expect(commit.source_writeback).toBe("never");
+    expect(commit.materialization_intent_id).toBeNull();
+    expect(commit.results).toEqual([expect.objectContaining({
+      proposal_id: seededPayload.proposal_id,
+      verb: "confirm",
+      result: "applied",
+      gesture_id: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })]);
     await expect
       .poll(
         async () => {
@@ -1857,20 +1938,39 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       "utf-8",
     );
     await expect(editor).toContainText(replacement);
-    await expect
-      .poll(() => readFile(fixture.source.path), { timeout: 30_000 })
-      .toEqual(expected);
+    // Imported documents commit a managed projection without publishing over
+    // the source artifact. Read the exact committed head through its render API.
+    expect(await readFile(fixture.source.path)).toEqual(sourceBefore);
+    const projection = await request.get(
+      `/api/truth/doc/${importedDocumentId}/render?store_id=${ordinaryStoreId}` +
+        `&format=markdown&expected_structured_head_sha256=${commit.structured_head_sha256}`,
+    );
+    expect(projection.ok()).toBe(true);
+    expect(projection.headers()["x-wb-structured-head-sha256"]).toBe(commit.structured_head_sha256);
+    expect(await projection.body()).toEqual(expected);
+    expect(commit.new_file_sha256).toBe(digest(expected));
     const documentResponse = await request.get(
       `/api/truth/doc/${importedDocumentId}?store_id=${ordinaryStoreId}`,
     );
     expect(documentResponse.ok()).toBe(true);
     const document = (await documentResponse.json()) as {
       open_proposals: readonly unknown[];
-      hashes: { current_file_sha256: string; last_materialized_sha256: string };
+      structured_head_sha256: string;
+      source_writeback: string;
+      hashes: {
+        current_file_sha256: string;
+        last_materialized_sha256: string;
+        import_source_sha256: string;
+        observed_source_file_sha256: string;
+      };
     };
     expect(document.open_proposals).toHaveLength(0);
+    expect(document.source_writeback).toBe("never");
+    expect(document.structured_head_sha256).toBe(commit.structured_head_sha256);
     expect(document.hashes.current_file_sha256).toBe(digest(expected));
     expect(document.hashes.last_materialized_sha256).toBe(digest(expected));
+    expect(document.hashes.import_source_sha256).toBe(digest(sourceBefore));
+    expect(document.hashes.observed_source_file_sha256).toBe(digest(sourceBefore));
   });
 
   test("AC-13 AC-17: external Markdown cannot be overwritten and can be explicitly re-imported", async ({
@@ -1879,14 +1979,27 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
   }) => {
     await gotoAuthenticatedCowork(
       page,
-      `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
+      `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
     await waitForEditor(page);
+    const externalPath = path.join(fixture.ordinary.path, "drafts", "first-working-note.md");
+    const importedSourceBefore = await readFile(fixture.source.path);
+    expect(digest(importedSourceBefore)).toBe(fixture.source.sha256);
+    const beforeDocumentResponse = await request.get(
+      `/api/truth/doc/${firstDocumentId}?store_id=${ordinaryStoreId}`,
+    );
+    expect(beforeDocumentResponse.ok()).toBe(true);
+    const beforeDocument = (await beforeDocumentResponse.json()) as {
+      source_writeback: string;
+      path: string;
+    };
+    expect(beforeDocument.source_writeback).toBe("same_file");
+    expect(beforeDocument.path).toBe("drafts/first-working-note.md");
     const external = Buffer.from(
-      "# Imported note\n\nExternal author changed this line.\n",
+      "# First Working Note\n\nExternal author changed this line.\n",
       "utf-8",
     );
-    await writeFile(fixture.source.path, external);
+    await writeFile(externalPath, external);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
 
     const reviewExternal = page.getByRole("button", {
@@ -1896,7 +2009,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     const save = page.getByRole("button", { name: "Save", exact: true });
     await expect(save).toBeDisabled();
     await page.keyboard.press("Control+s");
-    expect(await readFile(fixture.source.path)).toEqual(external);
+    expect(await readFile(externalPath)).toEqual(external);
 
     await reviewExternal.click();
     await expect(
@@ -1904,10 +2017,10 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
     ).toBeVisible();
     const changes = page.locator('pre[aria-label="Markdown changes"]');
     await expect(changes).toContainText("External author changed this line.");
-    expect(await readFile(fixture.source.path)).toEqual(external);
+    expect(await readFile(externalPath)).toEqual(external);
     await page.getByRole("button", { name: "Continue to replacement" }).click();
     await expect(page.getByText("Replacement confirmation", { exact: true })).toBeVisible();
-    expect(await readFile(fixture.source.path)).toEqual(external);
+    expect(await readFile(externalPath)).toEqual(external);
     const committed = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
@@ -1920,7 +2033,7 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
         const pathname = new URL(candidate.url()).pathname;
         return (
           pathname.startsWith(
-            `/api/truth/doc/${encodeURIComponent(importedDocumentId)}/reimport/`,
+            `/api/truth/doc/${encodeURIComponent(firstDocumentId)}/reimport/`,
           ) && pathname.endsWith("/source")
         );
       },
@@ -1952,9 +2065,10 @@ test.describe.serial("Co-work live lifecycle", { tag: ["@live", "@no-ci"] }, () 
       "Saved",
       { timeout: 30_000 },
     );
-    expect(await readFile(fixture.source.path)).toEqual(external);
+    expect(await readFile(externalPath)).toEqual(external);
+    expect(await readFile(fixture.source.path)).toEqual(importedSourceBefore);
     const documentResponse = await request.get(
-      `/api/truth/doc/${importedDocumentId}?store_id=${ordinaryStoreId}`,
+      `/api/truth/doc/${firstDocumentId}?store_id=${ordinaryStoreId}`,
     );
     expect(documentResponse.ok()).toBe(true);
     const document = (await documentResponse.json()) as {

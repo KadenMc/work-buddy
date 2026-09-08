@@ -10,7 +10,7 @@ import { openCowork } from "./cowork-helpers";
  * deterministically.
  */
 
-const SUBMIT = /Submit sitting/;
+const SUBMIT = /Apply decisions/;
 
 test("drives the queue sitting with j/k and Enter", { tag: "@no-ci" }, async ({ page }) => {
   await openCowork(page);
@@ -18,7 +18,7 @@ test("drives the queue sitting with j/k and Enter", { tag: "@no-ci" }, async ({ 
   // Enter queue mode, the keyboard focus layout.
   await page.getByRole("button", { name: "Queue" }).click();
   await expect(page.getByText(/Item 1/)).toBeVisible();
-  await expect(page.getByText(/of 5/)).toBeVisible();
+  await expect(page.getByText(/of 4/)).toBeVisible();
 
   // Navigate forward with k, back with j (the inverted binding).
   await page.keyboard.press("k");
@@ -33,17 +33,17 @@ test("drives the queue sitting with j/k and Enter", { tag: "@no-ci" }, async ({ 
   // Stage Accept with Enter. Queue mode auto-advances to the next undecided item.
   await page.getByRole("button", { name: "Accept" }).press("Enter");
   await expect(page.getByRole("button", { name: SUBMIT })).toHaveText(
-    "Submit sitting (1)",
+    "Apply decisions (1)",
   );
   await expect(page.getByText(/Item 2/)).toBeVisible();
 
   // Stage Accept on the next item too, then submit with Enter.
   await page.getByRole("button", { name: "Accept" }).press("Enter");
   await expect(page.getByRole("button", { name: SUBMIT })).toHaveText(
-    "Submit sitting (2)",
+    "Apply decisions (2)",
   );
 
   await page.getByRole("button", { name: SUBMIT }).press("Enter");
   await expect(page.getByRole("button", { name: SUBMIT })).toBeDisabled();
-  await expect(page.getByText(/of 3/)).toBeVisible();
+  await expect(page.getByText(/of 2/)).toBeVisible();
 });

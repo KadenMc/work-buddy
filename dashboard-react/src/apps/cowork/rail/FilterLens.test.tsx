@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import { FilterLens } from "./FilterLens";
 
-const counts = { all: 5, suggestions: 3, flags: 1, claims: 1 };
+const counts = { all: 4, suggestions: 3, flags: 1 };
 
 describe("FilterLens", () => {
   it("renders every typed group with its count", () => {
@@ -13,11 +13,9 @@ describe("FilterLens", () => {
     const all = screen.getByRole("button", { name: /All/ });
     const suggestions = screen.getByRole("button", { name: /Suggestions/ });
     const flags = screen.getByRole("button", { name: /Flags/ });
-    const claims = screen.getByRole("button", { name: /Claims/ });
-    expect(all.querySelector(".wb-cowork-rail__chip-count")).toHaveTextContent("5");
+    expect(all.querySelector(".wb-cowork-rail__chip-count")).toHaveTextContent("4");
     expect(suggestions.querySelector(".wb-cowork-rail__chip-count")).toHaveTextContent("3");
     expect(flags.querySelector(".wb-cowork-rail__chip-count")).toHaveTextContent("1");
-    expect(claims.querySelector(".wb-cowork-rail__chip-count")).toHaveTextContent("1");
   });
 
   it("marks the active filter pressed and the rest not", () => {
@@ -37,8 +35,8 @@ describe("FilterLens", () => {
   it("emits the selected filter on click", async () => {
     const onChange = vi.fn();
     render(<FilterLens filter="all" counts={counts} onChange={onChange} />);
-    await userEvent.click(screen.getByRole("button", { name: /Claims/ }));
-    expect(onChange).toHaveBeenCalledWith("claims");
+    await userEvent.click(screen.getByRole("button", { name: /Flags/ }));
+    expect(onChange).toHaveBeenCalledWith("flags");
   });
 
   it("has no accessibility violations", async () => {

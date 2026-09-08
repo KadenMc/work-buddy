@@ -42,9 +42,9 @@ dev_notes: |
 
   Document lifecycle operations span the folder's Truth/Ydoc databases and the house conversations database. They therefore acquire the cross-process per-store-and-document lifecycle lock before either side: start, feedback, and sitting routing hold it from active-state validation through their conversation effects, while retirement holds it through Truth commit and conversation close/lease revocation. Keep database work in the order lifecycle lock → Truth/Ydoc → conversations; never introduce the inverse nesting.
 
-  Editor annotations are a runtime-only ProseMirror decoration projection derived from the same R2 document snapshot as the Review rail. They must never enter the schema, Yjs state, Markdown, undo history, or outbound persistence. Proposal and claim anchors are kind-qualified so identical raw IDs cannot collide. Review focus changes only the active treatment; rail filters never remove the underlying editor annotations. Chat passage highlighting is also view state and must preserve the editor selection and the user's current focus.
+  Editor annotations are runtime-only ProseMirror decorations derived from the authoritative document snapshot and the active rail's projection. Review owns proposal and evaluation anchors, Truth owns expressions, and Provenance owns source/authorship/review coverage. They must never enter the schema, Yjs state, Markdown, undo history, or outbound persistence. Proposal and claim anchors are kind-qualified so identical raw IDs cannot collide. Review focus changes only the active treatment; rail filters never remove the underlying editor annotations. Chat passage highlighting is also view state and must preserve the editor selection and the user's current focus.
 
-  Review Stream cards stay in normal document flow inside one ordinary Review scroll container. Do not position or transform cards from editor-anchor geometry, subscribe card layout to editor transactions, or compensate for rail scrolling; those cross-pane geometry loops previously produced blank space and snap-back behavior. The editor and Review remain independent sibling scroll owners. Passive selection reconciliation—initial render, filtering, mode changes, and data/decorations refresh—may restore the editor's focused treatment but must not move either surface. A present-user activation of a card, Queue target, or recovery link is a one-shot command that selects and reveals the corresponding editor passage; recovery links first expose their target in Stream/All, and the explicit passage affordance also flashes it. On a narrow workspace, the surface exposes the Editor before revealing. Never persist or replay a reveal command during anchor/decorations refresh: only the current kind-qualified focused identity may be reapplied during the mounted session. A future contextual margin view would need to share the editor's scroll plane rather than recreate independent editor-to-rail alignment.
+  Review Stream cards stay in normal document flow inside one ordinary Review scroll container. Do not position or transform cards from editor-anchor geometry, subscribe card layout to editor transactions, or compensate for rail scrolling; cross-pane geometry loops can produce blank space and snap-back behavior. The editor and Review remain independent sibling scroll owners. Passive selection reconciliation (initial render, filtering, mode changes, and data/decorations refresh) may restore the editor's focused treatment but must not move either surface. A present-user activation of a card, Queue target, or recovery link is a one-shot command that selects and reveals the corresponding editor passage; recovery links first expose their target in Stream/All, and the explicit passage affordance also flashes it. On a narrow workspace, the surface exposes the Editor before revealing. Never persist or replay a reveal command during anchor/decorations refresh: only the current kind-qualified focused identity may be reapplied during the mounted session. A future contextual margin view would need to share the editor's scroll plane rather than recreate independent editor-to-rail alignment.
 
   Scroll persistence is a device-local callback-ref binding keyed by full folder ID, document ID, and surface (with an explicit document-only namespace for browser-local and demo documents). Attach the Review binding only while Review is visible and only for **Stream** + **All**. Detach it synchronously before switching to Chat, a filter, or Queue, so shorter replacement content cannot clamp the canonical position before it is saved. Writes are throttled and flushed on unmount, page hide, and document visibility loss. A saved position may exceed a loading shell's current range, so restoration observes later geometry for a bounded period and must never persist that temporary clamp. Wheel or touch movement, scroll keys directed at the container itself, an external programmatic scroll, or explicit passage navigation cancels pending restoration and becomes the new position. Ordinary clicks, caret placement, and descendant control keys do not cancel it before scrolling actually occurs.
 
@@ -61,6 +61,18 @@ dev_notes: |
   while the sitting's expected-head and snapshot checks still hold.
 
   Paste persistence and paste provenance are related but cannot be committed in one browser transaction: Yjs state, the synchronous local-storage intent journal, the document-scoped IndexedDB provenance outbox, and the server Truth store are separate authorities. The journal is the smallest recovery barrier across that gap, not an atomicity claim. Never delete a frozen provenance request before a confirmed server receipt, and never retarget one implicitly after an absent, ambiguous, or changed target. An actor-binding rejection is the exception that requires explicit recovery: refetch the current actor, invalidate every stale frozen request, rotate its idempotency key, reset its determination to unknown, and require a fresh user attestation before sending.
+
+  Direct-entry identity and recording-rejection recovery share the durable
+  provenance outbox. Keep the recovery transitions and request-retention rules
+  in cowork/content-provenance authoritative for the bridge and transport.
+
+  The shared document menu freezes a passage target against the opening
+  ProseMirror document and rechecks it before dispatch. Truth header and menu
+  creation use one registered action controller; claim decisions open the same
+  staged detail flow. The shortcut map includes openClaim alongside the six
+  Queue commands. Valid persisted six-command maps retain every existing chord
+  and receive an unused Enter combination for openClaim; do not silently reset
+  customized review bindings.
 
   Co-work's editor/rail split uses Dashboard Core's `WorkspaceSidePanel`, shared
   with contextual form assistance. Preserve `wb.cowork.workspace-layout`, the
@@ -353,7 +365,11 @@ visible, the exact passage says **Recording provenance…** rather than claiming
 authorship or reporting an empty ledger. If no actor was available at capture,
 the row becomes an explicit legacy/user-attested determination and automatically
 surfaces after identity recovery; deferring or reloading retains that one row.
-A later actor is never silently substituted as the capture-time author.
+A later actor is never silently substituted as the capture-time author. Older
+queued captures without that actor enter the same explicit recovery before
+sending. A definite rejection of the attribution also stops automatic delivery
+and keeps the passage for a fresh determination. Uncertain delivery and failed
+refresh after a confirmed receipt preserve the original attempt for recovery.
 
 The attestation says what the acting person reports about the content. It does
 not prove authorship, verify a claim, certify correctness, or approve the text.
@@ -396,6 +412,22 @@ draft stay. The selection is revisioned so two open surfaces cannot silently
 overwrite each other, and assistant messages retain the provider/model that
 actually produced them. Read-only documents may inspect the saved selection but
 cannot change it or send a turn that starts a new driver.
+
+The editor has one shared **Passage actions** menu in every lens, including
+Provenance. It is available from a selected passage's floating control, a
+context click, or the keyboard context-menu command. Shared actions are **Ask
+about this part…**, **Request a change here…**, and **Set as working target**;
+the active lens adds relevant claim, suggestion, or provenance actions. This
+is the common passage-action surface. It keeps the exact target that was
+opened, and a changed passage requires opening its
+actions again. Unavailable actions retain an explanation.
+
+**Request a change here…** opens a short form around that passage. Sending
+records the authored request through the existing feedback path and opens the
+document's Chat. Failed delivery keeps the form available to retry; if the
+request was saved but Chat could not open, **Open in Chat** retries navigation
+without sending the request again. **Ask about this part…** opens Chat with the
+passage as its working context and leaves the user to author the question.
 
 Selected-text feedback is saved verbatim as human-authored evidence, anchored to
 the exact document passage, and posted as an ordinary user turn in that same
@@ -458,13 +490,15 @@ preserve their meaningful edge whitespace. Deletions cannot carry claim
 references, because accepted deletion leaves no passage from which to mint an
 expression.
 
-The editor keeps every unresolved review annotation visible independently of
-the active Review filter. These are view-only decorations, not hidden edits to
+In the Review lens, the editor keeps every unresolved review annotation visible
+independently of the active Review filter. These are view-only decorations, not hidden edits to
 the document. Insertions and replacements show their proposed text beside the
 anchored original; deletions show the original as translucent danger text with
-a strikethrough. Flags, expressions or claims, and confirmed agent provenance
-have distinct visual and non-colour treatments, and a flag remains a warning
-underline rather than looking like removed text. The Review **Stream** is a
+a strikethrough. A flag remains a warning underline rather than looking like
+removed text. Truth and Provenance have separate editor lenses and detail
+surfaces for claims and content attribution. Claims are managed in Truth;
+Review passively links claims needing attention to Truth and does not stage
+claim decisions. The Review **Stream** is a
 conventional normal-flow list in document order, with filters acting as lenses
 over that list and **Queue** providing sequential focus. An unselected Stream
 card keeps only its scan-level identity and title visible; selection discloses
@@ -478,15 +512,17 @@ briefly flashes the anchor. Merely reconciling an already-selected item or
 remounting the editor projection restores its emphasis without scrolling;
 current selection is rail state, while navigation intent is a one-shot command.
 
-Queue keyboard commands come from the registry-backed Co-work settings page.
-The same atomic shortcut map owns previous, next, positive decision, amend,
-negative decision, and defer bindings, so the settings UI can reject conflicts
-before saving and the rendered key hints cannot drift from runtime behavior.
-Shortcuts operate only while Review's Queue is visibly active, never steal text
-entry or composition, and dispatch through the same applicability and staging
-paths as their corresponding buttons. The Co-work view links directly to its
-own App settings page; the reusable keybinding-map control is host Settings UI,
-not a Review-only configuration surface.
+Co-work keyboard commands come from its registry-backed settings page. **Open
+the claim under the caret**, assigned **Alt+Enter** by default, works in the
+editor and opens Truth without confirming the claim. The same atomic shortcut
+map retains the six Queue commands: previous, next, positive decision, amend,
+negative decision, and defer. Those six operate only while Review's Queue is
+visibly active, never steal text entry or composition, and dispatch through the
+same applicability and staging paths as their buttons. Settings reject
+conflicts before saving, and rendered hints follow the saved map. Existing
+custom Queue bindings keep their meanings when the editor command is added.
+The Co-work view links directly to its own App settings page; the reusable
+keybinding-map control is host Settings UI.
 
 The review rail groups proposals into a sitting so the user can decide them in
 context. Accepting or amending a proposal applies only the admitted,
@@ -505,7 +541,7 @@ Before a multi-decision sitting changes the document, Co-work confirms that the
 selected edits can be placed together against one synchronized document head. A
 blocked decision does not collapse the batch into a generic failure and does not
 cause the other decisions to be applied silently. Review identifies the blocked
-suggestions, keeps all choices selected, and—when an independent subset is ready—
+suggestions, keeps all choices selected, and, when an independent subset is ready,
 offers an explicit action to apply only those other decisions.
 
 Proposal base hashes remain immutable drafting lineage; they are not a

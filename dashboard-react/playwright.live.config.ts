@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const baseURL = process.env.WB_LIVE_BASE_URL;
 const app = process.env.WB_LIVE_APP ?? "cowork";
+const scenario = process.env.WB_LIVE_SCENARIO ?? "lifecycle";
 
 if (app !== "cowork") throw new Error(`No live specification registered for app: ${app}`);
 
@@ -13,7 +14,7 @@ if (baseURL === undefined || baseURL.length === 0) {
 
 export default defineConfig({
   testDir: "./tests/live",
-  testMatch: `${app}.spec.ts`,
+  testMatch: scenario === "truth-panel" ? "cowork-truth.spec.ts" : `${app}.spec.ts`,
   fullyParallel: false,
   workers: 1,
   forbidOnly: true,

@@ -33,6 +33,7 @@ describe("TruthStore", () => {
       filter: "needs_review",
       selectedClaimId: "claim-1",
       composer: null,
+      requestedDecision: null,
     });
     expect(truthStateStorageKey("store/one", "doc/one")).toContain("store%2Fone");
   });
@@ -47,5 +48,16 @@ describe("TruthStore", () => {
       scope: "document",
       filter: "all",
     });
+  });
+
+  it("never persists or replays a requested decision", () => {
+    const storage = new MemoryStorage();
+    const store = createPersistedTruthStore(storage, "store", "doc");
+    store.requestDecision("claim", "reject");
+    expect(store.getState().requestedDecision?.action).toBe("reject");
+    const restored = createPersistedTruthStore(storage, "store", "doc");
+    expect(restored.getState()).toMatchObject({ selectedClaimId: "claim", requestedDecision: null });
+    store.selectClaim("claim");
+    expect(store.getState().requestedDecision).toBeNull();
   });
 });

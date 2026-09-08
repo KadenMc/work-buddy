@@ -59,6 +59,37 @@
   border-block-end: 1px solid var(--wb-color-border-subtle);
 }
 
+.wb-cowork-truth__action-reason {
+  margin: 0;
+  padding: var(--wb-space-2) var(--wb-space-4);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__state-summary,
+.wb-cowork-truth__preparation {
+  margin: 0;
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-truth__record-details {
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+  padding-block: var(--wb-space-3);
+}
+
+.wb-cowork-truth__record-details > summary {
+  cursor: pointer;
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-truth__record-details code {
+  overflow-wrap: anywhere;
+}
+
+.wb-cowork-truth__correction button {
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+
 .wb-cowork-truth__scope,
 .wb-cowork-truth__actions,
 .wb-cowork-truth__composer-actions,

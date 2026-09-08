@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor } from "@tiptap/core";
 import * as Y from "yjs";
+import { DefaultCoworkActionSnapshotController } from "../targets"
 
 import {
   CoworkYdocPersistence,
@@ -38,6 +39,9 @@ const DEFAULT_DOCUMENT_ID = "cowork-empty";
 const COMPACTION_IDLE_MS = 2_000;
 
 export interface CoworkEditorPaneProps {
+  readonly onEditorChange?: (editor: Editor | null) => void
+  readonly storeId?: string
+  readonly onActionSnapshotController?: (controller: import("../targets").CoworkActionSnapshotController | null) => void
   /**
    * Identifies the persisted document, so its local Yjs state is keyed per document and
    * survives reload. The surface passes the workspace's document id here. Defaults to a
@@ -196,6 +200,9 @@ function MountedCoworkEditor({
  * gates the editor mount by conditionally rendering it (never `useEditor(null)`, F5.4).
  */
 export function CoworkEditorPane({
+  onEditorChange,
+  storeId,
+  onActionSnapshotController,
   documentId,
   seedMarkdown = DEFAULT_SEED_MARKDOWN,
   document,
@@ -218,6 +225,27 @@ export function CoworkEditorPane({
   >({ kind: "loading" });
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [mountedEditor, setMountedEditor] = useState<Editor | null>(null);
+  useEffect(() => {
+    onEditorChange?.(mountedEditor)
+    return () => onEditorChange?.(null)
+  }, [mountedEditor, onEditorChange])
+  useEffect(() => {
+    if (mountedEditor === null || storeId === undefined || onActionSnapshotController === undefined) return
+    let editGeneration = 0
+    const updated = () => { editGeneration += 1 }
+    const controller = new DefaultCoworkActionSnapshotController({
+      document: doc, documentId: documentId ?? DEFAULT_DOCUMENT_ID, storeId, persistence,
+      getEditGeneration: () => editGeneration, storage: null,
+    })
+    mountedEditor.on("update", updated)
+    controller.attach(mountedEditor)
+    onActionSnapshotController(controller)
+    return () => {
+      onActionSnapshotController(null)
+      mountedEditor.off("update", updated)
+      controller.detach()
+    }
+  }, [mountedEditor, storeId, onActionSnapshotController, doc, documentId, persistence])
   const ensureScratchDurability = useCallback(async (): Promise<void> => {
     await persistence.flush();
     await persistence.compact();

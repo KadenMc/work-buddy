@@ -7,7 +7,6 @@
 
 import {
   demoReviewData,
-  type ReviewClaim,
   type ReviewProposal,
   type ReviewRailData,
 } from "../rail";
@@ -15,15 +14,6 @@ import {
 /** The four demo proposals: two insertions, one deletion, one flag. */
 export function demoProposals(): readonly ReviewProposal[] {
   return demoReviewData().proposals;
-}
-
-/** The one demo claim (a confirmed measurement with two evidence receipts). */
-export function demoClaim(): ReviewClaim {
-  const claim = demoReviewData().claims[0];
-  if (claim === undefined) {
-    throw new Error("The demo scene must carry at least one claim.");
-  }
-  return claim;
 }
 
 function proposalOfKind(

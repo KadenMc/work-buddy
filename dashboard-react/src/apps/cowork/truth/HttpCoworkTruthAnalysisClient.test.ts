@@ -377,6 +377,36 @@ describe("HttpCoworkTruthAnalysisClient", () => {
     );
   });
 
+  it("resolves no current run from the explicit no-run payload", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ ok: true, current: null }),
+    );
+    const client = new HttpCoworkTruthAnalysisClient({
+      storeId: "store-1",
+      documentId: "doc-1",
+      fetchImpl,
+    });
+
+    await expect(client.loadCurrent()).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("still treats a 404 from an older server as no current run", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      jsonResponse(
+        { ok: false, error: "No Truth analysis run exists for this document." },
+        404,
+      ),
+    );
+    const client = new HttpCoworkTruthAnalysisClient({
+      storeId: "store-1",
+      documentId: "doc-1",
+      fetchImpl,
+    });
+
+    await expect(client.loadCurrent()).resolves.toBeNull();
+  });
+
   it("restores the current run and preserves server-reported coverage", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ run: runPayload }));
     const client = new HttpCoworkTruthAnalysisClient({

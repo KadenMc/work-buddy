@@ -8,6 +8,7 @@ import {
   type RefCallback,
   type ReactNode,
 } from "react";
+import type { Editor } from "@tiptap/core"
 import {
   coworkHumanAuthorityHeaders,
   exactHumanAuthorityHeaders,
@@ -112,6 +113,18 @@ import {
   type TruthSelectionCapture,
 } from "../truth";
 import { ProvenanceHoverCard } from "../provenance";
+import { TruthHoverCard, TruthLegend } from "../truth/view/TruthHoverCard"
+import { resolveProvenanceQuoteAnchorDetailed } from "../suggestions/anchor"
+import { InMemoryTruthProvider } from "../truth/InMemoryTruthProvider"
+import { TruthStore } from "../truth/store"
+import { DomReviewAnchorController } from "../bridge/DomReviewAnchorController"
+import { CoworkPassageHighlighter } from "../bridge/CoworkPassageHighlighter"
+import { revealTruthPassage } from "../truth/revealTruthPassage"
+import { LedgerDecorationProjector } from "../bridge/ledgerDecorationProjector"
+import { InMemoryCoworkYdocTransport } from "../persistence/InMemoryCoworkYdocTransport"
+import { InMemoryCoworkFeedbackTransport } from "../feedback/feedbackClient"
+import { CoworkDocumentContextMenu } from "../menus/CoworkDocumentContextMenu"
+import type { CoworkActionSnapshotController, CoworkCapturedActionSnapshot } from "../targets"
 import type { ProvenanceEditorIntegration } from "../provenance";
 import { HttpCoworkVerifyClient, useCoworkVerifyExecution } from "../verify";
 import {
@@ -243,6 +256,22 @@ const useNarrowWorkspace = (): boolean => {
   }, []);
   return narrow;
 };
+
+const orderTruthPassages = (editor: Editor | null, documentId: string, connections: readonly TruthPassageConnection[]) => {
+  const positions = new Map<string, number>()
+  for (const connection of connections) {
+    if (editor === null || connection.documentId !== documentId) continue
+    const range = resolveProvenanceQuoteAnchorDetailed(editor.state.doc, connection.selector)
+    if (range.state === "unique") positions.set(connection.expressionId, range.from)
+  }
+  return [...connections].sort((left, right) => {
+    const leftHere = left.documentId === documentId
+    const rightHere = right.documentId === documentId
+    if (leftHere !== rightHere) return leftHere ? -1 : 1
+    if (left.documentId !== right.documentId) return left.documentId.localeCompare(right.documentId)
+    return (positions.get(left.expressionId) ?? Number.MAX_SAFE_INTEGER) - (positions.get(right.expressionId) ?? Number.MAX_SAFE_INTEGER)
+  })
+}
 
 function CoworkPaneTabs({
   active,
@@ -474,6 +503,94 @@ export function CoworkDemoWorkspace({
   const documentId = model?.document?.documentId ?? "demo-doc";
   const conversationId = `cowork-doc-${documentId}`;
   const reviewProvider = useMemo(() => new InMemoryReviewProvider(), []);
+  const storeId = "demo"
+  const [editor, setEditor] = useState<Editor | null>(null)
+  const editorRef = useRef<Editor | null>(null)
+  editorRef.current = editor
+  const [controller, setController] = useState<CoworkActionSnapshotController | null>(null)
+  const [railStore] = useState(() => new RailStore())
+  const activeTab = useRailState(railStore, (state) => state.tab)
+  const narrowWorkspace = useNarrowWorkspace()
+  const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor")
+  const editorPaneTabRef = useRef<HTMLButtonElement | null>(null)
+  const selectPane = useCallback((pane: CoworkWorkspacePane) => {
+    setActivePane(pane)
+    if (pane !== "editor") railStore.setTab(pane)
+  }, [railStore])
+  const [truthStore] = useState(() => new TruthStore())
+  const truthProvider = useMemo(() => new InMemoryTruthProvider({ storeId, documentId }), [documentId])
+  const [transport] = useState(() => new InMemoryCoworkYdocTransport())
+  const [feedbackTransport] = useState(() => new InMemoryCoworkFeedbackTransport())
+  const [annotations] = useState(() => new CoworkChatAnnotations())
+  const [passageAnnouncement, setPassageAnnouncement] = useState("")
+  const [passageHighlighter] = useState(() => new CoworkPassageHighlighter({ getEditor: () => editorRef.current }))
+  useEffect(() => () => passageHighlighter.dispose(), [passageHighlighter])
+  const [projector] = useState(() => new LedgerDecorationProjector())
+  const [anchors] = useState(() => new DomReviewAnchorController({
+    getEditorRoot: () => editorRef.current?.view.dom ?? null, getEditor: () => editorRef.current,
+  }))
+  const lens = activeTab === "chat" ? "neutral" : activeTab
+  const shortcutBindings = useCoworkShortcutBindings()
+  useEffect(() => {
+    const syncTruth = () => reviewProvider.setExpressions(truthProvider.getExpressions())
+    syncTruth()
+    return truthProvider.subscribe(syncTruth)
+  }, [truthProvider, reviewProvider])
+  useEffect(() => {
+    let mounted = true
+    const sync = () => void reviewProvider.load().then((data) => { if (mounted) projector.setData(data) })
+    sync()
+    const unsubscribe = reviewProvider.subscribe(sync)
+    return () => { mounted = false; unsubscribe() }
+  }, [projector, reviewProvider])
+  useEffect(() => {
+    if (editor === null) return
+    projector.attach(editor)
+    anchors.attachEditor(editor)
+    return () => { projector.detach(); anchors.detachEditor() }
+  }, [anchors, editor, projector])
+  useEffect(() => { projector.setLens(lens) }, [lens, projector])
+  const openClaim = (id: string) => {
+    selectPane("truth")
+    projector.setLens("truth")
+    truthStore.selectClaim(id)
+    anchors.focusAnchor(id, "claim")
+  }
+  const captureSelection = useCallback(async (): Promise<TruthSelectionCapture> => {
+    if (controller === null) throw new Error("The editor is preparing.")
+    const capture = await controller.capture("current_selection")
+    if (capture.target.selector.kind !== "text_quote") throw new Error("Select the passage first.")
+    return { schema: "wb.cowork.truth-selection/v1", captureId: capture.captureId, documentId, storeId,
+      structuredHeadSha256: capture.structuredHeadSha256, ydocGenerationSha256: capture.ydocGenerationSha256,
+      projectionSha256: capture.projectionSha256, label: capture.target.label, wordCount: capture.target.wordCount,
+      selector: capture.target.selector,
+    }
+  }, [controller, documentId])
+  const truthEditor = useMemo<TruthEditorIntegration>(() => ({
+    orderPassages: (connections) => orderTruthPassages(editor, documentId, connections),
+    captureSelection,
+    capturePassage: async (connection) => {
+      if (editor === null) throw new Error("The editor is preparing.")
+      const range = resolveProvenanceQuoteAnchorDetailed(editor.state.doc, connection.selector)
+      if (range.state !== "unique") throw new Error("The original passage could not be located.")
+      editor.commands.setTextSelection({ from: range.from, to: range.to })
+      return captureSelection()
+    },
+    focusClaim: (id) => id === null ? anchors.clearFocusedAnchor() : anchors.focusAnchor(id, "claim"),
+    revealPassage: (connection) => {
+      const reveal = () => {
+        const found = revealTruthPassage(editorRef.current, connection, anchors, (target) => passageHighlighter.show(target))
+        setPassageAnnouncement(found ? "" : "That connected passage could not be located in the current document.")
+      }
+      if (!narrowWorkspace) { reveal(); return }
+      selectPane("editor")
+      window.requestAnimationFrame(() => {
+        editorPaneTabRef.current?.focus()
+        reveal()
+      })
+    },
+    revealClaimIfOutsideViewport: (id) => { if (!narrowWorkspace) anchors.revealClaimIfOutsideViewport(id) },
+  }), [anchors, captureSelection, documentId, editor, narrowWorkspace, passageHighlighter, selectPane])
   const chatProvider = useMemo(
     () => createDemoChatProvider(conversationId),
     [conversationId],
@@ -492,16 +609,62 @@ export function CoworkDemoWorkspace({
   return (
     <CoworkWorkspaceLayout
       health={healthFromModel(model)}
+      narrow={narrowWorkspace}
+      activePane={activePane}
+      editorTopBar={controller === null ? null : <CoworkDocumentActionBar controller={controller} />}
+      paneTabs={<>
+        {narrowWorkspace ? <CoworkPaneTabs active={activePane} onChange={selectPane}
+          editorTabRef={editorPaneTabRef} panes={["editor", "review", "truth", "chat"]} /> : null}
+        <TruthHoverCard editor={editor} active={activeTab === "truth"} onOpenClaim={openClaim} />
+        <TruthLegend editor={editor} active={activeTab === "truth"} />
+        <p className="wb-cowork-truth__visually-hidden" role="status">{passageAnnouncement}</p>
+      </>}
       editorScrollRef={editorScrollRef}
       editor={
-        <CoworkEditorPane
+        <><CoworkEditorPane
           documentId={documentId}
+          storeId={storeId}
+          transport={transport}
+          onEditorChange={setEditor}
+          onActionSnapshotController={setController}
           seedMarkdown={DEMO_DOCUMENT_MARKDOWN}
-        />
+        />{editor === null ? null : <CoworkDocumentContextMenu editor={editor} activeLens={lens}
+          active={!narrowWorkspace || activePane === "editor"}
+          documentId={documentId} storeId={storeId} feedbackTransport={feedbackTransport}
+          actions={{ truthStore, truthEditor, shortcutBindings, onOpenClaim: openClaim,
+            onOpenSuggestion: (id) => { selectPane("review"); railStore.select(id, "proposal") },
+            onSetWorkingTarget: controller === null ? undefined : () => controller.setWorkingTargetFromSelection(),
+            onAsk: controller === null ? undefined : () => {
+              controller.setWorkingTargetFromSelection()
+              selectPane("chat")
+              window.requestAnimationFrame(() => window.document.querySelector<HTMLElement>(".wb-chat-composer__input")?.focus())
+            },
+          }} onFeedbackCaptured={(capture) => {
+            chatProvider.pushMessage({ id: capture.messageId, author: "user", content: capture.text, createdAt: new Date().toISOString() })
+            annotations.annotateFeedback(capture)
+            selectPane("chat")
+          }} />}</>
       }
       rail={
+        <CoworkChatTargetingProvider documentId={documentId} storeId={storeId} controller={controller}
+          agent={{ status: "running", alive: true, started: true, error: null }}
+          client={{ prepare: async (capture: CoworkCapturedActionSnapshot) => ({
+            kind: "action_snapshot", actionSnapshotId: capture.captureId, documentId, storeId,
+            targetKind: capture.target.selector.kind, targetLabel: capture.target.label,
+            targetWordCount: capture.target.wordCount, targetTextSha256: capture.target.targetTextSha256,
+            projectionSha256: capture.projectionSha256, capturedAt: capture.capturedAt,
+          }) }}>
         <CoworkRail
           documentId={documentId}
+          storeId={storeId}
+          store={railStore}
+          showTabs={!narrowWorkspace}
+          availableTabs={["review", "truth", "chat"]}
+          reviewVisible={!narrowWorkspace || activePane === "review"}
+          truthVisible={!narrowWorkspace || activePane === "truth"}
+          truth={{ provider: truthProvider, store: truthStore, editor: truthEditor }}
+          reviewAnchors={anchors}
+          chatAnnotations={annotations}
           reviewScrollRef={reviewScrollRef}
           onReviewScrollWillDetach={detachReviewScroll}
           reviewProvider={reviewProvider}
@@ -518,6 +681,7 @@ export function CoworkDemoWorkspace({
             },
           }}
         />
+        </CoworkChatTargetingProvider>
       }
     />
   );
@@ -1171,6 +1335,7 @@ export function CoworkLiveWorkspace({
     () =>
       capabilities.truth
         ? ({
+      orderPassages: (connections) => orderTruthPassages(bridge.getEditor(), documentId, connections),
       captureAnalysisTarget: async (target) => {
         const controller = bridge.actionSnapshotController;
         if (controller === null) {
@@ -1211,6 +1376,26 @@ export function CoworkLiveWorkspace({
               }),
         };
       },
+      capturePassage: async (connection): Promise<TruthSelectionCapture> => {
+        const editor = bridge.getEditor()
+        if (editor === null || bridge.actionSnapshotController === null || connection.documentId !== documentId) {
+          throw new Error("Open the connected document before adding a corrected claim.")
+        }
+        const range = resolveProvenanceQuoteAnchorDetailed(editor.state.doc, connection.selector)
+        if (range.state !== "unique") throw new Error("The original passage could not be located. Select its corrected text first.")
+        editor.commands.setTextSelection({ from: range.from, to: range.to })
+        const capture = await bridge.actionSnapshotController.capture("current_selection")
+        if (capture.target.selector.kind !== "text_quote") throw new Error("Select the passage first.")
+        return { schema: "wb.cowork.truth-selection/v1", captureId: capture.captureId, storeId, documentId,
+          structuredHeadSha256: capture.structuredHeadSha256, ydocGenerationSha256: capture.ydocGenerationSha256,
+          projectionSha256: capture.projectionSha256, label: capture.target.label,
+          wordCount: capture.target.wordCount, selector: capture.target.selector,
+          ...(capture.target.targetReference === undefined ? {} : { targetReference: { ...capture.target.targetReference } }),
+        }
+      },
+      revealClaimIfOutsideViewport: (claimId) => {
+        if (!narrowWorkspace) bridge.revealClaimIfOutsideViewport(claimId)
+      },
       revealPassage: (connection) => {
         if (
           !connection.currentDocument &&
@@ -1225,12 +1410,10 @@ export function CoworkLiveWorkspace({
           onOpenTruthPassage(connection);
           return;
         }
-        const reveal = (): void =>
-          bridge.reviewAnchors.revealAnchor(
-            connection.expressionId,
-            "expression",
-            { flash: true },
-          );
+        const reveal = (): void => {
+          const found = revealTruthPassage(bridge.getEditor(), connection, bridge.reviewAnchors, bridge.scrollToSpanAnchor)
+          setPassageAnnouncement(found ? "" : "That connected passage could not be located in the current document.")
+        };
         if (!narrowWorkspace) {
           reveal();
           return;
@@ -1289,14 +1472,18 @@ export function CoworkLiveWorkspace({
         : undefined,
     [
       bridge.actionSnapshotController,
+      bridge.getEditor,
+      bridge.revealClaimIfOutsideViewport,
       bridge.focusSpanAnchor,
       bridge.reviewAnchors,
       bridge.revealFocusedSpanAnchor,
+      bridge.scrollToSpanAnchor,
       documentId,
       narrowWorkspace,
       onOpenTruthPassage,
       selectPane,
       capabilities.truth,
+      storeId,
     ],
   );
   const resolvedRunVerify = useMemo<CoworkRunVerifyHandler | undefined>(() => {
@@ -1405,6 +1592,13 @@ export function CoworkLiveWorkspace({
           openProposalCount: bridge.health.drift.openProposalCount,
         };
 
+  const openTruthClaim = (claimId: string) => {
+    selectPane("truth")
+    bridge.setEditorLens("truth")
+    truthStore?.selectClaim(claimId)
+    bridge.reviewAnchors.focusAnchor(claimId, "claim")
+  }
+
   return (
     <DocumentSessionProvider session={session}>
       <CoworkWorkspaceLayout
@@ -1463,10 +1657,27 @@ export function CoworkLiveWorkspace({
             active={activeRailTab === "provenance"}
             editorReady={bridge.editorReady}
           />
+          <TruthHoverCard editor={bridge.getEditor()} active={activeRailTab === "truth"} onOpenClaim={openTruthClaim} />
+          <TruthLegend editor={bridge.getEditor()} active={activeRailTab === "truth"} />
         </>
       }
       editor={
         <DocumentEditorSurface
+          documentActions={{
+            active: !narrowWorkspace || activePane === "editor",
+            truthStore,
+            truthEditor,
+            shortcutBindings,
+            onOpenClaim: capabilities.truth ? openTruthClaim : undefined,
+            onOpenSuggestion: (proposalId) => { selectPane("review"); railStore.select(proposalId, "proposal") },
+            onSetWorkingTarget: bridge.actionSnapshotController === null ? undefined : () => bridge.actionSnapshotController?.setWorkingTargetFromSelection(),
+            onAsk: !capabilities.chat || bridge.actionSnapshotController === null ? undefined : async () => {
+              bridge.actionSnapshotController?.setWorkingTargetFromSelection()
+              selectPane("chat")
+              await prepareChat()
+              window.requestAnimationFrame(() => window.document.querySelector<HTMLElement>(".wb-chat-composer__input")?.focus())
+            },
+          }}
           activeLens={
             activeRailTab === "review"
               ? "review"

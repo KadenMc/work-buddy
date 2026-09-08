@@ -8,7 +8,6 @@ import { StreamView } from "./StreamView";
 import { orderedItems } from "./items";
 
 const items = orderedItems(demoReviewData());
-const emptySpanMap = new Map<string, string>();
 
 function baseProps() {
   return {
@@ -16,10 +15,7 @@ function baseProps() {
     selectedId: null,
     selectedKind: null,
     decisions: {},
-    claimDecisions: {},
-    inspectSpanByClaim: emptySpanMap,
     onActivate: vi.fn(),
-    onInspect: vi.fn(),
   };
 }
 
@@ -27,7 +23,7 @@ describe("StreamView", () => {
   it("renders every item as a card in document order", () => {
     render(<StreamView {...baseProps()} />);
     const cards = [...document.querySelectorAll(".wb-cowork-rail__card")];
-    expect(cards).toHaveLength(5);
+    expect(cards).toHaveLength(4);
     expect(
       cards.map(
         (card) =>
@@ -35,7 +31,7 @@ describe("StreamView", () => {
       ),
     ).toEqual(
       items.map((item) =>
-        item.kind === "claim" ? item.claim.proposition : item.proposal.tldr,
+        item.proposal.tldr,
       ),
     );
   });
@@ -56,7 +52,7 @@ describe("StreamView", () => {
     };
     const first = items[0];
     const anchorLabel =
-      first.kind === "claim" ? first.claim.anchorLabel : first.proposal.anchorLabel;
+      first.proposal.anchorLabel;
     render(<StreamView {...props} />);
 
     await userEvent.click(
@@ -97,7 +93,7 @@ describe("StreamView", () => {
 
   it("shows an empty state when there is nothing to review", () => {
     render(<StreamView {...baseProps()} items={[]} />);
-    expect(screen.getByText("Nothing to review here.")).toBeVisible();
+    expect(screen.getByText("No suggestions or flags to review.")).toBeVisible();
   });
 
   it("has no accessibility violations", async () => {

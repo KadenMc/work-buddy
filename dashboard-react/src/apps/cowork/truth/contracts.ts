@@ -79,6 +79,8 @@ export interface TruthPassageConnection {
   readonly quote: string;
   readonly selector: TruthQuoteSelector;
   readonly currentDocument: boolean;
+  /** Absent on older providers; null means the current connection is healthy. */
+  readonly stale?: "claim_changed" | "claim_terminal" | "span_missing" | null;
   readonly claimCanonicalSha256: string;
   readonly createdAt: string;
   readonly createdBy: {
@@ -555,19 +557,41 @@ export interface TruthRailProvider {
 export interface TruthEditorIntegration {
   /** Capture and freeze the current non-empty selection. */
   captureSelection(): Promise<TruthSelectionCapture>;
+  /** Capture a recorded passage again against the current editor version. */
+  capturePassage?(connection: TruthPassageConnection): Promise<TruthSelectionCapture>;
   /** Capture one full immutable action snapshot for AI-assisted analysis. */
   captureAnalysisTarget?(
     target: TruthAnalysisTargetChoice,
   ): Promise<CoworkCapturedActionSnapshot>;
   /** One-shot present-user navigation; passive selection must never call it. */
   revealPassage(connection: TruthPassageConnection): void;
+  /**
+   * View-only ordering against the current editor. Preserve every connection,
+   * group the current document first, and put unresolved passages last within
+   * each document. This must not change selection, focus, or scroll position.
+   */
+  orderPassages?(
+    connections: readonly TruthPassageConnection[],
+  ): readonly TruthPassageConnection[];
   /** Optional persistent emphasis without scrolling. */
   focusClaim?(claimId: string | null): void;
+  /** Called only by a present-user claim-card activation, never restoration. */
+  revealClaimIfOutsideViewport?(claimId: string): void;
   /** View-only focus for a staged candidate that is not a ledger expression yet. */
   focusAnalysisPassage?(target: TruthAnalysisPassageTarget | null): void;
   /** One-shot explicit navigation to a staged candidate's exact expression. */
   revealAnalysisPassage?(target: TruthAnalysisPassageTarget): void;
 }
+
+/** Stable fallback when the editor cannot resolve current passage positions. */
+export const orderTruthPassages = (
+  connections: readonly TruthPassageConnection[],
+): readonly TruthPassageConnection[] => [...connections].sort((left, right) => {
+  if (left.currentDocument !== right.currentDocument) return left.currentDocument ? -1 : 1;
+  if (left.documentId !== right.documentId) return left.documentId.localeCompare(right.documentId);
+  const position = (left.selector.start ?? Number.MAX_SAFE_INTEGER) - (right.selector.start ?? Number.MAX_SAFE_INTEGER);
+  return position || left.expressionId.localeCompare(right.expressionId);
+});
 
 export interface TruthAnalysisPassageTarget {
   readonly candidateId: string;

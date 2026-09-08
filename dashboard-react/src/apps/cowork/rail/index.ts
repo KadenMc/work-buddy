@@ -22,8 +22,6 @@ export {
 export { FilterLens, type FilterLensProps, type FilterCounts } from "./FilterLens";
 export { MarkBar, type MarkBarProps, type MarkBarTarget } from "./MarkBar";
 export { ProposalCard, type ProposalCardProps } from "./ProposalCard";
-export { ClaimCard, type ClaimCardProps } from "./ClaimCard";
-export { Inspector, type InspectorProps } from "./Inspector";
 export {
   VerificationAttentionFeed,
   type VerificationAttentionFeedProps,
@@ -78,9 +76,7 @@ export {
 export {
   EDIT_VERBS,
   FLAG_VERBS,
-  CLAIM_VERBS,
   PROPOSAL_VERB_LABEL,
-  CLAIM_VERB_LABEL,
   verbsForProposal,
   isVerbDecidable,
   rejectAsFalseNeedsNegation,
@@ -92,17 +88,14 @@ export {
 export type {
   ReviewRailData,
   ReviewProposal,
-  ReviewClaim,
   ReviewExpression,
   ProvenanceSpan,
   RailDriftHealth,
   StagedDecision,
-  StagedClaimDecision,
   SittingResult,
   SittingItemResult,
   SittingResultKind,
   ProposalVerbKind,
-  ClaimVerbKind,
   ProposalKind,
   ProposalChangeType,
   CoworkEpistemicState,

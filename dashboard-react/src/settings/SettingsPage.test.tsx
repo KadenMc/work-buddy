@@ -292,6 +292,7 @@ describe("SettingsPage", () => {
 
   it("captures, validates, cancels, and saves an authoritative keybinding map", async () => {
     const defaults = {
+      openClaim: "Alt+Enter",
       previous: "j",
       next: "k",
       accept: "a",
@@ -363,6 +364,7 @@ describe("SettingsPage", () => {
       name: "Rebind Next review item",
     });
     await waitFor(() => expect(rebindNext).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Rebind Open the claim under the caret" })).toBeEnabled();
 
     fireEvent.click(rebindNext);
     expect(rebindNext).toHaveTextContent("Listening");

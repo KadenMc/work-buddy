@@ -11,16 +11,13 @@
 import { useState, type ReactNode } from "react";
 
 import {
-  ClaimCard,
   MarkBar,
   ProposalCard,
   StreamView,
   demoReviewData,
   orderedItems,
   type MarkBarTarget,
-  type ReviewClaim,
   type ReviewProposal,
-  type StagedClaimDecision,
   type StagedDecision,
 } from "../../apps/cowork/rail";
 import "../../apps/cowork/rail/styles.css";
@@ -44,11 +41,6 @@ function proposalOfKind(
 const insertion = proposalOfKind("insertion");
 const deletion = proposalOfKind("deletion");
 const flag = proposalOfKind("flag");
-const claim: ReviewClaim = (() => {
-  const first = DATA.claims[0];
-  if (first === undefined) throw new Error("The demo scene must carry a claim.");
-  return first;
-})();
 const staleBase: ReviewProposal = {
   ...insertion,
   proposalId: "stale-1",
@@ -67,18 +59,14 @@ function LabMarkBar({
   readonly testId: string;
 }) {
   const [proposalDecision, setProposalDecision] = useState<StagedDecision>();
-  const [claimDecision, setClaimDecision] = useState<StagedClaimDecision>();
   return (
     <div data-testid={testId} className="wb-cowork-lab__markbar-host">
       <MarkBar
         target={target}
         stagedProposal={proposalDecision}
-        stagedClaim={claimDecision}
         showHotkeys
         onStageProposal={setProposalDecision}
-        onStageClaim={setClaimDecision}
         onClearProposal={() => setProposalDecision(undefined)}
-        onClearClaim={() => setClaimDecision(undefined)}
       />
     </div>
   );
@@ -132,17 +120,6 @@ export function CoworkLabSection() {
           </ul>
         </LabPanel>
 
-        <LabPanel heading="Claim card" testId="cowork-lab-card-claim">
-          <ul className="wb-cowork-rail__card-list">
-            <ClaimCard
-              claim={claim}
-              selected={false}
-              onSelect={noop}
-              inspectSpanId="sp-cl1"
-              onInspect={noop}
-            />
-          </ul>
-        </LabPanel>
 
         <LabPanel heading="Edit verbs" testId="cowork-lab-verbs-edit">
           <LabMarkBar
@@ -158,12 +135,6 @@ export function CoworkLabSection() {
           />
         </LabPanel>
 
-        <LabPanel heading="Claim verbs" testId="cowork-lab-verbs-claim">
-          <LabMarkBar
-            target={{ kind: "claim", claim }}
-            testId="cowork-lab-markbar-claim"
-          />
-        </LabPanel>
 
         <LabPanel
           heading="Stale-base disabled"
@@ -187,10 +158,7 @@ export function CoworkLabSection() {
             selectedId={null}
             selectedKind={null}
             decisions={{}}
-            claimDecisions={{}}
-            inspectSpanByClaim={new Map()}
             onActivate={noop}
-            onInspect={noop}
           />
         </LabPanel>
       </div>

@@ -110,6 +110,10 @@ const mapExpression = (expression: R2Expression): ReviewExpression => ({
   claimRef: expression.claim_ref,
   claimStatus: expression.claim_status,
   claimKind: expression.claim_kind,
+  isFact: expression.is_fact === true,
+  stale: expression.stale ?? null,
+  proposition: expression.proposition ?? "",
+  evidenceCount: Math.max(0, expression.evidence_count ?? 0),
 });
 
 const mapProvenanceSpan = (span: R2ProvenanceSpan): ProvenanceSpan => ({
@@ -491,7 +495,6 @@ export const mapR2ToReview = (payload: R2DocPayload): MappedReview => {
     proposals: proposals.map(mapProposal),
     expressions: payload.expressions.map(mapExpression),
     provenanceSpans: payload.provenance_spans.map(mapProvenanceSpan),
-    claims: [],
   };
   return {
     railData,

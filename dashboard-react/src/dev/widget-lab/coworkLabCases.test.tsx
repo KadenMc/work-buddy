@@ -21,9 +21,6 @@ describe("Co-work Widget Lab section", () => {
     expect(
       within(screen.getByTestId("cowork-lab-card-flag")).getByText("Flag"),
     ).toBeVisible();
-    expect(
-      within(screen.getByTestId("cowork-lab-card-claim")).getByText("Claim"),
-    ).toBeVisible();
   });
 
   it("renders every verb group", () => {
@@ -46,17 +43,6 @@ describe("Co-work Widget Lab section", () => {
       expect(flag.getByRole("button", { name: label })).toBeVisible();
     }
 
-    const claim = within(screen.getByTestId("cowork-lab-markbar-claim"));
-    for (const label of [
-      "Confirm",
-      "Reject",
-      "Challenge",
-      "Supersede",
-      "Redact",
-      "Propose",
-    ]) {
-      expect(claim.getByRole("button", { name: label })).toBeVisible();
-    }
   });
 
   it("disables text mutation when the original target is missing", () => {
@@ -81,7 +67,7 @@ describe("Co-work Widget Lab section", () => {
   it("renders the document-order stream", () => {
     render(<CoworkLabSection />);
     const stream = within(screen.getByTestId("cowork-lab-stream"));
-    expect(stream.getAllByRole("listitem")).toHaveLength(5);
+    expect(stream.getAllByRole("listitem")).toHaveLength(4);
   });
 
   it("stages a verb through the live mark bar", async () => {

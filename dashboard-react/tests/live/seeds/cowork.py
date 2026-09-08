@@ -23,6 +23,9 @@ root = _required_path("WB_LIVE_ROOT")
 host_root = _required_path("WB_LIVE_HOST_ROOT")
 data_root = _required_path("WORK_BUDDY_DATA_DIR")
 manifest_path = _required_path("WB_LIVE_FIXTURE_FILE")
+scenario = os.environ.get("WB_LIVE_SCENARIO", "lifecycle")
+if scenario not in {"lifecycle", "truth-panel"}:
+    raise RuntimeError(f"unknown Co-work seed scenario: {scenario}")
 if not (root / ".wb-live-harness").is_file():
     raise RuntimeError("refusing to seed outside a marked Co-work live temp root")
 if any(root not in item.parents for item in (host_root, data_root, manifest_path)):
@@ -128,5 +131,14 @@ if manifest_path.exists():
     if existing.get("root") != str(root) or existing.get("format") != payload["format"]:
         raise RuntimeError("fixture manifest does not describe this marked root")
     payload = {**existing, **payload}
+if scenario == "truth-panel":
+    from truth_panel import seed_truth_panel
+
+    payload["truth_panel"] = seed_truth_panel(
+        root=root,
+        folder=initialized,
+        store=registry.open_store(store.store_id),
+        existing=payload.get("truth_panel"),
+    )
 manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 print(json.dumps({"ok": True, "fixture_format": payload["format"]}))

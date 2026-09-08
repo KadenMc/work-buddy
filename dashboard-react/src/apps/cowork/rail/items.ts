@@ -2,31 +2,24 @@
  * Pure derivation of the unified review-item list from ReviewRailData. The
  * stream, the groups, and the queue all walk the same document-ordered list,
  * and the filter lens narrows it. Suggestions are edit proposals, flags are
- * flag proposals, claims are the claim-review cards (SP-6 counts).
+ * flag proposals.
  */
 
-import type { ReviewClaim, ReviewProposal, ReviewRailData } from "./contracts";
+import type { ReviewProposal, ReviewRailData } from "./contracts";
 import type { RailFilter } from "./store";
 import type { FilterCounts } from "./FilterLens";
 
-export type RailItem =
-  | {
-      readonly kind: "proposal";
-      readonly id: string;
-      readonly documentOrder: number;
-      readonly proposal: ReviewProposal;
-    }
-  | {
-      readonly kind: "claim";
-      readonly id: string;
-      readonly documentOrder: number;
-      readonly claim: ReviewClaim;
-    };
+export interface RailItem {
+  readonly kind: "proposal";
+  readonly id: string;
+  readonly documentOrder: number;
+  readonly proposal: ReviewProposal;
+}
 
 /** The kind of typed group an item belongs to. */
-export type RailGroup = "suggestions" | "flags" | "claims";
+export type RailGroup = "suggestions" | "flags";
 
-/** Stable UI identity across the separate proposal and claim id namespaces. */
+/** Stable UI identity for a review proposal. */
 export function railItemKey(item: RailItem): string {
   return `${item.kind}:${item.id}`;
 }
@@ -40,13 +33,7 @@ export function isSelectedItem(
   return item.id === selectedId && item.kind === selectedKind;
 }
 
-/** Match the two canonical R2 claim-reference shapes without substring collisions. */
-export function claimRefMatchesId(claimRef: string, claimId: string): boolean {
-  return claimRef === claimId || claimRef.endsWith(`/claim/${claimId}`);
-}
-
 export function groupOf(item: RailItem): RailGroup {
-  if (item.kind === "claim") return "claims";
   return item.proposal.kind === "flag" ? "flags" : "suggestions";
 }
 
@@ -59,14 +46,6 @@ export function orderedItems(data: ReviewRailData): RailItem[] {
         id: proposal.proposalId,
         documentOrder: proposal.documentOrder,
         proposal,
-      }),
-    ),
-    ...data.claims.map(
-      (claim): RailItem => ({
-        kind: "claim",
-        id: claim.claimId,
-        documentOrder: claim.documentOrder,
-        claim,
       }),
     ),
   ];
@@ -91,12 +70,10 @@ export function filterCounts(data: ReviewRailData): FilterCounts {
   const items = orderedItems(data);
   let suggestions = 0;
   let flags = 0;
-  let claims = 0;
   for (const item of items) {
     const group = groupOf(item);
     if (group === "suggestions") suggestions += 1;
     else if (group === "flags") flags += 1;
-    else claims += 1;
   }
-  return { all: items.length, suggestions, flags, claims };
+  return { all: items.length, suggestions, flags };
 }

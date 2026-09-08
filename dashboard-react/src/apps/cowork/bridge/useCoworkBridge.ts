@@ -167,6 +167,8 @@ export interface CoworkBridgeEditorMountProps {
 }
 
 export interface CoworkBridge {
+  readonly getEditor: () => Editor | null
+  readonly revealClaimIfOutsideViewport: (id: string) => void
   readonly reviewProvider: LiveReviewRailProvider;
   readonly provenanceProvider: ProvenanceProvider;
   readonly provenanceEditor: ProvenanceEditorIntegration;
@@ -640,8 +642,12 @@ export const useCoworkBridge = (
     [applyProvenanceLoad, core.provenanceProvider, provenanceMutationBarrier],
   );
 
+  const getEditor = useCallback(() => editorRef.current, [])
+  const revealClaimIfOutsideViewport = useCallback((id: string) => core.reviewAnchors.revealClaimIfOutsideViewport(id), [core])
   return {
     reviewProvider: core.reviewProvider,
+    getEditor,
+    revealClaimIfOutsideViewport,
     provenanceProvider: core.provenanceProvider,
     provenanceEditor,
     provenanceMutationBarrier: synchronizedProvenanceMutationBarrier,

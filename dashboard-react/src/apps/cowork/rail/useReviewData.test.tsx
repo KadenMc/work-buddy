@@ -41,7 +41,6 @@ const data = (title: string): ReviewRailData => ({
   proposals: [],
   expressions: [],
   provenanceSpans: [],
-  claims: [],
 });
 
 const deferred = <T,>() => {

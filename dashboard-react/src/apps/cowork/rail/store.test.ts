@@ -36,17 +36,6 @@ describe("RailStore", () => {
     expect(isDirty(store.getState())).toBe(false);
   });
 
-  it("stages a claim decision and clears all", () => {
-    const store = new RailStore();
-    store.stageClaimDecision({
-      claimId: "c1",
-      verb: "confirm",
-      canonicalSha256: "h",
-    });
-    expect(isDirty(store.getState())).toBe(true);
-    store.clearAllDecisions();
-    expect(isDirty(store.getState())).toBe(false);
-  });
 
   it("resets the queue cursor when the filter changes", () => {
     const store = new RailStore({ queueIndex: 4 });
@@ -55,15 +44,11 @@ describe("RailStore", () => {
     expect(store.getState().filter).toBe("flags");
   });
 
-  it("tracks selection and the inspector span", () => {
+  it("tracks the selected proposal", () => {
     const store = new RailStore();
     store.select("p1", "proposal");
     expect(store.getState().selectedId).toBe("p1");
     expect(store.getState().selectedKind).toBe("proposal");
-    store.openInspector("sp-1");
-    expect(store.getState().inspectorSpanId).toBe("sp-1");
-    store.closeInspector();
-    expect(store.getState().inspectorSpanId).toBeNull();
   });
 
   it("invokes onTabChange with the new tab when one is provided", () => {
@@ -85,7 +70,6 @@ describe("RailStore", () => {
     const store = new RailStore();
     store.hydrateDecisions(
       { p1: { proposalId: "p1", verb: "defer", canonicalSha256: "h" } },
-      {},
     );
     expect(store.getState().decisions.p1.verb).toBe("defer");
     expect(isDirty(store.getState())).toBe(true);

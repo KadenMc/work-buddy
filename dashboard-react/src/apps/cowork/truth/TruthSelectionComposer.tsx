@@ -28,6 +28,11 @@ export interface TruthSelectionComposerProps {
   readonly editor: TruthEditorIntegration;
   /** Capture begun by the user's command, before the composer takes focus. */
   readonly initialCapture?: Promise<TruthSelectionCapture>;
+  readonly initialClaim?: {
+    readonly proposition: string;
+    readonly claimKind: string;
+    readonly role: TruthExpressionRole;
+  };
   readonly allowedClaimKinds: readonly string[];
   onCancel(): void;
   onComplete(receipt: TruthMutationReceipt): void;
@@ -46,6 +51,7 @@ export function TruthSelectionComposer({
   provider,
   editor,
   initialCapture,
+  initialClaim,
   allowedClaimKinds,
   onCancel,
   onComplete,
@@ -53,9 +59,9 @@ export function TruthSelectionComposer({
   const [capture, setCapture] = useState<TruthSelectionCapture | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(true);
-  const [proposition, setProposition] = useState("");
-  const [claimKind, setClaimKind] = useState(allowedClaimKinds[0] ?? "fact");
-  const [role, setRole] = useState<TruthExpressionRole>("quote");
+  const [proposition, setProposition] = useState(initialClaim?.proposition ?? "");
+  const [claimKind, setClaimKind] = useState(initialClaim?.claimKind ?? allowedClaimKinds[0] ?? "fact");
+  const [role, setRole] = useState<TruthExpressionRole>(initialClaim?.role ?? "quote");
   const [candidates, setCandidates] = useState<readonly TruthClaimSummary[]>([]);
   const [claimId, setClaimId] = useState("");
   const [candidatesLoading, setCandidatesLoading] = useState(mode === "connect");

@@ -59,6 +59,71 @@ const createProjectedEditor = (): Editor => {
 };
 
 describe("DomReviewAnchorController", () => {
+  it("highlights every claim passage and scrolls the first DOM passage on the first offscreen card activation", () => {
+    const viewport = document.createElement("div");
+    viewport.className = "wb-cowork__editor-region";
+    viewport.getBoundingClientRect = () => new DOMRect(20, 100, 500, 300);
+    const root = document.createElement("div");
+    viewport.append(root);
+    const first = ledgerElement("claim-1", "claim");
+    const second = ledgerElement("claim-1", "claim");
+    // The namespace and alias lookups must share document order.
+    second.setAttribute("data-wb-anchor-kind", "claim");
+    second.setAttribute("data-wb-anchor-id", "claim-1");
+    root.append(first, second);
+    first.getClientRects = () => [new DOMRect(30, 10, 150, 20)] as unknown as DOMRectList;
+    second.getClientRects = () => [new DOMRect(30, 500, 150, 20)] as unknown as DOMRectList;
+    first.scrollIntoView = vi.fn();
+    second.scrollIntoView = vi.fn();
+    const controller = new DomReviewAnchorController({ getEditorRoot: () => root });
+    controller.focusAnchor("claim-1", "claim");
+    expect(first).toHaveClass("wb-cowork-anchor--active");
+    expect(second).toHaveClass("wb-cowork-anchor--active");
+    expect(first.scrollIntoView).not.toHaveBeenCalled();
+    controller.revealClaimIfOutsideViewport("claim-1");
+    expect(first.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "center", behavior: "smooth" });
+    expect(second.scrollIntoView).not.toHaveBeenCalled();
+    controller.refresh();
+    controller.focusAnchor("claim-1", "claim");
+    expect(first.scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps scrolling still when any passage intersects the editor viewport, even partly", () => {
+    const viewport = document.createElement("div");
+    viewport.className = "wb-cowork__editor-region";
+    viewport.getBoundingClientRect = () => new DOMRect(20, 100, 500, 300);
+    const root = document.createElement("div");
+    viewport.append(root);
+    const first = ledgerElement("claim-1", "claim");
+    const second = ledgerElement("claim-1", "claim");
+    root.append(first, second);
+    first.getClientRects = () => [new DOMRect(30, 500, 150, 20)] as unknown as DOMRectList;
+    second.getClientRects = () => [new DOMRect(30, 399, 150, 20)] as unknown as DOMRectList;
+    first.scrollIntoView = vi.fn();
+    second.scrollIntoView = vi.fn();
+    const controller = new DomReviewAnchorController({ getEditorRoot: () => root });
+    controller.revealClaimIfOutsideViewport("claim-1");
+    expect(first.scrollIntoView).not.toHaveBeenCalled();
+    expect(second.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("uses reduced-motion scrolling and never replays a missing card target during refresh", () => {
+    const root = document.createElement("div");
+    const controller = new DomReviewAnchorController({
+      getEditorRoot: () => root,
+      windowRef: { innerWidth: 800, innerHeight: 600, matchMedia: () => ({ matches: true }) } as unknown as Window,
+    });
+    controller.revealClaimIfOutsideViewport("claim-1");
+    const mark = ledgerElement("claim-1", "claim");
+    mark.getClientRects = () => [new DOMRect(10, 700, 150, 20)] as unknown as DOMRectList;
+    mark.scrollIntoView = vi.fn();
+    root.append(mark);
+    controller.refresh();
+    expect(mark.scrollIntoView).not.toHaveBeenCalled();
+    controller.revealClaimIfOutsideViewport("claim-1");
+    expect(mark.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "center", behavior: "auto" });
+  });
+
   it("reveals and flashes a legacy proposal anchor on explicit request", () => {
     const editorRoot = document.createElement("div");
     const mark = legacyProposalElement("s1");

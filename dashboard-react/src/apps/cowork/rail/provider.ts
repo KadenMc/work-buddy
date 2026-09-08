@@ -10,7 +10,6 @@
 import type {
   ReviewRailData,
   SittingResult,
-  StagedClaimDecision,
   StagedDecision,
   VerifyCheckInput,
   VerifyRunInspection,
@@ -24,6 +23,7 @@ import type { RailSelectionKind } from "./store";
  */
 export type ReviewAnchorKind =
   | RailSelectionKind
+  | "claim"
   | "expression"
   | "provenance"
   | "evaluation_result";
@@ -34,16 +34,10 @@ export type ReviewUnsubscribe = () => void;
 /** Called by a provider when its view of the review layer may have changed. */
 export type ReviewInvalidationListener = () => void;
 
-/**
- * One sitting submission in rail terms. proposalDecisions map to the live R5
- * request. claimDecisions remain part of the fixture-facing seam, but the live
- * provider fails closed until R2 supplies enough claim payload to implement
- * truthful claim semantics; it never silently drops or partially submits them.
- */
+/** One sitting submission of proposal and flag decisions to R5. */
 export interface SittingSubmission {
   readonly baseDocSha256: string;
   readonly proposalDecisions: readonly StagedDecision[];
-  readonly claimDecisions: readonly StagedClaimDecision[];
 }
 
 /** The read and submit seam for one document's review layer. */

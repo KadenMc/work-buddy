@@ -226,6 +226,7 @@ try {
     WB_LIVE_FIXTURE_FILE: fixtureFile,
     WB_LIVE_BACKEND_PORT: String(backendPort),
     WB_LIVE_HARNESS_NONCE: nonce,
+    WB_LIVE_SCENARIO: options.scenario,
   };
 
   await run(
@@ -359,6 +360,7 @@ try {
       format: "wb-live-interactive/v1",
       status: "ready",
       app: options.app,
+      scenario: options.scenario,
       mode: options.mode,
       frontend_url: authenticatedUrl,
       backend_url: backendUrl,
@@ -411,6 +413,7 @@ try {
         env: {
           ...process.env,
           WB_LIVE_APP: options.app,
+          WB_LIVE_SCENARIO: options.scenario,
           WB_LIVE_BASE_URL: frontendUrl,
           WB_LIVE_BACKEND_URL: backendUrl,
           WB_LIVE_FIXTURE_FILE: fixtureFile,
@@ -461,6 +464,7 @@ try {
     format: "wb-live-evidence/v1",
     mode: options.mode,
     app: options.app,
+    scenario: options.scenario,
     interactive,
     ok: exitCode === 0,
     cleanup_succeeded: cleanupSucceeded,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -95,15 +96,21 @@ def truth_mutation_context_sha256(
     document_id: str,
     payload: Mapping[str, Any],
 ) -> str:
+    # Authority binds exact request values, including quote-anchor whitespace.
+    # Truth's semantic canonical_json deliberately normalizes those strings.
     return sha256_text(
-        canonical_json(
+        json.dumps(
             {
                 "schema": TRUTH_MUTATION_GESTURE_SCHEMA,
                 "operation": operation,
                 "store_id": store_id,
                 "document_id": document_id,
                 "payload": dict(payload),
-            }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
         )
     )
 

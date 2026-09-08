@@ -105,13 +105,18 @@ export function TruthClaimCard({
       </button>
       <p className="wb-cowork-truth__claim-meta">
         <span>
-          {claim.evidenceCount} evidence {claim.evidenceCount === 1 ? "receipt" : "receipts"}
+          {claim.evidenceCount === 0 ? "No evidence recorded" : `${claim.evidenceCount} evidence ${claim.evidenceCount === 1 ? "receipt" : "receipts"}`}
         </span>
         <span aria-hidden="true">·</span>
         <span>
           {claim.connectionCount} document {claim.connectionCount === 1 ? "connection" : "connections"}
         </span>
       </p>
+      {currentConnections.some((connection) => connection.stale === "span_missing") ? (
+        <p className="wb-cowork-truth__notice">A connected passage needs review against the current document version.</p>
+      ) : currentConnections.some((connection) => connection.stale === "claim_changed") ? (
+        <p className="wb-cowork-truth__notice">A passage connection needs review because this claim changed.</p>
+      ) : null}
       {currentConnections.length === 1 && onRevealPassage !== undefined ? (
         <button
           type="button"

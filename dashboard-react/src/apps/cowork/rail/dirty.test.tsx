@@ -43,15 +43,15 @@ const decision = {
 describe("draft persistence functions", () => {
   it("round-trips a saved draft", () => {
     const storage = new MemoryStorage();
-    saveDraft(storage, "doc", { p1: decision }, {});
+    saveDraft(storage, "doc", { p1: decision });
     const loaded = loadDraft(storage, "doc");
     expect(loaded?.decisions.p1.verb).toBe("confirm");
   });
 
   it("removes the draft when the sitting is empty", () => {
     const storage = new MemoryStorage();
-    saveDraft(storage, "doc", { p1: decision }, {});
-    saveDraft(storage, "doc", {}, {});
+    saveDraft(storage, "doc", { p1: decision });
+    saveDraft(storage, "doc", {});
     expect(storage.getItem(draftStorageKey("doc"))).toBeNull();
   });
 
@@ -59,14 +59,14 @@ describe("draft persistence functions", () => {
     const storage = new MemoryStorage();
     storage.setItem(
       draftStorageKey("doc"),
-      JSON.stringify({ version: 99, decisions: {}, claimDecisions: {} }),
+      JSON.stringify({ version: 99, decisions: {} }),
     );
     expect(loadDraft(storage, "doc")).toBeNull();
   });
 
   it("clears a draft explicitly", () => {
     const storage = new MemoryStorage();
-    saveDraft(storage, "doc", { p1: decision }, {});
+    saveDraft(storage, "doc", { p1: decision });
     clearDraft(storage, "doc");
     expect(loadDraft(storage, "doc")).toBeNull();
   });
@@ -86,7 +86,7 @@ function PersistHarness({
 describe("useDraftPersistence", () => {
   it("hydrates a persisted draft into the store on mount", () => {
     const storage = new MemoryStorage();
-    saveDraft(storage, "doc", { p1: decision }, {});
+    saveDraft(storage, "doc", { p1: decision });
     const store = new RailStore();
     render(<PersistHarness store={store} storage={storage} />);
     expect(store.getState().decisions.p1.verb).toBe("confirm");

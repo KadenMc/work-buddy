@@ -1,13 +1,10 @@
 /**
  * The mark-bar verb vocabulary. C1 surface contract section 1.5 maps the UI
  * labels to the shipped kernel gesture-kind names exactly once, and this module
- * is the single realization of that table on the client. The six claim verbs
- * come from the kernel truth_claim_* capabilities (propose, confirm, reject,
- * challenge, supersede, redact). No new kind is coined here.
+ * is the single realization of that table on the client.
  */
 
 import type {
-  ClaimVerbKind,
   ProposalKind,
   ProposalVerbKind,
   ReviewProposal,
@@ -74,16 +71,6 @@ export const FLAG_VERBS: readonly VerbOption<ProposalVerbKind>[] = [
   { label: "Redirect", verb: "redirect", tone: "neutral", input: "redirect_note" },
 ];
 
-/** The six committed claim verbs (kernel truth_claim_* capabilities). */
-export const CLAIM_VERBS: readonly VerbOption<ClaimVerbKind>[] = [
-  { label: "Confirm", verb: "confirm", tone: "primary", shortcut: "accept", input: "none" },
-  { label: "Reject", verb: "reject", tone: "danger", shortcut: "reject", input: "none" },
-  { label: "Challenge", verb: "challenge", tone: "neutral", input: "none" },
-  { label: "Supersede", verb: "supersede", tone: "neutral", input: "none" },
-  { label: "Redact", verb: "redact", tone: "danger", input: "none" },
-  { label: "Propose", verb: "propose", tone: "neutral", input: "none" },
-];
-
 /** The verb list for a proposal or flag card. */
 export function verbsForProposal(
   kind: ProposalKind,
@@ -102,16 +89,6 @@ export const PROPOSAL_VERB_LABEL: Record<ProposalVerbKind, string> = {
   defer: "Defer",
   endorse: "Endorse",
   dismiss: "Dismiss",
-};
-
-/** UI label for a staged claim verb (the six committed claim verbs). */
-export const CLAIM_VERB_LABEL: Record<ClaimVerbKind, string> = {
-  propose: "Propose",
-  confirm: "Confirm",
-  reject: "Reject",
-  challenge: "Challenge",
-  supersede: "Supersede",
-  redact: "Redact",
 };
 
 /**

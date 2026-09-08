@@ -1,14 +1,30 @@
 import { useCallback, useRef, useSyncExternalStore } from "react";
 
-import type { TruthClaimFilter, TruthViewScope } from "./contracts";
+import type { CoworkCapturedActionSnapshot } from "../targets";
+import type { TruthClaimDecision, TruthClaimFilter, TruthSelectionCapture, TruthViewScope } from "./contracts";
 
 export type TruthComposer = "propose" | "connect" | null;
+
+/** Shared by the rail header and the document's captured-target menu. */
+export interface TruthActionController {
+  readonly analyzeBlockedReason: string | null;
+  readonly manualBlockedReason: string | null;
+  analyzePassage(capture?: CoworkCapturedActionSnapshot): void;
+  openComposer(mode: Exclude<TruthComposer, null>, capture?: TruthSelectionCapture): void;
+}
+
+export interface TruthDecisionRequest {
+  readonly requestId: number;
+  readonly claimId: string;
+  readonly action: TruthClaimDecision;
+}
 
 export interface TruthState {
   readonly scope: TruthViewScope;
   readonly filter: TruthClaimFilter;
   readonly selectedClaimId: string | null;
   readonly composer: TruthComposer;
+  readonly requestedDecision: TruthDecisionRequest | null;
 }
 
 export interface PersistedTruthState {
@@ -23,6 +39,7 @@ const DEFAULT_STATE: TruthState = {
   filter: "all",
   selectedClaimId: null,
   composer: null,
+  requestedDecision: null,
 };
 
 const SCOPES = new Set<TruthViewScope>(["document", "folder"]);
@@ -67,6 +84,7 @@ export const loadTruthState = (
       selectedClaimId: value.selectedClaimId,
       // A captured document selection is deliberately never restored.
       composer: null,
+      requestedDecision: null,
     };
   } catch {
     return null;
@@ -101,6 +119,9 @@ export class TruthStore {
   #state: TruthState;
   readonly #listeners = new Set<Listener>();
   readonly #onChange?: (state: TruthState) => void;
+  #actions: TruthActionController | null = null;
+  #decisionSequence = 0;
+  readonly #actionListeners = new Set<Listener>();
 
   constructor(
     initial: Partial<TruthState> = {},
@@ -122,7 +143,8 @@ export class TruthStore {
       next.scope === this.#state.scope &&
       next.filter === this.#state.filter &&
       next.selectedClaimId === this.#state.selectedClaimId &&
-      next.composer === this.#state.composer
+      next.composer === this.#state.composer &&
+      next.requestedDecision === this.#state.requestedDecision
     ) {
       return;
     }
@@ -132,25 +154,50 @@ export class TruthStore {
   }
 
   setScope(scope: TruthViewScope): void {
-    this.#set({ ...this.#state, scope, selectedClaimId: null, composer: null });
+    this.#set({ ...this.#state, scope, selectedClaimId: null, composer: null, requestedDecision: null });
   }
 
   setFilter(filter: TruthClaimFilter): void {
-    this.#set({ ...this.#state, filter, selectedClaimId: null, composer: null });
+    this.#set({ ...this.#state, filter, selectedClaimId: null, composer: null, requestedDecision: null });
   }
 
   selectClaim(claimId: string | null): void {
-    this.#set({ ...this.#state, selectedClaimId: claimId, composer: null });
+    this.#set({ ...this.#state, selectedClaimId: claimId, composer: null, requestedDecision: null });
+  }
+
+  requestDecision(claimId: string, action: TruthClaimDecision): void {
+    this.#set({ ...this.#state, selectedClaimId: claimId, composer: null,
+      requestedDecision: { requestId: ++this.#decisionSequence, claimId, action } });
+  }
+
+  readonly getActions = (): TruthActionController | null => this.#actions;
+
+  readonly subscribeActions = (listener: Listener): (() => void) => {
+    this.#actionListeners.add(listener);
+    return () => this.#actionListeners.delete(listener);
+  };
+
+  registerActions(actions: TruthActionController): () => void {
+    this.#actions = actions;
+    for (const listener of this.#actionListeners) listener();
+    return () => {
+      if (this.#actions !== actions) return;
+      this.#actions = null;
+      for (const listener of this.#actionListeners) listener();
+    };
   }
 
   openComposer(composer: Exclude<TruthComposer, null>): void {
-    this.#set({ ...this.#state, composer });
+    this.#set({ ...this.#state, composer, requestedDecision: null });
   }
 
   closeComposer(): void {
     this.#set({ ...this.#state, composer: null });
   }
 }
+
+export const useTruthActions = (store: TruthStore): TruthActionController | null =>
+  useSyncExternalStore(store.subscribeActions, store.getActions, store.getActions);
 
 /**
  * Shared-store factory for parents that need Review attention items to open

@@ -6,7 +6,7 @@
  * slice changes and a thirty-mark sitting does not thrash the tree.
  */
 
-import type { StagedClaimDecision, StagedDecision } from "./contracts";
+import type { StagedDecision } from "./contracts";
 
 /** Which first-class interaction surface is shown in the Co-work rail. */
 export type RailTab = "review" | "truth" | "provenance" | "chat";
@@ -15,26 +15,22 @@ export type RailTab = "review" | "truth" | "provenance" | "chat";
 export type RailMode = "stream" | "queue";
 
 /** The typed filter lens over the document-order stream. */
-export type RailFilter = "all" | "suggestions" | "flags" | "claims";
+export type RailFilter = "all" | "suggestions" | "flags";
 
-/** What the mark bar and inspector are currently pointed at. */
-export type RailSelectionKind = "proposal" | "claim";
+/** What the mark bar is currently pointed at. */
+export type RailSelectionKind = "proposal";
 
 export interface RailState {
   readonly tab: RailTab;
   readonly mode: RailMode;
   readonly filter: RailFilter;
-  /** The selected proposal or claim id, or null for none. */
+  /** The selected proposal id, or null for none. */
   readonly selectedId: string | null;
   readonly selectedKind: RailSelectionKind | null;
   /** The queue focus index, over the currently filtered item list. */
   readonly queueIndex: number;
   /** Staged proposal and flag decisions by proposal id. */
   readonly decisions: Readonly<Record<string, StagedDecision>>;
-  /** Staged claim decisions by claim id. */
-  readonly claimDecisions: Readonly<Record<string, StagedClaimDecision>>;
-  /** The span the read-only inspector is open on, or null when closed. */
-  readonly inspectorSpanId: string | null;
 }
 
 const INITIAL_STATE: RailState = {
@@ -45,8 +41,6 @@ const INITIAL_STATE: RailState = {
   selectedKind: null,
   queueIndex: 0,
   decisions: {},
-  claimDecisions: {},
-  inspectorSpanId: null,
 };
 
 type Listener = () => void;
@@ -59,10 +53,7 @@ export interface RailStoreOptions {
 
 /** Whether the sitting holds any staged decision (drives the dirty guard). */
 export function isDirty(state: RailState): boolean {
-  return (
-    Object.keys(state.decisions).length > 0 ||
-    Object.keys(state.claimDecisions).length > 0
-  );
+  return Object.keys(state.decisions).length > 0;
 }
 
 export class RailStore {
@@ -130,41 +121,15 @@ export class RailStore {
     this.set({ ...this.state, decisions: next });
   }
 
-  stageClaimDecision(decision: StagedClaimDecision): void {
-    this.set({
-      ...this.state,
-      claimDecisions: {
-        ...this.state.claimDecisions,
-        [decision.claimId]: decision,
-      },
-    });
-  }
-
-  clearClaimDecision(claimId: string): void {
-    if (this.state.claimDecisions[claimId] === undefined) return;
-    const next = { ...this.state.claimDecisions };
-    delete next[claimId];
-    this.set({ ...this.state, claimDecisions: next });
-  }
-
   clearAllDecisions(): void {
-    this.set({ ...this.state, decisions: {}, claimDecisions: {} });
+    this.set({ ...this.state, decisions: {} });
   }
 
   /** Restore a persisted draft (dirty-state retention across a reload). */
   hydrateDecisions(
     decisions: Readonly<Record<string, StagedDecision>>,
-    claimDecisions: Readonly<Record<string, StagedClaimDecision>>,
   ): void {
-    this.set({ ...this.state, decisions, claimDecisions });
+    this.set({ ...this.state, decisions });
   }
 
-  openInspector(spanId: string): void {
-    this.set({ ...this.state, inspectorSpanId: spanId });
-  }
-
-  closeInspector(): void {
-    if (this.state.inspectorSpanId === null) return;
-    this.set({ ...this.state, inspectorSpanId: null });
-  }
 }

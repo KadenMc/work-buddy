@@ -1,0 +1,59 @@
+.wb-cowork-passage-handle {
+  position: fixed;
+  z-index: 80;
+  min-height: 36px;
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  padding: 6px 10px;
+  color: var(--wb-color-text-primary);
+  background: var(--wb-color-surface-overlay);
+  box-shadow: var(--wb-shadow-raised);
+}
+.wb-cowork-menu-anchor { position: fixed; width: 1px; height: 1px; pointer-events: none; }
+.wb-cowork-document-menu {
+  z-index: 100;
+  box-sizing: border-box;
+  width: min(340px, calc(100vw - 24px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  color: var(--wb-color-text-primary);
+  background: var(--wb-color-surface-overlay);
+  box-shadow: var(--wb-shadow-overlay);
+}
+.wb-cowork-document-menu__heading { font-weight: 600; margin: 6px 8px; }
+.wb-cowork-document-menu [role="menuitem"] { display: grid; gap: 3px; padding: 7px 9px; border-radius: var(--wb-radius-control); cursor: pointer; }
+.wb-cowork-document-menu [slot="description"] { font-size: 12px; line-height: 1.35; opacity: .8; overflow-wrap: anywhere; }
+.wb-cowork-document-menu [data-focused] { outline: 2px solid var(--wb-color-focus-ring, Highlight); outline-offset: -2px; }
+.wb-cowork-document-menu [data-disabled] { opacity: .6; cursor: default; }
+.wb-cowork-passage-request {
+  position: relative;
+  z-index: 110;
+  width: min(440px, calc(100vw - 24px));
+  max-height: 75dvh;
+  overflow: auto;
+  background: var(--wb-color-surface-overlay);
+  color: var(--wb-color-text-primary);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  box-shadow: var(--wb-shadow-overlay);
+}
+.wb-cowork-passage-request textarea { width: 100%; box-sizing: border-box; }
+.wb-cowork-passage-error { padding: 8px; }
+
+.wb-cowork-passage-handle { font: inherit; font-size: var(--wb-font-size-xs); cursor: pointer; }
+.wb-cowork-passage-handle:focus-visible { outline: 2px solid var(--wb-color-focus-ring); outline-offset: 2px; }
+.wb-cowork-passage-request [role="dialog"] { outline: none; }
+@media (forced-colors: active) {
+  .wb-cowork-passage-handle,
+  .wb-cowork-document-menu,
+  .wb-cowork-passage-request { color: CanvasText; background: Canvas; border-color: ButtonText; box-shadow: none; }
+  .wb-cowork-document-menu [data-focused] { outline-color: Highlight; }
+  .wb-cowork-document-menu [data-disabled] { color: GrayText; opacity: 1; }
+}
+
+.wb-cowork-document-menu__passage { margin: var(--wb-space-2); max-height: 4.5em; overflow: auto; font-size: var(--wb-font-size-xs); color: var(--wb-color-text-secondary); }
+.wb-cowork-document-menu__reason { display: block; margin-top: var(--wb-space-1); }

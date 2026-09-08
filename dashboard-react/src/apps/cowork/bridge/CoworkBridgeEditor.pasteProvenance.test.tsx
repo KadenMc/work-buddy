@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Editor } from "@tiptap/core";
 import {
@@ -235,6 +235,18 @@ const mountPasteEditor = async (
   };
 };
 
+const openPassageMenu = async (editor: Editor): Promise<void> => {
+  // jsdom has no range layout; menu focus restoration asks ProseMirror for it.
+  vi.spyOn(editor.view, "coordsAtPos").mockReturnValue({
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 20,
+  });
+  fireEvent.keyDown(editor.view.dom, { key: "F10", shiftKey: true });
+  await screen.findByRole("menu", { name: "Actions for this passage" });
+};
+
 const emptyProvenanceData = (): ProvenanceData => ({
   schema: "cowork-provenance-view/v1",
   currentStructuredHeadSha256: null,
@@ -396,9 +408,10 @@ describe("CoworkBridgeEditor paste provenance", () => {
           });
         });
       }
+      await openPassageMenu(mounted.editor);
       expect(
-        await screen.findByRole("button", { name: "Record provenance" }),
-      ).toBeEnabled();
+        screen.getByRole("menuitem", { name: /^Record provenance/ }),
+      ).not.toHaveAttribute("aria-disabled", "true");
       expect(
         screen.queryByRole("button", { name: /Recording recent typing/u }),
       ).toBeNull();
@@ -462,8 +475,9 @@ describe("CoworkBridgeEditor paste provenance", () => {
           });
         });
       }
+      await openPassageMenu(mounted.editor);
       await userEvent.click(
-        await screen.findByRole("button", { name: "Record provenance" }),
+        screen.getByRole("menuitem", { name: /^Record provenance/ }),
       );
       const dialog = await screen.findByRole("dialog", {
         name: "Record provenance",
@@ -1091,6 +1105,193 @@ describe("CoworkBridgeEditor paste provenance", () => {
       releaseActor();
       mounted?.unmount();
       vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
+  it.each(["ready", "frozen"] as const)("requires explicit attribution for restored actorless %s typing before posting", async (state) => {
+    const user = userEvent.setup();
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const key = `restored-actorless-${state}-${String(Date.now())}`;
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const stage = new InMemoryCoworkPasteProvenanceIntentStage();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(key, backing, stage);
+    const original = await outbox.append({
+      anchor: { exact: "Before", prefix: "", suffix: " after" },
+      idempotencyKey: "old-actorless-attempt",
+      substantial: false,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: unknownCoworkProvenanceDetermination(),
+      status: "ready",
+    });
+    if (state === "frozen") {
+      await backing.mutate(key, (record) => ({
+        record: {
+          ...record,
+          entries: record.entries.map((entry) => ({
+            ...entry,
+            status: "retryable_failure" as const,
+            frozenRequest: {
+              storeId: "paste-provenance-store",
+              documentId: "restored-actorless-document",
+              expectedStructuredHeadSha256: "a".repeat(64),
+              sourceKind: entry.sourceKind,
+              basisKind: entry.basisKind,
+              idempotencyKey: entry.idempotencyKey,
+              anchor: entry.anchor,
+              attestation: entry.determination,
+            },
+          })),
+        },
+        result: undefined,
+      }));
+    }
+    const reopened = new DurableCoworkPasteProvenanceOutbox(key, backing, stage);
+    const mounted = await mountPasteEditor(async (request) => {
+      requests.push(request);
+    }, { outbox: reopened, activeLens: "provenance", provenanceProvider: provenanceProvider() });
+    try {
+      await screen.findByRole("dialog", { name: "Recent typing needs attribution" });
+      expect(requests).toEqual([]);
+      const [deferred] = await reopened.list();
+      expect(deferred).toMatchObject({
+        id: original.id,
+        anchor: original.anchor,
+        capturedAt: original.capturedAt,
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        status: "awaiting_determination",
+        requiresExplicitDetermination: true,
+        failure: { code: "provenance_actor_unavailable_at_capture" },
+      });
+      expect(deferred?.capturedActor).toBeUndefined();
+      expect(deferred?.frozenRequest).toBeUndefined();
+      expect(deferred?.idempotencyKey).not.toBe(original.idempotencyKey);
+      await user.click(screen.getByRole("button", { name: /Authorship/i }));
+      await user.click(screen.getByRole("option", { name: /^Human-written/ }));
+      await user.click(screen.getByRole("button", { name: "Confirm attribution" }));
+      await waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]).toMatchObject({
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        anchor: original.anchor,
+        expectedActorRef: ACTOR.ref,
+        expectedActorIdentityStatus: ACTOR.identity_status,
+      });
+      await waitFor(() => expect(reopened.list()).resolves.toEqual([]));
+    } finally {
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it.each([400, 422] as const)("stops a rejected %s typing attempt until an explicit legacy determination", async (status) => {
+    const user = userEvent.setup();
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const listeners = new Set<() => void>();
+    const provider = provenanceProvider();
+    provider.subscribe = (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `direct-validation-${String(status)}-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(async (request) => {
+      requests.push(request);
+      if (request.sourceKind === "direct_entry") {
+        throw new CoworkHttpError({
+          code: "request_failed",
+          message: "Direct entry requires valid actor fields.",
+          retryable: false,
+          status,
+        });
+      }
+    }, { outbox, activeLens: "neutral", provenanceProvider: provider });
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Needs attribution"));
+      mounted.setActiveLens("provenance");
+      await screen.findByRole("dialog", { name: "Recent typing needs attribution" });
+      expect(requests).toHaveLength(1);
+      const [deferred] = await outbox.list();
+      expect(deferred).toMatchObject({
+        anchor: { exact: "Needs attribution", prefix: "", suffix: "Before after" },
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        status: "awaiting_determination",
+        requiresExplicitDetermination: true,
+        determination: { authorship: { kind: "unknown" } },
+        failure: { code: "provenance_direct_entry_rejected", kind: "terminal" },
+      });
+      expect(deferred?.frozenRequest).toBeUndefined();
+      expect(deferred?.capturedActor).toBeUndefined();
+      expect(deferred?.idempotencyKey).not.toBe(requests[0]!.idempotencyKey);
+      expect(screen.queryByRole("button", { name: "Retry provenance storage" })).toBeNull();
+
+      await user.click(screen.getByRole("button", { name: "Keep for later" }));
+      for (let publication = 0; publication < 3; publication += 1) {
+        await act(async () => {
+          for (const listener of listeners) listener();
+        });
+      }
+      expect(requests).toHaveLength(1);
+      expect(await outbox.list()).toHaveLength(1);
+      await user.click(screen.getByRole("button", { name: "Review pending attribution" }));
+      await user.click(screen.getByRole("button", { name: /Authorship/i }));
+      await user.click(screen.getByRole("option", { name: /^Human-written/ }));
+      await waitFor(async () => expect((await outbox.list())[0]?.failure?.code).toBe("provenance_direct_entry_rejected"));
+      await user.click(screen.getByRole("button", { name: "Confirm attribution" }));
+      await waitFor(() => expect(requests).toHaveLength(2));
+      expect(requests[1]).toMatchObject({
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        expectedActorRef: ACTOR.ref,
+        expectedActorIdentityStatus: ACTOR.identity_status,
+        anchor: requests[0]!.anchor,
+        idempotencyKey: deferred!.idempotencyKey,
+      });
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    } finally {
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("retains a confirmed receipt when only its projection refresh returns 400", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const provider = provenanceProvider();
+    const refresh = provider.refresh;
+    provider.refresh = vi.fn().mockImplementation(refresh).mockRejectedValueOnce(
+      new CoworkHttpError({
+        code: "request_failed",
+        message: "Projection refresh failed.",
+        retryable: false,
+        status: 400,
+      }),
+    );
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `confirmed-before-refresh-failed-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(async (request) => {
+      requests.push(request);
+    }, { outbox, activeLens: "neutral", provenanceProvider: provider });
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Confirmed typing"));
+      mounted.setActiveLens("provenance");
+      await screen.findByRole("button", { name: "Retry provenance storage" });
+      expect(requests).toHaveLength(1);
+      expect((await outbox.list())[0]).toMatchObject({
+        sourceKind: "direct_entry",
+        status: "retryable_failure",
+        frozenRequest: requests[0],
+      });
+      expect(screen.queryByRole("dialog", { name: "Recent typing needs attribution" })).toBeNull();
+      await userEvent.click(screen.getByRole("button", { name: "Retry provenance storage" }));
+      await waitFor(() => expect(requests).toHaveLength(2));
+      expect(requests[1]).toEqual(requests[0]);
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    } finally {
+      mounted.unmount();
     }
   }, 30_000);
 
@@ -2090,18 +2291,19 @@ describe("CoworkBridgeEditor paste provenance", () => {
         mounted!.editor.commands.setTextSelection({ from: 1, to: 7 });
       });
 
-      expect(
-        await screen.findByRole("button", { name: "Inspect provenance" }),
-      ).toBeVisible();
       expect(screen.getByRole("alert")).toHaveTextContent(
         "Provenance identity is unavailable.",
       );
       expect(
         screen.getByRole("button", { name: "Retry provenance identity" }),
       ).toBeVisible();
+      await openPassageMenu(mounted.editor);
       expect(
-        screen.queryByRole("button", { name: "Record provenance" }),
-      ).toBeNull();
+        screen.getByRole("menuitem", { name: /^Inspect provenance/ }),
+      ).not.toHaveAttribute("aria-disabled", "true");
+      expect(
+        screen.getByRole("menuitem", { name: /^Record provenance/ }),
+      ).toHaveAttribute("aria-disabled", "true");
       expect(
         screen.queryByRole("button", { name: "Give feedback" }),
       ).toBeNull();
@@ -2154,17 +2356,11 @@ describe("CoworkBridgeEditor paste provenance", () => {
       });
     });
 
-    act(() => {
-      mounted.editor.commands.setTextSelection({ from: 1, to: 7 });
-    });
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Record provenance" }),
-    );
-    await userEvent.click(
-      within(
-        screen.getByRole("dialog", { name: "Record provenance" }),
-      ).getByRole("button", { name: "Record provenance" }),
-    );
+    await screen.findByRole("dialog", { name: "Passage needs attribution" });
+    expect(requests).toEqual([]);
+    await userEvent.click(screen.getByRole("button", { name: /Authorship/i }));
+    await userEvent.click(screen.getByRole("option", { name: /^Human-written/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm attribution" }));
 
     await waitFor(() => expect(requests).toHaveLength(1), {
       timeout: 10_000,
@@ -2176,6 +2372,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
       anchor: { exact: "Before" },
     });
     await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    mounted.unmount();
   }, 30_000);
 
   it("never silently changes a frozen manual determination on ambiguous retry", async () => {
@@ -2203,8 +2400,9 @@ describe("CoworkBridgeEditor paste provenance", () => {
     act(() => {
       mounted.editor.commands.setTextSelection({ from: 1, to: 7 });
     });
+    await openPassageMenu(mounted.editor);
     await user.click(
-      await screen.findByRole("button", { name: "Record provenance" }),
+      screen.getByRole("menuitem", { name: /^Record provenance/ }),
     );
     const dialog = screen.getByRole("dialog", { name: "Record provenance" });
     const confirm = within(dialog).getByRole("button", {
@@ -3083,17 +3281,18 @@ describe("CoworkBridgeEditor paste provenance", () => {
       act(() => {
         mounted!.editor.commands.setTextSelection({ from: 1, to: 7 });
       });
+      await openPassageMenu(mounted.editor);
       expect(
-        await screen.findByRole("button", { name: "Record provenance" }),
-      ).toBeVisible();
+        screen.getByRole("menuitem", { name: /^Record provenance/ }),
+      ).not.toHaveAttribute("aria-disabled", "true");
 
       await act(async () => {
         await refreshLocalIdentity();
       });
       await waitFor(() =>
         expect(
-          screen.queryByRole("button", { name: "Record provenance" }),
-        ).toBeNull(),
+          screen.getByRole("menuitem", { name: /^Record provenance/ }),
+        ).toHaveAttribute("aria-disabled", "true"),
       );
       await waitFor(() =>
         expect(identityStates[identityStates.length - 1]).toBe("error"),
@@ -3103,9 +3302,13 @@ describe("CoworkBridgeEditor paste provenance", () => {
         await refreshLocalIdentity();
       });
       await waitFor(() => expect(actorAttempts).toBe(2));
+      await waitFor(() =>
+        expect(identityStates[identityStates.length - 1]).toBe("ready"),
+      );
+      await openPassageMenu(mounted.editor);
       expect(
-        await screen.findByRole("button", { name: "Record provenance" }),
-      ).toBeVisible();
+        screen.getByRole("menuitem", { name: /^Record provenance/ }),
+      ).not.toHaveAttribute("aria-disabled", "true");
       expect(identityStates).toContain("loading");
       expect(identityStates[identityStates.length - 1]).toBe("ready");
       expect(sessionAttempts).toBeGreaterThanOrEqual(4);

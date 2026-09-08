@@ -10,6 +10,7 @@ type BridgeEditorProps = ComponentProps<typeof CoworkBridgeEditor>;
 
 export interface DocumentEditorSurfaceProps {
   readonly activeLens?: BridgeEditorProps["activeLens"];
+  readonly documentActions?: BridgeEditorProps["documentActions"]
   readonly provenanceSelectionActionsActive?: BridgeEditorProps["provenanceSelectionActionsActive"];
   readonly onProvenanceSelectionAction?: BridgeEditorProps["onProvenanceSelectionAction"];
   readonly onInputProvenancePendingChange?: BridgeEditorProps["onInputProvenancePendingChange"];
@@ -24,6 +25,7 @@ export interface DocumentEditorSurfaceProps {
  */
 export function DocumentEditorSurface({
   activeLens = "neutral",
+  documentActions,
   provenanceSelectionActionsActive = false,
   onProvenanceSelectionAction,
   onInputProvenancePendingChange,
@@ -41,6 +43,7 @@ export function DocumentEditorSurface({
       <CoworkBridgeEditor
         {...bridge.editorProps}
         activeLens={activeLens}
+        documentActions={documentActions}
         provenanceProvider={bridge.provenanceProvider}
         provenanceSelectionActionsActive={provenanceSelectionActionsActive}
         onProvenanceSelectionAction={onProvenanceSelectionAction}

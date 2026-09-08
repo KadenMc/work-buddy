@@ -11,7 +11,7 @@ import type { QuoteAnchor } from "../suggestions/types";
 
 /**
  * The editor-visible namespaces used by review geometry and passage navigation.
- * Review owns proposal and claim focus. Expression and provenance identities remain
+ * Review owns proposal focus; Truth owns claim focus. Expression and provenance identities remain
  * available in the DOM for inspection without collapsing those namespaces together.
  */
 export type CoworkEditorAnchorKind =
@@ -48,7 +48,22 @@ export interface CoworkExpressionDecoration {
   readonly quoteAnchor?: QuoteAnchor;
   readonly claimRef: string;
   readonly claimStatus: string | null;
+  readonly isFact?: boolean;
+  readonly proposition?: string;
+  readonly evidenceCount?: number;
+  readonly stale?: "claim_changed" | "claim_terminal" | "span_missing" | null;
 }
+
+export interface CoworkExpressionRange {
+  readonly from: number;
+  readonly to: number;
+  readonly stale: CoworkExpressionDecoration["stale"];
+}
+
+const terminalClaimStatuses = new Set(["rejected", "superseded", "retracted", "expired"]);
+
+export const coworkExpressionIsTerminal = (expression: CoworkExpressionDecoration): boolean =>
+  terminalClaimStatuses.has(expression.claimStatus ?? "") || expression.stale === "claim_terminal";
 
 export interface CoworkClaimDecoration {
   readonly claimId: string;
@@ -145,6 +160,7 @@ interface CoworkLedgerDecorationState {
   readonly flashFocused: boolean;
   readonly highlight: CoworkPassageHighlight | null;
   readonly decorations: DecorationSet;
+  readonly expressionRanges: ReadonlyMap<string, CoworkExpressionRange>;
 }
 
 type CoworkLedgerDecorationMeta =
@@ -537,6 +553,7 @@ function buildDecorations(
   focused: CoworkFocusedAnchor | null,
   flashFocused: boolean,
   highlight: CoworkPassageHighlight | null,
+  expressionRanges: ReadonlyMap<string, CoworkExpressionRange>,
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const claimsByExpression = new Map<string, CoworkClaimDecoration[]>();
@@ -751,8 +768,9 @@ function buildDecorations(
   }
 
   for (const expression of lens === "truth" ? projection.expressions : []) {
-    const range = rangeForQuote(doc, expression.quote, expression.quoteAnchor);
-    if (range === null) continue;
+    if (coworkExpressionIsTerminal(expression)) continue;
+    const range = expressionRanges.get(expression.expressionId);
+    if (range === undefined) continue;
     const expressionClaims =
       claimsByExpression.get(expression.expressionId) ?? [];
     const claimIds = expressionClaims.map((claim) => claim.claimId);
@@ -763,6 +781,10 @@ function buildDecorations(
       "data-wb-expression-id": expression.expressionId,
       "data-wb-span-id": expression.spanId,
       "data-claim-ref": expression.claimRef,
+      "data-wb-is-fact": String(expression.isFact === true),
+      "data-wb-stale": range.stale ?? "",
+      "data-wb-proposition": expression.proposition ?? "",
+      "data-wb-evidence-count": String(expression.evidenceCount ?? 0),
     };
     if (claimIds.length > 0) {
       attributes["data-wb-claim-ids"] = JSON.stringify(claimIds);
@@ -844,7 +866,25 @@ function createPluginState(
   focused: CoworkFocusedAnchor | null,
   flashFocused: boolean,
   highlight: CoworkPassageHighlight | null,
+  retainedRanges: ReadonlyMap<string, CoworkExpressionRange> = new Map(),
 ): CoworkLedgerDecorationState {
+  const expressionRanges = new Map<string, CoworkExpressionRange>();
+  for (const expression of projection.expressions) {
+    const exact = rangeForQuote(doc, expression.quote, expression.quoteAnchor);
+    const retained = retainedRanges.get(expression.expressionId);
+    const retainedValid = retained !== undefined && retained.to > retained.from && retained.to <= doc.content.size;
+    // A surviving duplicate elsewhere must not steal a locally edited passage's
+    // identity. Only the precisely mapped range can explain that stale passage.
+    const exactMatchesRetained = !retainedValid || (exact !== null && exact.from >= retained.from && exact.to <= retained.to);
+    if (exact !== null && exactMatchesRetained) {
+      expressionRanges.set(expression.expressionId, { ...exact, stale: expression.stale ?? null });
+    } else if (retainedValid) {
+      expressionRanges.set(expression.expressionId, {
+        ...retained,
+        stale: expression.stale ?? "span_missing",
+      });
+    }
+  }
   return {
     projection,
     pendingProvenance,
@@ -852,6 +892,7 @@ function createPluginState(
     focused,
     flashFocused,
     highlight,
+    expressionRanges,
     decorations: buildDecorations(
       doc,
       projection,
@@ -860,6 +901,7 @@ function createPluginState(
       focused,
       flashFocused,
       highlight,
+      expressionRanges,
     ),
   };
 }
@@ -882,6 +924,21 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         const meta = transaction.getMeta(coworkLedgerDecorationsKey) as
           CoworkLedgerDecorationMeta | undefined;
         if (meta === undefined && !transaction.docChanged) return value;
+        const expressionRanges = new Map<string, CoworkExpressionRange>();
+        for (const [id, range] of value.expressionRanges) {
+          const from = transaction.mapping.mapResult(range.from, -1);
+          const to = transaction.mapping.mapResult(range.to, 1);
+          // Replacing the whole document destroys local location continuity.
+          // An exact selector may resolve again, but a stale range cannot guess.
+          if (from.deletedAcross || to.deletedAcross || to.pos <= from.pos) continue;
+          if (meta?.type === "project") {
+            const previous = value.projection.expressions.find((item) => item.expressionId === id);
+            const incoming = meta.projection.expressions.find((item) => item.expressionId === id);
+            if (previous === undefined || incoming === undefined || previous.spanId !== incoming.spanId ||
+                previous.quote !== incoming.quote || JSON.stringify(previous.quoteAnchor) !== JSON.stringify(incoming.quoteAnchor)) continue;
+          }
+          expressionRanges.set(id, { ...range, from: from.pos, to: to.pos });
+        }
 
         /*
          * Review and Truth annotations can follow ProseMirror's precise mapping.
@@ -891,7 +948,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
          */
         if (meta === undefined) {
           const highlight = mappedHighlight(transaction, value.highlight);
-          if (value.lens === "provenance") {
+          if (value.lens === "provenance" || value.projection.expressions.length > 0) {
             return createPluginState(
               transaction.doc,
               value.projection,
@@ -900,6 +957,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
               value.focused,
               value.flashFocused,
               highlight,
+              expressionRanges,
             );
           }
           return {
@@ -959,6 +1017,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
           focused,
           flashFocused,
           highlight,
+          expressionRanges,
         );
       },
     },
@@ -978,6 +1037,41 @@ export const CoworkLedgerDecorations = Extension.create({
     return [coworkLedgerDecorationsPlugin()];
   },
 });
+
+/** Inspection reads the projection in every lens without adding marks. */
+export const coworkExpressionTargets = (
+  editor: Editor,
+  options: { readonly includeTerminal?: boolean } = {},
+) => {
+  const state = coworkLedgerDecorationsKey.getState(editor.state);
+  if (state === undefined) return [];
+  return state.projection.expressions.flatMap((expression) => {
+    const range = state.expressionRanges.get(expression.expressionId);
+    if (range === undefined || (!options.includeTerminal && coworkExpressionIsTerminal(expression))) return [];
+    const claimIds = state.projection.claims
+      .filter((claim) => claim.expressionId === expression.expressionId)
+      .map((claim) => claim.claimId);
+    return [{ ...expression, ...range, claimIds }];
+  });
+};
+
+export const coworkTruthLegendCounts = (editor: Editor) => {
+  const state = coworkLedgerDecorationsKey.getState(editor.state);
+  const claims = new Map<string, CoworkExpressionDecoration>();
+  for (const expression of state?.projection.expressions ?? []) {
+    if (!coworkExpressionIsTerminal(expression)) claims.set(expression.claimRef, expression);
+  }
+  return {
+    claims: claims.size,
+    facts: [...claims.values()].filter((claim) => claim.isFact === true).length,
+    toJudge: [...claims.values()].filter((claim) =>
+      ["proposed", "needs_review", "challenged"].includes(claim.claimStatus ?? ""),
+    ).length,
+    missing: (state?.projection.expressions ?? []).filter((expression) =>
+      !coworkExpressionIsTerminal(expression) && !state?.expressionRanges.has(expression.expressionId),
+    ).length,
+  };
+};
 
 const dispatchMeta = (
   editor: Editor,

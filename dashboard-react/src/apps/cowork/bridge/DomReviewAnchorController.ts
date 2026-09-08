@@ -129,7 +129,10 @@ export class DomReviewAnchorController implements ReviewAnchorController {
         }
       }
     }
-    return [...matches];
+    return [...matches].sort((left, right) => {
+      if (left === right) return 0;
+      return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
   }
 
   #clearDomFocus(): void {
@@ -267,5 +270,22 @@ export class DomReviewAnchorController implements ReviewAnchorController {
     if (!cleared && this.#options.getEditor === undefined) {
       this.#clearDomFocus();
     }
+  }
+
+  /** Scroll only for a present-user card selection whose passages are all offscreen. */
+  revealClaimIfOutsideViewport(id: string): void {
+    const elements = this.#anchorElements(id, "claim");
+    const root = this.#options.getEditorRoot();
+    if (elements.length === 0 || root === null) return;
+    const viewport = root.closest(".wb-cowork__editor-region")?.getBoundingClientRect();
+    const top = Math.max(0, viewport?.top ?? 0);
+    const bottom = Math.min(this.#window?.innerHeight ?? Infinity, viewport?.bottom ?? Infinity);
+    const left = Math.max(0, viewport?.left ?? 0);
+    const right = Math.min(this.#window?.innerWidth ?? Infinity, viewport?.right ?? Infinity);
+    if (bottom <= top || right <= left) return;
+    if (elements.some((element) => [...element.getClientRects()].some((rect) =>
+      rect.bottom > top && rect.top < bottom && rect.right > left && rect.left < right,
+    ))) return;
+    this.#scrollToFirst(elements);
   }
 }

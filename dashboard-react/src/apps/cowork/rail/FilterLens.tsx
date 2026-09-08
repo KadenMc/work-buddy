@@ -11,7 +11,6 @@ export interface FilterCounts {
   readonly all: number;
   readonly suggestions: number;
   readonly flags: number;
-  readonly claims: number;
 }
 
 export interface FilterLensProps {
@@ -41,12 +40,6 @@ const CHIPS: readonly ChipSpec[] = [
     label: "Flags",
     count: (counts) => counts.flags,
     series: "flags",
-  },
-  {
-    value: "claims",
-    label: "Claims",
-    count: (counts) => counts.claims,
-    series: "claims",
   },
 ];
 

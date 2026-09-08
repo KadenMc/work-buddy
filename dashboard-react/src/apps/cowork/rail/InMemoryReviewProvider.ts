@@ -1,6 +1,6 @@
 /**
  * A deterministic in-memory ReviewRailProvider. It reproduces the SP-6 review
- * scene (two insertions, one deletion, one flag, one claim) so the rail, its
+ * scene (two insertions, one deletion, one flag) so the rail, its
  * tests, and a development harness all render the same content the mockups
  * showed. It performs no input and is not a live transport, a live provider
  * supplies that behind the same seam.
@@ -8,7 +8,6 @@
 
 import type {
   ProposalVerbKind,
-  ReviewClaim,
   ReviewExpression,
   ReviewProposal,
   ReviewRailData,
@@ -154,37 +153,10 @@ function demoExpressions(): ReviewExpression[] {
       claimRef: "wb-truth://demo/claim/cl1",
       claimStatus: "confirmed",
       claimKind: "measurement",
-    },
-  ];
-}
-
-function demoClaims(): ReviewClaim[] {
-  return [
-    {
-      claimId: "cl1",
-      proposition:
-        "Cold-start latency dropped from 1.8 s to 1.1 s after prewarming.",
-      status: "confirmed",
-      claimKind: "measurement",
-      canonicalSha256: fakeSha("cl1"),
-      rationale:
-        "This sentence expresses a measured claim. Its evidence is two benchmark runs on the reference machine.",
-      receipts: [
-        {
-          evidenceId: "ev-1",
-          quote: "prewarm run A: cold-start 1.12 s",
-          sourceLocator: "benchmarks/prewarm-a.json",
-          trustClass: "measurement",
-        },
-        {
-          evidenceId: "ev-2",
-          quote: "prewarm run B: cold-start 1.08 s",
-          sourceLocator: "benchmarks/prewarm-b.json",
-          trustClass: "measurement",
-        },
-      ],
-      anchorLabel: "paragraph 6",
-      documentOrder: 80,
+      isFact: true,
+      stale: null,
+      proposition: "Cold-start latency dropped from 1.8 s to 1.1 s after prewarming.",
+      evidenceCount: 2,
     },
   ];
 }
@@ -234,7 +206,6 @@ export function demoReviewData(): ReviewRailData {
         approvalGestureId: "g-approve-c1",
       },
     ],
-    claims: demoClaims(),
   };
 }
 
@@ -268,6 +239,11 @@ export class InMemoryReviewProvider implements ReviewRailProvider {
 
   constructor(seed: InMemoryReviewSeed = {}) {
     this.data = seed.data ?? demoReviewData();
+  }
+
+  setExpressions(expressions: readonly ReviewExpression[]): void {
+    this.data = { ...this.data, expressions };
+    this.notify();
   }
 
   async load(): Promise<ReviewRailData> {

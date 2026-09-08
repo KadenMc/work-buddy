@@ -2,8 +2,8 @@
  * Dashboard-citizenship proof (PRD I18) for every member of the CoworkRail
  * family in isolation, so a violation is pinned to its component rather than
  * hidden in the composed surface. Covered: the proposal cards (insertion,
- * deletion, flag), the claim card, the filter lens, the mark bar for each verb
- * group including the reject-as-preference inline input, the passage inspector,
+ * deletion, flag), the filter lens, the mark bar for each verb
+ * group including the reject-as-preference inline input,
  * the drift strip, and the normal-flow Review stream.
  */
 
@@ -14,9 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import {
-  ClaimCard,
   FilterLens,
-  Inspector,
   MarkBar,
   ProposalCard,
   RailDriftStrip,
@@ -26,7 +24,6 @@ import {
 } from "../rail";
 import {
   deletionProposal,
-  demoClaim,
   flagProposal,
   insertionProposal,
   reviewData,
@@ -91,26 +88,12 @@ describe("CoworkRail family accessibility", () => {
     await expectNoAccessibilityViolations(container);
   });
 
-  it("clears axe on a claim card with an inspect affordance", async () => {
-    const { container } = render(
-      inList(
-        <ClaimCard
-          claim={demoClaim()}
-          selected={false}
-          onSelect={noop}
-          inspectSpanId="sp-cl1"
-          onInspect={noop}
-        />,
-      ),
-    );
-    await expectNoAccessibilityViolations(container);
-  });
 
   it("clears axe on the filter lens", async () => {
     const { container } = render(
       <FilterLens
         filter="all"
-        counts={{ all: 5, suggestions: 3, flags: 1, claims: 1 }}
+        counts={{ all: 4, suggestions: 3, flags: 1 }}
         onChange={noop}
       />,
     );
@@ -133,9 +116,7 @@ describe("CoworkRail family accessibility", () => {
       <MarkBar
         target={target}
         onStageProposal={noop}
-        onStageClaim={noop}
         onClearProposal={noop}
-        onClearClaim={noop}
       />,
     );
     await expectNoAccessibilityViolations(container);
@@ -147,27 +128,12 @@ describe("CoworkRail family accessibility", () => {
       <MarkBar
         target={target}
         onStageProposal={noop}
-        onStageClaim={noop}
         onClearProposal={noop}
-        onClearClaim={noop}
       />,
     );
     await expectNoAccessibilityViolations(container);
   });
 
-  it("clears axe on the mark bar for a claim", async () => {
-    const target: MarkBarTarget = { kind: "claim", claim: demoClaim() };
-    const { container } = render(
-      <MarkBar
-        target={target}
-        onStageProposal={noop}
-        onStageClaim={noop}
-        onClearProposal={noop}
-        onClearClaim={noop}
-      />,
-    );
-    await expectNoAccessibilityViolations(container);
-  });
 
   it("clears axe with the reject-as-preference inline input open", async () => {
     const target: MarkBarTarget = {
@@ -178,9 +144,7 @@ describe("CoworkRail family accessibility", () => {
       <MarkBar
         target={target}
         onStageProposal={noop}
-        onStageClaim={noop}
         onClearProposal={noop}
-        onClearClaim={noop}
       />,
     );
     await userEvent.click(
@@ -193,12 +157,6 @@ describe("CoworkRail family accessibility", () => {
     await expectNoAccessibilityViolations(container);
   });
 
-  it("clears axe on the passage inspector", async () => {
-    const { container } = render(
-      <Inspector spanId="sp-c1" data={reviewData()} onClose={noop} />,
-    );
-    await expectNoAccessibilityViolations(container);
-  });
 
   it("clears axe on the document-order Review stream", async () => {
     const items = orderedItems(reviewData());
@@ -208,10 +166,7 @@ describe("CoworkRail family accessibility", () => {
         selectedId={null}
         selectedKind={null}
         decisions={{}}
-        claimDecisions={{}}
-        inspectSpanByClaim={new Map()}
         onActivate={noop}
-        onInspect={noop}
       />,
     );
     expect(container.querySelectorAll(".wb-cowork-rail__card")).toHaveLength(

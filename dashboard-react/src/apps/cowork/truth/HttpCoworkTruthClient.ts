@@ -255,6 +255,9 @@ const passageConnection = (
       first(value, "current_document", "currentDocument"),
       documentId === currentDocumentId,
     ),
+    stale: ["claim_changed", "claim_terminal", "span_missing"].includes(stringValue(first(value, "stale")))
+      ? first(value, "stale") as "claim_changed" | "claim_terminal" | "span_missing"
+      : null,
     claimCanonicalSha256: stringValue(
       first(value, "claim_canonical_sha256", "claimCanonicalSha256"),
     ),

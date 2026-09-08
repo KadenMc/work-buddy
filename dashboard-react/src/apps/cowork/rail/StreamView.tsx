@@ -6,9 +6,8 @@
  * emphasis.
  */
 
-import { ClaimCard } from "./ClaimCard";
 import { ProposalCard } from "./ProposalCard";
-import type { StagedClaimDecision, StagedDecision } from "./contracts";
+import type { StagedDecision } from "./contracts";
 import {
   isSelectedItem,
   railItemKey,
@@ -21,12 +20,8 @@ export interface StreamViewProps {
   readonly selectedId: string | null;
   readonly selectedKind: RailSelectionKind | null;
   readonly decisions: Readonly<Record<string, StagedDecision>>;
-  readonly claimDecisions: Readonly<Record<string, StagedClaimDecision>>;
-  /** Claim id to inspector span id, for the claim inspect affordance. */
-  readonly inspectSpanByClaim: ReadonlyMap<string, string>;
   onActivate(id: string, kind: RailSelectionKind): void;
   onScrollToAnchor?(id: string, kind: RailSelectionKind): void;
-  onInspect(spanId: string): void;
 }
 
 export function StreamView(props: StreamViewProps) {
@@ -35,24 +30,6 @@ export function StreamView(props: StreamViewProps) {
       props.onScrollToAnchor === undefined
         ? undefined
         : () => props.onScrollToAnchor?.(item.id, item.kind);
-    if (item.kind === "claim") {
-      return (
-        <ClaimCard
-          key={railItemKey(item)}
-          claim={item.claim}
-          selected={isSelectedItem(
-            item,
-            props.selectedId,
-            props.selectedKind,
-          )}
-          staged={props.claimDecisions[item.id]}
-          onSelect={() => props.onActivate(item.id, "claim")}
-          inspectSpanId={props.inspectSpanByClaim.get(item.id)}
-          onInspect={props.onInspect}
-          onScrollToAnchor={scrollTo}
-        />
-      );
-    }
     return (
       <ProposalCard
         key={railItemKey(item)}
@@ -72,7 +49,7 @@ export function StreamView(props: StreamViewProps) {
   if (props.items.length === 0) {
     return (
       <div className="wb-cowork-rail__stream" role="status">
-        <p className="wb-cowork-rail__empty">Nothing to review here.</p>
+        <p className="wb-cowork-rail__empty">No suggestions or flags to review.</p>
       </div>
     );
   }

@@ -50,6 +50,7 @@ describe("cowork keyboard settings contribution", () => {
       throw new Error("expected a keybinding-map control");
     }
     expect(definition.control.commands.map((command) => command.commandId)).toEqual([
+      "openClaim",
       "previous",
       "next",
       "accept",

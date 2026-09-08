@@ -319,7 +319,6 @@ describe("LiveReviewRailProvider", () => {
       proposalDecisions: [
         { proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" },
       ],
-      claimDecisions: [],
     };
 
     const result = await provider.submitSitting(submission);
@@ -413,7 +412,6 @@ describe("LiveReviewRailProvider", () => {
       proposalDecisions: [
         { proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" },
       ],
-      claimDecisions: [],
     };
 
     const first = await provider.submitSitting(submission).catch(
@@ -526,7 +524,6 @@ describe("LiveReviewRailProvider", () => {
       proposalDecisions: [
         { proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" },
       ],
-      claimDecisions: [],
     });
 
     expect(onSittingCommitted).toHaveBeenCalledWith([
@@ -552,39 +549,8 @@ describe("LiveReviewRailProvider", () => {
         proposalDecisions: [
           { proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" },
         ],
-        claimDecisions: [],
       }),
     ).rejects.toThrow(/editor is not ready/u);
   });
 
-  it.each(["claim-only", "mixed"] as const)(
-    "fails closed for %s live claim decisions before touching workspace or transport",
-    async (shape) => {
-      const getWorkspace = vi.fn(() => workspaceRecording().workspace);
-      const transport: CoworkSittingTransport = {
-        prepare: vi.fn(),
-        commit: vi.fn(),
-        cancel: vi.fn(),
-      };
-      const provider = build({
-        getSittingWorkspace: getWorkspace,
-        sittingTransport: transport,
-      });
-      await expect(
-        provider.submitSitting({
-          baseDocSha256: "base-sha",
-          proposalDecisions:
-            shape === "mixed"
-              ? [{ proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" }]
-              : [],
-          claimDecisions: [
-            { claimId: "claim-1", verb: "confirm", canonicalSha256: "claim-sha" },
-          ],
-        }),
-      ).rejects.toThrow(/No sitting decisions were submitted/u);
-      expect(getWorkspace).not.toHaveBeenCalled();
-      expect(transport.prepare).not.toHaveBeenCalled();
-      expect(transport.commit).not.toHaveBeenCalled();
-    },
-  );
 });
