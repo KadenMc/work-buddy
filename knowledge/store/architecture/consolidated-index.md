@@ -155,6 +155,10 @@ and invalidate the partition's resident matrices. It runs under a DB-wide writer
 per-partition lock, so concurrent builds (across partitions or processes) serialize safely
 rather than colliding on the shared DB. Default is incremental (`force=false`).
 
+Legacy IR-backed partitions whose source accepts a `days` parameter use an explicit 3650-day
+discovery window. The wrapper does not inherit the shorter rolling defaults used by the live IR
+jobs, so older conversations and summaries remain eligible for reconciliation.
+
 For a database partition, the facade additionally snapshots its transactional search outbox,
 builds and verifies source/index parity, then acknowledges exactly the snapshot. The returned
 `outbox` receipt uses `wb.search-outbox-delivery/v1`; `ready=true` requires zero remaining lag
@@ -199,10 +203,10 @@ score-guarded, so a genuinely dominant document with no competitive alternative 
 
 - **`index_rebuild`** (`context/index-rebuild`) — incremental per-partition build; self-skips
   while any index build is running.
-- **Nine `index-<partition>-refresh` sidecar crons** keep the active partitions fresh at
-  corpus-matched cadences, including Journal every five minutes and Projects, Contracts, and
-  Personal Knowledge every fifteen minutes. One job per partition preserves replay and
-  backfill isolation.
+- **Ten `index-<partition>-refresh` sidecar crons** keep the active partitions fresh at
+  corpus-matched cadences, including Journal every five minutes and Projects, Contracts,
+  Personal Knowledge, and Task Notes every fifteen minutes. One job per partition preserves
+  replay and backfill isolation.
 - **Embedding-service endpoints** `/index/search`, `/index/search_many`, `/index/build`, with
   `index_search` / `index_search_many` clients (see `architecture/embedding-service`).
 - **Status/dashboard seam** — registered as the `consolidated` index in `work_buddy/indexing/`

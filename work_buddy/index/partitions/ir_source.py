@@ -20,8 +20,10 @@ Two OPTIONAL, source-interpreted capabilities make the wrapper extensible to arb
   (``change_key`` becomes ``"hash"``), and (b) stamps a uniform ``lifecycle_state``
   metadata key so ANY source's states are filterable by ANY query with one key.
 
-Both are duck-typed (``getattr``/signature introspection), so a brand-new source opts in
-by implementing them and is otherwise byte-identical to today.
+Coverage and lifecycle are duck-typed (``getattr``/signature introspection), so a
+brand-new source opts into either by implementing it. Separately, a source whose
+``discover`` accepts ``days`` receives the consolidated index's explicit long-history
+window instead of its rolling default.
 
 NOTE: the IR ``docs`` source is intentionally NOT wrapped — it's the redundant second
 index of the knowledge store, replaced by ``KnowledgePartition``.
@@ -51,6 +53,10 @@ logger = get_logger(__name__)
 # domain-owned stable-ID adapters, so wrapping their legacy IR sources would
 # overwrite those registrations.
 _IR_PARTITIONS = ("conversation", "chrome", "summary", "task_note")
+
+# Consolidated partitions retain a long-lived search corpus, so sources with a
+# rolling ``days`` parameter must receive the intended history window explicitly.
+_DISCOVERY_WINDOW_DAYS = 3650
 
 
 def _accepts(fn: Any, param: str) -> bool:
@@ -124,16 +130,14 @@ class IRSourcePartition:
         return {"content": ProjectionSpec(kind=ProjectionKind.PASSAGE)}
 
     def discover(self):
-        # Forward coverage only when the source understands it (else byte-identical
-        # to today). Keep the existing `days`-fallback for sources that require it.
+        # Forward optional source controls only when the source understands them.
         disc = self._src.discover
         kwargs: dict[str, Any] = {}
+        if _accepts(disc, "days"):
+            kwargs["days"] = _DISCOVERY_WINDOW_DAYS
         if self._coverage and self._coverage != "active" and _accepts(disc, "coverage"):
             kwargs["coverage"] = self._coverage
-        try:
-            raw = disc(**kwargs)
-        except TypeError:
-            raw = disc(days=3650, **kwargs)  # some sources require a lookback arg
+        raw = disc(**kwargs)
 
         pairs: list[tuple[str, float]] = []
         for entry in raw or []:

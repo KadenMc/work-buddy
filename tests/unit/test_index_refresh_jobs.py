@@ -22,6 +22,7 @@ _PARTITION_JOBS = {
     "projects": "index-projects-refresh",
     "contracts": "index-contracts-refresh",
     "personal_knowledge": "index-personal-knowledge-refresh",
+    "task_note": "index-task-note-refresh",
 }
 _RANGES = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]  # min hour dom mon dow
 

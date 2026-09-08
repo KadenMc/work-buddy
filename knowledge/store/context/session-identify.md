@@ -94,16 +94,42 @@ mcp__work-buddy__wb_run("summary_search", {
 
 ### 3. Fallback: raw-span sweep when summaries miss
 
-If `summary_search` returned an `error`, an empty `candidate_items`, or weak top scores (single-digit hits across queries, no token co-occurrence), fall back to the raw-span sweep:
+Choose the raw-span search method based on how `summary_search` failed.
 
-- Use `context_search(query=..., source="conversation", top_k=15, recency=false)` to scan raw spans across all sessions. `source="conversation"` is mandatory — otherwise tabs and docs dilute the ranking. `recency=false` for older targets (default `true` biases toward this week and buries multi-month-old hits).
-- Returned hits are tagged `[<cwd-name>]` and a short session-ID prefix. The same conversation often appears under multiple short IDs — resumed-session forks of the same JSONL. Treat clustered IDs as a single conversation.
-- Drill into clustered candidates via `session_search(session_id=..., query=...)`.
+If it returned an empty `candidate_items` list or weak top scores without a service error, use the default hybrid method:
 
-The fallback is the right path for:
-- Very recent sessions (the summarization cron runs every 2 hours; today's session may not be summarized yet).
-- Sessions whose summarization landed with `status='error'` (the framework records the failure without overwriting prior good summaries; the row exists but has no nodes to search).
-- Queries needing exact-string match (use `method="substring"`).
+```
+mcp__work-buddy__wb_run("context_search", {
+  "query": "<topic phrase>",
+  "source": "conversation",
+  "top_k": 15,
+  "recency": false
+})
+```
+
+`source="conversation"` is mandatory because omitting it lets tabs and docs dilute the ranking. Use `recency=false` for older targets because the default recency bias can bury multi-month-old hits.
+
+If `summary_search` returned an error, or embedding-backed search is timing out or unavailable, do not use the default `context_search` method. It calls the same embedding-service search path. Use two or three separate in-process substring probes instead:
+
+```
+mcp__work-buddy__wb_run("context_search", {
+  "query": "<short literal term>",
+  "source": "conversation",
+  "method": "substring",
+  "top_k": 15,
+  "recency": false
+})
+```
+
+`method="substring"` matches the entire query string literally. It does not tokenize or interpret a natural-language question. Probe with one distinctive identifier, file-path fragment, error string, or short exact phrase per call, then combine the returned session candidates. A long conceptual query will usually match nothing even when the target session is present.
+
+For either raw-span path:
+
+- Returned hits are tagged `[<cwd-name>]` and a short session-ID prefix. The same conversation often appears under multiple short IDs because resumed-session forks have distinct JSONL files. Treat clustered IDs as a single conversation.
+- After the default hybrid sweep, drill into clustered candidates with `session_search(session_id=..., query=...)`.
+- During an embedding-service outage, keep the drill local too: call `session_search(session_id=..., query="<short literal term>", method="substring")`. Do not switch back to the default hybrid method until the service path recovers.
+
+Raw-span search is the right path for very recent sessions, sessions whose summarization has `status='error'`, and exact strings that compressed summaries may omit. The substring method is also the outage-safe path because it reads the local IR store without calling the embedding service.
 
 ### 4. Score and sanity-check candidates
 
@@ -140,6 +166,6 @@ Return:
 - The rank-first `summary_search` (`drill=False`) is the load-bearing step. Spend phrasing effort there; drill only the winner, never the whole top-N.
 - Resumed-session forks share content but have distinct UUIDs. Pick the longest / latest fork as the canonical one to cite.
 - The 8-char session prefix is canonical for display; the full UUID is canonical for storage. Always show the full UUID once in the report.
-- If `summary_search` returns nothing, check whether the IR `summary` index is built via `ir_index(action='status', source='summary')`. If `dense_eligible_docs` is 0, the embedding service is down; fall back to `context_search` (raw-span sweep).
+- Do not diagnose a search outage with `ir_index(action='status')` in this flow. It calls the same service with the same client timeout, so congestion can make a healthy service look unreachable. Use the explicit substring fallback above.
 - The drill stage is per-item bounded; if a single session has many topic hits, increase `drill_per_item_top_k` rather than `drill_top_k`.
 - Cached summaries (`conversation_observability_summary_get`) are not authoritative for content matching — they exist as a read shortcut, not as a replacement for drill confirmation.
