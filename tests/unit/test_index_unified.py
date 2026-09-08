@@ -407,8 +407,9 @@ class TestWarmingSignal:
 
         # A scheduled build runs in the sidecar process, whose registry cannot
         # invalidate this embedding-process object directly. The durable generation
-        # is therefore the authority: the still-allocated v1 matrix must be reported
-        # cold so the endpoint emits its warming signal and starts a v2 reload.
+        # is therefore the authority: the still-allocated prior matrix must be reported
+        # cold so the endpoint emits its warming signal and starts a current-generation
+        # reload.
         ui.store.begin_partition_mutation("proj")
         ui.store.finish_partition_mutation("proj")
 

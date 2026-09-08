@@ -44,7 +44,7 @@ class TestResidentCache:
 
         cache = ResidentCache(loader, version_fn=lambda: version["v"])
         assert cache.get() == 1
-        version["v"] = "v2"          # rebuild bumped the version
+        version["v"] = "next"        # rebuild bumped the version
         assert cache.get() == 2      # reloaded
         assert calls["n"] == 2
 
@@ -107,7 +107,7 @@ class TestResidentCache:
         assert not cache.is_cached()
 
     def test_value_loaded_across_a_generation_change_is_discarded(self):
-        versions = iter(["v1", "v2"])
+        versions = iter(["prior", "current"])
         cache = ResidentCache(lambda: ["old snapshot"], version_fn=lambda: next(versions))
         assert cache.get() is None
         assert not cache.is_cached()
@@ -130,7 +130,7 @@ class TestResidentCache:
         version = {"v": "v1"}
         cache = ResidentCache(lambda: 1, version_fn=lambda: version["v"])
         cache.get()
-        version["v"] = "v2"                    # a rebuild bumped the version
+        version["v"] = "next"                  # a rebuild bumped the version
         assert cache.get_if_cached() is None   # stale cached value counts as absent
 
     def test_get_if_cached_none_after_invalidate(self):
@@ -144,7 +144,7 @@ class TestResidentCache:
         cache = ResidentCache(lambda: None, version_fn=lambda: version["v"])
         assert cache.get() is None
         assert cache.is_current()
-        version["v"] = "v2"
+        version["v"] = "next"
         assert not cache.is_current()
 
     def test_concurrent_callers_join_one_slow_load(self):

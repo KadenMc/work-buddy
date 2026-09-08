@@ -20,7 +20,9 @@ from work_buddy.document_kernel.causality import (
     DomainDocumentBinding,
 )
 from work_buddy.document_kernel.client import DocumentKernelClient
+from work_buddy.document_kernel.projection import project_document
 from work_buddy.document_kernel.protocol import sha256_bytes, structured_head_sha256
+from work_buddy.document_kernel.runtime_service import shared_document_kernel
 from work_buddy.paths import resolve
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
@@ -49,28 +51,7 @@ def project_live_markdown(
 ) -> str:
     """Project the current Y.Doc snapshot plus every un-compacted update."""
 
-    document = documents.get_document(store, document_id)
-    if document.ydoc_snapshot_sha256 is None:
-        raise RuntimeError("task_document_snapshot_unavailable")
-    snapshot = ydoc_store.read_snapshot(
-        store,
-        snapshot_sha256=document.ydoc_snapshot_sha256,
-    )
-    updates, _cursor = ydoc_store.read_updates(store, document_id=document.id)
-    head = structured_head_sha256(snapshot, updates)
-    client = kernel or DocumentKernelClient()
-    projected = client.request(
-        {
-            "kind": "project_markdown",
-            "snapshotBase64": snapshot,
-            "updatesBase64": updates,
-            "expectedBaseStructuredHeadSha256": head,
-        },
-        request_id=f"task_read_{hashlib.sha256(f'{document.id}:{head}'.encode()).hexdigest()[:24]}",
-    )
-    if projected.projection is None:
-        raise RuntimeError("document_kernel_missing_projection")
-    return projected.projection.decode("utf-8")
+    return project_document(store, document_id, kernel=kernel).markdown
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +222,7 @@ class TaskDocumentService:
         kernel: DocumentKernelClient | None = None,
         stores: TaskDocumentStoreManager | None = None,
     ) -> None:
-        self.kernel = kernel or DocumentKernelClient()
+        self.kernel = kernel or shared_document_kernel()
         self.stores = stores or TaskDocumentStoreManager()
 
     @staticmethod

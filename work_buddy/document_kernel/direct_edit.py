@@ -18,6 +18,7 @@ from work_buddy.document_kernel.protocol import (
     sha256_bytes,
     structured_head_sha256,
 )
+from work_buddy.document_kernel.runtime_service import shared_document_kernel
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.store import TruthStore
 
@@ -38,7 +39,7 @@ class DirectDocumentEditService:
     """
 
     def __init__(self, *, kernel: DocumentKernelClient | None = None) -> None:
-        self.kernel = kernel or DocumentKernelClient()
+        self.kernel = kernel or shared_document_kernel()
 
     def apply(
         self,

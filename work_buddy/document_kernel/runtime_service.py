@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import threading
 
 from work_buddy.document_kernel.client import DocumentKernelClient
@@ -28,6 +29,9 @@ def reset_document_kernel() -> None:
         _client = None
     if current is not None:
         current.close()
+
+
+atexit.register(reset_document_kernel)
 
 
 __all__ = ["reset_document_kernel", "shared_document_kernel"]

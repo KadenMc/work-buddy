@@ -58,7 +58,7 @@ dev_notes: |-
 
   ## FTS storage schema and rollout
 
-  Schema version 2 makes `doc_fts` an external-content FTS5 table keyed to
+  The current FTS storage schema makes `doc_fts` an external-content FTS5 table keyed to
   `documents.rowid`; canonical title/body/tags stay in `documents`, and validated triggers
   keep the index synchronized. Item deletion is therefore proportional to the deleted rows
   instead of scanning the entire FTS corpus once per document. Upserts preserve rowids when
@@ -66,7 +66,7 @@ dev_notes: |-
   the resumable encoder always rebuilds them from the just-written projection text.
 
   Ordinary opens, including dashboard status, search, and scheduled builds, do not repair an
-  existing version-1 database. Status uses an existing-file, query-only connection and
+  existing legacy-layout database. Status uses an existing-file, query-only connection and
   reports `repair_required`; builders fail closed. An operator must call the explicit
   `IndexStore.prepare_schema()` boundary, which holds the same DB-wide writer gate as every
   build, gives a competing legacy build up to eleven minutes to release it, and performs one
@@ -76,7 +76,7 @@ dev_notes: |-
   Plan a stop-the-world restart of every process that opens the consolidated database and
   keep enough free space for the rebuilt table plus WAL. A production-sized rehearsal
   produced roughly 1 GB of transient WAL and held a concurrent opener for several minutes.
-  Old code expects `doc_fts.doc_id` and cannot search a version-2 database, so rollback is
+  Old code expects `doc_fts.doc_id` and cannot search a rowid-aligned database, so rollback is
   database restore or forward-fix, not simply restarting an older binary. The safe order is:
   stop the sidecar and every old DB opener, checkpoint and back up the DB, run the explicit
   preparation once with the new binary, verify schema/integrity/counts, then start only new
@@ -278,7 +278,7 @@ chunker. Each consumer is re-pointed onto the consolidated partition behind its 
 validated (blind A/B) before the corresponding legacy index is retired. See
 `architecture/vault-index`, `architecture/knowledge-system`, and `context/index-rebuild`.
 
-The consolidated-index FTS storage-schema v2 repair and backfill are prerequisites,
+The consolidated-index rowid-aligned FTS storage repair and backfill are prerequisites,
 not consumer cutover. Until parity and
 the consumer's cutover evidence pass, legacy search remains authoritative and its database and
 scheduled maintenance remain intact.

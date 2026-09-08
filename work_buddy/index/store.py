@@ -22,7 +22,7 @@ Tables:
 Thread-safety: a fresh connection per public method (sqlite3 connections aren't
 shareable across threads; the embedding service is multi-threaded). Ordinary opens
 are existing-schema-only: they never create, migrate, or repair the database. The
-one-time consolidated-index FTS storage-schema v2 repair is an explicit
+one-time rowid-aligned FTS storage repair is an explicit
 ``prepare_schema()`` operation serialized by the same advisory writer gate as every
 build and by ``BEGIN IMMEDIATE`` inside SQLite. It changes storage inside this index
 only; it is not a consumer cutover from the legacy IR engine.
@@ -309,8 +309,8 @@ def _ensure_fts_schema(conn: sqlite3.Connection) -> None:
     """Atomically migrate legacy standalone FTS rows to documents-rowid identity.
 
     The legacy table stored ``doc_id UNINDEXED`` and every replacement/deletion
-    therefore scanned the complete FTS corpus.  Version 2 materializes canonical
-    text on ``documents`` and uses an external-content FTS table whose rowid is the
+    therefore scanned the complete FTS corpus.  The rowid-aligned layout materializes
+    canonical text on ``documents`` and uses an external-content FTS table whose rowid is the
     indexed ``documents.rowid``.  FTS5's ``rebuild`` command reconstructs every row
     from the authoritative documents table.
 
@@ -335,10 +335,7 @@ def _ensure_fts_schema(conn: sqlite3.Connection) -> None:
             conn.commit()
             return
 
-        logger.info(
-            "index store: migrating FTS to rowid-aligned schema v%s",
-            _FTS_SCHEMA_VERSION,
-        )
+        logger.info("index store: starting rowid-aligned FTS storage repair")
         for trigger_name in _FTS_TRIGGER_NAMES:
             conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
 
@@ -399,7 +396,7 @@ def _ensure_fts_schema(conn: sqlite3.Connection) -> None:
                 != (migrated - len(updates)) // _FTS_MIGRATION_PROGRESS_EVERY
             ):
                 logger.info(
-                    "index store: FTS storage-schema v2 repair backfill "
+                    "index store: rowid-aligned FTS storage repair backfill "
                     "%d/%d documents (%.1f%%)",
                     migrated,
                     total_documents,
@@ -423,8 +420,8 @@ def _ensure_fts_schema(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
         logger.info(
-            "index store: FTS schema v%s ready (%d documents, %d malformed, %.2fs)",
-            _FTS_SCHEMA_VERSION,
+            "index store: rowid-aligned FTS storage ready "
+            "(%d documents, %d malformed, %.2fs)",
             migrated,
             malformed,
             time.perf_counter() - started,
@@ -503,7 +500,7 @@ class IndexStore:
             conn.execute("PRAGMA foreign_keys=ON")
             if not _fts_layout_is_current(conn):
                 raise IndexSchemaRepairRequired(
-                    "consolidated-index FTS storage-schema v2 repair is required; "
+                    "consolidated-index rowid-aligned FTS storage repair is required; "
                     "ordinary reads and writes never run it implicitly"
                 )
             return conn
@@ -545,8 +542,8 @@ class IndexStore:
                 pass
             if not repair_existing and not logically_absent:
                 raise IndexSchemaRepairRequired(
-                    "existing consolidated index requires the explicit FTS "
-                    "storage-schema v2 repair; scheduled builds will not run it"
+                    "existing consolidated index requires the explicit "
+                    "rowid-aligned FTS storage repair; scheduled builds will not run it"
                 )
 
         from work_buddy.index.locking import index_writer_gate
@@ -580,8 +577,8 @@ class IndexStore:
                         and _database_has_user_schema(conn)
                     ):
                         raise IndexSchemaRepairRequired(
-                            "existing consolidated index requires the explicit FTS "
-                            "storage-schema v2 repair; scheduled builds will not run it"
+                            "existing consolidated index requires the explicit "
+                            "rowid-aligned FTS storage repair; scheduled builds will not run it"
                         )
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA foreign_keys=ON")
@@ -628,7 +625,7 @@ class IndexStore:
                 ).fetchall()
             }
             try:
-                # Version rejection precedes every v2-specific table/column read.
+                # Version rejection precedes every current-layout table/column read.
                 # A future layout is free to rename those objects and must still
                 # be reported as unsupported, never absent or generically broken.
                 _fts_schema_version(conn)
@@ -648,7 +645,7 @@ class IndexStore:
             current = _fts_layout_is_current(conn)
             state = "current" if current else "repair_required"
             detail = None if current else (
-                "consolidated-index FTS storage-schema v2 repair required; "
+                "consolidated-index rowid-aligned FTS storage repair required; "
                 "status inspection did not run it"
             )
             vector_counts = {

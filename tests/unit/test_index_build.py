@@ -390,7 +390,8 @@ class TestBuild:
             _builder(store, part).build()
 
         # The committed vector remains fenced after the crash. No resident reader
-        # can load it under v1; replay atomically publishes generation v2.
+        # can load it under the prior generation; replay atomically publishes the
+        # next generation.
         assert store.vector_count("fake", "content") == 1
         assert store.build_version("fake") == 1
         assert store.partition_mutation_in_progress("fake") is True
