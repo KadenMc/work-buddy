@@ -128,6 +128,21 @@ class TestIRSourcePartition:
         assert {r.item_id for r in refs} == {"sess1", "sess2"}
         assert {r.mtime for r in refs} == {100.0, 200.0}
 
+    def test_discover_requests_full_history_window_when_supported(self):
+        class WindowedSource(_FakeIRSource):
+            def __init__(self):
+                self.days = None
+
+            def discover(self, days=30):
+                self.days = days
+                return super().discover()
+
+        source = WindowedSource()
+        refs = list(IRSourcePartition(source).discover())
+
+        assert source.days == 3650
+        assert {r.item_id for r in refs} == {"sess1", "sess2"}
+
     def test_parse_converts_ir_doc(self):
         p = IRSourcePartition(_FakeIRSource())
         docs = p.parse("sess1")
