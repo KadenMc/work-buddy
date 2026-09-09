@@ -51,7 +51,9 @@ def test_task_match_reads_native_descriptions_without_legacy_surfaces(
             "task_id": "t-native-match",
             "text": "Native focus description",
             "state": "focused",
-            "project": "native-project",
+            "project": None,
+            "project_ids": [],
+            "projects": [],
         }
     ]
     legacy_markdown.assert_not_called()
@@ -109,6 +111,8 @@ def test_tasks_context_queries_native_store_and_cowork_reader_only(
             "state": "mit",
             "text": "Native context task",
             "contract": "context-contract",
+            "project_ids": [],
+            "unresolved_projects": [],
         }
     ]
 

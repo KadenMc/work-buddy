@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -25,6 +26,11 @@ def test_project_and_context_collectors_ignore_frozen_task_markdown_after_cutove
         encoding="utf-8",
     )
     task_path = tmp_path / "tasks.db"
+    project_path = tmp_path / 'projects.db'
+    registry = sqlite3.connect(project_path)
+    registry.executescript("CREATE TABLE projects(id INTEGER PRIMARY KEY,slug TEXT,name TEXT,status TEXT); CREATE TABLE project_aliases(project_id INTEGER,alias_norm TEXT); INSERT INTO projects VALUES(1,'native','Native','active');")
+    registry.close()
+    monkeypatch.setattr('work_buddy.tasks.project_links.project_database_path', lambda: project_path)
     monkeypatch.setattr(runtime, "default_task_db_path", lambda: task_path)
     monkeypatch.setattr(
         runtime,
@@ -58,6 +64,7 @@ def test_project_and_context_collectors_ignore_frozen_task_markdown_after_cutove
         task_id="t-native-open",
         state="active",
         tags=[("projects/native", True)],
+        project_ids=[1],
         client_mutation_id="create-native-open",
         actor="human:test",
     )
@@ -66,6 +73,7 @@ def test_project_and_context_collectors_ignore_frozen_task_markdown_after_cutove
         task_id="t-native-done",
         state="inbox",
         tags=[("projects/native", True)],
+        project_ids=[1],
         client_mutation_id="create-native-done",
         actor="human:test",
     ).task

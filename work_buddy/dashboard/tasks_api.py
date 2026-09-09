@@ -6,9 +6,9 @@ import hmac
 import hashlib
 import json
 import uuid
-from collections import Counter
 from collections.abc import Callable, Mapping
-from datetime import date, datetime, timedelta, timezone
+from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -28,9 +28,12 @@ from work_buddy.tasks.errors import (
     TaskRevisionConflict,
     TaskValidationError,
 )
-from work_buddy.tasks.models import Task, TaskActionItem, TaskDocumentLink, TaskQuery
+from work_buddy.tasks.models import MutationResult, Task, TaskActionItem, TaskDocumentLink
 from work_buddy.tasks.service import TaskApplicationService
 from work_buddy.tasks.store import TaskStore
+from work_buddy.tasks.namespaces import NamespaceConflict, TaskNamespaceService
+from work_buddy.tasks.project_links import candidates, registry_snapshot
+from work_buddy.tasks.workspace_query import WorkspaceQuery, read_workspace
 from work_buddy.truth.identity import canonical_json, sha256_text
 
 
@@ -182,6 +185,10 @@ def _task_summary(task: Task, document: TaskDocumentLink | None) -> dict[str, An
         "deadline_date": task.deadline_date,
         "snooze_until": task.snooze_until,
         "project": task.project,
+        "project_ids": list(task.project_ids),
+        "unresolved_projects": list(task.unresolved_projects),
+        "created_at": task.created_at or None,
+        "status": "trash" if task.deleted_at else "archived" if task.archived_at else "completed" if task.state == "done" else "open",
         "namespaces": list(task.namespace_tags),
         "tags": [tag.name for tag in task.tags],
         "current_action": _current_action(task),
@@ -414,111 +421,59 @@ def _document_links(store: TaskStore, tasks: list[Task]) -> dict[str, TaskDocume
         conn.close()
 
 
-def _lens_matches(task: Task, lens: str) -> bool:
-    if lens == "trash":
-        return task.deleted_at is not None
-    if task.deleted_at is not None:
-        return False
-    if lens == "completed":
-        return task.state == "done" or task.archived_at is not None
-    if task.archived_at is not None or task.state == "done":
-        return False
-    if lens == "focused":
-        return task.state == "focused"
-    if lens in {"inbox", "triage"}:
-        return task.state == "inbox"
-    if lens == "snoozed":
-        return task.state == "snoozed"
-    return task.state != "snoozed"
+def _workspace_query(registry: dict[int, dict[str, Any]] | None) -> tuple[WorkspaceQuery, dict[str, Any]]:
+    """Translate old bookmarks into visible filters, then use one query model."""
+    args = request.args
 
+    def values(key: str, legacy: str | None = None, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+        if key in args:
+            return tuple(dict.fromkeys(value.strip() for value in args.getlist(key) if value.strip()))
+        value = args.get(legacy, "") if legacy else ""
+        return (value.strip(),) if value.strip() else default
 
-def _filters_match(
-    task: Task,
-    document: TaskDocumentLink | None,
-    query: Mapping[str, str | None],
-) -> bool:
-    q = (query.get("q") or "").casefold()
-    if q and q not in task.description.casefold() and all(
-        q not in tag.name.casefold() for tag in task.tags
-    ):
-        return False
-    project = query.get("project") or ""
-    if project and (task.project or "").casefold() != project.casefold():
-        return False
-    namespace = (query.get("namespace") or "").strip("#/").casefold()
-    if namespace and not any(
-        tag.casefold() == namespace or tag.casefold().startswith(namespace + "/")
-        for tag in task.namespace_tags
-    ):
-        return False
-    urgency = query.get("urgency") or ""
-    if urgency and task.urgency != ("high" if urgency == "critical" else urgency):
-        return False
-    state = query.get("state") or ""
-    if state and _attention_state(task) != state:
-        return False
-    note = query.get("note") or ""
-    if note == "yes" and document is None:
-        return False
-    if note == "no" and document is not None:
-        return False
-    due = query.get("due") or ""
-    today = date.today().isoformat()
-    if due == "today" and task.due_date != today:
-        return False
-    if due == "overdue" and (task.due_date is None or task.due_date >= today):
-        return False
-    if due == "none" and task.due_date is not None:
-        return False
-    if due == "week":
-        week_end = (date.today() + timedelta(days=7)).isoformat()
-        if task.due_date is None or not (today <= task.due_date <= week_end):
-            return False
-    return True
-
-
-def _facets(tasks: list[Task]) -> dict[str, Any]:
-    counts = {
-        lens: sum(1 for task in tasks if _lens_matches(task, lens))
-        for lens in (
-            "focused",
-            "inbox",
-            "active",
-            "snoozed",
-            "completed",
-            "trash",
-            "triage",
+    lens = args.get("lens", "")
+    legacy_attention = {
+        "focused": ("focused",), "inbox": ("inbox",), "triage": ("inbox",),
+        "active": ("inbox", "mit", "focused", "active", "waiting"), "snoozed": ("snoozed",),
+    }.get(lens, ())
+    default_statuses = {"completed": ("completed", "archived"), "trash": ("trash",)}.get(lens, ("open",))
+    attention = values("attention", "state", legacy_attention)
+    if attention == ("done",):
+        attention, default_statuses = (), ("completed",)
+    projects = values("projects", "project")
+    if "projects" not in args and projects:
+        # The old singular field always held a project name, even when its
+        # slug was numeric. Only canonical plural fields hold registry IDs.
+        resolved = candidates(projects[0], registry or {})
+        projects = (str(resolved[0]),) if len(resolved) == 1 else ("unresolved:" + projects[0],)
+    sort = args.get("sort", "created_at")
+    default_direction = "asc" if sort in {"title", "due_date"} else "desc"
+    try:
+        query = WorkspaceQuery(
+            statuses=values("statuses", default=default_statuses),
+            projects=projects, namespaces=values("namespaces", "namespace"),
+            exact_namespaces=values("exact_namespaces"), attention=attention,
+            urgencies=tuple("high" if value == "critical" else value for value in values("urgencies", "urgency")),
+            q=args.get("q", ""), due=args.get("due", ""), note=args.get("note", ""),
+            sort=sort, direction=args.get("direction", default_direction),
+            offset=int(args.get("offset", 0)), limit=int(args.get("limit", 50)),
         )
-    }
-    projects = Counter(task.project for task in tasks if task.project)
-    namespaces = Counter(tag for task in tasks for tag in task.namespace_tags)
-    urgencies = Counter(task.urgency for task in tasks)
-    return {
-        "counts": counts,
-        "projects": dict(sorted(projects.items())),
-        "namespaces": dict(sorted(namespaces.items())),
-        "urgencies": dict(sorted(urgencies.items())),
-    }
+    except (TypeError, ValueError) as exc:
+        raise TaskValidationError({"query": str(exc)}) from exc
+    mode = args.get("mode", "triage" if lens == "triage" else "browse")
+    if mode not in {"browse", "triage", "namespaces"}:
+        mode = "browse"
+    return query, {**asdict(query), "mode": mode, "task": args.get("task"), "proposal": args.get("proposal")}
 
 
-def _options(tasks: list[Task]) -> dict[str, Any]:
-    projects = sorted({task.project for task in tasks if task.project})
-    namespaces = sorted({tag for task in tasks for tag in task.namespace_tags})
-    contracts = sorted({task.contract for task in tasks if task.contract})
-    contexts = sorted(
-        {
-            value
-            for task in tasks
-            for value in (*task.agent_required_contexts, *task.user_required_contexts)
-        }
-    )
-    option = lambda value: {"value": value, "label": value}
-    return {
-        "projects": [option(value) for value in projects],
-        "namespaces": [option(value) for value in namespaces],
-        "contracts": [option(value) for value in contracts],
-        "contexts": [option(value) for value in contexts],
-    }
+def _project_options(registry: dict[int, dict[str, Any]] | None, values: set[str]) -> list[dict[str, str]]:
+    labels = {str(key): str(item["name"] or item["slug"]) + (" (deleted)" if item["status"] == "deleted" else "") for key, item in (registry or {}).items()}
+    for value in values:
+        if value.startswith("unresolved:"):
+            labels[value] = value.removeprefix("unresolved:") + " (unresolved project)"
+        elif value not in {"__none__", "__unresolved__"}:
+            labels.setdefault(value, "Unavailable project #" + value)
+    return [{"value": value, "label": label} for value, label in sorted(labels.items(), key=lambda item: (item[1].casefold(), item[0]))]
 
 
 def _task_fields(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -567,13 +522,82 @@ def _tag_set(body: Mapping[str, Any], current: Task | None = None) -> list[tuple
         if isinstance(body.get("namespaces"), list)
         else list(current.namespace_tags if current is not None else ())
     )
-    project = body.get("project")
-    if "project" not in body and current is not None:
-        project = current.project
-    namespaces = [value for value in namespaces if value and not value.casefold().startswith("projects/")]
-    if isinstance(project, str) and project.strip():
-        namespaces.append(f"projects/{project.strip().strip('#/')}" )
+    namespaces = [value for value in namespaces if value]
     return [*( (value, False) for value in ordinary), *((value, True) for value in namespaces)]
+
+
+def _project_update(body: Mapping[str, Any], store: TaskStore) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    if "project_ids" in body:
+        if not isinstance(body["project_ids"], list):
+            raise TaskValidationError({"project_ids": "Choose a list of registered projects."})
+        result["project_ids"] = body["project_ids"]
+    elif "project" in body:
+        # Keep old explicit HTTP edits meaningful without reconstructing a tag.
+        legacy = body["project"]
+        if legacy is None or legacy == "":
+            result["project_ids"] = []
+        elif isinstance(legacy, str):
+            found = candidates(legacy, registry_snapshot(store.project_db_path) or {})
+            if len(found) != 1:
+                raise TaskValidationError({"project": "Choose a registered project; this historical name cannot be resolved uniquely."})
+            result["project_ids"] = list(found)
+        else:
+            raise TaskValidationError({"project": "Choose a registered project."})
+    if "remove_unresolved_projects" in body:
+        values = body["remove_unresolved_projects"]
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise TaskValidationError({"remove_unresolved_projects": "Choose a list of historical project names to remove."})
+        result["remove_unresolved_projects"] = values
+    return result
+
+
+def _legacy_update_replay(
+    body: Mapping[str, Any], task_id: str, actor: str,
+    store: TaskStore, service: TaskApplicationService,
+) -> MutationResult | None:
+    """Recognize an old HTTP edit receipt before resolving its legacy Project.
+
+    Only the saved pre-project-fields result supplies historical tag defaults.
+    This request shape is compared to a receipt and never reaches a write.
+    """
+    if "project_ids" in body or body.get("remove_unresolved_projects"):
+        return None
+    with store.transaction() as conn:
+        service._assert_native_mutation_authority(conn)
+        receipt = conn.execute(
+            "SELECT * FROM task_mutation_receipts WHERE client_mutation_id=?",
+            (_client_mutation_id(body),),
+        ).fetchone()
+        if receipt is None or receipt["actor"] != actor or receipt["mutation"] != "update" or receipt["task_id"] != task_id or receipt["status"] != "completed":
+            return None
+        saved = json.loads(receipt["result_json"] or "{}")
+        task_data = saved.get("task")
+        if not isinstance(task_data, dict) or "project_ids" in task_data or "unresolved_projects" in task_data:
+            return None
+        previous = Task.from_dict(task_data)
+        tags = [(name, namespace) for name, namespace in _tag_set(body, previous)
+                if not (namespace and name.casefold().startswith("projects/"))]
+        project = body.get("project")
+        if "project" not in body:
+            project_tags = [tag for tag in previous.namespace_tags if tag.casefold().startswith("projects/")]
+            if len(project_tags) > 1:
+                return None
+            project = project_tags[0].split("/", 1)[1] if project_tags else None
+        if isinstance(project, str) and project.strip():
+            tags.append((f"projects/{project.strip().strip('#/')}", True))
+        state = body.get("attention_state")
+        if state in {"snoozed", "done"} and state == previous.state:
+            state = None
+        legacy_request = {
+            "task_id": task_id, "expected_revision": _expected_revision(body),
+            "changes": service._validate_update_fields(_task_fields(body)),
+            "state": state, "tags": [tag.to_dict() for tag in service._normalize_tags(tags)],
+            "reason": None,
+        }
+        if service._request_hash("update", legacy_request) == receipt["request_hash"]:
+            return MutationResult.from_dict(saved, replayed=True)
+        return None
 
 
 def _batch_items(body: Mapping[str, Any]) -> list[Any]:
@@ -613,27 +637,14 @@ def _batch_preview(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     items = _batch_items(body)
     batch_id = _client_mutation_id(body)
-    existing_titles: set[str] = set()
-    offset = 0
-    while True:
-        page = service.list(
-            TaskQuery(
-                include_done=True,
-                include_archived=True,
-                include_deleted=False,
-                include_snoozed=True,
-                limit=5000,
-                offset=offset,
-            )
-        )
-        existing_titles.update(
-            key
-            for task in page
-            if (key := _batch_title_key(task.description))
-        )
-        if len(page) < 5000:
-            break
-        offset += len(page)
+    conn = store.connect_readonly()
+    try:
+        existing_titles = {
+            key for row in conn.execute("SELECT description FROM task_metadata WHERE deleted_at IS NULL")
+            if (key := _batch_title_key(row[0]))
+        }
+    finally:
+        conn.close()
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
     accepted: list[dict[str, Any]] = []
@@ -771,14 +782,7 @@ def _replay_batch_items(body: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _mutation_envelope(store: TaskStore, result) -> dict[str, Any]:
-    from work_buddy.tasks.events import publish_pending
-    from work_buddy.dashboard.events import publish
-
-    def deliver(event_type: str, payload: dict[str, Any]) -> bool:
-        publish(event_type, payload)
-        return True
-
-    publish_pending(store, delivery=deliver)
+    _publish_task_events(store)
     return {
         "ok": True,
         "result": {
@@ -791,6 +795,17 @@ def _mutation_envelope(store: TaskStore, result) -> dict[str, Any]:
     }
 
 
+def _publish_task_events(store: TaskStore) -> None:
+    from work_buddy.tasks.events import publish_pending_coalesced
+    from work_buddy.dashboard.events import publish
+
+    def deliver(event_type: str, payload: dict[str, Any]) -> bool:
+        publish(event_type, payload)
+        return True
+
+    publish_pending_coalesced(store, delivery=deliver)
+
+
 def _error_response(exc: Exception):
     if isinstance(exc, LocalIdentityError):
         return local_identity_api._error(exc)
@@ -798,7 +813,7 @@ def _error_response(exc: Exception):
         status = 422
         if isinstance(exc, TaskNotFound):
             status = 404
-        elif isinstance(exc, (TaskRevisionConflict, TaskIdempotencyConflict)):
+        elif isinstance(exc, (TaskRevisionConflict, TaskIdempotencyConflict, NamespaceConflict)):
             status = 409
         elif isinstance(exc, (TaskMutationFenced, TaskAuthorityUnavailable)):
             status = 503
@@ -832,6 +847,7 @@ def create_tasks_blueprint(
 
     def stack() -> tuple[TaskStore, TaskApplicationService]:
         store = store_factory()
+        store.initialize()
         return store, TaskApplicationService(store)
 
     def access(store: TaskStore) -> dict[str, str]:
@@ -868,59 +884,64 @@ def create_tasks_blueprint(
     def view():
         try:
             store, service = stack()
-            all_tasks = service.list(
-                TaskQuery(
-                    include_done=True,
-                    include_archived=True,
-                    include_deleted=True,
-                    include_snoozed=True,
-                    limit=5000,
-                )
-            )
-            links = _document_links(store, all_tasks)
-            lens = request.args.get("lens", "inbox")
-            if lens not in {
-                "focused", "inbox", "active", "snoozed", "completed", "trash", "triage"
-            }:
-                lens = "inbox"
-            query = {
-                "lens": lens,
-                "q": request.args.get("q", ""),
-                "project": request.args.get("project", ""),
-                "namespace": request.args.get("namespace", ""),
-                "urgency": request.args.get("urgency", ""),
-                "due": request.args.get("due", ""),
-                "state": request.args.get("state", ""),
-                "note": request.args.get("note", ""),
-                "task": request.args.get("task"),
-            }
-            visible = [
-                task
-                for task in all_tasks
-                if _lens_matches(task, lens)
-                and _filters_match(task, links.get(task.task_id), query)
-            ]
+            registry = registry_snapshot(store.project_db_path)
+            query, wire_query = _workspace_query(registry)
+            payload = read_workspace(store, query)
             selected = None
-            selected_id = query["task"]
-            if selected_id:
+            if selected_id := wire_query["task"]:
                 candidate = service.get(str(selected_id), include_deleted=True)
                 if candidate is not None:
                     selected = _task_detail(store, candidate)
-            return jsonify(
-                {
-                    "ok": True,
-                    "collection_revision": service.store.collection_revision(),
-                    "observed_at": _now(),
-                    "access": access(store),
-                    "query": query,
-                    "facets": _facets(all_tasks),
-                    "tasks": [
-                        _task_summary(task, links.get(task.task_id)) for task in visible
-                    ],
-                    "selected_task": selected,
-                    "options": _options(all_tasks),
-                }
-            )
+            project_values = set(payload["facets"]["projects"]) | set(query.projects)
+            if selected:
+                project_values.update(str(value) for value in selected["project_ids"])
+                project_values.update("unresolved:" + item["legacy_value"] for item in selected["unresolved_projects"])
+            payload["options"]["projects"] = _project_options(registry, project_values)
+            return jsonify({
+                "ok": True, **payload, "observed_at": _now(), "access": access(store),
+                "query": wire_query, "selected_task": selected,
+            })
+        except Exception as exc:
+            return _error_response(exc)
+
+    @blueprint.get("/api/tasks/namespaces")
+    def namespace_inventory():
+        try:
+            store, service = stack()
+            return jsonify({"ok": True, **TaskNamespaceService(service).inventory(), "access": access(store)})
+        except Exception as exc:
+            return _error_response(exc)
+
+    @blueprint.post("/api/tasks/namespaces/preview")
+    def namespace_preview():
+        try:
+            body = _json_body()
+            _store, service = stack()
+            return jsonify({"ok": True, "preview": TaskNamespaceService(service).preview(body)})
+        except Exception as exc:
+            return _error_response(exc)
+
+    @blueprint.post("/api/tasks/namespaces/apply")
+    def namespace_apply():
+        try:
+            body = _json_body()
+            store, service = stack()
+            actor = authorize(store, operation="namespace_apply", subject="task-namespaces", path="/api/tasks/namespaces/apply", body=body)
+            result = TaskNamespaceService(service).apply(body, actor=actor)
+            _publish_task_events(store)
+            return jsonify({"ok": True, **result})
+        except Exception as exc:
+            return _error_response(exc)
+
+    @blueprint.post("/api/tasks/namespaces/<operation_id>/undo")
+    def namespace_undo(operation_id: str):
+        try:
+            body = _json_body()
+            store, service = stack()
+            actor = authorize(store, operation="namespace_undo", subject=f"task-namespace-operation:{operation_id}", path=f"/api/tasks/namespaces/{_encoded(operation_id)}/undo", body=body)
+            result = TaskNamespaceService(service).undo(operation_id, body, actor=actor)
+            _publish_task_events(store)
+            return jsonify({"ok": True, **result})
         except Exception as exc:
             return _error_response(exc)
 
@@ -947,6 +968,8 @@ def create_tasks_blueprint(
                 state=state,
                 urgency="high" if body.get("urgency") == "critical" else str(body.get("urgency") or "medium"),
                 tags=_tag_set(body),
+                project_ids=body.get("project_ids", ()),
+                project=body.get("project"),
                 due_date=body.get("due_date"),
                 deadline_date=body.get("deadline_date"),
                 summary_text=body.get("summary"),
@@ -1060,13 +1083,13 @@ def create_tasks_blueprint(
                 actor=actor,
             )
             from work_buddy.dashboard.events import publish
-            from work_buddy.tasks.events import publish_pending
+            from work_buddy.tasks.events import publish_pending_coalesced
 
             def deliver(event_type: str, payload: dict[str, Any]) -> bool:
                 publish(event_type, payload)
                 return True
 
-            publish_pending(store, delivery=deliver)
+            publish_pending_coalesced(store, delivery=deliver)
             return jsonify(
                 {
                     "ok": True,
@@ -1097,6 +1120,9 @@ def create_tasks_blueprint(
                 path=path,
                 body=body,
             )
+            replay = _legacy_update_replay(body, task_id, actor, store, service)
+            if replay is not None:
+                return jsonify(_mutation_envelope(store, replay))
             current = service.get(task_id, include_deleted=True)
             if current is None:
                 raise TaskNotFound(task_id)
@@ -1118,6 +1144,7 @@ def create_tasks_blueprint(
                 actor=actor,
                 changes=_task_fields(body),
                 tags=_tag_set(body, current),
+                **_project_update(body, store),
                 state=requested_state,
             )
             return jsonify(_mutation_envelope(store, result))

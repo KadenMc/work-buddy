@@ -150,6 +150,11 @@ class TaskAggregateCreationService:
             "task": _json_value({**values, "task_id": task_id}),
             "document": _json_value(document),
         }
+        replay = self._legacy_completed_project_replay(
+            client_mutation_id=client_mutation_id, task_id=task_id, actor=actor, request=request,
+        )
+        if replay is not None:
+            return replay
         create_values = dict(request["task"])
         create_values.pop("task_id", None)
         create_values["tags"] = _rehydrate_tags(create_values.get("tags"))
@@ -177,6 +182,51 @@ class TaskAggregateCreationService:
             requested_truth_policy_resolution=requested_truth_policy_resolution,
         )
         return self.resume(intent.intent_id)
+
+    def _legacy_completed_project_replay(
+        self, *, client_mutation_id: str, task_id: str, actor: str,
+        request: Mapping[str, Any],
+    ) -> MutationResult | None:
+        """Replay a published pre-project-fields aggregate without new work.
+
+        The coordinator fingerprints the original ordered tag list before the
+        task service normalizes it. Preserve that old ingress order here, and
+        compare the complete task/document request, never only project fields.
+        Unpublished intents continue through ordinary coordinator recovery.
+        """
+        task_values = request["task"]
+        project = task_values.get("project")
+        if not project or task_values.get("project_ids"):
+            return None
+        tags = list(task_values.get("tags") or ())
+        if any(not isinstance(tag, Mapping) for tag in tags):
+            return None
+        project_tag = {"name": f"projects/{str(project).strip().strip('#/')}", "is_namespace": True}
+        legacy_task = {key: value for key, value in task_values.items() if key not in {"project", "project_ids"}}
+        tag_variants = (
+            [*tags, project_tag],
+            [*[tag for tag in tags if not (tag.get("is_namespace") and str(tag.get("name", "")).casefold().startswith("projects/"))], project_tag],
+        )
+        hashes = {_sha256_json({**request, "task": {**legacy_task, "tags": variant}}) for variant in tag_variants}
+        with self.store.transaction() as conn:
+            self.task_service._assert_native_mutation_authority(conn)
+            row = conn.execute(
+                "SELECT i.request_hash,i.request_json,r.result_json FROM task_creation_intents i "
+                "JOIN task_mutation_receipts r ON r.receipt_id=i.task_receipt_id "
+                "WHERE i.client_mutation_id=? AND i.task_id=? AND i.actor=? AND i.status='published' "
+                "AND r.client_mutation_id=i.client_mutation_id AND r.task_id=i.task_id "
+                "AND r.actor=i.actor AND r.mutation='create' AND r.status='completed'",
+                (client_mutation_id, task_id, actor),
+            ).fetchone()
+            if row is None or row["request_hash"] not in hashes:
+                return None
+            if hashlib.sha256(str(row["request_json"]).encode("utf-8")).hexdigest() != row["request_hash"]:
+                return None
+            result = json.loads(row["result_json"] or "{}")
+            saved_task = result.get("task")
+            if not isinstance(saved_task, dict) or "project_ids" in saved_task or "unresolved_projects" in saved_task:
+                return None
+            return MutationResult.from_dict(result, replayed=True)
 
     def resume(self, intent_id: str) -> MutationResult:
         intent = self.coordinator.get(intent_id)

@@ -87,6 +87,7 @@ _PARAMETER_FIELDS = (
     | {
         "has_dependency",
         "automation_tier_achievable",
+        "project_ids",
     }
 )
 
@@ -167,6 +168,11 @@ def validate_task_parameters(value: Any) -> dict[str, Any]:
     parameters["task_text"] = _text(
         parameters.get("task_text"), "task text", maximum=16_384
     )
+    if "project_ids" in parameters:
+        ids = parameters["project_ids"]
+        if not isinstance(ids, list) or len(ids) > 100 or any(type(item) is not int or item <= 0 for item in ids):
+            raise ProposalError("proposal_invalid_parameters", "project_ids must be a bounded list of positive registry IDs.")
+        parameters["project_ids"] = sorted(set(ids))
     # The note body is document content, not a scalar form field. Preserve it
     # byte-for-byte so the reviewed proposal, aggregate request hash, and
     # provenance receipt all refer to the same authored text.

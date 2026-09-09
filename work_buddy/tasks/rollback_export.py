@@ -220,6 +220,9 @@ class _SourceSnapshot:
     cohort: Mapping[str, Any]
     tasks: tuple[Mapping[str, Any], ...]
     tags: tuple[Mapping[str, Any], ...]
+    project_links: tuple[Mapping[str, Any], ...]
+    unresolved_projects: tuple[Mapping[str, Any], ...]
+    project_migration_log: tuple[Mapping[str, Any], ...]
     history: tuple[Mapping[str, Any], ...]
     sessions: tuple[Mapping[str, Any], ...]
     actions: tuple[Mapping[str, Any], ...]
@@ -2127,6 +2130,9 @@ class ReverseLegacyTaskExportOperator:
                 cohort=cohort,
                 tasks=_select_all(connection, "task_metadata", order_by="task_id"),
                 tags=_select_all(connection, "task_tags", order_by="task_id, tag"),
+                project_links=_select_all(connection, "task_projects", order_by="task_id, project_id"),
+                unresolved_projects=_select_all(connection, "task_project_unresolved", order_by="task_id, legacy_value, source_tag"),
+                project_migration_log=_select_all(connection, "task_project_migration_log", order_by="task_id, source_tag"),
                 history=_select_all(connection, "task_state_history", order_by="id"),
                 sessions=_select_all(connection, "task_sessions", order_by="id"),
                 actions=_select_all(connection, "task_action_items", order_by="id"),
@@ -2598,6 +2604,9 @@ class ReverseLegacyTaskExportOperator:
             "task_local_file_links": list(snapshot.local_file_links),
             "task_mutation_receipts": list(snapshot.mutation_receipts),
             "task_event_outbox": list(snapshot.event_outbox),
+            "task_projects": list(snapshot.project_links),
+            "task_project_unresolved": list(snapshot.unresolved_projects),
+            "task_project_migration_log": list(snapshot.project_migration_log),
             "date_resolutions": {
                 task_id: asdict(resolution)
                 for task_id, resolution in sorted(resolutions.items())
@@ -2605,6 +2614,14 @@ class ReverseLegacyTaskExportOperator:
         }
         _write_json(root / _SUPPLEMENT_FILE, supplement)
         supplement_size, supplement_sha = _file_digest(root / _SUPPLEMENT_FILE)
+        if snapshot.project_links or snapshot.unresolved_projects:
+            downgrades.append({
+                "kind": "independent_project_links_preserved_in_supplement",
+                "resolved_links": len(snapshot.project_links),
+                "unresolved_links": len(snapshot.unresolved_projects),
+                "supplement_file": _SUPPLEMENT_FILE,
+                "warning": "The historical UI cannot edit independent project references; namespaces are preserved unchanged.",
+            })
 
         if any(task.get("state") in {"active", "waiting"} for task in snapshot.tasks):
             for task in snapshot.tasks:

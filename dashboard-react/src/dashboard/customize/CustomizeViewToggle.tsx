@@ -17,10 +17,11 @@ import { useCustomizeMode } from "./CustomizeModeController";
  * single announcement source avoids a duplicate utterance.
  */
 export function CustomizeViewToggle() {
-  const { available, customizing, begin } = useCustomizeMode();
+  const { available, hidden, customizing, begin } = useCustomizeMode();
   // Self-gate on narrow, hover-less viewports where the desktop layout editor does not apply,
   // mirroring the prior grid-only control that CSS hid on mobile.
   const isMobile = useMediaQuery("(max-width: 767px)");
+  if (hidden) return null;
   return (
     <HelpTarget
       content={{

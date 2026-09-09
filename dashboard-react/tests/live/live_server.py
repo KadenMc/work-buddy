@@ -37,6 +37,15 @@ port = int(_required("WB_LIVE_BACKEND_PORT"))
 if port == 5127:
     raise RuntimeError("the live E2E backend must never use the normal dashboard port")
 
+if os.environ.get("WB_LIVE_APP") == "tasks":
+    # Reject a merged/inherited config that would escape the throwaway world.
+    # These checks precede importing any product route or connecting a store.
+    from work_buddy.tasks.store import default_task_db_path
+    from work_buddy.tasks.project_links import project_database_path
+    for database_path in (default_task_db_path(), project_database_path()):
+        if data_root not in database_path.resolve().parents:
+            raise RuntimeError("live Tasks and Projects databases must be contained by the isolated data root")
+
 from flask import jsonify, request  # noqa: E402
 
 from work_buddy.cowork import native_folder_chooser  # noqa: E402
@@ -90,12 +99,16 @@ def _picker_fixture() -> dict:
 
 
 def _choose_fixture_folder():
-    return _contained_fixture_path(_picker_fixture()["initialized"]["path"])
+    fixture = _picker_fixture()
+    return _contained_fixture_path(fixture["initialized"]["path"]) if fixture.get("initialized") else None
 
 
 def _choose_fixture_file(start_directory):
     selected_root = _contained_fixture_path(start_directory)
-    source = _contained_fixture_path(_picker_fixture()["source"]["path"])
+    fixture = _picker_fixture()
+    if not fixture.get("source"):
+        return None
+    source = _contained_fixture_path(fixture["source"]["path"])
     return source if selected_root in source.parents else None
 
 

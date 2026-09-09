@@ -5,8 +5,8 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 export const normalDashboardPort = 5127;
-export const applications = Object.freeze({ cowork: "seeds/cowork.py" });
-export const scenarios = Object.freeze({ cowork: ["lifecycle", "truth-panel"] });
+export const applications = Object.freeze({ cowork: "seeds/cowork.py", tasks: "seeds/tasks.py" });
+export const scenarios = Object.freeze({ cowork: ["lifecycle", "truth-panel"], tasks: ["browse", "organization"] });
 export const liveArtifactRoot = fileURLToPath(new URL("../../test-results/live", import.meta.url));
 
 export function parseOptions(args) {
@@ -14,7 +14,7 @@ export function parseOptions(args) {
     args,
     options: {
       app: { type: "string", default: "cowork" },
-      scenario: { type: "string", default: "lifecycle" },
+      scenario: { type: "string" },
       interactive: { type: "boolean", default: false },
       dev: { type: "boolean", default: false },
       build: { type: "boolean", default: false },
@@ -24,6 +24,7 @@ export function parseOptions(args) {
   if (!Object.hasOwn(applications, values.app)) {
     throw new Error(`Unknown app: ${values.app}. Available apps: ${Object.keys(applications).join(", ")}`);
   }
+  values.scenario ??= scenarios[values.app][0];
   if (!scenarios[values.app].includes(values.scenario)) {
     throw new Error(`Unknown scenario for ${values.app}: ${values.scenario}`);
   }

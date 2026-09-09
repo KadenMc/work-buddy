@@ -37,6 +37,7 @@ from .models import (
     VALID_URGENCIES,
 )
 from .store import TaskStore
+from .project_links import normalize_project_ids, registry_snapshot, resolve_legacy_projects, validate_project_ids, write_links
 
 _TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_/-]*$", re.IGNORECASE)
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -67,6 +68,8 @@ class _PreparedCreate:
     effective_task_id: str
     derivations: tuple[FieldDerivation, ...]
     request: dict[str, Any]
+    project_ids: tuple[int, ...]
+    unresolved_projects: tuple[dict[str, Any], ...]
 
 
 class TaskApplicationService:
@@ -138,6 +141,8 @@ class TaskApplicationService:
         state: str = "inbox",
         urgency: str = "medium",
         tags: Iterable[str | Tag | tuple[str, bool]] = (),
+        project_ids: Sequence[int | str] = (),
+        project: str | None = None,
         complexity: str | None = None,
         contract: str | None = None,
         due_date: str | None = None,
@@ -173,6 +178,8 @@ class TaskApplicationService:
             state=state,
             urgency=urgency,
             tags=tags,
+            project_ids=project_ids,
+            project=project,
             complexity=complexity,
             contract=contract,
             due_date=due_date,
@@ -240,6 +247,8 @@ class TaskApplicationService:
                 session_id=session_id,
                 fields=fields,
                 tags=normalized_tags,
+                project_ids=prepared.project_ids,
+                unresolved_projects=prepared.unresolved_projects,
                 contract=contract,
                 summary_text=summary_text,
                 outcome_text=outcome_text,
@@ -273,6 +282,8 @@ class TaskApplicationService:
                 details={
                     "created": True,
                     "tags": [tag.to_dict() for tag in normalized_tags],
+                    "project_ids": list(prepared.project_ids),
+                    "unresolved_projects": list(prepared.unresolved_projects),
                     "document": initial_document.to_dict() if initial_document else None,
                     "creation_intent_id": creation_intent_id,
                 },
@@ -307,6 +318,7 @@ class TaskApplicationService:
             request=request,
             operation=operation,
             finalize=finalize,
+            legacy_requests=self._legacy_project_requests(request, project_is_namespace=True),
         )
 
     def validate_create(self, **values: Any) -> None:
@@ -329,6 +341,8 @@ class TaskApplicationService:
                 (prepared.effective_task_id,),
             ).fetchone()
             if task_exists is None:
+                if prepared.project_ids:
+                    validate_project_ids(prepared.project_ids, registry_snapshot(self.store.project_db_path))
                 return
             aggregate_replay = conn.execute(
                 "SELECT 1 FROM task_creation_intents WHERE client_mutation_id=?",
@@ -350,6 +364,8 @@ class TaskApplicationService:
         state: str = "inbox",
         urgency: str = "medium",
         tags: Iterable[str | Tag | tuple[str, bool]] = (),
+        project_ids: Sequence[int | str] = (),
+        project: str | None = None,
         complexity: str | None = None,
         contract: str | None = None,
         due_date: str | None = None,
@@ -412,6 +428,10 @@ class TaskApplicationService:
                     {field_name: "Contexts must be a list of non-empty strings."}
                 ) from exc
         normalized_tags = self._normalize_tags(tags)
+        ids = normalize_project_ids(project_ids)
+        registry = registry_snapshot(self.store.project_db_path) if ids or project else None
+        legacy_ids, unresolved = resolve_legacy_projects([project] if project else [], registry)
+        linked_ids = tuple(sorted(set(ids) | set(legacy_ids)))
         if initial_document is not None and initial_document.task_id != (
             task_id or initial_document.task_id
         ):
@@ -457,6 +477,10 @@ class TaskApplicationService:
                 asdict(derivation) for derivation in normalized_derivations
             ],
         }
+        if ids:
+            request["project_ids"] = list(ids)
+        if project:
+            request["project"] = project
         return _PreparedCreate(
             fields=fields,
             dependencies=normalized_dependencies,
@@ -464,6 +488,8 @@ class TaskApplicationService:
             effective_task_id=effective_task_id,
             derivations=normalized_derivations,
             request=request,
+            project_ids=linked_ids,
+            unresolved_projects=unresolved,
         )
 
     def batch_create(
@@ -494,7 +520,15 @@ class TaskApplicationService:
                 (client_mutation_id,),
             ).fetchone()
             if existing is not None:
-                if existing["request_hash"] != request_hash or existing["actor"] != actor:
+                legacy_requests = ()
+                if existing["request_hash"] != request_hash:
+                    legacy_items = [
+                        self._legacy_project_requests(item["request"], project_is_namespace=False)
+                        for item in prepared
+                    ]
+                    if all(legacy_items):
+                        legacy_requests = ({"items": [item[0] for item in legacy_items]},)
+                if not self._receipt_request_matches(existing, "batch.create", request_hash, legacy_requests) or existing["actor"] != actor:
                     raise TaskIdempotencyConflict(client_mutation_id)
                 if existing["status"] != "completed" or not existing["result_json"]:
                     raise TaskDomainError("That batch is reserved but has no completed result yet.")
@@ -609,6 +643,8 @@ class TaskApplicationService:
         actor: str,
         changes: Mapping[str, Any],
         tags: Iterable[str | Tag | tuple[str, bool]] | None = None,
+        project_ids: Sequence[int | str] | None = None,
+        remove_unresolved_projects: Sequence[str] = (),
         state: str | None = None,
         session_id: str | None = None,
         reason: str | None = None,
@@ -618,6 +654,10 @@ class TaskApplicationService:
         )
         normalized = self._validate_update_fields(changes)
         normalized_tags = self._normalize_tags(tags) if tags is not None else None
+        normalized_projects = normalize_project_ids(project_ids) if project_ids is not None else None
+        if isinstance(remove_unresolved_projects, (str, bytes)):
+            raise TaskValidationError({"remove_unresolved_projects": "Use a list of unresolved project values."})
+        remove_unresolved = tuple(sorted(set(str(value) for value in remove_unresolved_projects)))
         if state is not None and state not in VALID_ATTENTION_STATES:
             raise TaskValidationError(
                 {"state": "Update accepts only an attention state; use lifecycle actions for Done or Snoozed."}
@@ -661,7 +701,11 @@ class TaskApplicationService:
             tag_changed = normalized_tags is not None and tuple(
                 sorted(task.tags, key=lambda item: item.name)
             ) != normalized_tags
-            if not changed_fields and not tag_changed:
+            project_changed = normalized_projects is not None and normalized_projects != task.project_ids
+            removed_unresolved = tuple(item for item in task.unresolved_projects if item["legacy_value"] in remove_unresolved)
+            if project_changed:
+                validate_project_ids(normalized_projects, registry_snapshot(self.store.project_db_path), existing=task.project_ids)
+            if not changed_fields and not tag_changed and not project_changed and not removed_unresolved:
                 return _Change(task_id, task.state, task.state, False, {})
             if "deadline_date" in changed_fields:
                 changed_fields["has_deadline"] = int(
@@ -674,6 +718,11 @@ class TaskApplicationService:
                         "INSERT INTO task_tags (task_id, tag, is_namespace) VALUES (?, ?, ?)",
                         [(task_id, tag.name, int(tag.is_namespace)) for tag in normalized_tags],
                     )
+            if project_changed:
+                conn.execute("DELETE FROM task_projects WHERE task_id=?", (task_id,))
+                write_links(conn, task_id, normalized_projects)
+            for value in remove_unresolved:
+                conn.execute("DELETE FROM task_project_unresolved WHERE task_id=? AND legacy_value=?", (task_id, value))
             self._update_task_cas(
                 conn,
                 task_id,
@@ -696,6 +745,8 @@ class TaskApplicationService:
                     "tags": [tag.to_dict() for tag in normalized_tags]
                     if tag_changed and normalized_tags is not None
                     else None,
+                    "projects": {"old": list(task.project_ids), "new": list(normalized_projects or ())} if project_changed else None,
+                    "removed_unresolved_projects": list(removed_unresolved),
                 },
                 reason,
             )
@@ -715,6 +766,8 @@ class TaskApplicationService:
                 if normalized_tags is not None
                 else None,
                 "reason": reason,
+                **({"project_ids": list(normalized_projects)} if normalized_projects is not None else {}),
+                **({"remove_unresolved_projects": list(remove_unresolved)} if remove_unresolved else {}),
             },
             operation=operation,
         )
@@ -1472,6 +1525,7 @@ class TaskApplicationService:
         request: Mapping[str, Any],
         operation: Callable[[sqlite3.Connection, str], _Change],
         finalize: Callable[[sqlite3.Connection, str, str, _Change], None] | None = None,
+        legacy_requests: Sequence[Mapping[str, Any]] = (),
     ) -> MutationResult:
         self._validate_authority(client_mutation_id, actor)
         request_hash = self._request_hash(mutation, request)
@@ -1483,7 +1537,7 @@ class TaskApplicationService:
                 (client_mutation_id,),
             ).fetchone()
             if existing is not None:
-                if existing["request_hash"] != request_hash or existing["actor"] != actor:
+                if not self._receipt_request_matches(existing, mutation, request_hash, legacy_requests) or existing["actor"] != actor:
                     raise TaskIdempotencyConflict(client_mutation_id)
                 if existing["status"] != "completed" or not existing["result_json"]:
                     raise TaskDomainError("That mutation is reserved but has no completed result yet.")
@@ -1623,6 +1677,8 @@ class TaskApplicationService:
         session_id: str | None,
         fields: Mapping[str, Any],
         tags: Sequence[Tag],
+        project_ids: Sequence[int] = (),
+        unresolved_projects: Sequence[dict[str, Any]] = (),
         contract: str | None = None,
         summary_text: str | None = None,
         outcome_text: str | None = None,
@@ -1639,6 +1695,8 @@ class TaskApplicationService:
         required_contexts_source: str | None = None,
         legacy_import_receipt_id: str | None = None,
     ) -> None:
+        if project_ids:
+            validate_project_ids(project_ids, registry_snapshot(self.store.project_db_path))
         record: dict[str, Any] = {
             "task_id": task_id,
             "state": fields["state"],
@@ -1684,6 +1742,7 @@ class TaskApplicationService:
                 "INSERT INTO task_tags (task_id, tag, is_namespace) VALUES (?, ?, ?)",
                 [(task_id, tag.name, int(tag.is_namespace)) for tag in tags],
             )
+        write_links(conn, task_id, project_ids, unresolved_projects)
 
     def _require_task(
         self,
@@ -1915,8 +1974,10 @@ class TaskApplicationService:
             else:
                 raw_tags.append(raw)
         project = item.get("project")
-        if project:
-            raw_tags.append(f"projects/{str(project).strip().strip('#/')}")
+        requested_project_ids = normalize_project_ids(item.get("project_ids") or ())
+        registry = registry_snapshot(self.store.project_db_path) if requested_project_ids or project else None
+        legacy_ids, unresolved = resolve_legacy_projects([project] if project else [], registry)
+        project_ids = tuple(sorted(set(requested_project_ids) | set(legacy_ids)))
         supplied_namespaces = item.get("namespaces") or ()
         if isinstance(supplied_namespaces, (str, bytes)):
             raise TaskValidationError(
@@ -1951,6 +2012,8 @@ class TaskApplicationService:
         insert = {
             "fields": fields,
             "tags": tags,
+            "project_ids": project_ids,
+            "unresolved_projects": unresolved,
             "contract": item.get("contract"),
             "summary_text": fields["summary_text"],
             "outcome_text": fields["outcome_text"],
@@ -1983,16 +2046,70 @@ class TaskApplicationService:
             **{
                 key: value
                 for key, value in insert.items()
-                if key not in {"fields", "tags"}
+                if key not in {"fields", "tags", "project_ids", "unresolved_projects"}
             },
             "tags": [tag.to_dict() for tag in tags],
         }
+        # Preserve pre-project-field fingerprints for ordinary batches. Registry
+        # resolution is insertion data, never part of the caller's identity.
+        if requested_project_ids:
+            request["project_ids"] = list(requested_project_ids)
+        if project:
+            request["project"] = project
         return {
             "index": index,
             "task_id": task_id,
             "insert": insert,
             "request": request,
         }
+
+    @classmethod
+    def _legacy_project_requests(
+        cls, request: Mapping[str, Any], *, project_is_namespace: bool,
+    ) -> tuple[dict[str, Any], ...]:
+        """Recognize old project-as-tag receipts without using that write shape.
+
+        Batch ingress used an ordinary tag; native/API single creates used a
+        namespace. The old HTTP editor also stripped project namespace paths.
+        Explicit registry IDs have no pre-upgrade equivalent.
+        """
+        if request.get("project_ids"):
+            return ()
+        legacy = {key: value for key, value in request.items() if key not in {"project", "project_ids"}}
+        tags = [Tag(str(tag["name"]), bool(tag.get("is_namespace"))) for tag in request.get("tags") or ()]
+        project = request.get("project")
+        try:
+            if project:
+                project_tag = Tag(f"projects/{str(project).strip().strip('#/')}", project_is_namespace)
+                legacy["tags"] = [tag.to_dict() for tag in cls._normalize_tags([*tags, project_tag])]
+            candidates = [legacy]
+            if project and project_is_namespace:
+                http_tags = [tag for tag in tags if not (tag.is_namespace and tag.name.casefold().startswith("projects/"))]
+                candidates.append({**legacy, "tags": [tag.to_dict() for tag in cls._normalize_tags([*http_tags, project_tag])]})
+            return tuple(candidates)
+        except TaskValidationError:
+            # A newly valid registry alias may not have been a valid old tag.
+            return ()
+
+    @classmethod
+    def _receipt_request_matches(
+        cls, receipt: sqlite3.Row, mutation: str, request_hash: str,
+        legacy_requests: Sequence[Mapping[str, Any]] = (),
+    ) -> bool:
+        if receipt["request_hash"] == request_hash:
+            return True
+        if not legacy_requests or not receipt["result_json"]:
+            return False
+        try:
+            result = json.loads(receipt["result_json"])
+            tasks = result.get("tasks") if mutation == "batch.create" else [result.get("task")]
+            # Current receipts always serialize both fields. A fallback must
+            # never reinterpret a modern tagged request as a new project link.
+            if not tasks or any(not isinstance(task, dict) or "project_ids" in task or "unresolved_projects" in task for task in tasks):
+                return False
+        except (TypeError, ValueError, AttributeError):
+            return False
+        return any(receipt["request_hash"] == cls._request_hash(mutation, request) for request in legacy_requests)
 
     def _validate_create_fields(self, **values: Any) -> dict[str, Any]:
         errors: dict[str, str] = {}

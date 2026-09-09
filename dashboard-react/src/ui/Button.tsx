@@ -30,6 +30,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     size = "medium",
     disabled,
     onClick,
+    title,
+    render: renderButton,
     ...props
   },
   ref,
@@ -41,6 +43,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       isDisabled={disabled}
       onPress={onClick}
       className={`wb-button wb-button--${variant} wb-button--${size} ${className}`.trim()}
+      // React Aria filters title out of its global DOM props. Its supported
+      // render hook preserves the native hint alongside all behavior and refs.
+      render={(domProps, values) => renderButton
+        ? renderButton({ ...domProps, title }, values)
+        : <button {...domProps} title={title} />}
     >
       {children}
     </AriaButton>

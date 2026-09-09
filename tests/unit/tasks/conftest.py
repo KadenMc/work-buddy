@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 import pytest
 
 from work_buddy.tasks.service import TaskApplicationService
 from work_buddy.tasks.store import TaskStore
+
+
+@pytest.fixture(autouse=True)
+def _isolate_project_registry(tmp_path, monkeypatch):
+    """Default task tests must never consult the installation's registry."""
+    monkeypatch.setattr('work_buddy.tasks.project_links.project_database_path', lambda: tmp_path / 'projects.db')
 
 
 @pytest.fixture(autouse=True)
@@ -75,3 +82,18 @@ def create_task(service: TaskApplicationService, *, mutation_id: str = "create-1
         task_id=kwargs.pop("task_id", "t-test-1"),
         **kwargs,
     )
+
+
+def legacy_project_receipt(store, client_mutation_id, *, request=None):
+    """Model a durable receipt serialized before independent project fields."""
+    with store.transaction() as conn:
+        row = conn.execute('SELECT * FROM task_mutation_receipts WHERE client_mutation_id=?', (client_mutation_id,)).fetchone()
+        result = json.loads(row['result_json'])
+        for task in result.get('tasks', [result.get('task')]):
+            task.pop('project_ids', None)
+            task.pop('unresolved_projects', None)
+        request_hash = row['request_hash'] if request is None else TaskApplicationService._request_hash(row['mutation'], request)
+        result['receipt']['request_hash'] = request_hash
+        conn.execute('UPDATE task_mutation_receipts SET request_hash=?,result_json=? WHERE client_mutation_id=?',
+                     (request_hash, json.dumps(result), client_mutation_id))
+    return result

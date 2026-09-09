@@ -62,13 +62,65 @@ const renderComposer = (
   widgetInput: TaskQuickAddInput = input,
 ) => render(composerElement(emit, widgetInput));
 
+async function openCapture() {
+  const existing = screen.queryByRole("textbox", { name: "New task" });
+  if (existing) return existing;
+  await userEvent.click(await screen.findByRole("button", { name: /^(New task|Quick capture)$/ }));
+  return screen.findByRole("textbox", { name: "New task" });
+}
+
 describe("TaskComposer", () => {
+  it("starts as one capture action on desktop and focuses its retained form on activation", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn();
+    renderComposer(emit);
+    const action = await screen.findByRole("button", { name: "New task" });
+    expect(action).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("textbox", { name: "New task" })).not.toBeInTheDocument();
+    await user.click(action);
+    const title = screen.getByRole("textbox", { name: "New task" });
+    await waitFor(() => expect(title).toHaveFocus());
+    await user.type(title, "Retain while browsing");
+    await user.click(screen.getByRole("button", { name: "Hide quick capture" }));
+    expect(screen.queryByRole("textbox", { name: "New task" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New task" }));
+    expect(title).toHaveValue("Retain while browsing");
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("links multiple registered projects independently of namespaces", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    renderComposer(emit, { ...input, options: { ...input.options, projects: [{ value: "1", label: "ECG research" }, { value: "2", label: "Work Buddy" }] } });
+    await user.type(await openCapture(), "Shared work");
+    await user.click(screen.getByRole("button", { name: "Add details" }));
+    await user.click(screen.getByRole("button", { name: "Linked projects, none selected" }));
+    await user.click(screen.getByRole("checkbox", { name: "ECG research" }));
+    await user.click(screen.getByRole("checkbox", { name: "Work Buddy" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Add task" }));
+    await waitFor(() => expect(emit).toHaveBeenCalledWith(expect.objectContaining({ intent_type: TASK_INTENTS.create, payload: expect.objectContaining({ project_ids: [1, 2], namespaces: [] }) })));
+  });
+
+  it("keeps a capture draft mounted in the compact dedicated-task disclosure", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    const view = renderComposer(emit);
+    await user.type(await openCapture(), "Retained capture");
+    view.rerender(composerElement(emit, { ...input, compact: true }));
+    expect(screen.queryByRole("textbox", { name: "New task" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Quick capture" }));
+    expect(screen.getByRole("textbox", { name: "New task" })).toHaveValue("Retained capture");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "New task" })).toHaveFocus());
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it("keeps keyboard and batch instructions in contextual help without changing Enter submission", async () => {
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
     const user = userEvent.setup();
     const view = (help: boolean) => <DashboardHelpProvider enabled={help}>{composerElement(emit)}</DashboardHelpProvider>;
     const rendered = render(view(false));
-    let title = await screen.findByRole("textbox", { name: "New task" });
+    let title = await openCapture();
     expect(screen.queryByText(/Press Enter to add/)).not.toBeInTheDocument();
     expect(title).not.toHaveAttribute("aria-describedby");
     await user.hover(title);
@@ -82,6 +134,8 @@ describe("TaskComposer", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
     await user.tab();
+    expect(screen.getByRole("button", { name: "Hide quick capture" })).toHaveFocus();
+    await user.tab();
     expect(title).toHaveFocus();
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Press Enter to add the task");
     await user.type(title, "Read the short draft");
@@ -92,7 +146,7 @@ describe("TaskComposer", () => {
   it("keeps save-proposal guidance on the existing action without submitting on hover", async () => {
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
     render(<DashboardHelpProvider enabled>{composerElement(emit)}</DashboardHelpProvider>);
-    await userEvent.type(await screen.findByRole("textbox", { name: "New task" }), "Review this idea");
+    await userEvent.type(await openCapture(), "Review this idea");
     const save = screen.getByRole("button", { name: "Save proposal" });
     expect(screen.queryByText("Save a proposal for review.")).not.toBeInTheDocument();
     await userEvent.hover(save);
@@ -106,7 +160,7 @@ describe("TaskComposer", () => {
     const proposal: TaskProposal = { thread_id: "th-1234abcd", proposal_event_id: 9, status: "ready", parameters: { task_text: "Reviewed title", contract: "Additional commitment", automation_tier_achievable: 3 }, origin: {}, realization: null, href: "/app/tasks?proposal=th-1234abcd" };
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted", value: { proposal } }));
     renderComposer(emit, { ...input, observedProposal: proposal });
-    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Reviewed title");
+    await user.type(await openCapture(), "Reviewed title");
     await user.click(screen.getByRole("button", { name: "Save proposal" }));
     expect(await screen.findByText(/This proposal includes additional task settings/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create task from proposal" })).toBeDisabled();
@@ -135,7 +189,7 @@ describe("TaskComposer", () => {
       return { intent_id: intent.intent_id, status: "accepted", value: { proposal: original } };
     });
     renderComposer(emit, { ...input, observedProposal: original });
-    const title = await screen.findByRole("textbox", { name: "New task" });
+    const title = await openCapture();
     await user.type(title, "My reviewed title");
     await user.click(screen.getByRole("button", { name: "Save proposal" }));
     if (operation === "revision") {
@@ -159,7 +213,7 @@ describe("TaskComposer", () => {
     const proposal: TaskProposal = { thread_id: "th-1234abcd", proposal_event_id: 7, status: "ready", parameters: { task_text: "Original" }, origin: {}, realization: null, href: "/app/tasks?proposal=th-1234abcd" };
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted", value: { proposal } }));
     const view = renderComposer(emit, { ...input, observedProposal: proposal });
-    const title = await screen.findByRole("textbox", { name: "New task" });
+    const title = await openCapture();
     await user.type(title, "Original");
     await user.click(screen.getByRole("button", { name: "Save proposal" }));
     await screen.findByRole("link", { name: "Review saved proposal" });
@@ -181,7 +235,7 @@ describe("TaskComposer", () => {
       return { intent_id: intent.intent_id, status: "accepted", value: { proposal: { ...proposal, proposal_event_id: revisions > 1 ? 9 : 7 } } };
     });
     renderComposer(emit, { ...input, observedProposal: proposal });
-    const title = await screen.findByRole("textbox", { name: "New task" });
+    const title = await openCapture();
     await user.type(title, "Review draft");
     await user.click(screen.getByRole("button", { name: "Save proposal" }));
     await screen.findByRole("link", { name: "Review saved proposal" });
@@ -203,7 +257,7 @@ describe("TaskComposer", () => {
     const proposal: TaskProposal = { thread_id: "th-1234abcd", proposal_event_id: 7, status: "ready", parameters: { task_text: "Review draft" }, origin: { kind: "task_quick_add", id: "widget" }, realization: null, href: "/app/tasks?proposal=th-1234abcd" };
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted", value: intent.intent_type === TASK_INTENTS.proposalAccept ? { proposal: { ...proposal, status: "realized", realization: { task_id: "t-1234abcd", receipt_id: "receipt-1", task_revision: 1, href: "/app/tasks?task=t-1234abcd" } } } : { proposal } }));
     renderComposer(emit, { ...input, observedProposal: proposal });
-    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Review draft");
+    await user.type(await openCapture(), "Review draft");
     await user.click(screen.getByRole("button", { name: "Save proposal" }));
     await screen.findByRole("link", { name: "Review saved proposal" });
     expect(screen.getByRole("textbox", { name: "New task" })).toHaveValue("Review draft");
@@ -219,7 +273,7 @@ describe("TaskComposer", () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "unavailable", message: "Response lost; retry this proposal." }));
     renderComposer(emit);
-    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Pending draft");
+    await user.type(await openCapture(), "Pending draft");
     await user.click(screen.getByRole("button", { name: "Save proposal" }));
     await screen.findByText("Response lost; retry this proposal.");
     await user.click(screen.getByRole("button", { name: "Add task" }));
@@ -270,7 +324,7 @@ describe("TaskComposer", () => {
       access: { mode: "read_only", reason },
     });
 
-    expect(await screen.findByRole("textbox", { name: "New task" })).toBeDisabled();
+    expect(await openCapture()).toBeDisabled();
     expect(screen.queryByText(reason)).not.toBeInTheDocument();
   });
 
@@ -285,7 +339,7 @@ describe("TaskComposer", () => {
     }));
     renderComposer(emit);
 
-    const title = await screen.findByRole("textbox", { name: "New task" });
+    const title = await openCapture();
     await user.type(title, "Back up task store{Enter}");
 
     await waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
@@ -330,7 +384,7 @@ describe("TaskComposer", () => {
       return { intent_id: intent.intent_id, status: "accepted", revision: 8 };
     });
     renderComposer(emit);
-    const title = await screen.findByRole("textbox", { name: "New task" });
+    const title = await openCapture();
     await user.type(title, "Retained title");
 
     fireEvent.paste(title, { clipboardData: { getData: () => "- First task\n- Second task\n- first task" } });
@@ -366,23 +420,23 @@ describe("TaskComposer", () => {
     });
   });
 
-  it("requires explicit confirmation before minting new project structure", async () => {
+  it("requires explicit confirmation before creating a new namespace", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent) => ({ intent_id: intent.intent_id, status: "accepted" as const, revision: 8 }));
     renderComposer(emit);
 
-    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Plan launch");
+    await user.type(await openCapture(), "Plan launch");
     await user.click(screen.getByRole("button", { name: "Add details" }));
-    await user.type(screen.getByRole("combobox", { name: "Project" }), "new-project");
+    await user.type(screen.getByRole("textbox", { name: "Namespaces" }), "new-namespace");
     await user.click(screen.getByRole("button", { name: "Add task" }));
 
     expect(emit).not.toHaveBeenCalled();
-    expect(screen.getByText(/This will create project “new-project”/)).toBeInTheDocument();
+    expect(screen.getByText(/This will create namespace “new-namespace”/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm structure and add" }));
     await waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
     expect(emit.mock.calls[0]?.[0]).toMatchObject({
       intent_type: TASK_INTENTS.create,
-      payload: { project: "new-project" },
+      payload: { namespaces: ["new-namespace"] },
     });
   });
 
@@ -395,7 +449,7 @@ describe("TaskComposer", () => {
     }));
     renderComposer(emit);
 
-    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Investigate retention");
+    await user.type(await openCapture(), "Investigate retention");
     await user.click(screen.getByRole("button", { name: "Add details" }));
     expect(screen.queryByRole("checkbox", { name: "Enable Truth tools for this note" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: "Create an editable Co-work note" }));
@@ -427,9 +481,9 @@ describe("TaskComposer", () => {
     }));
     const view = renderComposer(emit);
 
-    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Plan launch");
+    await user.type(await openCapture(), "Plan launch");
     await user.click(screen.getByRole("button", { name: "Add details" }));
-    await user.type(screen.getByRole("combobox", { name: "Project" }), "new-project");
+    await user.type(screen.getByRole("textbox", { name: "Namespaces" }), "new-namespace");
     await user.click(screen.getByRole("button", { name: "Add task" }));
 
     const confirmation = screen.getByRole("button", { name: "Confirm structure and add" });
@@ -439,7 +493,7 @@ describe("TaskComposer", () => {
       access: { mode: "read_only", reason: "Editing is temporarily unavailable." },
     }));
 
-    expect(screen.getByText(/This will create project “new-project”/)).toBeInTheDocument();
+    expect(screen.getByText(/This will create namespace “new-namespace”/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Confirm structure and add" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "New task" })).toHaveValue("Plan launch");
     await user.click(screen.getByRole("button", { name: "Confirm structure and add" }));
@@ -456,12 +510,12 @@ describe("TaskComposer", () => {
     }));
     renderComposer(emit);
 
-    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Focus this task");
+    await user.type(await openCapture(), "Focus this task");
     await user.click(screen.getByRole("button", { name: "Add details" }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "State" }), "focused");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Attention" }), "focused");
     await user.click(screen.getByRole("button", { name: "Add task" }));
 
-    const state = await screen.findByRole("combobox", { name: /^State/ });
+    const state = await screen.findByRole("combobox", { name: /^Attention/ });
     await waitFor(() => expect(state).toHaveFocus());
     expect(state).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByText("Add a summary or knowledge document first.")).toBeInTheDocument();

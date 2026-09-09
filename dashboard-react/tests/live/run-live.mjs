@@ -193,6 +193,8 @@ try {
     vault_root: hostRoot,
     repos_root: hostRoot,
     paths: { data_root: dataRoot },
+    tasks: { db_path: path.join(dataRoot, "db", "tasks.db") },
+    projects: { db_path: path.join(dataRoot, "db", "projects.db") },
     dashboard: {
       read_only: false,
       cowork_allowed_roots: [hostRoot],
@@ -227,6 +229,7 @@ try {
     WB_LIVE_BACKEND_PORT: String(backendPort),
     WB_LIVE_HARNESS_NONCE: nonce,
     WB_LIVE_SCENARIO: options.scenario,
+    WB_LIVE_APP: options.app,
   };
 
   await run(
@@ -243,6 +246,7 @@ try {
   );
 
   fixture = JSON.parse(await readFile(fixtureFile, "utf-8"));
+  if (options.app === "cowork") {
   const scratchDocument = new Y.Doc();
   const paragraph = new Y.XmlElement("paragraph");
   const scratchMarker = "Recovered scratch marker - exact local writing.";
@@ -256,6 +260,7 @@ try {
     snapshot_base64: Buffer.from(scratchSnapshot).toString("base64"),
     snapshot_sha256: sha256(scratchSnapshot),
   };
+  }
   fixture.harness = {
     backend_port: backendPort,
     frontend_port: frontendPort,
@@ -474,10 +479,12 @@ try {
       ? null
       : {
           format: fixture.format,
-          initialized_store_id: fixture.initialized.store_id,
-          source_sha256: fixture.source.sha256,
-          sentinel_sha256: fixture.sentinel.sha256,
-          scratch_snapshot_sha256: fixture.scratch.snapshot_sha256,
+          initialized_store_id: fixture.initialized?.store_id ?? null,
+          source_sha256: fixture.source?.sha256 ?? null,
+          sentinel_sha256: fixture.sentinel?.sha256 ?? null,
+          scratch_snapshot_sha256: fixture.scratch?.snapshot_sha256 ?? null,
+          task_count: fixture.tasks?.task_count ?? null,
+          project_ids: fixture.tasks?.project_ids ?? null,
         },
     commands: commandEvidence,
   };

@@ -1,7 +1,7 @@
 ---
 name: React Tasks View
 kind: system
-description: Authoritative React task workspace for capture, batch authoring, filtering, triage, detail editing, Co-work knowledge, local-file links, lifecycle, and conflict recovery.
+description: Authoritative React task workspace for capture, filtering, triage, detail editing, Co-work knowledge, contextual Help, confirmed completion, and conflict recovery.
 summary: /app/tasks is the native task UI; it uses same-origin APIs and revision-aware intents and never renders or edits Obsidian task Markdown.
 tags:
 - dashboard
@@ -21,7 +21,11 @@ entry_points:
 dev_notes: |-
   The Tasks app contributes its view, widgets, schemas, and provider through the dashboard registry. Widget mutations receive a stable `client_mutation_id`; providers preserve in-flight composer/detail drafts across authoritative refreshes and surface revision conflicts with fresh server state.
 
-  Local-file rows are opaque handles. Never add an absolute path to browser contracts, logs, DOM text, or error strings. Refresh/reprobe goes through the same-origin host boundary. Focused Vitest coverage includes accessibility, responsive inert panes, draft preservation, triage rotation, conflict handling, and linked-file actions.
+  The view opts into grid.contentFlow: Dashboard Core renders natural-height widgets and hides layout customization. Workspace browse reads use work_buddy.tasks.workspace_query with SQL filtering, sorting, pagination, and self-excluding facets in one collection-revision snapshot. Only a selected task loads full aggregate/detail data; list rows do not hydrate documents. HttpTasksProvider ignores superseded query responses and retains prior results on refresh failure.
+
+  TaskCompletionDialog shares React Aria's ModalOverlay, Modal, and Dialog primitives across browse and detail. Opening it freezes the saved task identity and revision; one client_mutation_id survives uncertain retries. TaskHelp uses Dashboard Core HelpTarget and native button titles to keep explanations attached to the controls, including compact layouts.
+
+  Local-file rows are opaque handles. Never add an absolute path to browser contracts, logs, DOM text, or error strings. Refresh/reprobe goes through the same-origin host boundary. Focused Vitest coverage includes accessibility, responsive navigation, draft preservation, triage rotation, conflict handling, and linked-file actions. Persisted browser checks use the Tasks disposable live harness described in dev/testing/react-dashboard.
 ---
 
 # React Tasks view
@@ -30,7 +34,7 @@ dev_notes: |-
 
 ## Capture and authoring
 
-Quick capture supports title-first entry, while the expanded composer exposes urgency, project, namespace tags, dates, outcome, next action, definition of done, dependencies, and initial knowledge. Multi-line paste creates a review table, detects duplicates, and lets the user edit or exclude rows before a batch create. Successful requests return native IDs, revisions, receipts, and document metadata—never task lines or note paths.
+Quick capture supports title-first entry, while the expanded composer exposes urgency, zero or more linked projects, independent namespace tags, dates, outcome, next action, definition of done, dependencies, and initial knowledge. Project selections carry stable registry IDs. Multi-line paste creates a review table, detects duplicates, and lets the user edit or exclude rows before a batch create. Successful requests return native IDs, revisions, receipts, and document metadata—never task lines or note paths.
 
 **AI help** opens Dashboard Core's shared assisted-draft dock. It uses the same conversation primitives as Co-work and fills the visible form; it never creates a task or submits a form. See `services/dashboard/react/assisted-drafts` for disclosure, field conflicts, conditional Undo, and host-owned draft identity.
 
@@ -44,10 +48,106 @@ If a proposal carries standard task settings outside Quick Add's field set, Quic
 
 ## Workspace
 
-Focused, Inbox, All active, Snoozed, Completed/Archived, Trash, and Inbox triage lenses share search and structured filters. The triage view shows at most five candidates and offers Most Important, Working on now, Snooze, Archive, and a local-only **Skip this pass** action that rotates the item without mutating task state.
+Browsing starts with **Status: Open**, sorted by **Date created, newest first**.
+Open includes every attention state, including Snoozed; Completed, Archived,
+and Trash are excluded by that visible status filter. Status describes lifecycle.
+Attention describes Inbox, Most Important, Working on now, Active, Waiting, or
+Snoozed. They are separate dimensions, not competing task-state tabs.
 
-The detail pane edits structured fields and action items, opens the task's Co-work document, and presents linked local files through opaque host actions. Complete/reopen, archive/unarchive, soft delete, restore, and delete undo are revision-aware. A stale edit returns a visible conflict and refreshes authoritative state instead of silently overwriting it.
+Status, Projects, Attention, and Urgency are checkbox selectors across the top
+with removable selection pills. Due date and Knowledge are single-choice
+filters. Values within one dimension match any selection; different dimensions
+combine. Clearing a selector means any value, so clearing Status includes all
+four lifecycle statuses. **Clear filters** removes every restriction, including
+the default Open selection. Filter changes apply immediately; text search is
+debounced. Previous results stay visible while updating, and failed refreshes
+offer Retry without erasing the list.
+
+The namespace rail has its own hierarchy search, checkbox selection, and counts.
+Selecting a branch includes descendants; its scope control switches to direct
+assignments only. **No namespace** and **No project** are explicit choices.
+Hiding the rail gives its width to task results; selected namespace pills remain
+visible and effective. Narrow layouts start with the rail hidden. Namespace and
+project filters are independent, and unresolved project associations remain
+visible rather than being counted as No project.
+
+Sorting has its own result-toolbar group, separate from filters. **Date created**
+and **Date updated** default to newest first, **Title** to A–Z, **Due date** to
+earliest first, and **Urgency** to highest first. The adjacent direction toggle
+reverses the selected sort. Sorting applies to the whole matching collection
+before pagination, with stable task-ID ties; missing dates stay last in either
+direction. Rows always show creation dates and show updated dates when sorting
+by Date updated. Unknown imported timestamps are labeled as unknown.
+
+Selecting a task opens its full detail workspace instead of an empty side pane.
+**Back to tasks** restores the browsing filters, sort, page, scroll, and focus on
+the originating task where available. Task and proposal links are URL-addressable;
+older lens/state bookmarks are translated into visible filters. **Triage inbox**
+sets Open and Inbox explicitly, then shows at most five candidates with Most
+Important, Working on now, Snooze, Archive, and local-only **Skip this pass**.
+The visible filters still define the triage collection.
+
+Detail edits structured fields and action items, independently edits project
+links and namespaces, opens the task's Co-work document, and presents linked
+local files through opaque host actions. Historical unresolved project links
+are retained until the user chooses their replacements or explicitly removes
+them. Complete/reopen, archive/unarchive, soft delete, restore, and delete undo
+are revision-aware. Stale edits show a conflict with authoritative state.
+
+The row checkmark and detail **Complete** button open **Complete this task?**
+before changing anything. This alert dialog names the saved task and explains
+that completion removes it from an Open-only list. **Cancel** receives initial
+focus; Cancel or Escape closes the dialog and restores focus to the originating
+control. The primary **Mark complete** action submits the reviewed task revision.
+Unsaved field edits remain in the draft and are not included in completion.
+While completion is pending, repeated submissions and dismissal are disabled.
+An uncertain response offers **Retry completion** with the same request identity
+and revision; a conflict requires canceling and reviewing the latest task.
+To reverse completion later, include Completed in Status and choose **Reopen**.
+
+Dashboard Core's **Help** mode provides contextual explanations across task
+selection, lifecycle actions, filters, sorting, project and namespace fields,
+triage, proposals, action items, and namespace organization. The explanations
+identify whether a control only changes browsing, edits a draft, opens a review,
+or writes immediately, with the relevant recovery action. In particular, the
+square checkbox selects a task for bulk namespace changes; the checkmark opens
+completion confirmation. Buttons also expose a brief native hover title. Reading
+Help does not perform the explained action.
+
+## Namespace organization
+
+**Manage namespaces** opens a dedicated organization workspace. Select source
+branches, then choose Rename, Move, Merge, Move children up one level, or Remove
+assignments. It starts from the hierarchy and intended action, without assuming
+a particular prefix transformation. To flatten `projects/`, Move children up one level
+lifts its children to root; direct assignments on `projects/` require an explicit
+keep-or-move choice. Existing destination branches require reviewed merge
+handling. Namespace operations never change project associations.
+
+Checkboxes in task rows support **Change namespaces** for the selected tasks:
+Add, Remove, or Replace. Both entry points require Preview before Apply. Preview
+shows scope, old/new mappings, affected tasks, lifecycle counts, collisions,
+duplicates, and tasks that would have no namespace. Structural organization
+covers all statuses; assignment changes cover only the selection. Recent
+operations offer Undo only while all affected revisions still match. See
+`tasks/namespace-organization` for the API and conflict contract.
+
+## Workspace query contract
+
+`GET /api/tasks/view` accepts repeated `statuses`, `projects`, `namespaces`,
+`exact_namespaces`, `attention`, and `urgencies` parameters, plus `q`, `due`,
+`note`, `sort`, `direction`, `offset`, and `limit` (default 50, maximum 200).
+An omitted status defaults to Open; an explicit empty `statuses` removes that
+restriction. Project values are registry ID strings, `__none__`,
+`__unresolved__`, or `unresolved:<historical-value>`. Namespace `__none__`
+matches tasks with no namespace assignments. Search matches title and tags.
+
+The response contains lightweight `tasks`, full-match `total`, `page`, `facets`,
+`namespace_tree`, `options`, and `collection_revision`; `selected_task` supplies
+detail only when requested. Facet counts omit their own filter dimension so
+alternatives remain discoverable. This endpoint still runs through Python and
+SQLite; performance comes from bounded hydration and database-side queries.
 
 ## Interaction contract
 
-Read-only mode disables mutations. Mobile list/detail panes use `hidden` plus `inert`; dialogs trap and restore focus; status changes are announced; skipping restores keyboard focus to the next candidate. In-flight drafts survive unrelated authoritative rerenders, while successful saves remount from the new revision.
+Read-only mode disables mutations. Browsing and detail occupy separate visible modes; dialogs trap and restore focus, status changes are announced, and skipping restores keyboard focus to the next candidate. In-flight drafts survive unrelated authoritative rerenders, while successful saves remount from the new revision.

@@ -195,6 +195,16 @@ one-column compact DOM flow from the persisted canonical mobile order, so visual
 focus, and assistive-technology order agree. Desktop Customize mode exposes explicit
 Earlier/Later controls for editing this mobile order without relying on drag geometry.
 
+A standard view may opt into `grid.contentFlow: true` for an app-owned natural-height
+stack. `ViewHost` uses `readingOrder` on desktop and `mobileOrder` on narrow screens,
+without mounting RGL or loading a saved layout patch. Existing personalization stays
+stored for a later return to grid mode. The shared Customize controller suppresses
+its navbar entry for this mode, including attempts to begin customization programmatically.
+Content-flow frames and durable wrappers have automatic height and normal document
+overflow. Widget hydration, identity, keep-alive placement, and assistance still use
+the standard host. Tasks uses this mode so short capture content does not reserve a
+fixed-height grid cell above the browsing workspace.
+
 ### Shared workspace side panels
 
 `src/dashboard/layout/WorkspaceSidePanel.tsx` owns the reusable horizontal split,

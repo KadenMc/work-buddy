@@ -778,6 +778,55 @@ describe("HttpTasksProvider", () => {
     expect(result).toMatchObject({ status: "accepted", revision: 18 });
   });
 
+  it("preserves repeated multi-filters and an explicit unrestricted status selection in the URL", async () => {
+    const route = locationAdapter("?lens=focused&namespace=old");
+    const provider = new HttpTasksProvider({ fetchImpl: vi.fn() as unknown as typeof fetch, location: route.location });
+    await provider.dispatch(intent(TASK_INTENTS.locationChange, { patch: { statuses: ["open", "completed"], projects: ["1", "2"], namespaces: ["research", "work"], sort: "title", direction: "asc" }, replace: true }));
+    const params = new URLSearchParams(route.getSearch());
+    expect(params.getAll("statuses")).toEqual(["open", "completed"]);
+    expect(params.getAll("projects")).toEqual(["1", "2"]);
+    expect(params.has("lens")).toBe(false);
+    expect(params.has("namespace")).toBe(false);
+    await provider.dispatch(intent(TASK_INTENTS.locationChange, { patch: { statuses: [] }, replace: true }));
+    expect(new URLSearchParams(route.getSearch()).has("statuses")).toBe(true);
+    expect(new URLSearchParams(route.getSearch()).get("statuses")).toBe("");
+  });
+
+  it("retains prior rows and the attempted query when refresh fails, then clears the error on retry", async () => {
+    const route = locationAdapter(""); let failed = false;
+    const fetchImpl = vi.fn(async () => { if (failed) throw new Error("Offline temporarily"); return json(viewPayload); });
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    await provider.dispatch(intent(TASK_INTENTS.locationChange, { patch: { q: "different", statuses: ["completed"] }, replace: true }));
+    failed = true;
+    const stale = await provider.loadView(TASKS_VIEW_ID, { reason: "refresh" });
+    expect(stale.status).toBe("stale");
+    expect(stale.widgetInputs[TASKS_INSTANCE_IDS.workspace]).toMatchObject({ tasks: [{ task_id: "task-1" }], query: { q: "different", statuses: ["completed"] }, refresh_error: "Offline temporarily" });
+    failed = false;
+    const fresh = await provider.loadView(TASKS_VIEW_ID, { reason: "refresh" });
+    expect(fresh.status).toBe("ready");
+    expect(fresh.widgetInputs[TASKS_INSTANCE_IDS.workspace]).not.toHaveProperty("refresh_error");
+  });
+
+  it("keeps unrelated legacy bookmark filters when changing only lifecycle status", async () => {
+    const route = locationAdapter("?lens=focused&project=research&namespace=research/notes&urgency=high");
+    const fetchImpl = vi.fn(async () => json({ ...viewPayload, query: {
+      statuses: ["open"], projects: ["42"], namespaces: ["research/notes"],
+      exact_namespaces: [], attention: ["focused"], urgencies: ["high"], q: "",
+    } }));
+    const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: route.location });
+    await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    await provider.dispatch(intent(TASK_INTENTS.locationChange, { patch: { statuses: ["completed"] }, replace: true }));
+    const params = new URLSearchParams(route.getSearch());
+    expect(params.getAll("projects")).toEqual(["42"]);
+    expect(params.getAll("namespaces")).toEqual(["research/notes"]);
+    expect(params.getAll("attention")).toEqual(["focused"]);
+    expect(params.getAll("urgencies")).toEqual(["high"]);
+    expect(params.getAll("statuses")).toEqual(["completed"]);
+    expect(params.has("project")).toBe(false);
+    await provider.dispatch(intent(TASK_INTENTS.locationChange, { patch: { namespaces: ["work"] }, replace: true }));
+    expect(new URLSearchParams(route.getSearch()).getAll("statuses")).toEqual(["completed"]);
+  });
   it("opens only an API-returned same-origin Co-work route", async () => {
     const navigate = vi.fn();
     const fetchImpl = vi.fn(async () => json({ ok: true, href: "/app/cowork?store=store-1&document=doc-1" }));

@@ -33,6 +33,26 @@ describe("useCustomizeMode without a provider", () => {
 describe("CustomizeModeProvider", () => {
   const wrapper = CustomizeModeProvider;
 
+  it("suppresses content layout controls and restores the next grid host", () => {
+    const { result } = renderHook(() => useCustomizeMode(), { wrapper });
+    const contentBegin = vi.fn();
+    const gridBegin = vi.fn();
+    let contentRegistration!: CustomizeModeRegistration;
+    act(() => {
+      contentRegistration = result.current.register({ begin: contentBegin, hideControl: true });
+    });
+    expect(result.current.hidden).toBe(true);
+    expect(result.current.available).toBe(false);
+    act(() => result.current.begin());
+    expect(contentBegin).not.toHaveBeenCalled();
+    act(() => { result.current.register({ begin: gridBegin }); });
+    act(() => contentRegistration.unregister());
+    expect(result.current.hidden).toBe(false);
+    expect(result.current.available).toBe(true);
+    act(() => result.current.begin());
+    expect(gridBegin).toHaveBeenCalledTimes(1);
+  });
+
   it("becomes available when a host registers and inert when it unregisters", () => {
     const { result } = renderHook(() => useCustomizeMode(), { wrapper });
     expect(result.current.available).toBe(false);

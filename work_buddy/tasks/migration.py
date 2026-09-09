@@ -2189,6 +2189,7 @@ class TaskMigrationLedger:
 
     @staticmethod
     def _activate_existing_rows(conn: sqlite3.Connection, cohort_id: str, now: str) -> None:
+        from .project_links import stage_imported_project_tags
         rows = conn.execute(
             "SELECT * FROM task_migration_existing_task_stage WHERE cohort_id=? "
             "ORDER BY source_key",
@@ -2249,6 +2250,7 @@ class TaskMigrationLedger:
                     "INSERT INTO task_tags(task_id, tag, is_namespace) VALUES (?, ?, ?)",
                     (staged["task_id"], tag, int(tag.startswith("projects/") or "/" in tag)),
                 )
+            stage_imported_project_tags(conn, str(staged['task_id']), tags)
             collection_revision = TaskMigrationLedger._next_collection_revision(
                 conn, now
             )
@@ -2270,6 +2272,7 @@ class TaskMigrationLedger:
 
     @staticmethod
     def _activate_idless_rows(conn: sqlite3.Connection, cohort_id: str, now: str) -> None:
+        from .project_links import stage_imported_project_tags
         rows = conn.execute(
             "SELECT * FROM task_migration_idless_stage WHERE cohort_id=? ORDER BY source_key",
             (cohort_id,),
@@ -2317,6 +2320,7 @@ class TaskMigrationLedger:
                     "INSERT INTO task_tags(task_id, tag, is_namespace) VALUES (?, ?, ?)",
                     (row["task_id"], tag, int(tag.startswith("projects/") or "/" in tag)),
                 )
+            stage_imported_project_tags(conn, str(row['task_id']), tags)
             collection_revision = TaskMigrationLedger._next_collection_revision(
                 conn, now
             )

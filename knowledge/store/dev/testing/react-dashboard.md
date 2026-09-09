@@ -38,7 +38,7 @@ dev_notes: |-
 |---|---|---|
 | Component | `npm --prefix dashboard-react test` | Vitest with jsdom and co-located `src/**/*.test.ts(x)`. Shared widget tests use `expectNoAccessibilityViolations` from `src/test/setup.ts`. |
 | Browser end-to-end | `npm --prefix dashboard-react run test:e2e -- --workers=1` | Chromium and Firefox under `playwright.config.ts`, including ordinary e2e and performance specs. Fixtures select in-memory providers. |
-| Isolated live harness | `npm --prefix dashboard-react run test:e2e:live -- --app cowork` | Real Flask application, disposable roots, domain-seeded data, production bundle, and persistence/authority regression under `playwright.live.config.ts`. |
+| Isolated live harness | `npm --prefix dashboard-react run test:e2e:live -- --app cowork` or `--app tasks` | Real Flask application, disposable roots, domain-seeded data, production bundle, and persistence/authority regression under `playwright.live.config.ts`. |
 | Document-kernel determinism | `npm --prefix dashboard-react run test:document-kernel-build` | Two builds of the document worker, compared by sha256. |
 | Projection fidelity | `npm --prefix dashboard-react/tests/fidelity ci`, then `npm --prefix dashboard-react/tests/fidelity test` | Separate package and Vitest config with byte-fidelity corpus. Root `npm test` does not collect it. |
 
@@ -54,7 +54,7 @@ Real-data reads are a last resort when fixtures cannot answer the question. Use 
 
 ## Shared live harness
 
-`tests/live/run-live.mjs --app cowork` owns the entire disposable application stack. It creates a temporary root with a `.wb-live-harness` marker, allocates non-5127 loopback ports, redirects `WORK_BUDDY_DATA_DIR` and `WORK_BUDDY_CONFIG_DIR`, and seeds through production domain code in `tests/live/seeds/cowork.py`. The seeder is idempotent. Co-work is the supported App seeder.
+`tests/live/run-live.mjs --app cowork` or `--app tasks` owns the entire disposable application stack. It creates a temporary root with a `.wb-live-harness` marker, allocates non-5127 loopback ports, redirects `WORK_BUDDY_DATA_DIR` and `WORK_BUDDY_CONFIG_DIR`, and seeds through production domain code in the selected `tests/live/seeds/` module. Seeders are idempotent. Both Co-work and Tasks are registered Apps.
 
 The Co-work seeder accepts `--scenario lifecycle` and `--scenario truth-panel`.
 Lifecycle is the default. Truth-panel supplies one ready throwaway document
@@ -65,17 +65,43 @@ to actual throwaway text files. Context paragraphs separate connected passages
 by more than one editor viewport for navigation checks. Use this scenario for
 Truth state, evidence, correction, decision, and passage-navigation behavior.
 
+The Tasks seeder accepts `--scenario browse` (default) and
+`--scenario organization`. Both provide a synthetic task collection with enough
+rows for pagination, deterministic creation/update dates, mixed lifecycle and
+attention states, registered projects, multiple project links, and unresolved
+historical associations. Namespace fixtures include direct parent assignments,
+deep branches, existing merge destinations, ordinary tags, and tasks without
+namespaces or projects. The manifest's `tasks` section records task and project
+identities; reseeding retains those identities and subsequent edits.
+
+Tasks isolation explicitly sets both `tasks.db_path` and `projects.db_path` under
+the disposable root. The seeder and live server reject escaping database paths,
+and the server checks this before importing product routes. The fixture activates
+native task authority only inside that root, provisions its task document store,
+and reads no real task corpus. Do not substitute the user's task/project databases.
+
 `tests/live/live_server.py` imports the real `work_buddy.dashboard.service.app`. It refuses a missing marker, roots outside the harness root, and port 5127. It supplies nonce-gated `/api/_live/` host controls and skips normal sidecar pollers. Teardown rechecks the path and marker before deletion and treats failed cleanup as a failed run.
 
 The live host injects deterministic picker callbacks through the production folder blueprint. Open folder selects the seeded Reference Folder, Choose Location keeps the active contained fixture folder, and import selects the manifest's source only when it belongs to the active folder, otherwise returning cancellation. Native picker adapters and picker child processes are refused. Harness browser testing must never open native dialogs on the user's desktop; the normal dashboard's picker behavior is unchanged.
 
 Regression builds and previews the production bundle before running the
 scenario's registered spec: `tests/live/cowork.spec.ts` for lifecycle or
-`tests/live/cowork-truth.spec.ts` for truth-panel. Interactive exploration uses:
+`tests/live/cowork-truth.spec.ts` for truth-panel, and `tests/live/tasks.spec.ts`
+for Tasks. Interactive exploration uses:
 
 ```bash
 npm --prefix dashboard-react run test:e2e:live:interactive -- --app cowork
 ```
+
+For Tasks browsing or namespace exploration:
+
+```bash
+npm --prefix dashboard-react run test:e2e:live:interactive -- --app tasks --scenario browse
+npm --prefix dashboard-react run test:e2e:live:interactive -- --app tasks --scenario organization
+```
+
+After interactive exploration, run the Tasks production-bundle regression with
+`npm --prefix dashboard-react run test:e2e:live -- --app tasks`.
 
 For the Truth fixture, add `--scenario truth-panel`:
 
@@ -114,7 +140,7 @@ Explore with the interactive browser, then encode regression. Do not append prob
 
 ## Continuous integration
 
-The dashboard job runs the component suite, checks CI decisions with `npx playwright test --list --reporter=./scripts/check-spec-tags.mjs`, selects the exact `@ci` token with `--grep '(^|\s)@ci(?=\s|$)'`, and builds production assets. Each ordinary browser test declares exactly one of `@ci` or `@no-ci`, verified from Playwright's collected metadata. The guard inventories spec files throughout `tests/`, including files outside the configured collection directories. An uncollected spec must have an exact entry in the checker's separate-configuration registry with an existing configuration and an exclusion reason. The registered `tests/live/cowork.spec.ts` and `tests/live/cowork-truth.spec.ts` each declare an encompassing `@live` and `@no-ci` suite, verified from TypeScript syntax. Comments do not count as decisions, and an extra live spec needs its own declaration.
+The dashboard job runs the component suite, checks CI decisions with `npx playwright test --list --reporter=./scripts/check-spec-tags.mjs`, selects the exact `@ci` token with `--grep '(^|\s)@ci(?=\s|$)'`, and builds production assets. Each ordinary browser test declares exactly one of `@ci` or `@no-ci`, verified from Playwright's collected metadata. The guard inventories spec files throughout `tests/`, including files outside the configured collection directories. An uncollected spec must have an exact entry in the checker's separate-configuration registry with an existing configuration and an exclusion reason. The registered `tests/live/cowork.spec.ts`, `tests/live/cowork-truth.spec.ts`, and `tests/live/tasks.spec.ts` each declare an encompassing `@live` and `@no-ci` suite, verified from TypeScript syntax. Comments do not count as decisions, and an extra live spec needs its own declaration.
 
 CI-selected specs cover Journal, shell routing, layout, themes, and mobile/settings accessibility. Co-work specs, visual regression, widget lab, calendar spike, and performance specs explicitly opt out with `@no-ci`. The live harness, fidelity package, and document-kernel determinism runner require separate local execution.
 

@@ -43,7 +43,7 @@ def test_create_is_durable_idempotent_and_emits_one_atomic_event(task_service, t
     assert created.collection_revision == 1
     assert created.task.due_date == "2026-08-30"
     assert created.task.deadline_date == "2026-09-15"
-    assert created.task.project == "work-buddy"
+    assert created.task.project_ids == ()  # Namespace spelling does not establish a link.
     assert created.task.namespace_tags == ("research/native",)
     assert replay.replayed is True
     assert replay.task.task_id == created.task.task_id
@@ -173,6 +173,7 @@ def test_query_and_search_are_sqlite_authoritative(task_service):
         task_id="t-alpha",
         mutation_id="create-alpha",
         description="Alpha compiler task",
+        project="work-buddy",
         tags=[Tag("research/compiler", True), "projects/work-buddy"],
     )
     beta = create_task(
@@ -210,7 +211,7 @@ def test_authoring_fields_states_and_tags_save_in_one_revision(task_service):
     assert saved.task.revision == 2
     assert saved.task.summary_text == "A compact handoff"
     assert saved.task.dependencies == ("React provider", "Co-work store")
-    assert saved.task.project == "work-buddy"
+    assert saved.task.project_ids == ()  # Editing tags never changes project associations.
     assert saved.task.namespace_tags == ("task/backend",)
     assert saved.task.state == "focused"
 

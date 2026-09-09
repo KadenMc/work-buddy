@@ -22,7 +22,7 @@ entry_points:
 - dashboard-react/src/dashboard
 - dashboard-react/src/widget-library
 dev_notes: |-
-  The desktop grid engine is private behind `ReactGridLayoutAdapter`; persisted personalization remains library-neutral. The desktop layout uses preserved outer gaps, collision prevention, explicit tidy behavior, and all-edge resize affordances. Mobile renders normal document flow from a persisted canonical order.
+  The desktop grid engine is private behind `ReactGridLayoutAdapter`; persisted personalization remains library-neutral. The desktop layout uses preserved outer gaps, collision prevention, explicit tidy behavior, and all-edge resize affordances. Mobile renders normal document flow from a persisted canonical order. Views with grid.contentFlow use their app-owned readingOrder/mobileOrder and natural-height frames instead; saved grid patches are bypassed without being deleted.
 
   Durable widgets live in `dashboard-react/src/dashboard/widgets/durable/`: a keep-alive host above the grid owns one permanent wrapper per instance, portals the live `WidgetHost` in once, and light placeholder cells re-home the wrapper with appendChild when the grid remounts. The durable path pins `interactionMode` to operate (the draft-scope re-key is also structurally unreachable because durable forbids drafts) and maps a failed re-hydration with a previous good snapshot to a stale banner instead of unmounting. The navbar entry seam is `dashboard-react/src/dashboard/customize/` (a registration-handle controller; only the grid view host registers). Validation enforces durable implies single-instance and no drafts. Contract prose lives in `dashboard-react/ARCHITECTURE.md`.
 
@@ -90,6 +90,14 @@ Renderers receive typed UI input and emit declared intents. Local presentation s
 ## Layout and personalization
 
 Dashboard Core owns layout editing, constraint enforcement, collision feedback, reset, undo/redo, and portable personalization patches. The grid library remains an implementation detail rather than part of persisted view state. The Customize view entry control lives in the app shell navbar and activates when the mounted view registers a customize session, so grid views everywhere share one entry point while other surfaces leave it disabled.
+
+A view can opt into `grid.contentFlow: true` for an app-owned vertical stack,
+as Tasks does. Widgets occupy their natural content height and the Customize
+view control is hidden because no arrangement editor applies. Desktop uses
+the view's reading order and mobile its mobile order. Existing grid
+personalization remains stored but is suspended in this mode; returning to grid
+mode restores it. Widget identity, provider hydration, assistance, and live
+draft retention still belong to Dashboard Core.
 
 Desktop customization uses the grid and includes the editor for the canonical
 mobile sequence. Narrow surfaces render that sequence in document flow but do

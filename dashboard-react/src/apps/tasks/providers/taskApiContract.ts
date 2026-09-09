@@ -149,6 +149,10 @@ export function parseTaskSummary(value: unknown): TaskSummary {
     deadline_date: optionalString(task.deadline_date),
     snooze_until: optionalString(task.snooze_until),
     project: optionalString(task.project),
+    project_ids: Array.isArray(task.project_ids) ? task.project_ids.filter((value): value is number => typeof value === "number") : [],
+    unresolved_projects: Array.isArray(task.unresolved_projects) ? task.unresolved_projects.map((value) => { const link = record(value, "Unresolved project"); return { legacy_value: string(link.legacy_value, "Historical project"), source_tag: string(link.source_tag, "Historical project source"), reason: string(link.reason, "Historical project reason"), candidate_ids: Array.isArray(link.candidate_ids) ? link.candidate_ids.filter((id): id is number => typeof id === "number") : [] }; }) : [],
+    created_at: optionalString(task.created_at),
+    status: task.status === "open" || task.status === "completed" || task.status === "archived" || task.status === "trash" ? task.status : task.deleted_at ? "trash" : task.archived_at ? "archived" : task.completed_at || attentionState === "done" ? "completed" : "open",
     namespaces: strings(task.namespaces ?? task.namespace_tags),
     tags: strings(task.tags),
     current_action: optionalString(task.current_action),
@@ -299,14 +303,27 @@ const parseFacets = (value: unknown): TaskFacets => {
     projects: countMap(item.projects),
     namespaces: countMap(item.namespaces),
     urgencies: countMap(item.urgencies),
+    statuses: countMap(item.statuses),
+    attention: countMap(item.attention),
   };
 };
 
-const parseQuery = (value: unknown): TaskQueryState => {
+export const parseTaskQuery = (value: unknown): TaskQueryState => {
   const item = record(value ?? {}, "Task query");
   const lens = TASK_LENSES.includes(item.lens as TaskLens) ? item.lens as TaskLens : "inbox";
   return {
     lens,
+    statuses: Array.isArray(item.statuses) ? strings(item.statuses) : ["open"],
+    projects: strings(item.projects),
+    namespaces: strings(item.namespaces),
+    exact_namespaces: strings(item.exact_namespaces),
+    attention: strings(item.attention),
+    urgencies: strings(item.urgencies),
+    sort: item.sort === "updated_at" || item.sort === "title" || item.sort === "due_date" || item.sort === "urgency" ? item.sort : "created_at",
+    direction: item.direction === "asc" ? "asc" : "desc",
+    mode: item.mode === "namespaces" ? "namespaces" : item.mode === "triage" || item.lens === "triage" ? "triage" : "browse",
+    limit: typeof item.limit === "number" ? item.limit : 50,
+    offset: typeof item.offset === "number" ? item.offset : 0,
     q: typeof item.q === "string" ? item.q : "",
     project: typeof item.project === "string" ? item.project : "",
     namespace: typeof item.namespace === "string" ? item.namespace : "",
@@ -329,9 +346,15 @@ export function parseTaskViewPayload(payload: unknown): TasksViewModel {
     revision: integer(view.collection_revision ?? view.revision, "Collection revision"),
     observedAt: typeof view.observed_at === "string" ? view.observed_at : new Date().toISOString(),
     access: parseTaskAccess(view.access),
-    query: parseQuery(view.query),
+    query: parseTaskQuery(view.query),
     facets: parseFacets(view.facets),
     tasks,
+    total: typeof view.total === "number" ? view.total : tasks.length,
+    page: view.page && typeof view.page === "object" ? { limit: integer(record(view.page, "Page").limit, "Page limit"), offset: integer(record(view.page, "Page").offset, "Page offset"), has_more: record(view.page, "Page").has_more === true } : { limit: 100, offset: 0, has_more: false },
+    namespace_tree: Array.isArray(view.namespace_tree) ? view.namespace_tree.map((value) => {
+      const node = record(value, "Namespace");
+      return { path: string(node.path, "Namespace path"), parent: optionalString(node.parent), label: string(node.label, "Namespace label"), count: integer(node.count, "Namespace count"), direct_count: integer(node.direct_count, "Namespace direct count") };
+    }) : [],
     selectedTask: selected === null || selected === undefined ? null : parseTaskDetail(selected),
     options: parseTaskOptions(view.options),
   };

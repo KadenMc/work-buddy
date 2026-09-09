@@ -47,6 +47,82 @@ class MockEventSource extends EventTarget {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ViewHost", () => {
+  it.each([false, true])("uses app-owned content order and suspends grid customization (mobile: %s)", async (mobile) => {
+    vi.stubGlobal("matchMedia", vi.fn((query: string) =>
+      media(mobile && query === "(max-width: 767px)")));
+    const provider = new InMemoryJournalProvider();
+    const notesSlot = JOURNAL_VIEW_DEFINITION.defaultSlots[1];
+    const savedPatch = {
+      schemaVersion: 1 as const,
+      viewId: JOURNAL_VIEW_DEFINITION.viewId,
+      baseDefinitionVersion: 1,
+      defaultSlotOverrides: {
+        [notesSlot.slotId]: {
+          slotId: notesSlot.slotId,
+          instanceId: notesSlot.defaultInstanceId,
+          visibility: "hidden" as const,
+        },
+      },
+      addedInstances: [],
+      orphanedInstances: [],
+      mobileOrderOverride: null,
+    };
+    const repository = {
+      load: vi.fn(async () => savedPatch),
+      save: vi.fn(async () => {}),
+      reset: vi.fn(async () => {}),
+    };
+    const tree = (contentFlow: boolean) => (
+      <MemoryRouter initialEntries={["/journal"]}>
+        <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
+          <DashboardEventProvider>
+            <DashboardAnnouncer>
+              <DashboardTestRuntime>
+                <CustomizeModeProvider>
+                  <CustomizeViewToggle />
+                  <ViewHost
+                    registry={dashboardRegistry}
+                    definition={{
+                      ...JOURNAL_VIEW_DEFINITION,
+                      grid: { columns: 24, contentFlow },
+                      readingOrder: [...JOURNAL_VIEW_DEFINITION.readingOrder].reverse(),
+                    }}
+                    provider={provider}
+                    personalizationRepository={repository}
+                  />
+                </CustomizeModeProvider>
+              </DashboardTestRuntime>
+            </DashboardAnnouncer>
+          </DashboardEventProvider>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+    const rendered = render(tree(true));
+    await screen.findByRole("region", { name: "Quick Capture" });
+    const flow = rendered.container.querySelector(".wb-dashboard-content-flow")!;
+    expect(flow).not.toBeNull();
+    expect(within(flow as HTMLElement).getAllByRole("heading", { level: 2 })
+      .map((heading) => heading.textContent)).toEqual(mobile
+        ? ["Quick Capture", "Day Timeline", "Running Notes"]
+        : ["Running Notes", "Day Timeline", "Quick Capture"]);
+    expect(rendered.container.querySelector(".react-grid-layout")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Customize view" })).toBeNull();
+    expect(repository.load).not.toHaveBeenCalled();
+    expect(repository.save).not.toHaveBeenCalled();
+    expect(repository.reset).not.toHaveBeenCalled();
+
+    // Returning to grid mode restores both the control and the untouched saved patch.
+    rendered.rerender(tree(false));
+    await waitFor(() => expect(repository.load).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Running Notes" })).toBeNull());
+    const customize = screen.getByRole("button", { name: "Customize view" });
+    if (mobile) expect(customize).toBeDisabled();
+    else {
+      expect(customize).toBeEnabled();
+      expect(rendered.container.querySelector(".react-grid-layout")).not.toBeNull();
+    }
+  }, 20_000);
+
   it("renders canonical mobile order without mounting the desktop grid", async () => {
     vi.stubGlobal(
       "matchMedia",

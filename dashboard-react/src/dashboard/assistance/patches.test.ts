@@ -18,6 +18,14 @@ beforeEach(() => { vi.stubGlobal("crypto", webcrypto); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("widget-native assisted patch laws", () => {
+  it("validates registry project arrays without confusing them with scalar text", () => {
+    expect(discloseSnapshot(form, { title: "Shared", project_ids: [1, 2] })).toEqual({ title: "Shared", project_ids: [1, 2] });
+    expect(() => validateOperations(form, [{ op: "set", path: ["project_ids"], value: [2, 3] }])).not.toThrow();
+    for (const value of [[true], ["work-buddy"], [0], [1.5], "1", Array.from({ length: 101 }, () => 1)]) {
+      expect(() => validateOperations(form, [{ op: "set", path: ["project_ids"], value }])).toThrow();
+    }
+  });
+
   it("discloses only manifest fields, preserving all host-only metadata", () => {
     const value = { title: "Task", summary: "Details", batch_lines: ["one", "two"], proposal_ref: { threadId: "th-123", draftFingerprint: "hash" }, proposal_pending: { clientMutationId: "key", parameters: "private" }, password: "secret" };
     expect(discloseSnapshot(form, value)).toEqual({ title: "Task", summary: "Details" });

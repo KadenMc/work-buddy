@@ -186,6 +186,8 @@ def _collect_tasks(
                             "state": task.state,
                             "text": task.description,
                             "contract": task.contract or "",
+                            "project_ids": list(task.project_ids),
+                            "unresolved_projects": list(task.unresolved_projects),
                         }
                     )
         except Exception as exc:

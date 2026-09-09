@@ -591,9 +591,6 @@ def _project_status(plan: dict[str, Any], counts: Counter[str]) -> dict[str, Any
             if not tag.startswith("projects/"):
                 continue
             full_project_tag = tag
-            if proposed_slug is None:
-                parts = tag.split("/", 2)
-                proposed_slug = parts[1] if len(parts) > 1 else None
             break
 
     slug_exists = bool(
@@ -614,6 +611,7 @@ def _project_status(plan: dict[str, Any], counts: Counter[str]) -> dict[str, Any
         "known_projects": [
             {
                 "slug": project.get("slug"),
+                "project_id": project.get("id"),
                 "name": project.get("name"),
                 "status": project.get("status"),
             }

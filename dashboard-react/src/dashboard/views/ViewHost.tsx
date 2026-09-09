@@ -160,6 +160,7 @@ function StandardGridViewHost({
   const { announce } = useDashboardAnnouncer();
   const { notify, confirm } = useInteractionSurfaces();
   const isMobile = useMediaQuery("(max-width: 767px)");
+  const contentFlow = effectiveDefinition.grid.contentFlow === true;
   const { register } = useCustomizeMode();
   const definitions = useMemo(
     () =>
@@ -178,8 +179,8 @@ function StandardGridViewHost({
   const [personalizationLoaded, setPersonalizationLoaded] = useState(false);
   const [personalizationError, setPersonalizationError] = useState<string>();
   const resolved = useMemo(
-    () => resolveViewPersonalization(effectiveDefinition, definitions, storedPatch),
-    [effectiveDefinition, definitions, storedPatch],
+    () => resolveViewPersonalization(effectiveDefinition, definitions, contentFlow ? undefined : storedPatch),
+    [effectiveDefinition, definitions, storedPatch, contentFlow],
   );
   const [editState, setEditState] = useState<ViewEditSessionState>(() =>
     beginViewEditSession(defaults),
@@ -220,6 +221,17 @@ function StandardGridViewHost({
 
   useEffect(() => {
     let active = true;
+    // Content flow belongs to the app's composition. Preserve saved grid patches
+    // without applying their hidden slots, replacements, or fixed geometry here.
+    if (contentFlow) {
+      setStoredPatch(undefined);
+      setPersonalizationError(undefined);
+      setPersonalizationLoaded(true);
+      setCustomizing(false);
+      setCatalogOpen(false);
+      setMobileOrderOpen(false);
+      return;
+    }
     setPersonalizationLoaded(false);
     setPersonalizationError(undefined);
     void personalizationRepository
@@ -238,7 +250,7 @@ function StandardGridViewHost({
     return () => {
       active = false;
     };
-  }, [definition.viewId, personalizationRepository]);
+  }, [definition.viewId, personalizationRepository, contentFlow]);
 
   useEffect(() => {
     if (!customizing) setEditState(beginViewEditSession(resolved));
@@ -330,6 +342,7 @@ function StandardGridViewHost({
   }, [act, customizing, editState.lastFailure, showDashboardNotice]);
 
   const beginCustomize = () => {
+    if (contentFlow) return;
     setEditState(beginViewEditSession(resolved));
     setHelpEnabled(false);
     setCustomizeMode("arrange");
@@ -340,19 +353,22 @@ function StandardGridViewHost({
 
   // Register with the app-shell Customize controller so the navbar entry control can open
   // this host's in-view layout editor. begin routes through a ref so the newest closure runs,
-  // the registration effect depends only on the stable register function so a controller state
-  // change never re-registers, and the host's customizing state propagates in its own effect.
+  // controller state changes never re-register, and the host's customizing state propagates
+  // in its own effect. Content flow registers only to suppress the shared entry control.
   const beginRef = useRef(beginCustomize);
   beginRef.current = beginCustomize;
   const registrationRef = useRef<CustomizeModeRegistration | null>(null);
   useEffect(() => {
-    const registration = register({ begin: () => beginRef.current() });
+    const registration = register({
+      begin: () => beginRef.current(),
+      hideControl: contentFlow,
+    });
     registrationRef.current = registration;
     return () => {
       registration.unregister();
       registrationRef.current = null;
     };
-  }, [register]);
+  }, [register, contentFlow]);
   useEffect(() => {
     registrationRef.current?.setCustomizing(customizing);
   }, [customizing]);
@@ -710,6 +726,10 @@ function StandardGridViewHost({
   const orderedMobile = editState.present.mobileOrder
     .map((instanceId) => byId.get(instanceId))
     .filter((instance): instance is EffectiveWidgetInstance => instance !== undefined);
+  const bySlot = new Map(visibleInstances.map((instance) => [instance.slotId, instance]));
+  const orderedContent = effectiveDefinition.readingOrder
+    .map((slotId) => bySlot.get(slotId))
+    .filter((instance): instance is EffectiveWidgetInstance => instance !== undefined);
 
   const layoutConstraintMessage = (
     kind: "move" | "resize",
@@ -913,7 +933,13 @@ function StandardGridViewHost({
       ) : null}
       <AssistedDraftWorkspace viewId={definition.viewId}>
         <DurableWidgetHost entries={liveEntries}>
-          {isMobile ? (
+          {contentFlow ? (
+            <div className="wb-dashboard-content-flow">
+              {(isMobile ? orderedMobile : orderedContent).map((instance) => (
+                <div key={instance.instanceId}>{renderWidget(instance)}</div>
+              ))}
+            </div>
+          ) : isMobile ? (
             <div className="wb-dashboard-mobile-stack">
               {orderedMobile.map((instance) => (
                 <div key={instance.instanceId}>{renderWidget(instance)}</div>

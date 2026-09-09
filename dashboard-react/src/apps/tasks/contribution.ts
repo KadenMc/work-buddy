@@ -46,6 +46,8 @@ const mutationTypes = new Set<string>([
   TASK_INTENTS.delete,
   TASK_INTENTS.restore,
   TASK_INTENTS.replaceTags,
+  TASK_INTENTS.namespaceApply,
+  TASK_INTENTS.namespaceUndo,
   TASK_INTENTS.createDocument,
   TASK_INTENTS.localFileAction,
   TASK_INTENTS.actionItemCreate,
@@ -56,7 +58,7 @@ const mutationTypes = new Set<string>([
   TASK_INTENTS.actionItemDelete,
   TASK_INTENTS.actionItemRestore,
 ]);
-const readTypes = new Set<string>([TASK_INTENTS.batchPreview]);
+const readTypes = new Set<string>([TASK_INTENTS.batchPreview, TASK_INTENTS.namespaceLoad, TASK_INTENTS.namespacePreview]);
 
 const effects = (schemas: readonly JsonSchemaReference[]): readonly WidgetIntentEffectDeclaration[] =>
   schemas.map((schema) => ({
@@ -131,8 +133,8 @@ const widgets: readonly WidgetDefinition[] = [
       },
     ],
     sizeContract: {
-      default: { w: 24, h: 6 },
-      min: { w: 8, h: 5 },
+      default: { w: 24, h: 4 },
+      min: { w: 8, h: 3 },
       max: { w: 24, h: 12 },
       modes: ["compact", "standard", "expanded"],
     },

@@ -451,6 +451,19 @@ def test_prepare_exports_tree_v11_database_and_native_supplement(tmp_path):
         old.close()
 
 
+def test_independent_project_links_survive_reverse_export_in_native_supplement(tmp_path):
+    operator, _database, store, _documents = _operator(tmp_path)
+    with store.transaction() as conn:
+        conn.execute("INSERT INTO task_projects(task_id,project_id) VALUES('t-aa11',17),('t-aa11',23)")
+        conn.execute("INSERT INTO task_project_unresolved(task_id,legacy_value,source_tag,reason) VALUES('t-cc33','unknown','projects/unknown/deep','unmatched')")
+    _prepare(operator)
+    supplement = json.loads((operator.staging_root / 'native-supplement.json').read_text(encoding='utf-8'))
+    assert supplement['task_projects'] == [{'task_id': 't-aa11', 'project_id': 17}, {'task_id': 't-aa11', 'project_id': 23}]
+    assert supplement['task_project_unresolved'][0]['source_tag'] == 'projects/unknown/deep'
+    report = json.loads((operator.staging_root / 'rollback-exceptions.json').read_text(encoding='utf-8'))
+    assert any(item['kind'] == 'independent_project_links_preserved_in_supplement' for item in report['semantic_downgrades'])
+
+
 def test_prepare_preserves_deleted_tombstone_without_document_link(tmp_path):
     operator, _database, store, _documents = _operator(tmp_path)
     with store.transaction() as connection:

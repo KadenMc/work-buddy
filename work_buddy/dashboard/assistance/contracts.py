@@ -144,6 +144,7 @@ def validate_value(field: Mapping[str, Any], value: Any) -> None:
     valid = (
         (kind == "string" and isinstance(value, str))
         or (kind == "boolean" and isinstance(value, bool))
+        or (kind == "array" and isinstance(value, list))
         or (
             kind == "number"
             and isinstance(value, (int, float))
@@ -152,6 +153,10 @@ def validate_value(field: Mapping[str, Any], value: Any) -> None:
     )
     if not valid:
         raise AssistanceError("invalid_field_type")
+    if kind == "array":
+        item_schema = field.get("items", {})
+        if len(value) > field.get("maxItems", 100) or item_schema.get("type") != "integer" or any(type(item) is not int or item < item_schema.get("minimum", 1) for item in value):
+            raise AssistanceError("invalid_field_value")
     if "enum" in field and value not in field["enum"]:
         raise AssistanceError("invalid_field_value")
     if kind == "number" and (
@@ -255,7 +260,7 @@ def structured_reply_schema(form: Mapping[str, Any]) -> dict[str, Any]:
             continue
         value_schema = {
             key: field[key]
-            for key in ("type", "maxLength", "enum", "pattern", "minimum", "maximum")
+            for key in ("type", "maxLength", "enum", "pattern", "minimum", "maximum", "items", "maxItems")
             if key in field
         }
         variants.append(

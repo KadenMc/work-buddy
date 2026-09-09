@@ -25,7 +25,11 @@ entry_points:
 - work_buddy.tasks.documents
 - work_buddy.dashboard.tasks_api
 dev_notes: |-
-  Schema v22 carries the authority epoch, collection revision, tasks, structured tags, lifecycle/history, action items, mutation receipts, outbox, document links, local-file handles, document-stage replay-integrity receipts, aggregate-creation intents and participant receipts, field-derivation receipts, and existing-task document-attachment intents. Mutations are compare-and-swap operations keyed by `expected_revision`; the gateway pins a stable `client_mutation_id` before dispatch so response loss is replay-safe. Conflicts return the live task and revision.
+  Schema v24 carries the authority epoch, collection revision, tasks, structured tags, lifecycle/history, action items, mutation receipts, outbox, document links, local-file handles, document-stage replay-integrity receipts, aggregate-creation intents and participant receipts, field-derivation receipts, existing-task document-attachment intents, independent project associations, project migration provenance, and namespace operation history. Mutations are compare-and-swap operations keyed by `expected_revision`; the gateway pins a stable `client_mutation_id` before dispatch so response loss is replay-safe. Conflicts return the live task and revision.
+
+  Migration 23 snapshots legacy projects/<slug>[/...] assignments once into pending association rows. The read-only registry resolver finishes only these captured rows, preserving every source path in task_project_migration_log. Registry unavailability leaves pending rows recoverable; ambiguous and unmatched decisions remain explicit until edited. Deferred resolution increments each affected task revision and the collection revision, recording history, a mutation receipt, and an outbox event so stale task forms conflict. Later tag changes never trigger association inference. Migration 24 adds namespace-operation history and workspace query indexes. Neither migration changes historical is_namespace flags. Never initialize or migrate the separate project registry while holding a task transaction.
+
+  Batch-create receipts fingerprint the originally requested legacy project value and explicit project IDs independently of registry availability. A retry must replay its existing receipt before re-resolving project membership, so later registry changes cannot alter the original mutation identity.
 
   Native activation is guarded by an external, fsynced authority latch written before the SQLite activation CAS. Once native authority has ever activated for a configured database identity, a missing, moved, corrupt, or path-mismatched database fails closed with `TaskAuthorityUnavailable`; compatibility writers must never fall through to Obsidian. A pending latch also protects the crash window between latch creation and database commit.
 
@@ -43,6 +47,35 @@ dev_notes: |-
 `TaskStore` and `TaskApplicationService` are the sole source of truth for live task identity, fields, state, completion, archive/trash lifecycle, structured tags, action items, history, provenance, and document links. Obsidian, `tasks/master-task-list.md`, `tasks/archive.md`, task-note Markdown, and the Obsidian Tasks plugin are not runtime readers, writers, mirrors, or reconciliation peers after activation.
 
 Every mutation returns the task ID, task revision, collection revision, and a durable mutation receipt. Callers should pass the current `expected_revision` and may pass a stable `client_mutation_id`; retries with the same semantic request replay, while stale revisions produce a structured conflict instead of overwriting newer work. Completion accepts an optional historical `done_date`; snoozing uses the explicit `snooze_until` field.
+
+## Projects and namespaces
+
+A task may link to zero, one, or several registered projects through
+`project_ids`, a list of stable positive integer registry IDs. Project names,
+slugs, aliases, and folders belong to the Projects registry; namespaces are
+independent task organization. Renaming or flattening a namespace does not
+change project links, and linking a project does not create a namespace.
+Ordinary tags and namespace assignments also remain distinct.
+
+The explicit legacy `project` create argument accepts a registry slug or alias
+as a compatibility ingress. It is never inferred from a newly supplied tag.
+Callers must consume `project_ids` rather than select an arbitrary primary
+project from a task with several links. Existing links survive registry renames,
+soft deletion, or temporary registry unavailability; adding an unknown ID fails
+validation.
+
+Historical associations that cannot be resolved uniquely are returned in
+`unresolved_projects` with `legacy_value`, `source_tag`, `reason`, and
+`candidate_ids`. No project is silently created or association discarded.
+In task detail, choose the intended registered projects and explicitly remove
+the historical references being replaced. The revisioned update combines
+`project_ids` with `remove_unresolved_projects`, whose entries are historical
+values, and preserves every unchecked reference. Omitting either field leaves
+that part unchanged. A task with unresolved associations is not a task with no
+project.
+
+Namespace changes use a reviewed preview, atomic apply, and conditional durable
+undo. See `tasks/namespace-organization` for scope and API contracts.
 
 Batch creation validates every accepted row before opening its transaction, then
 rechecks all task IDs against existing task rows and non-aborted aggregate
@@ -86,6 +119,11 @@ Migration is backup-first and operator-driven. The inventory includes ID-bearing
 
 The live cutover is never implicit in application startup, tests, import, or dashboard use. The backed-up legacy task files and database snapshot remain frozen and retained indefinitely until the user explicitly decides otherwise. No 30-day cleanup or automatic deletion is permitted.
 
+Rollback exports retain independent project links, unresolved associations, and
+their migration provenance in `native-supplement.json`. The export warns that
+the historical UI cannot edit these independent references. Namespace paths are
+preserved as stored; export does not manufacture project tags as a substitute.
+
 ## Secondary consumers
 
-Task context, project tag counts, Obsidian context summaries, Chrome/email/Journal routing, completeness, search/IR, MCP capabilities, and both dashboard entry points query the native domain after activation. The disabled `sidecar_jobs/task-sync.md` file remains only as historical configuration.
+Task context, project task counts, Obsidian context summaries, Chrome/email/Journal routing, completeness, search/IR, MCP capabilities, and both dashboard entry points query the native domain after activation. Project counts use independent associations and count a task once per linked project. The disabled `sidecar_jobs/task-sync.md` file remains only as historical configuration.

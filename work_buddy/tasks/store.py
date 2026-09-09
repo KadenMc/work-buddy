@@ -40,9 +40,10 @@ class TaskStore:
     a caller cannot accidentally bypass receipts, history, CAS, or the outbox.
     """
 
-    def __init__(self, path: str | Path | None = None, *, timeout: float = 10.0) -> None:
+    def __init__(self, path: str | Path | None = None, *, timeout: float = 10.0, project_db_path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else default_task_db_path()
         self.timeout = timeout
+        self.project_db_path = Path(project_db_path) if project_db_path is not None else None
 
     def connect(self) -> sqlite3.Connection:
         from work_buddy.storage.read_only import process_read_only
@@ -60,6 +61,13 @@ class TaskStore:
         conn.execute("PRAGMA journal_mode = WAL")
         migrate(conn)
         conn.execute("PRAGMA foreign_keys = ON")
+        if conn.execute("SELECT 1 FROM task_project_unresolved WHERE reason='pending' LIMIT 1").fetchone():
+            from .project_links import finish_legacy_backfill, registry_snapshot
+            try:
+                finish_legacy_backfill(conn, registry_snapshot(self.project_db_path), store=self)
+            except BaseException:
+                conn.close()
+                raise
         return conn
 
     def connect_readonly(self) -> sqlite3.Connection:
@@ -131,7 +139,25 @@ class TaskStore:
         task_id = str(row["task_id"])
         tags = cls._tags_for_ids(conn, [task_id]).get(task_id, ())
         actions = cls._action_items_for_ids(conn, [task_id]).get(task_id, ())
-        return Task.from_row(row, tags=tags, action_items=actions)
+        projects, unresolved = cls._projects_for_ids(conn, [task_id])
+        return Task.from_row(row, tags=tags, action_items=actions,
+                             project_ids=projects.get(task_id, ()), unresolved_projects=unresolved.get(task_id, ()))
+
+    @staticmethod
+    def _projects_for_ids(conn: sqlite3.Connection, task_ids: Sequence[str]) -> tuple[dict[str, tuple[int, ...]], dict[str, tuple[dict[str, Any], ...]]]:
+        projects: dict[str, list[int]] = {}
+        unresolved: dict[str, list[dict[str, Any]]] = {}
+        for start in range(0, len(task_ids), 900):
+            chunk = list(task_ids[start:start + 900])
+            placeholders = ','.join('?' for _ in chunk)
+            for row in conn.execute(f"SELECT task_id,project_id FROM task_projects WHERE task_id IN ({placeholders}) ORDER BY project_id", chunk):
+                projects.setdefault(str(row["task_id"]), []).append(int(row["project_id"]))
+            for row in conn.execute(f"SELECT * FROM task_project_unresolved WHERE task_id IN ({placeholders}) ORDER BY legacy_value,source_tag", chunk):
+                unresolved.setdefault(str(row["task_id"]), []).append({
+                    "legacy_value": str(row["legacy_value"]), "source_tag": str(row["source_tag"]),
+                    "reason": str(row["reason"]), "candidate_ids": json.loads(row["candidate_ids_json"]),
+                })
+        return ({key: tuple(value) for key, value in projects.items()}, {key: tuple(value) for key, value in unresolved.items()})
 
     @staticmethod
     def _action_items_for_ids(
@@ -211,8 +237,7 @@ class TaskStore:
         finally:
             conn.close()
 
-    @staticmethod
-    def _query_sql(query: TaskQuery) -> tuple[str, list[Any]]:
+    def _query_sql(self, query: TaskQuery) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if query.state:
@@ -232,11 +257,17 @@ class TaskStore:
             clauses.append("t.deleted_at IS NULL")
         if query.project:
             project = query.project.strip().strip("#/")
-            clauses.append(
-                "EXISTS (SELECT 1 FROM task_tags pt WHERE pt.task_id = t.task_id "
-                "AND (LOWER(pt.tag) = LOWER(?) OR LOWER(pt.tag) LIKE LOWER(?)))"
-            )
-            params.extend([f"projects/{project}", f"projects/{project}/%"])
+            from .project_links import candidates, registry_snapshot
+            registry = registry_snapshot(self.project_db_path)
+            # This compatibility selector historically names a project. A
+            # numeric slug/alias takes precedence over the optional ID fallback.
+            ids = candidates(project, registry or {})
+            if not ids and project.isdigit():
+                ids = (int(project),)
+            placeholders = ','.join('?' for _ in ids)
+            clauses.append("(EXISTS (SELECT 1 FROM task_project_unresolved pu WHERE pu.task_id=t.task_id AND LOWER(pu.legacy_value)=LOWER(?))" +
+                           (f" OR EXISTS (SELECT 1 FROM task_projects pt WHERE pt.task_id=t.task_id AND pt.project_id IN ({placeholders}))" if ids else "") + ")")
+            params.extend([project, *ids])
         if query.namespace:
             namespace = query.namespace.strip().strip("#/")
             clauses.append(
@@ -295,11 +326,14 @@ class TaskStore:
             ids = [str(row["task_id"]) for row in rows]
             tags = self._tags_for_ids(conn, ids)
             actions = self._action_items_for_ids(conn, ids)
+            projects, unresolved = self._projects_for_ids(conn, ids)
             return [
                 Task.from_row(
                     row,
                     tags=tags.get(str(row["task_id"]), ()),
                     action_items=actions.get(str(row["task_id"]), ()),
+                    project_ids=projects.get(str(row["task_id"]), ()),
+                    unresolved_projects=unresolved.get(str(row["task_id"]), ()),
                 )
                 for row in rows
             ]
@@ -395,22 +429,82 @@ class TaskStore:
             conn.close()
 
     def mark_outbox_published(self, event_id: str, *, published_at: str) -> bool:
+        return self.mark_outbox_batch_published([event_id], published_at=published_at) == 1
+
+    def mark_outbox_batch_published(self, event_ids: Sequence[str], *, published_at: str) -> int:
+        """Acknowledge confirmed deliveries in one transaction, never per event."""
+        ids = list(dict.fromkeys(event_ids))
+        if not ids:
+            return 0
+        changed = 0
         with self.transaction() as conn:
-            cursor = conn.execute(
-                "UPDATE task_event_outbox SET published_at = ?, attempts = attempts + 1, "
-                "last_error = NULL WHERE event_id = ? AND published_at IS NULL",
-                (published_at, event_id),
-            )
-            return cursor.rowcount == 1
+            for start in range(0, len(ids), 800):
+                chunk = ids[start:start + 800]
+                placeholders = ",".join("?" for _ in chunk)
+                changed += conn.execute(
+                    "UPDATE task_event_outbox SET published_at = ?, attempts = attempts + 1, "
+                    f"last_error = NULL WHERE event_id IN ({placeholders}) AND published_at IS NULL",
+                    [published_at, *chunk],
+                ).rowcount
+        return changed
 
     def record_outbox_failure(self, event_id: str, *, error: str) -> bool:
+        return self.record_outbox_batch_failure([event_id], error=error) == 1
+
+    def record_outbox_batch_failure(self, event_ids: Sequence[str], *, error: str) -> int:
+        ids = list(dict.fromkeys(event_ids))
+        if not ids:
+            return 0
+        changed = 0
         with self.transaction() as conn:
-            cursor = conn.execute(
-                "UPDATE task_event_outbox SET attempts = attempts + 1, last_error = ? "
-                "WHERE event_id = ? AND published_at IS NULL",
-                (error[:2000], event_id),
-            )
-            return cursor.rowcount == 1
+            for start in range(0, len(ids), 800):
+                chunk = ids[start:start + 800]
+                placeholders = ",".join("?" for _ in chunk)
+                changed += conn.execute(
+                    "UPDATE task_event_outbox SET attempts = attempts + 1, last_error = ? "
+                    f"WHERE event_id IN ({placeholders}) AND published_at IS NULL",
+                    [error[:2000], *chunk],
+                ).rowcount
+        return changed
+
+    def pending_outbox_invalidation(self) -> dict[str, int] | None:
+        """Capture a committed revision boundary without hydrating the backlog."""
+        conn = self.connect_readonly()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS event_count, MAX(collection_revision) AS revision "
+                "FROM task_event_outbox WHERE published_at IS NULL"
+            ).fetchone()
+            if not row["event_count"]:
+                return None
+            return {"event_count": int(row["event_count"]), "revision": int(row["revision"])}
+        finally:
+            conn.close()
+
+    def record_outbox_invalidation_delivery(
+        self, through_revision: int, *, published_at: str | None = None, error: str | None = None
+    ) -> int:
+        """Record one collection invalidation; later commits remain pending.
+
+        The outbox's unique, monotonically increasing collection revision is
+        the boundary captured before delivery. No task metadata is changed.
+        """
+        if (published_at is None) == (error is None):
+            raise ValueError("Supply either a confirmed delivery time or an error")
+        with self.transaction() as conn:
+            if published_at is not None:
+                cursor = conn.execute(
+                    "UPDATE task_event_outbox SET published_at = ?, attempts = attempts + 1, "
+                    "last_error = NULL WHERE published_at IS NULL AND collection_revision <= ?",
+                    (published_at, through_revision),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE task_event_outbox SET attempts = attempts + 1, last_error = ? "
+                    "WHERE published_at IS NULL AND collection_revision <= ?",
+                    ((error or "")[:2000], through_revision),
+                )
+            return cursor.rowcount
 
     def system_state(self) -> TaskSystemState:
         conn = self.connect()

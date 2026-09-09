@@ -143,6 +143,12 @@ export interface DashboardLayoutItem extends WidgetLayoutPlacement {
 
 export interface DashboardGridDefinition {
   readonly columns: number;
+  /**
+   * App-owned vertical composition with natural content height, using readingOrder
+   * (mobileOrder on narrow screens). Grid layout personalization is suspended and
+   * Customize view is hidden; existing saved patches remain available to grid mode.
+   */
+  readonly contentFlow?: boolean;
 }
 
 export type WidgetMultiplicity = "single_per_view" | "multiple_per_view";

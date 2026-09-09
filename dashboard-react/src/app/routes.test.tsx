@@ -118,7 +118,12 @@ describe("projectDashboardRoutes", () => {
     );
   });
 
-  it("keeps one runtime while its router-backed adapter publishes query changes", async () => {
+  it.each([
+    ["", ""],
+    ["#today", "#today"],
+    ["#wb-bootstrap=one-time-grant", ""],
+    ["#wb-bootstrap=one-time-grant&wb-next=%23today", "#today"],
+  ])("keeps one runtime while query navigation handles fragment %s", async (initialHash, expectedHash) => {
     const registry = new ContributionRegistry();
     const appId = asAppId("toy.location");
     const viewId = asViewId("toy.location.overview");
@@ -170,6 +175,7 @@ describe("projectDashboardRoutes", () => {
       return (
         <>
           <output>{useLocation().search}</output>
+          <output data-testid="current-fragment">{useLocation().hash}</output>
           <button onClick={() => adapter?.pushSearch("?document_id=two")}>
             Open second document
           </button>
@@ -178,7 +184,7 @@ describe("projectDashboardRoutes", () => {
     }
 
     render(
-      <MemoryRouter initialEntries={["/location?document_id=one"]}>
+      <MemoryRouter initialEntries={[`/location?document_id=one${initialHash}`]}>
         <Routes>
           <Route
             path="location"
@@ -200,6 +206,7 @@ describe("projectDashboardRoutes", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open second document" }));
     expect(adapter && adapter.getSearch()).toBe("?document_id=two");
     await screen.findByText("?document_id=two");
+    expect(screen.getByTestId("current-fragment").textContent).toBe(expectedHash);
     expect(listener).toHaveBeenCalledWith("?document_id=two");
     expect(adapter && adapter.getSearch()).toBe("?document_id=two");
     expect(createRuntime).toHaveBeenCalledOnce();
