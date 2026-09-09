@@ -332,9 +332,16 @@ def _print_startup_banner(
     if dashboard is None:
         return
 
+    # Windows login tasks launch the daemon through pythonw.exe, where the
+    # standard streams are None.  The banner is a convenience for interactive
+    # terminals; it must never make the windowless production entry point exit.
+    stream = sys.stdout
+    if stream is None:
+        return
+
     local_url = f"http://localhost:{dashboard.port}"
     remote_url = (cfg.get("dashboard", {}).get("external_url") or "").rstrip("/")
-    use_color = _supports_color(sys.stdout)
+    use_color = _supports_color(stream)
 
     if use_color:
         BOLD = "\x1b[1m"
@@ -351,15 +358,15 @@ def _print_startup_banner(
     # Two-column-aligned, with ``Local``/``Remote`` labels when both are
     # present — labels collapse to "Dashboard:" when only the local URL
     # exists, since the distinction would be redundant.
-    print()
-    print(f"    {BOLD}Work Buddy sidecar is running{RESET}")
+    print(file=stream)
+    print(f"    {BOLD}Work Buddy sidecar is running{RESET}", file=stream)
     if remote_url:
-        print(f"    {DIM}Local: {RESET}  {fmt_link(local_url)}")
-        print(f"    {DIM}Remote:{RESET}  {fmt_link(remote_url)}")
+        print(f"    {DIM}Local: {RESET}  {fmt_link(local_url)}", file=stream)
+        print(f"    {DIM}Remote:{RESET}  {fmt_link(remote_url)}", file=stream)
     else:
-        print(f"    {DIM}Dashboard:{RESET}  {fmt_link(local_url)}")
-    print()
-    sys.stdout.flush()
+        print(f"    {DIM}Dashboard:{RESET}  {fmt_link(local_url)}", file=stream)
+    print(file=stream)
+    stream.flush()
 
 
 # ---------------------------------------------------------------------------
