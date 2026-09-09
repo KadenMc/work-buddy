@@ -16,15 +16,14 @@ test("mobile uses canonical one-column DOM and visual order without mounting RGL
   await expect(customize).toBeAttached();
   await expect(customize).toBeDisabled();
 
-  const titles = await page
-    .locator(
-      ".wb-dashboard-mobile-stack > div > .wb-widget-frame > .wb-widget-frame__header .wb-widget-frame__title",
-    )
-    .allTextContents();
-  expect(titles).toEqual(["Quick Capture", "Day Timeline", "Running Notes"]);
+  const cards = page.locator(".wb-dashboard-mobile-stack > div");
+  await expect(cards).toHaveCount(3);
+  // Draft-owning widgets keep a stable host wrapper through breakpoint changes.
+  // Assert their actual DOM order without depending on that wrapper's depth.
+  await expect(cards.locator(".wb-widget-frame > .wb-widget-frame__header .wb-widget-frame__title"))
+    .toHaveText(["Quick Capture", "Day Timeline", "Running Notes"]);
 
-  const positions = await page
-    .locator(".wb-dashboard-mobile-stack > div")
+  const positions = await cards
     .evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().top));
   expect(positions).toEqual([...positions].sort((left, right) => left - right));
 });
