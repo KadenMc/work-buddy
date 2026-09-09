@@ -142,6 +142,14 @@ A widget definition may declare itself durable. Dashboard Core then keeps its re
 
 Widgets declare meaningful drafts; the host owns persistence, schema versions, revisions, clearing, and cross-tab behavior. Draft identity includes profile/workspace, publisher App, view, widget instance, widget type, draft name, and scope. Widgets do not persist arbitrary DOM inputs or create incompatible storage formats.
 
+Host-owned working state can also represent a saved browsing query. A draft
+declaration may supply `clearPresentation` text so the shared header eraser
+truthfully describes resetting a view instead of discarding field edits.
+`useWidgetDraft` can set `includeInClear: false` for a mounted background scope;
+its state still persists while the visible card's eraser affects only its active
+scope. Tasks uses this for saved filters and sorting while task-field drafts
+remain independent.
+
 An eligible widget may additionally declare `assistableDrafts`, referencing the shared machine-readable form schema. Dashboard Core binds a contextual assistance dock to that exact host-owned draft; it is not a separate placeable chat widget or a Co-work editor adapter. Typed allowlisted patches update visible fields, preserve concurrent user edits, and expose conditional Undo. Submission remains the App's explicit human action. See `services/dashboard/react/assisted-drafts`.
 
 Short-lived notices and confirmation requests are reusable dashboard infrastructure. They are distinct from the durable notification/request system. Contextual Hover Help is another host mode with layered ownership: Dashboard, view placement, widget, and primitive. Help and Customize are mutually exclusive.

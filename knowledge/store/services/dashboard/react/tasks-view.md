@@ -34,7 +34,7 @@ dev_notes: |-
 
 ## Capture and authoring
 
-Quick Add is directly visible while browsing; dedicated task detail offers a compact Quick capture disclosure that preserves the draft. Quick capture supports title-first entry, while the expanded composer exposes urgency, zero or more linked projects, independent namespace tags, dates, outcome, next action, definition of done, dependencies, and initial knowledge. Project selections carry stable registry IDs. Multi-line paste creates a review table, detects duplicates, and lets the user edit or exclude rows before a batch create. Successful requests return native IDs, revisions, receipts, and document metadata—never task lines or note paths.
+Quick Add is directly visible while browsing; dedicated task detail offers a compact Quick capture disclosure that preserves the draft. Its default card is five grid rows tall so the initial controls fit; saved custom sizes remain authoritative and smaller cards retain content scrolling. Quick capture supports title-first entry, while the expanded composer exposes urgency, zero or more linked projects, independent namespace tags, dates, outcome, next action, definition of done, dependencies, and initial knowledge. Project selections carry stable registry IDs. Multi-line paste creates a review table, detects duplicates, and lets the user edit or exclude rows before a batch create. Successful requests return native IDs, revisions, receipts, and document metadata—never task lines or note paths.
 
 **AI help** opens Dashboard Core's shared assisted-draft dock. It uses the same conversation primitives as Co-work and fills the visible form; it never creates a task or submits a form. See `services/dashboard/react/assisted-drafts` for disclosure, field conflicts, conditional Undo, and host-owned draft identity.
 
@@ -68,18 +68,31 @@ the default Open selection. Filter changes apply immediately; text search is
 debounced. Previous results stay visible while updating, and failed refreshes
 offer Retry without erasing the list.
 
+Filter buttons and their selection pills share a subtle theme-aware color per
+dimension. Browsing filters, sorting, direction and pagination use the host's
+view-scoped `task-browse` saved state. A bare Tasks URL restores that state;
+an explicit browsing query overrides it completely. The workspace header eraser
+resets all browsing dimensions together, including branch and exact namespace
+selections, to Open / Date created / newest first / first page. Task-field drafts
+and the customizable grid layout retain their separate scopes.
+
 The namespace rail has its own hierarchy search, checkbox selection, and counts.
 It shows namespaces matching all other active filters, retaining selected zero-count
 paths and their ancestors. Namespace selection itself does not remove alternative
 choices. Manage namespaces always uses the complete inventory. Branches start
 collapsed; deliberate expansions are remembered and search reveals matching
-ancestors temporarily. The shared Co-work divider resizes the wider pane by pointer
-or keyboard, saves its width, and resets on double-click. Show namespaces sits at
+ancestors temporarily. The shared Co-work divider starts at a compact width,
+allows resizing down to 160 pixels without a percentage floor, saves deliberate
+width changes, and resets on double-click. Show namespaces sits at
 the left of the results toolbar; Manage namespaces is inside the open pane only.
 Legacy empty path segments have an explicit label, while filtering, saves, and Undo
 preserve their exact stored spelling until a reviewed organization operation changes it.
-Selecting a branch includes descendants; its scope control switches to direct
-assignments only. **No namespace** and **No project** are explicit choices.
+Each namespace checkbox cycles blank → checkmark (including descendants) →
+filled box (direct assignments only) → blank using a click or Space. Hover help
+explains the cycle and accessible descriptions announce the current scope.
+The rail's eraser clears every namespace selection together while retaining
+other filters and sorting; the whole-card eraser encompasses that reset.
+**No namespace** and **No project** are explicit choices.
 Hiding the rail gives its width to task results; selected namespace pills remain
 visible and effective. Narrow layouts start with the rail hidden. Namespace and
 project filters are independent, and unresolved project associations remain
@@ -141,7 +154,11 @@ handling. Namespace operations never change project associations.
 Task namespaces are editable pills on a dedicated, consistently aligned row.
 Add namespace opens a searchable picker with existing paths and explicit path
 creation. Removing a saved pill opens a confirmation scoped to that task; it
-does not delete the namespace globally. Namespace changes save separately and
+does not delete the namespace globally. An unchecked opt-in can skip further
+namespace-removal confirmations for that task for ten minutes in the current
+browser session. It starts only after a confirmed successful removal, never
+extends on skipped removals, and can be revoked using **Confirmations off**.
+Completion still confirms every time. Namespace changes save separately and
 preserve unrelated task-field drafts. The dashboard has no bulk task namespace
 replacement interface. Structural branch operations remain in Manage namespaces.
 See `tasks/namespace-organization` for the API and conflict contract.

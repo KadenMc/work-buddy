@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState, type ComponentType } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +19,8 @@ import {
   type WidgetRendererProps,
 } from "../contributions/contracts";
 import { WidgetHost } from "./WidgetHost";
+import { useWidgetDraft, type WidgetDraftHandle } from "../drafts";
+import { TASKS_APP_CONTRIBUTION } from "../../apps/tasks/contribution";
 
 const typeId = asWidgetTypeId("wb.test.summary");
 const moduleId = asWidgetModuleId("wb.test.summary.renderer");
@@ -123,6 +125,64 @@ describe("WidgetHost", () => {
         dispatchEvent: vi.fn(),
       })),
     );
+  });
+
+  it.each([false, true])("uses declared reset copy=%s while retaining ordinary draft defaults and confirmation", async (customCopy) => {
+    const user = userEvent.setup();
+    const browse = TASKS_APP_CONTRIBUTION.widgetDefinitions[1].drafts!.find((draft) => draft.draftName === "task-browse")!;
+    const { clearPresentation: _copy, ...ordinary } = browse;
+    const draftDefinition = { ...definition, displayName: "Task Workspace", drafts: [customCopy ? browse : ordinary] };
+    function Renderer() {
+      const draft = useWidgetDraft("task-browse", { q: "" }, { isPristine: (value) => value.q === "" });
+      return <input aria-label="Working state" value={draft.value.q} disabled={!draft.ready} onChange={(event) => draft.setValue({ q: event.target.value })} />;
+    }
+    const { emit } = renderHost(createModule(Renderer), { definition: draftDefinition });
+    const field = await screen.findByRole("textbox", { name: "Working state" });
+    await waitFor(() => expect(field).toBeEnabled());
+    fireEvent.change(field, { target: { value: "research" } });
+    const label = customCopy ? "Reset Task Workspace view" : "Clear Task Workspace draft";
+    await user.click(await screen.findByRole("button", { name: label }));
+    let dialog = screen.getByRole("alertdialog", { name: customCopy ? "Reset task view?" : "Clear this draft?" });
+    if (customCopy) expect(dialog).toHaveTextContent("including selected and exact namespaces");
+    await user.click(within(dialog).getByRole("button", { name: customCopy ? "Keep view" : "Keep draft" }));
+    expect(field).toHaveValue("research");
+    await user.click(screen.getByRole("button", { name: label }));
+    dialog = screen.getByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: customCopy ? "Reset view" : "Clear draft" }));
+    await waitFor(() => expect(field).toHaveValue(""));
+    expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("does not clear a detail draft when the card changes mode after its browse reset confirmation opens", async () => {
+    const user = userEvent.setup();
+    const workspace = TASKS_APP_CONTRIBUTION.widgetDefinitions[1];
+    const browse = workspace.drafts!.find((draft) => draft.draftName === "task-browse")!;
+    const edit = workspace.drafts!.find((draft) => draft.draftName === "task-edit")!;
+    let changeMode!: (detail: boolean) => void;
+    let editing!: WidgetDraftHandle<{ title: string }>;
+    function Renderer() {
+      const [detailMode, setDetailMode] = useState(false);
+      changeMode = setDetailMode;
+      const filters = useWidgetDraft("task-browse", { q: "" }, { isPristine: (value) => value.q === "", includeInClear: !detailMode });
+      editing = useWidgetDraft("task-edit", { title: "" }, { isPristine: (value) => value.title === "", includeInClear: detailMode });
+      return <input aria-label="Browse query" value={filters.value.q} disabled={!filters.ready} onChange={(event) => filters.setValue({ q: event.target.value })} />;
+    }
+    renderHost(createModule(Renderer), { definition: { ...definition, displayName: "Task Workspace", drafts: [browse, edit] }, input: { selectedTask: { task_id: "task-1" } } });
+    const field = await screen.findByRole("textbox", { name: "Browse query" });
+    await waitFor(() => expect(field).toBeEnabled());
+    fireEvent.change(field, { target: { value: "research" } });
+    await user.click(await screen.findByRole("button", { name: "Reset Task Workspace view" }));
+    await act(async () => {
+      changeMode(true);
+      editing.setValue({ title: "Unsaved detail text" });
+      await editing.flush();
+    });
+    await user.click(within(screen.getByRole("alertdialog", { name: "Reset task view?" })).getByRole("button", { name: "Reset view" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(editing.getSnapshot().value.title).toBe("Unsaved detail text");
+    expect(field).toHaveValue("research");
+    expect(screen.getByRole("button", { name: "Clear Task Workspace draft" })).toBeInTheDocument();
   });
 
   it("lazy-loads a renderer with bound input and host presentation", async () => {

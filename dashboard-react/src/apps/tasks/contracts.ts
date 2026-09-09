@@ -210,6 +210,8 @@ export interface TaskQuickAddInput {
 }
 
 export interface TaskWorkspaceInput {
+  /** The URL supplied browsing parameters; its complete resolved query overrides saved card state. */
+  readonly browseQueryExplicit?: boolean;
   readonly total?: number;
   readonly page?: { readonly limit: number; readonly offset: number; readonly has_more: boolean };
   readonly namespace_tree?: readonly TaskNamespaceNode[];

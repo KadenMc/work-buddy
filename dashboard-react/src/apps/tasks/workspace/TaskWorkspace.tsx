@@ -13,6 +13,7 @@ import { TaskProposalDetail } from "./TaskProposalDetail";
 import { ATTENTION_OPTIONS, STATUS_OPTIONS, FilterPill, MultiSelect, NamespaceRail, toggleValue } from "./TaskFilters";
 import { NamespaceOrganizer } from "./NamespaceOrganizer";
 import { TaskCompletionDialog } from "./TaskCompletionDialog";
+import { useTaskBrowseState } from "./useTaskBrowseState";
 
 export const tomorrow = (current = new Date()): string => {
   const date = new Date(current.getTime()); date.setDate(date.getDate() + 1);
@@ -38,6 +39,7 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
     try { const saved = localStorage.getItem(narrow ? "wb.tasks.namespace-visible-mobile" : "wb.tasks.namespace-visible"); return saved === null ? !narrow : saved === "true"; } catch { return !narrow; }
   });
   const narrowHost = presentation.width > 0 ? presentation.width < 768 : typeof matchMedia === "function" && matchMedia("(max-width: 767px)").matches;
+  const namespaceDefaultPercent = Math.min(40, 280 / Math.max(presentation.width, 768) * 100);
   useEffect(() => {
     try { const saved = localStorage.getItem(narrowHost ? "wb.tasks.namespace-visible-mobile" : "wb.tasks.namespace-visible"); setNamespaceVisible(saved === null ? !narrowHost : saved === "true"); } catch { setNamespaceVisible(!narrowHost); }
   }, [narrowHost]);
@@ -54,6 +56,8 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
   const navigationGeneration = useRef(0);
   const directionMemory = useRef<Partial<Record<TaskSort, "asc" | "desc">>>({});
   const latest = useRef(input.query);
+  const authoritativeQuery = useRef(input.query);
+  authoritativeQuery.current = input.query;
   const query = optimistic;
   const hasSelection = Boolean(input.query.task || input.query.proposal);
   const triage = query.mode === "triage";
@@ -91,16 +95,23 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
     const generation = ++navigationGeneration.current;
     const next = { ...latest.current, ...patch } as TaskQueryState;
     latest.current = next; setOptimistic(next); setRefreshing(true); setRefreshError(null);
-    void send(TASK_INTENTS.locationChange, { patch, replace }).then((result) => {
-      if (generation !== navigationGeneration.current) return;
-      if (result.status !== "accepted") { setRefreshError(result.message ?? "Tasks could not refresh."); setRefreshing(false); }
+    const restoreActualQuery = () => {
+      latest.current = authoritativeQuery.current;
+      setOptimistic(authoritativeQuery.current);
+      setSearch(authoritativeQuery.current.q);
+    };
+    return send(TASK_INTENTS.locationChange, { patch, replace }).then((result) => {
+      if (generation !== navigationGeneration.current) return result;
+      if (result.status !== "accepted") { restoreActualQuery(); setRefreshError(result.message ?? "Tasks could not refresh."); setRefreshing(false); }
+      return result;
     }).catch((error: unknown) => {
-      if (generation !== navigationGeneration.current) return;
       const text = error instanceof Error ? error.message : "Task view could not change.";
-      setRefreshError(text); setRefreshing(false); announce(text, "assertive");
+      if (generation === navigationGeneration.current) { restoreActualQuery(); setRefreshError(text); setRefreshing(false); announce(text, "assertive"); }
+      return { intent_id: `location-${generation}`, status: "unavailable", message: text } satisfies IntentResult;
     });
   };
   const filter = (patch: Record<string, JsonValue>) => navigate({ ...patch, offset: 0 });
+  const browseState = useTaskBrowseState({ input, activeBrowse: !hasSelection && !organizer, onRestore: (patch) => { setSearch(typeof patch.q === "string" ? patch.q : ""); directionMemory.current = {}; return navigate(patch, true); } });
   useEffect(() => {
     if (search === latest.current.q) return;
     const timer = setTimeout(() => filter({ q: search }), 250);
@@ -147,38 +158,39 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
   const error = refreshError ?? input.refresh_error;
 
   return <section className="wb-task-workspace wb-task-workspace--redesigned" data-layout={presentation.width > 0 && presentation.width < 768 ? "stacked" : "wide"} aria-label="Task workspace">
+    {browseState.error ? <InlineAlert tone="warning">Browsing preferences: {browseState.error} {browseState.canRetry ? <Button size="small" onClick={browseState.retry}>Retry saved view</Button> : null}</InlineAlert> : null}
     {completionTask ? <TaskCompletionDialog task={completionTask} onClose={() => setCompletionTask(null)} onConfirm={(id) => runSummaryAction(completionTask, "complete", id)} /> : null}
     {notice ? <InlineAlert tone={notice.tone}>{notice.text}</InlineAlert> : null}
     {hasSelection && error ? <InlineAlert tone="danger">{error} <Button size="small" onClick={() => navigate({})}>Retry</Button></InlineAlert> : null}
     {hasSelection ? <section className="wb-task-dedicated-view" aria-label="Task details">
       {input.selectedProposal ? <TaskProposalDetail key={input.query.proposal} selection={input.selectedProposal} options={input.options} readOnly={readOnly} presentation={presentation} emit={emit} onClose={closeDetails} /> : input.selectedTask ? <TaskDetail key={input.selectedTask.task_id} task={input.selectedTask} options={input.options} readOnly={readOnly} presentation={presentation} emit={emit} onClose={closeDetails} undoDeleteRevision={pendingDeleteUndo?.taskId === input.selectedTask.task_id ? pendingDeleteUndo.revision : null} onDeleteAcknowledged={(revision) => setPendingDeleteUndo({ taskId: input.selectedTask!.task_id, revision })} onDeleteUndone={() => setPendingDeleteUndo(null)} /> : <div className="wb-task-empty"><Button onClick={closeDetails}>Back to tasks</Button><p>{refreshing ? "Opening task…" : "This task is unavailable. Return to your task list to continue browsing."}</p></div>}
-    </section> : organizer ? <NamespaceOrganizer send={send} readOnly={readOnly} onClose={() => navigate({ mode: "browse" })} onApplied={() => {}} /> : <>
+    </section> : organizer ? <NamespaceOrganizer send={send} readOnly={readOnly} onClose={() => navigate({ mode: "browse" })} onApplied={() => {}} /> : !browseState.ready ? <p role="status">Restoring your task view…</p> : <>
       <div className="wb-task-browse-tools">
         <form className="wb-task-search" role="search" onSubmit={(event) => { event.preventDefault(); filter({ q: search }); }}><label><span>Search tasks</span><span className="wb-task-search__control"><MagnifyingGlass aria-hidden="true" /><input ref={searchInputRef} type="search" value={search} placeholder="Find a task…" onChange={(event) => setSearch(event.target.value)} /></span></label></form>
         <div className="wb-task-browse-actions"><Button size="small" variant={triage ? "primary" : "ghost"} onClick={toggleTriage}>{triage ? "Finish triage" : "Triage inbox"}</Button></div>
       </div>
       <div className="wb-task-filter-toolbar" aria-label="Task filters">
-        <MultiSelect label="Status" values={queryValues(query, "statuses")} options={STATUS_OPTIONS} counts={input.facets.statuses} onChange={(statuses) => filter({ statuses })} />
-        <MultiSelect label="Projects" values={queryValues(query, "projects")} options={projects} searchable counts={input.facets.projects} onChange={(projects) => filter({ projects })} />
-        <MultiSelect label="Attention" values={queryValues(query, "attention")} options={ATTENTION_OPTIONS} counts={input.facets.attention} onChange={(attention) => filter({ attention })} />
-        <MultiSelect label="Urgency" values={queryValues(query, "urgencies")} options={urgencyOptions} counts={input.facets.urgencies} onChange={(urgencies) => filter({ urgencies })} />
-        <MultiSelect label="Due date" single values={query.due ? [query.due] : []} options={dateOptions} onChange={(due) => filter({ due: due[0] ?? "" })} />
-        <MultiSelect label="Knowledge" single values={query.note ? [query.note] : []} options={knowledgeOptions} onChange={(note) => filter({ note: note[0] ?? "" })} />
+        <MultiSelect label="Status" tone="statuses" values={queryValues(query, "statuses")} options={STATUS_OPTIONS} counts={input.facets.statuses} onChange={(statuses) => filter({ statuses })} />
+        <MultiSelect label="Projects" tone="projects" values={queryValues(query, "projects")} options={projects} searchable counts={input.facets.projects} onChange={(projects) => filter({ projects })} />
+        <MultiSelect label="Attention" tone="attention" values={queryValues(query, "attention")} options={ATTENTION_OPTIONS} counts={input.facets.attention} onChange={(attention) => filter({ attention })} />
+        <MultiSelect label="Urgency" tone="urgencies" values={queryValues(query, "urgencies")} options={urgencyOptions} counts={input.facets.urgencies} onChange={(urgencies) => filter({ urgencies })} />
+        <MultiSelect label="Due date" tone="due" single values={query.due ? [query.due] : []} options={dateOptions} onChange={(due) => filter({ due: due[0] ?? "" })} />
+        <MultiSelect label="Knowledge" tone="note" single values={query.note ? [query.note] : []} options={knowledgeOptions} onChange={(note) => filter({ note: note[0] ?? "" })} />
       </div>
       <div className="wb-task-active-filters" aria-label="Selected filters">
         {(["statuses", "projects", "attention", "urgencies", "namespaces", "exact_namespaces"] as const).flatMap((key) => queryValues(query, key).map((value) => {
           const options = key === "statuses" ? STATUS_OPTIONS : key === "projects" ? projects : key === "attention" ? ATTENTION_OPTIONS : urgencyOptions;
           const text = value === "__none__" ? key === "projects" ? "No project" : "No namespace" : options.find((option) => option.value === value)?.label ?? value;
           const label = key === "namespaces" && value !== "__none__" ? `${text} + descendants` : key === "exact_namespaces" ? `${text} only` : text;
-          return <FilterPill key={`${key}:${value}`} label={label} onRemove={() => filter({ [key]: toggleValue(queryValues(query, key), value) })} />;
+          return <FilterPill key={`${key}:${value}`} tone={key === "exact_namespaces" ? "namespaces" : key} label={label} onRemove={() => filter({ [key]: toggleValue(queryValues(query, key), value) })} />;
         }))}
-        {query.due ? <FilterPill label={dateOptions.find((option) => option.value === query.due)?.label ?? query.due} onRemove={() => filter({ due: "" })} /> : null}
-        {query.note ? <FilterPill label={knowledgeOptions.find((option) => option.value === query.note)?.label ?? query.note} onRemove={() => filter({ note: "" })} /> : null}
+        {query.due ? <FilterPill tone="due" label={dateOptions.find((option) => option.value === query.due)?.label ?? query.due} onRemove={() => filter({ due: "" })} /> : null}
+        {query.note ? <FilterPill tone="note" label={knowledgeOptions.find((option) => option.value === query.note)?.label ?? query.note} onRemove={() => filter({ note: "" })} /> : null}
         {search ? <FilterPill label={`Search: ${search}`} onRemove={() => { setSearch(""); filter({ q: "" }); }} /> : null}
         <Button size="small" variant="ghost" onClick={clearFilters}>Clear filters</Button>
       </div>
       {triage ? <InlineAlert tone="info">Inbox triage · choose how to handle each task, or skip it for this pass. The visible filters control this list.</InlineAlert> : null}
-      <WorkspaceSidePanel className={`wb-task-browse-grid${namespaceVisible ? " has-namespaces" : ""}`} layoutId="wb.tasks.namespace-width" primaryId="namespaces" sideId="results" mode={!namespaceVisible ? "side-only" : narrowHost ? "stacked" : "split"} primaryDefaultSize="30%" primaryMinSize="240px" sideDefaultSize="70%" sideMinSize="40%" sideMaxSize="80%" resizeLabel="Resize namespaces" resizeHelp={{ summary: "Resize the namespace panel.", details: "Drag this divider, or focus it and use the Left and Right arrow keys. Your width is saved. Double-click to restore the default widths. Hide namespaces gives this space back to the task list." }}
+      <WorkspaceSidePanel className={`wb-task-browse-grid${namespaceVisible ? " has-namespaces" : ""}`} layoutId="wb.tasks.namespace-width" primaryId="namespaces" sideId="results" mode={!namespaceVisible ? "side-only" : narrowHost ? "stacked" : "split"} primaryDefaultSize={`${namespaceDefaultPercent}%`} primaryMinSize="160px" sideDefaultSize={`${100 - namespaceDefaultPercent}%`} sideMinSize="40%" sideMaxSize="100%" resizeLabel="Resize namespaces" resizeHelp={{ summary: "Resize the namespace panel.", details: "Drag this divider, or focus it and use the Left and Right arrow keys. Your width is saved. Double-click to restore the compact default width. Hide namespaces gives this space back to the task list." }}
         primary={<NamespaceRail noNamespaceCount={input.facets.namespaces.__none__ ?? 0} nodes={namespaceNodes} selected={queryValues(query, "namespaces")} exact={queryValues(query, "exact_namespaces")} onChange={(namespaces, exact_namespaces) => filter({ namespaces: [...namespaces], exact_namespaces: [...exact_namespaces] })} onHide={() => setRail(false)} onManage={() => navigate({ mode: "namespaces" })} />}
         side={<div className="wb-task-results" ref={browseRef}>
           <div className="wb-task-results-bar"><div className="wb-task-results-summary">{!namespaceVisible ? <Button className="wb-task-show-namespaces" size="small" variant="ghost" onClick={() => setRail(true)}>Show namespaces</Button> : null}<div><h2 className={triage ? undefined : "wb-task-sr-only"}>{triage ? "Inbox triage" : "Tasks"}</h2><p role="status">{refreshing || input.refreshing ? "Updating… " : ""}{resultCount} {resultCount === 1 ? "task" : "tasks"}</p></div></div>

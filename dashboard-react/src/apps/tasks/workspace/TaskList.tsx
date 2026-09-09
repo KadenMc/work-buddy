@@ -100,7 +100,7 @@ export function TaskList({
               </span>
               <span className="wb-task-list__dates"><span>Created {created ? <time dateTime={task.created_at ?? undefined} title={created.toLocaleString()}>{created.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}<span className="wb-task-sr-only"> at {created.toLocaleTimeString()}</span></time> : "at an unknown time"}</span>{sort === "updated_at" ? <span>Updated {updated ? <time dateTime={task.updated_at} title={updated.toLocaleString()}>{updated.toLocaleDateString()}</time> : "at an unknown time"}</span> : null}</span>
             </button>
-            <TaskNamespacePills compact namespaces={task.namespaces} options={namespaceOptions} readOnly={readOnly || Boolean(task.deleted_at) || task.status === "trash" || !onNamespacesChange} onChange={(next, mutationId) => onNamespacesChange ? onNamespacesChange(task, next, mutationId) : Promise.resolve({ intent_id: mutationId ?? "read-only", status: "unavailable", message: "Task editing is unavailable." })} />
+            <TaskNamespacePills taskId={task.task_id} compact namespaces={task.namespaces} options={namespaceOptions} readOnly={readOnly || Boolean(task.deleted_at) || task.status === "trash" || !onNamespacesChange} onChange={(next, mutationId) => onNamespacesChange ? onNamespacesChange(task, next, mutationId) : Promise.resolve({ intent_id: mutationId ?? "read-only", status: "unavailable", message: "Task editing is unavailable." })} />
             </div>
             {triage ? (
               <div className="wb-task-list__triage" aria-label={`Triage ${task.title}`}>

@@ -99,6 +99,12 @@ function locationAdapter(initial = "?lens=inbox&q=launch") {
 describe("HttpTasksProvider", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it.each([["", false], ["?task=task-1", false], ["?mode=namespaces", false], ["?statuses=", true], ["?sort=title", true], ["?exact_namespaces=research", true]])("declares explicit browsing URL state for %s", async (search, explicit) => {
+    const provider = new HttpTasksProvider({ fetchImpl: vi.fn(async () => json(viewPayload)) as typeof fetch, location: locationAdapter(search as string).location });
+    const result = await provider.loadView(TASKS_VIEW_ID, { reason: "mount" });
+    expect(result.widgetInputs[TASKS_INSTANCE_IDS.workspace]).toMatchObject({ browseQueryExplicit: explicit });
+  });
+
   const proposal = { thread_id: "th-1234abcd", proposal_event_id: 7, status: "ready", parameters: { task_text: "Review draft" }, origin: { kind: "journal", id: "capture-1" }, realization: null, href: "/app/tasks?proposal=th-1234abcd" };
   const realizedProposal = {
     ...proposal,

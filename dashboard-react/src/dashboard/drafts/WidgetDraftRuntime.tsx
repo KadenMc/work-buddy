@@ -75,9 +75,11 @@ export function WidgetDraftRuntimeProvider({
 
 interface DraftRegistration {
   readonly draftName: string;
+  readonly identityKey: string;
+  readonly revision: number;
   readonly status: WidgetDraftStatus;
   readonly dirty: boolean;
-  clear(): Promise<boolean>;
+  clear(options?: { readonly ifRevision?: number }): Promise<boolean>;
 }
 
 interface WidgetDraftScopeValue {
@@ -88,6 +90,7 @@ interface WidgetDraftScopeValue {
   updateRegistration(registration: DraftRegistration): void;
   removeRegistration(draftName: string): void;
   readonly registrations: ReadonlyMap<string, DraftRegistration>;
+  prepareClear(): () => Promise<boolean>;
   clearAll(): Promise<boolean>;
 }
 
@@ -201,6 +204,8 @@ export function WidgetDraftScopeProvider({
       if (
         prior?.dirty === registration.dirty &&
         prior.status === registration.status &&
+        prior.identityKey === registration.identityKey &&
+        prior.revision === registration.revision &&
         prior.clear === registration.clear
       ) {
         return current;
@@ -218,14 +223,17 @@ export function WidgetDraftScopeProvider({
       return next;
     });
   }, []);
-  const clearAll = useCallback(async () => {
-    const results = await Promise.all(
-      [...registrationsRef.current.values()]
-        .filter((registration) => registration.dirty)
-        .map((registration) => registration.clear()),
-    );
-    return results.every(Boolean);
+  const prepareClear = useCallback(() => {
+    const chosen = [...registrationsRef.current.values()].filter((registration) => registration.dirty);
+    return async () => {
+      const current = [...registrationsRef.current.values()].filter((registration) => registration.dirty);
+      if (current.length !== chosen.length || chosen.some((target) => !current.some((candidate) =>
+        candidate.draftName === target.draftName && candidate.identityKey === target.identityKey && candidate.revision === target.revision))) return false;
+      const results = await Promise.all(chosen.map((registration) => registration.clear({ ifRevision: registration.revision })));
+      return results.every(Boolean);
+    };
   }, []);
+  const clearAll = useCallback(() => prepareClear()(), [prepareClear]);
   const value = useMemo<WidgetDraftScopeValue>(
     () => ({
       definition,
@@ -235,9 +243,10 @@ export function WidgetDraftScopeProvider({
       updateRegistration,
       removeRegistration,
       registrations,
+      prepareClear,
       clearAll,
     }),
-    [clearAll, declarationFor, definition, identityFor, registrations, removeRegistration, repositoryFor, updateRegistration],
+    [clearAll, declarationFor, definition, identityFor, prepareClear, registrations, removeRegistration, repositoryFor, updateRegistration],
   );
   return (
     <WidgetDraftScopeContext.Provider value={value}>
@@ -288,7 +297,11 @@ const asJsonValue = (value: unknown): { readonly value: JsonValue; readonly byte
 export function useWidgetDraft<Value>(
   draftName: string,
   initialValue: Value,
-  options: { readonly isPristine?: (value: Value) => boolean } = {},
+  options: {
+    readonly isPristine?: (value: Value) => boolean;
+    /** A mounted background draft can persist without joining the visible card's clear action. */
+    readonly includeInClear?: boolean;
+  } = {},
 ): WidgetDraftHandle<Value> {
   const scope = useContext(WidgetDraftScopeContext);
   if (scope === null) throw new Error("useWidgetDraft must run inside WidgetDraftScopeProvider");
@@ -500,11 +513,12 @@ export function useWidgetDraft<Value>(
     [resetValue],
   );
   const dirty = state.ready && !isPristineRef.current(state.value);
+  const clearable = options.includeInClear !== false;
 
   useEffect(() => {
-    updateRegistration({ draftName, status: state.status, dirty, clear });
+    updateRegistration({ draftName, identityKey, revision: state.revision, status: state.status, dirty: dirty && clearable, clear });
     return () => removeRegistration(draftName);
-  }, [clear, dirty, draftName, removeRegistration, state.status, updateRegistration]);
+  }, [clear, clearable, dirty, draftName, identityKey, removeRegistration, state.revision, state.status, updateRegistration]);
 
   return {
     ...state,
@@ -530,11 +544,13 @@ export function useWidgetAssistanceDeclaration(draftName: string) {
 export function useWidgetDraftScopeStatus(): {
   readonly hasDirtyDraft: boolean;
   readonly dirtyDraftNames: readonly string[];
+  readonly clearPresentation?: WidgetDraftDeclaration["clearPresentation"];
+  prepareClear(): () => Promise<boolean>;
   clearAll(): Promise<boolean>;
 } {
   const scope = useContext(WidgetDraftScopeContext);
   if (scope === null) {
-    return { hasDirtyDraft: false, dirtyDraftNames: [], clearAll: async () => true };
+    return { hasDirtyDraft: false, dirtyDraftNames: [], prepareClear: () => async () => true, clearAll: async () => true };
   }
   const dirtyDraftNames = [...scope.registrations.values()]
     .filter((registration) => registration.dirty)
@@ -542,6 +558,10 @@ export function useWidgetDraftScopeStatus(): {
   return {
     hasDirtyDraft: dirtyDraftNames.length > 0,
     dirtyDraftNames,
+    clearPresentation: dirtyDraftNames.length === 1
+      ? scope.definition.drafts?.find((draft) => draft.draftName === dirtyDraftNames[0])?.clearPresentation
+      : undefined,
+    prepareClear: scope.prepareClear,
     clearAll: scope.clearAll,
   };
 }

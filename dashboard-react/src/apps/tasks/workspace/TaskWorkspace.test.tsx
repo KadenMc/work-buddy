@@ -359,6 +359,27 @@ describe("TaskWorkspace", () => {
     expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ payload: { patch: { statuses: ["completed"], offset: 0 }, replace: true } }));
   });
 
+  it.each(["rejected", "thrown"])("restores actual filters and search after a %s navigation", async (failure) => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => {
+      if (failure === "thrown") throw new Error("Navigation unavailable");
+      return { intent_id: intent.intent_id, status: "unavailable", message: "Navigation unavailable" };
+    });
+    renderWorkspace(input(), emit);
+    await user.click(screen.getByRole("button", { name: "Status, 1 selected" }));
+    await user.click(screen.getByRole("checkbox", { name: "Completed" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Completed" })).not.toBeChecked());
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("button", { name: "Remove Completed filter" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Open filter" })).toBeInTheDocument();
+    const search = screen.getByRole("searchbox", { name: "Search tasks" });
+    await user.type(search, "unapplied search");
+    await waitFor(() => expect(emit).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(search).toHaveValue(""));
+    expect(screen.getByText("Prepare launch notes")).toBeInTheDocument();
+    expect(screen.getByText(/Your previous results remain visible/)).toHaveTextContent("Navigation unavailable");
+  });
+
   it("keeps mobile filters and triage direct, with namespace management only in the open pane", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent) => ({ intent_id: intent.intent_id, status: "accepted" as const }));

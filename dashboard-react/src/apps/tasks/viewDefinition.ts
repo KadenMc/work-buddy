@@ -51,7 +51,7 @@ export const TASKS_VIEW_DEFINITION = {
       lockedReason:
         "Tasks keeps Quick Add available so creating work stays one gesture away.",
       defaultSettings: {},
-      defaultLayout: { x: 0, y: 0, w: 24, h: 4 },
+      defaultLayout: { x: 0, y: 0, w: 24, h: 5 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
     {
@@ -68,7 +68,7 @@ export const TASKS_VIEW_DEFINITION = {
       lockedReason:
         "Tasks needs the workspace to show and manage your task collection.",
       defaultSettings: {},
-      defaultLayout: { x: 0, y: 4, w: 24, h: 20 },
+      defaultLayout: { x: 0, y: 5, w: 24, h: 20 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
   ],

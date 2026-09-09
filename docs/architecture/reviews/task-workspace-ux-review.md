@@ -1,5 +1,62 @@
 # Task Workspace UX review
 
+## Follow-up acceptance corrections
+
+The second user test exposed excessive namespace width, a separate scope link,
+unclear reset coverage, and missing persisted browsing preferences. The latest
+pass replaces the scope link with a keyboard-operable three-state checkbox,
+adds a namespace-only eraser, and uses the standard card eraser to reset every
+browsing filter (including namespaces), sorting and pagination. The latter
+restores Open / Date created / newest first; task-field drafts and grid settings
+remain separate. Explicit browse URLs override saved preferences completely.
+
+The namespace pane now has a compact default and a 160px minimum without a
+percentage floor. Deep indentation compresses at narrow pane widths. Filter
+buttons and their corresponding pills share restrained theme-aware colors.
+Assigned namespace pills have a larger text inset and retain a visible removal
+control when their labels wrap.
+
+Quick Add's default height increases by one grid row so its bottom controls fit.
+The default Workspace position moves down by the same row; saved user sizes and
+placements remain respected. Both browser engines check the initial controls
+against the card's content bounds.
+
+Namespace removal offers an unchecked, task-specific ten-minute opt-in to skip
+subsequent removal confirmations. It starts only after an accepted confirmed
+removal, is shared between list and detail in that browser session, and can be
+revoked. Completion still always confirms. Interrupted responses retain their
+reviewed request identity for retry while that editor remains mounted; leaving
+the entire detail before a response can lose its local retry dialog. This pass
+does not introduce a durable mutation queue.
+
+Independent source review caught a checkbox flex-width specificity conflict,
+deep-label space pressure, optimistic query rollback on navigation failure, and
+premature preference loss on reset failure. Those paths were corrected before
+the browser acceptance run. Header reset confirmation freezes its draft scope
+and revision, so navigating into a task during confirmation cannot clear that
+task's field draft instead.
+
+The final affected component, provider, persistence and host batch passed all
+199 tests across 12 files. This includes rejected and thrown navigation/reset
+responses, saved preferences, reviewed reset scope, task-specific cooldown,
+completion confirmation, and preservation of custom grid sizes.
+
+The final production typecheck and build passed, followed by **14/14 live
+journeys**: thirteen in Chromium and the default/filter/sort smoke in Firefox.
+The runner returned `ok: true` and `cleanup_succeeded: true`. New journeys cover
+the three-state checkbox, namespace-only eraser, saved browsing state, explicit
+URL precedence, whole-card reset cancellation/confirmation, and cooldown
+isolation, navigation, reload and interrupted-response retry. Existing grid,
+completion, organizer/Undo, task drafts and narrow-layout journeys also passed.
+
+Twenty-two screenshots from that final run are retained below. Independent
+visual review found no material clipping or overflow in the compact namespace
+pane, default Quick Add, reset/cooldown dialogs or wrapped long namespace pill.
+Earlier attempts exposed stale checkbox selectors and a search-settlement race
+in the new narrow assertion; those test assumptions were corrected before the
+successful full run. Screenshot review also caught insufficient pill padding and
+Quick Add clipping, both fixed before the final build.
+
 ## Scope and verification status
 
 This review covers task browsing, filtering, sorting, namespace assignments and
@@ -9,8 +66,8 @@ synthetic tasks and project records, with the authenticated session and matching
 origin checked first. The normal dashboard and personal task stores are outside
 this review.
 
-**The full production-bundle run passed 11 journeys, and two focused production
-journeys passed on the rebuilt final source.** The full run covered ten Chromium
+**The earlier accepted baseline passed 11 production-bundle journeys, and two
+focused journeys passed after its detail overlay guard.** That full run covered ten Chromium
 journeys and a Firefox default/filter/sort smoke journey. After the final
 three-line detail overlay guard, typecheck, the production build and both focused
 namespace/completion journeys passed. Each runner reported
@@ -99,7 +156,7 @@ proposal; there is no automatic completion.
 
 ## Verification record
 
-### Current corrective evidence
+### Earlier corrective evidence
 
 - The first corrective production run passed six journeys and failed the
   completion-dialog breakpoint check. Manual testing confirmed the namespace
@@ -163,7 +220,7 @@ profiling scripts are retained under `scripts/profile_task_*.py`.
 
 ### Visual evidence and review limitations
 
-Current screenshots from the successful production journeys show
+Current screenshots from the final fourteen-journey production run show
 [desktop default page](task-workspace/desktop-page-default.png),
 [narrow default page](task-workspace/narrow-page-default.png),
 [desktop browsing](task-workspace/desktop-browse.png),
@@ -175,10 +232,20 @@ Current screenshots from the successful production journeys show
 [completion Help](task-workspace/completion-help.png),
 [narrow project selection](task-workspace/narrow-project-picker.png),
 [namespace inventory](task-workspace/namespace-inventory.png), and
-[namespace preview](task-workspace/namespace-preview.png). These 12 captures
-document the corrected grid, browsing density, controls and organizer using
-synthetic data. Busy-overlay keyboard behavior is established by the passing
-focused interaction checks described above, rather than by static images.
+[namespace preview](task-workspace/namespace-preview.png). The latest corrections
+also have captures of the
+[collapsed namespace pane](task-workspace/namespace-collapsed-default-width.png),
+[160px minimum width](task-workspace/namespace-minimum-width.png),
+[branch checkbox](task-workspace/namespace-branch-checkbox.png),
+[exact checkbox](task-workspace/namespace-exact-checkbox.png),
+[desktop pill padding](task-workspace/namespace-pill-padding-desktop.png),
+[narrow pill wrapping](task-workspace/namespace-pill-wrapping-narrow.png),
+[cooldown opt-in](task-workspace/namespace-cooldown-opt-in.png),
+[interrupted-response retry](task-workspace/namespace-cooldown-safe-retry.png),
+[restored browsing state](task-workspace/task-browse-state-restored.png), and
+[whole-card reset confirmation](task-workspace/task-browse-reset-confirmation.png).
+These 22 captures use synthetic data. Busy-overlay keyboard behavior is
+established by the passing interaction checks, rather than static images.
 
 The independent reviewer inspected screenshots and raised viewport-density and
 inventory-hierarchy issues. This was a design-hypothesis review with partial prior

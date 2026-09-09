@@ -123,6 +123,8 @@ describe("Tasks view customization", () => {
     await user.click(screen.getByRole("button", { name: "Cancel task action" }));
 
     await user.click(screen.getByRole("button", { name: "Customize view" }));
+    // A larger shipped Quick Add default must not resize an existing personal layout.
+    expect(within(screen.getByRole("region", { name: "Quick Add" })).getByText("12 × 4 grid units")).toBeVisible();
     expect(within(workspace()).getByText("12 × 18 grid units")).toBeVisible();
     expect(await screen.findByLabelText("Task Workspace mode")).toHaveTextContent("arrange");
     expect(screen.getByRole("button", { name: "Widgets" })).toBeEnabled();
@@ -149,6 +151,7 @@ describe("Tasks view customization", () => {
     render(tree());
     await screen.findByLabelText("Task Workspace mode");
     await user.click(screen.getByRole("button", { name: "Customize view" }));
+    expect(within(screen.getByRole("region", { name: "Quick Add" })).getByText("12 × 4 grid units")).toBeVisible();
     expect(within(workspace()).getByText("12 × 19 grid units")).toBeVisible();
   });
 });

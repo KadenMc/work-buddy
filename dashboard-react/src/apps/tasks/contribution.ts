@@ -133,7 +133,7 @@ const widgets: readonly WidgetDefinition[] = [
       },
     ],
     sizeContract: {
-      default: { w: 24, h: 4 },
+      default: { w: 24, h: 5 },
       min: { w: 8, h: 3 },
       max: { w: 24, h: 12 },
       modes: ["compact", "standard", "expanded"],
@@ -155,6 +155,24 @@ const widgets: readonly WidgetDefinition[] = [
     outputIntentSchemas: workspaceSchemas,
     outputIntentEffects: effects(workspaceSchemas),
     drafts: [
+      {
+        draftName: "task-browse",
+        schema: { schemaId: "wb.tasks.browse.draft", version: 1 },
+        persistence: "device",
+        sensitivity: "ordinary",
+        maxBytes: 65_536,
+        clearPolicy: "confirm",
+        clearPresentation: {
+          label: "Reset Task Workspace view",
+          title: "Reset task view?",
+          description: "Reset every filter, including selected and exact namespaces. Show Open tasks sorted by Date created, newest first, on the first page. Unsaved task edits, the namespace panel layout, and the dashboard grid are kept.",
+          confirmLabel: "Reset view",
+          cancelLabel: "Keep view",
+          successMessage: "Default task view requested.",
+          failureMessage: "Task Workspace view could not be reset.",
+        },
+        scope: { kind: "view" },
+      },
       {
         draftName: "task-edit",
         schema: { schemaId: "wb.tasks.edit.draft", version: 1 },

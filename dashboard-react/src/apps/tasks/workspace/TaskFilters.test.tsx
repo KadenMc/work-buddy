@@ -60,6 +60,41 @@ describe("Namespace hierarchy", () => {
   beforeEach(() => localStorage.removeItem("wb.tasks.namespace-expanded"));
   const tree = (onChange = vi.fn()) => <NamespaceRail nodes={namespaceNodes} selected={[]} exact={[]} noNamespaceCount={3} onChange={onChange} onHide={vi.fn()} onManage={vi.fn()} />;
 
+  function StatefulRail() {
+    const [selected, setSelected] = useState<readonly string[]>([]);
+    const [exact, setExact] = useState<readonly string[]>([]);
+    return <NamespaceRail nodes={namespaceNodes} selected={selected} exact={exact} onChange={(next, direct) => { setSelected(next); setExact(direct); }} onHide={vi.fn()} onManage={vi.fn()} />;
+  }
+
+  it("cycles branch, exact and unchecked with pointer or Space, then clears all namespace scopes together", async () => {
+    const user = userEvent.setup();
+    render(<StatefulRail />);
+    const clear = screen.getByRole("button", { name: "Clear namespace filters" });
+    expect(clear).toBeDisabled();
+    const checkbox = screen.getByRole("checkbox", { name: "projects and descendants" });
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toHaveAttribute("aria-checked", "true");
+    await user.keyboard(" ");
+    expect(screen.getByRole("checkbox", { name: "projects only" })).toBePartiallyChecked();
+    expect(checkbox).toHaveAttribute("aria-description", expect.stringContaining("This namespace only"));
+    await user.keyboard(" ");
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).not.toBePartiallyChecked();
+    expect(clear).toBeDisabled();
+    await user.click(checkbox);
+    await user.click(checkbox);
+    await user.click(screen.getByRole("checkbox", { name: "138 and descendants" }));
+    await user.click(screen.getByRole("checkbox", { name: "No namespace" }));
+    await user.click(clear);
+    expect(screen.getAllByRole("checkbox").every((input) => !(input as HTMLInputElement).checked && !(input as HTMLInputElement).indeterminate)).toBe(true);
+    expect(clear).toBeDisabled();
+    expect(screen.queryByText("Including descendants")).not.toBeInTheDocument();
+    expect(screen.queryByText("Selecting a branch includes its descendants.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Change scope/ })).not.toBeInTheDocument();
+  });
+
   it("starts every level collapsed and remembers deliberate expansions across remounts", async () => {
     const user = userEvent.setup(); const onChange = vi.fn();
     const view = render(tree(onChange));

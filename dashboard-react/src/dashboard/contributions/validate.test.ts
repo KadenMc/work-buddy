@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AppContribution, WidgetModule } from "./contracts";
+import type { AppContribution, WidgetDraftDeclaration, WidgetModule } from "./contracts";
 import {
   asAppId,
   asSettingsPageId,
@@ -370,5 +370,17 @@ describe("validateAppContribution", () => {
     const codes = validate(contribution()).map((issue) => issue.code);
     expect(codes).not.toContain("durable_widget_multiplicity");
     expect(codes).not.toContain("durable_widget_drafts");
+  });
+
+  it("validates complete presentation copy for a declared view-state clear action", () => {
+    const value = contribution();
+    const copy = { label: "Reset view", title: "Reset this view?", description: "Restore the default filters.", confirmLabel: "Reset", cancelLabel: "Keep", successMessage: "View reset.", failureMessage: "View could not reset." };
+    const withCopy = (clearPresentation: unknown): AppContribution => ({ ...value, widgetDefinitions: [{
+      ...value.widgetDefinitions[0]!, drafts: [{ draftName: "view-state", schema: { schemaId: "example.view-state", version: 1 }, persistence: "device", sensitivity: "ordinary", maxBytes: 4096, clearPolicy: "confirm", scope: { kind: "view" }, clearPresentation: clearPresentation as NonNullable<WidgetDraftDeclaration["clearPresentation"]> }],
+    }] });
+    expect(validate(withCopy(copy)).map((issue) => issue.code)).not.toContain("invalid_widget_draft_clear_presentation");
+    for (const invalid of [null, {}, { ...copy, label: " " }, { ...copy, failureMessage: 12 }]) {
+      expect(validate(withCopy(invalid))).toEqual(expect.arrayContaining([expect.objectContaining({ code: "invalid_widget_draft_clear_presentation", path: "widgetDefinitions[0].drafts[0].clearPresentation" })]));
+    }
   });
 });

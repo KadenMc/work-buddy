@@ -38,6 +38,7 @@ import {
   type TasksApiError,
 } from "./taskApiContract";
 import { isProposalId, parseTaskProposalEnvelope } from "./proposalApiContract";
+import { hasTaskBrowseQuery } from "../workspace/taskBrowseState";
 
 export interface HttpTasksProviderOptions {
   readonly fetchImpl?: typeof fetch;
@@ -322,7 +323,7 @@ export class HttpTasksProvider implements ViewProvider {
         ...previous, revision: `${previous.revision}:refresh-error:${loadGeneration}`, status: "stale",
         quality: { kind: "partial", message },
         model: { ...previous.model, query: nextQuery, selectedTask, selectedProposal: null },
-        widgetInputs: { ...previous.widgetInputs, [TASKS_INSTANCE_IDS.workspace]: { ...workspace, query: nextQuery, selectedTask, selectedProposal: null, refreshing: false, refresh_error: message } },
+        widgetInputs: { ...previous.widgetInputs, [TASKS_INSTANCE_IDS.workspace]: { ...workspace, browseQueryExplicit: hasTaskBrowseQuery(search), query: nextQuery, selectedTask, selectedProposal: null, refreshing: false, refresh_error: message } },
       };
       if (canPublish()) this.#last = fallback;
       return fallback;
@@ -365,6 +366,7 @@ export class HttpTasksProvider implements ViewProvider {
       observedProposal: this.#observedProposal,
     };
     const workspace: TaskWorkspaceInput = {
+      browseQueryExplicit: hasTaskBrowseQuery(search),
       total: model.total,
       page: model.page,
       namespace_tree: model.namespace_tree,
