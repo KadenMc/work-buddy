@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
 import { DashboardHelpProvider } from "../../../dashboard/help";
@@ -109,6 +109,29 @@ const renderWorkspace = (
 
 const proposal: TaskProposal = { thread_id: "th-1234abcd", proposal_event_id: 7, status: "ready", parameters: { task_text: "Review captured idea", state: "inbox" }, origin: { kind: "journal", id: "capture-1", label: "Journal" }, realization: null, href: "/app/tasks?proposal=th-1234abcd" };
 const proposalInput = (value = proposal): TaskWorkspaceInput => ({ ...input(), selectedProposal: { kind: "loaded", proposal: value }, query: { ...input().query, proposal: value.thread_id } });
+
+beforeEach(() => {
+  for (const key of ["wb.tasks.namespace-visible", "wb.tasks.namespace-visible-mobile", "wb.tasks.namespace-expanded", "react-resizable-panels:wb.tasks.namespace-width"]) localStorage.removeItem(key);
+  // jsdom gives every element a zero rectangle. The real split-panel library
+  // then treats ordinary pointer clicks as divider hits and steals focus.
+  // Give only the split a measured geometry; keep its actual event behavior.
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.workspacePane === "primary") return 360;
+    if (this.dataset.workspacePane === "side") return 840;
+    if (this.hasAttribute("data-separator")) return 11;
+    return this.hasAttribute("data-group") ? 1211 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.workspacePane === "side") return 371;
+    return this.hasAttribute("data-separator") ? 360 : 0;
+  });
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.hasAttribute("data-group") || this.hasAttribute("data-separator") || this.dataset.workspacePane) return new DOMRect(this.offsetLeft, 0, this.offsetWidth, 800);
+    return originalRect.call(this);
+  });
+});
+afterEach(() => vi.restoreAllMocks());
 
 describe("Task proposal review", () => {
   it("explains proposal writes and cancellation without a help hover making a decision", async () => {
@@ -336,7 +359,7 @@ describe("TaskWorkspace", () => {
     expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ payload: { patch: { statuses: ["completed"], offset: 0 }, replace: true } }));
   });
 
-  it("keeps all filters visible on mobile and opens namespace and triage actions from the compact menu", async () => {
+  it("keeps mobile filters and triage direct, with namespace management only in the open pane", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent) => ({ intent_id: intent.intent_id, status: "accepted" as const }));
     renderWorkspace(input(), emit, { ...presentation, width: 390 });
@@ -344,13 +367,26 @@ describe("TaskWorkspace", () => {
       expect(screen.getByRole("button", { name: new RegExp(`^${label},`) })).toBeInTheDocument();
     }
     expect(screen.queryByRole("button", { name: "Manage namespaces" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Task actions" }));
-    expect(screen.getByRole("menuitem", { name: "Manage namespaces" })).toBeInTheDocument();
-    await user.click(screen.getByRole("menuitem", { name: "Show namespaces" }));
-    expect(screen.getByRole("complementary", { name: "Namespaces" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Task actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Triage inbox" }));
+    expect(screen.queryByRole("button", { name: "Task actions" })).not.toBeInTheDocument();
+    const show = screen.getByRole("button", { name: "Show namespaces" });
+    expect(show.closest(".wb-task-results-summary")).not.toBeNull();
+    await user.click(show);
+    const rail = screen.getByRole("complementary", { name: "Namespaces" });
+    expect(screen.getAllByRole("button", { name: "Manage namespaces" })).toHaveLength(1);
+    expect(within(rail).getByRole("button", { name: "Manage namespaces" })).toBeInTheDocument();
+    await user.click(within(rail).getByRole("button", { name: "Hide namespaces" }));
+    expect(screen.queryByRole("button", { name: "Manage namespaces" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Triage inbox" }));
     expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ payload: { patch: { mode: "triage", statuses: ["open"], attention: ["inbox"], offset: 0 }, replace: true } }));
+  });
+
+  it("keeps a contextual namespace tree empty even when the assignment picker has global options", () => {
+    localStorage.setItem("wb.tasks.namespace-visible", "true");
+    const value = input();
+    renderWorkspace({ ...value, namespace_tree: [], options: { ...value.options, namespaces: [{ value: "outside-current-filter", label: "Outside current filter" }] } }, vi.fn());
+    const rail = screen.getByRole("complementary", { name: "Namespaces" });
+    expect(within(rail).getByText("No namespaces match.")).toBeVisible();
+    expect(within(rail).queryByRole("checkbox", { name: "outside-current-filter and descendants" })).not.toBeInTheDocument();
   });
 
   it("hides the entire namespace rail while retaining namespace pills", async () => {
@@ -364,6 +400,8 @@ describe("TaskWorkspace", () => {
     expect(screen.queryByRole("complementary", { name: "Namespaces" })).not.toBeInTheDocument();
     expect(document.querySelector(".wb-task-browse-grid")).not.toHaveClass("has-namespaces");
     expect(screen.getByRole("button", { name: "Remove engineering + descendants filter" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Manage namespaces" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show namespaces" }).closest(".wb-task-results-summary")).not.toBeNull();
     await user.click(screen.getByRole("button", { name: "Show namespaces" }));
     expect(screen.getByRole("complementary", { name: "Namespaces" })).toBeInTheDocument();
     expect(emit).not.toHaveBeenCalled();
@@ -373,11 +411,16 @@ describe("TaskWorkspace", () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent) => ({ intent_id: intent.intent_id, status: "accepted" as const }));
     renderWorkspace(input(), emit);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Sort by" }), "title");
+    const chooseSort = async (label: string) => {
+      await user.click(screen.getByRole("button", { name: /Sort by/ }));
+      await user.click(screen.getByRole("option", { name: label }));
+    };
+    expect(screen.getByRole("button", { name: /Sort by/ })).toHaveClass("wb-select-field__trigger");
+    await chooseSort("Title");
     expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ payload: { patch: { sort: "title", direction: "asc", offset: 0 }, replace: true } }));
     await user.click(screen.getByRole("button", { name: "Reverse sort direction, currently A–Z" }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Sort by" }), "created_at");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Sort by" }), "title");
+    await chooseSort("Date created");
+    await chooseSort("Title");
     expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ payload: { patch: { sort: "title", direction: "desc", offset: 0 }, replace: true } }));
   });
 
@@ -454,16 +497,16 @@ describe("TaskWorkspace", () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 
-  it("explains completion, selection, lifecycle filters and sorting in Help mode without mutating", async () => {
+  it("explains completion, namespace editing, lifecycle filters and sorting in Help mode without mutating", async () => {
     const user = userEvent.setup(); const emit = vi.fn();
     render(<DashboardHelpProvider enabled>{workspaceElement(input(), emit)}</DashboardHelpProvider>);
     const checks = [
       [screen.getByRole("button", { name: "Complete Prepare launch notes" }), "does not change anything until you confirm"],
-      [screen.getByRole("checkbox", { name: "Select Prepare launch notes" }), "Selection does not complete or edit the task"],
+      [screen.getByRole("button", { name: "Add namespace to this task" }), "Selecting an existing namespace adds its assignment to this task only"],
       [screen.getByRole("button", { name: "Status, 1 selected" }), "Open includes snoozed tasks"],
       [screen.getByRole("button", { name: "Attention, any" }), "They do not replace lifecycle Status"],
       [screen.getByRole("button", { name: "Projects, any" }), "independently of its namespace assignments"],
-      [screen.getByRole("combobox", { name: "Sort by" }), "Unknown dates remain last"],
+      [screen.getByRole("button", { name: /Sort by/ }), "Unknown dates remain last"],
     ] as const;
     for (const [target, text] of checks) {
       await user.hover(document.body); await user.hover(target);
@@ -536,14 +579,135 @@ describe("TaskWorkspace", () => {
     await waitFor(() => expect(emit).toHaveBeenCalledWith(expect.objectContaining({ intent_type: TASK_INTENTS.update, payload: expect.objectContaining({ expected_revision: 4, title: "My local work" }) })));
   });
 
-  it("keeps namespace tags out of the ordinary tags editor", async () => {
+  it("saves a confirmed namespace removal immediately while preserving other draft edits and ordinary tags", async () => {
     const user = userEvent.setup();
-    const emit = vi.fn(async (intent: WidgetIntent) => ({ intent_id: intent.intent_id, status: "accepted" as const }));
-    renderWorkspace(input({ ...detail, tags: ["writing", ...detail.namespaces] }), emit);
+    const saved = { ...detail, revision: 4, namespaces: [], tags: ["writing"] };
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted", value: { task: saved } }));
+    const view = renderWorkspace(input({ ...detail, tags: ["writing", ...detail.namespaces] }), emit);
     expect(await screen.findByRole("textbox", { name: "Tags" })).toHaveValue("writing");
-    const namespaces = screen.getByRole("textbox", { name: "Namespaces" });
-    await user.clear(namespaces); await user.click(screen.getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(emit).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({ namespaces: [], tags: ["writing"] }) })));
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsubmitted title" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Summary" }), { target: { value: "Unsubmitted summary" } });
+    const remove = screen.getByRole("button", { name: "Remove project/work-buddy from this task" });
+    await user.click(remove);
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    expect(emit).not.toHaveBeenCalled();
+    await user.click(remove);
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove namespace" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({ intent_type: TASK_INTENTS.update });
+    expect(emit.mock.calls[0]?.[0].payload).toEqual({ task_id: "task-1", expected_revision: 3, namespaces: [] });
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsubmitted title");
+    expect(screen.getByRole("textbox", { name: "Summary" })).toHaveValue("Unsubmitted summary");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    view.rerender(workspaceElement(input(saved), emit));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsubmitted title");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(emit).toHaveBeenCalledTimes(2));
+    expect(emit.mock.calls[1]?.[0].payload).toMatchObject({ expected_revision: 4, title: "Unsubmitted title", summary: "Unsubmitted summary", namespaces: [], tags: ["writing"] });
+  });
+
+  it("adds a namespace independently of unsaved project and title fields", async () => {
+    const user = userEvent.setup();
+    const saved = { ...detail, revision: 4, project_ids: [7], namespaces: [...detail.namespaces, "research"] };
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted", value: { task: saved } }));
+    const baseInput = input({ ...detail, project_ids: [7] });
+    renderWorkspace({ ...baseInput, options: { ...baseInput.options, projects: [{ value: "7", label: "Work Buddy" }, { value: "8", label: "Research" }], namespaces: [{ value: "research", label: "Research" }] } }, emit);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), { target: { value: "Still editing" } });
+    await user.click(screen.getByRole("button", { name: /Linked projects/ }));
+    await user.click(screen.getByRole("checkbox", { name: "Research" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Add namespace to this task" }));
+    await user.click(screen.getByRole("button", { name: "Add research to this task" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add namespace" })).not.toBeInTheDocument());
+    expect(emit.mock.calls[0]?.[0].payload).toEqual({ task_id: "task-1", expected_revision: 3, namespaces: ["project/work-buddy", "research"] });
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Still editing");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(emit).toHaveBeenCalledTimes(2));
+    expect(emit.mock.calls[1]?.[0].payload).toMatchObject({ expected_revision: 4, title: "Still editing", project_ids: [7, 8], namespaces: ["project/work-buddy", "research"] });
+  });
+
+  it.each(["remove", "add", "complete"] as const)("keeps the detail draft and retry surface when Escape is pressed during a pending %s", async (operation) => {
+    const user = userEvent.setup();
+    let finish!: (result: IntentResult) => void;
+    const mutationType = operation === "complete" ? TASK_INTENTS.complete : TASK_INTENTS.update;
+    const emit = vi.fn((intent: WidgetIntent): Promise<IntentResult> => intent.intent_type === mutationType
+      ? new Promise<IntentResult>((resolve) => { finish = resolve; })
+      : Promise.resolve({ intent_id: intent.intent_id, status: "accepted" }));
+    const baseInput = input(detail);
+    renderWorkspace({ ...baseInput, options: { ...baseInput.options, namespaces: [{ value: "research", label: "Research" }] } }, emit);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), { target: { value: "Unsubmitted draft stays here" } });
+    if (operation === "remove") {
+      await user.click(screen.getByRole("button", { name: "Remove project/work-buddy from this task" }));
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove namespace" }));
+    } else if (operation === "add") {
+      await user.click(screen.getByRole("button", { name: "Add namespace to this task" }));
+      await user.click(screen.getByRole("button", { name: "Add research to this task" }));
+    } else {
+      await user.click(screen.getByRole("button", { name: "Complete" }));
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Mark complete" }));
+    }
+    const overlay = screen.getByRole(operation === "add" ? "dialog" : "alertdialog");
+    // All action buttons are disabled during the request; the dialog itself
+    // remains a keyboard target and portals still bubble to TaskDetail.
+    act(() => overlay.focus());
+    await user.keyboard("{Escape}");
+    expect(overlay).toBeInTheDocument();
+    await act(async () => finish({ intent_id: "uncertain", status: "unavailable", message: "Response interrupted." }));
+    expect(emit).toHaveBeenCalledTimes(1);
+    const retry = await screen.findByRole("button", { name: operation === "remove" ? "Retry removal" : operation === "add" ? "Retry adding namespace" : "Retry completion" });
+    await user.click(retry);
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit.mock.calls[1]?.[0].payload).toEqual(emit.mock.calls[0]?.[0].payload);
+    expect(emit.mock.calls[1]?.[0].client_mutation_id).toBe(emit.mock.calls[0]?.[0].client_mutation_id);
+    const namespaces = operation === "remove" ? [] : operation === "add" ? [...detail.namespaces, "research"] : detail.namespaces;
+    const saved = { ...detail, revision: 4, namespaces, ...(operation === "complete" ? { attention_state: "done", completed_at: "2026-09-09T12:00:00Z" } : {}) };
+    await act(async () => finish({ intent_id: "saved", status: "accepted", value: { task: saved } }));
+    await waitFor(() => expect(overlay).not.toBeInTheDocument());
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsubmitted draft stays here");
+    expect(screen.getByRole("button", { name: "Back to tasks" })).toBeInTheDocument();
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an uncertain namespace receipt with its original revision after a newer snapshot arrives", async () => {
+    const user = userEvent.setup();
+    const saved = { ...detail, revision: 4, namespaces: [] };
+    let attempts = 0;
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => {
+      if (++attempts === 1) throw new Error("Response was interrupted.");
+      return { intent_id: intent.intent_id, status: "accepted", value: { task: saved } };
+    });
+    const view = renderWorkspace(input(detail), emit);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), { target: { value: "Retained draft" } });
+    await user.click(screen.getByRole("button", { name: "Remove project/work-buddy from this task" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove namespace" }));
+    await screen.findByRole("button", { name: "Retry removal" });
+    view.rerender(workspaceElement(input(saved), emit));
+    await user.click(screen.getByRole("button", { name: "Retry removal" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit.mock.calls[1]?.[0].payload).toEqual(emit.mock.calls[0]?.[0].payload);
+    expect(emit.mock.calls[1]?.[0].client_mutation_id).toBe(emit.mock.calls[0]?.[0].client_mutation_id);
+    expect(emit.mock.calls[1]?.[0].payload).toMatchObject({ expected_revision: 3 });
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Retained draft");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
+
+  it("retains the draft on namespace conflict and blocks new namespace changes until reconciliation", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: intent.intent_type === TASK_INTENTS.update ? "conflict" : "accepted", message: "Task changed elsewhere." }));
+    const view = renderWorkspace(input(detail), emit);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Title" }), { target: { value: "Retained draft" } });
+    await user.click(screen.getByRole("button", { name: "Remove project/work-buddy from this task" }));
+    view.rerender(workspaceElement(input({ ...detail, revision: 4, title: "External title" }), emit));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove namespace" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry removal" })).toBeDisabled());
+    expect(emit.mock.calls[0]?.[0].payload).toEqual({ task_id: "task-1", expected_revision: 3, namespaces: [] });
+    expect(emit.mock.calls[1]?.[0]).toMatchObject({ intent_type: TASK_INTENTS.locationChange });
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Retained draft");
+    expect(screen.getByRole("button", { name: "Add namespace to this task" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove project/work-buddy from this task" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
   });
   it("edits structured fields explicitly and opens the bound Co-work document", async () => {
     const user = userEvent.setup();
@@ -551,11 +715,9 @@ describe("TaskWorkspace", () => {
     renderWorkspace(input(detail), emit);
     const title = await screen.findByRole("textbox", { name: "Title" });
 
-    await user.clear(title);
-    await user.type(title, "Prepare final launch notes");
+    fireEvent.change(title, { target: { value: "Prepare final launch notes" } });
     const tags = screen.getByRole("textbox", { name: "Tags" });
-    await user.clear(tags);
-    await user.type(tags, "writing, release");
+    fireEvent.change(tags, { target: { value: "writing, release" } });
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
     expect(emit.mock.calls[0]?.[0]).toMatchObject({

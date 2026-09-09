@@ -2,8 +2,9 @@ import { ArrowDown, ArrowUp, MagnifyingGlass } from "@phosphor-icons/react";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import type { IntentResult, JsonValue, WidgetIntent, WidgetRendererProps } from "../../../dashboard/contributions/contracts";
 import { useDashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
-import { ActionMenu, InlineAlert } from "../../../ui";
-import { TaskButton as Button, TaskHelp, TASK_HELP } from "./TaskHelp";
+import { InlineAlert, SelectField } from "../../../ui";
+import { WorkspaceSidePanel } from "../../../dashboard/layout/WorkspaceSidePanel";
+import { TaskButton as Button, TASK_HELP } from "./TaskHelp";
 import { createCorrelationId, createWidgetIntent } from "../../../widget-library/shared";
 import { TASK_INTENTS, type TaskQueryState, type TaskSort, type TaskSummary, type TaskWorkspaceInput } from "../contracts";
 import { TaskDetail } from "./TaskDetail";
@@ -40,8 +41,6 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
   useEffect(() => {
     try { const saved = localStorage.getItem(narrowHost ? "wb.tasks.namespace-visible-mobile" : "wb.tasks.namespace-visible"); setNamespaceVisible(saved === null ? !narrowHost : saved === "true"); } catch { setNamespaceVisible(!narrowHost); }
   }, [narrowHost]);
-  const [selected, setSelected] = useState<readonly string[]>([]);
-  const [bulkOpen, setBulkOpen] = useState(false);
   const [completionTask, setCompletionTask] = useState<TaskSummary | null>(null);
   const [pendingDeleteUndo, setPendingDeleteUndo] = useState<{ taskId: string; revision: number } | null>(null);
   const [triageOrder, setTriageOrder] = useState<readonly string[]>([]);
@@ -114,7 +113,14 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
     navigate({ task: taskId, proposal: null }, false);
   };
   const closeDetails = () => navigate({ task: null, proposal: null }, false);
-  const setRail = (visible: boolean) => { setNamespaceVisible(visible); try { localStorage.setItem(narrowHost ? "wb.tasks.namespace-visible-mobile" : "wb.tasks.namespace-visible", String(visible)); } catch { /* Optional preference. */ } };
+  const setRail = (visible: boolean) => {
+    setNamespaceVisible(visible);
+    try { localStorage.setItem(narrowHost ? "wb.tasks.namespace-visible-mobile" : "wb.tasks.namespace-visible", String(visible)); } catch { /* Optional preference. */ }
+    requestAnimationFrame(() => {
+      const group = browseRef.current?.closest(".wb-task-browse-grid");
+      group?.querySelector<HTMLElement>(visible ? '.wb-task-namespace-rail input[type="search"]' : ".wb-task-show-namespaces")?.focus({ preventScroll: true });
+    });
+  };
   const clearFilters = () => { setSearch(""); filter({ q: "", statuses: [], projects: [], namespaces: [], exact_namespaces: [], attention: [], urgencies: [], due: "", note: "", mode: "browse" }); };
   const toggleTriage = () => filter(triage ? { mode: "browse" } : { mode: "triage", statuses: ["open"], attention: ["inbox"] });
   const runSummaryAction = async (task: TaskSummary, action: "complete" | "reopen" | "focus" | "mit" | "snooze" | "archive", reuseId?: string): Promise<IntentResult> => {
@@ -126,8 +132,17 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
     if (result.status === "conflict") navigate({});
     return result;
   };
+  const changeNamespaces = async (task: TaskSummary, namespaces: readonly string[], mutationId?: string): Promise<IntentResult> => {
+    if (readOnly) return { intent_id: mutationId ?? "read-only", status: "unavailable", message: "Task editing is unavailable." };
+    const result = await send(TASK_INTENTS.update, { task_id: task.task_id, expected_revision: task.revision, namespaces: [...namespaces] }, true, mutationId);
+    const text = result.message ?? (result.status === "accepted" ? "Task namespaces updated." : "Task namespaces could not be updated.");
+    setNotice({ tone: result.status === "accepted" ? "success" : result.status === "conflict" ? "warning" : "danger", text });
+    announce(text, result.status === "accepted" ? "polite" : "assertive");
+    if (result.status === "conflict") navigate({});
+    return result;
+  };
   const skip = (task: TaskSummary) => { const next = [...triageOrder.filter((id) => id !== task.task_id), task.task_id]; setTriageOrder(next); announce(`${task.title} moved to the end of this triage pass.`); requestAnimationFrame(() => { if (next[0]) taskRefs.current.get(next[0])?.focus({ preventScroll: true }); }); };
-  const namespaceNodes = input.namespace_tree?.length ? input.namespace_tree : input.options.namespaces.map((option) => ({ path: option.value, parent: option.value.includes("/") ? option.value.slice(0, option.value.lastIndexOf("/")) : null, label: option.label, count: input.facets.namespaces[option.value] ?? 0, direct_count: input.facets.namespaces[option.value] ?? 0 }));
+  const namespaceNodes = input.namespace_tree ?? input.options.namespaces.map((option) => ({ path: option.value, parent: option.value.includes("/") ? option.value.slice(0, option.value.lastIndexOf("/")) : null, label: option.label, count: input.facets.namespaces[option.value] ?? 0, direct_count: input.facets.namespaces[option.value] ?? 0 }));
   const resultCount = input.total ?? input.tasks.length;
   const error = refreshError ?? input.refresh_error;
 
@@ -137,14 +152,10 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
     {hasSelection && error ? <InlineAlert tone="danger">{error} <Button size="small" onClick={() => navigate({})}>Retry</Button></InlineAlert> : null}
     {hasSelection ? <section className="wb-task-dedicated-view" aria-label="Task details">
       {input.selectedProposal ? <TaskProposalDetail key={input.query.proposal} selection={input.selectedProposal} options={input.options} readOnly={readOnly} presentation={presentation} emit={emit} onClose={closeDetails} /> : input.selectedTask ? <TaskDetail key={input.selectedTask.task_id} task={input.selectedTask} options={input.options} readOnly={readOnly} presentation={presentation} emit={emit} onClose={closeDetails} undoDeleteRevision={pendingDeleteUndo?.taskId === input.selectedTask.task_id ? pendingDeleteUndo.revision : null} onDeleteAcknowledged={(revision) => setPendingDeleteUndo({ taskId: input.selectedTask!.task_id, revision })} onDeleteUndone={() => setPendingDeleteUndo(null)} /> : <div className="wb-task-empty"><Button onClick={closeDetails}>Back to tasks</Button><p>{refreshing ? "Opening task…" : "This task is unavailable. Return to your task list to continue browsing."}</p></div>}
-    </section> : organizer || bulkOpen ? <NamespaceOrganizer send={send} readOnly={readOnly} selectedTaskIds={bulkOpen ? selected : undefined} onClose={() => { setBulkOpen(false); if (organizer) navigate({ mode: "browse" }); }} onApplied={() => { setSelected([]); }} /> : <>
+    </section> : organizer ? <NamespaceOrganizer send={send} readOnly={readOnly} onClose={() => navigate({ mode: "browse" })} onApplied={() => {}} /> : <>
       <div className="wb-task-browse-tools">
         <form className="wb-task-search" role="search" onSubmit={(event) => { event.preventDefault(); filter({ q: search }); }}><label><span>Search tasks</span><span className="wb-task-search__control"><MagnifyingGlass aria-hidden="true" /><input ref={searchInputRef} type="search" value={search} placeholder="Find a task…" onChange={(event) => setSearch(event.target.value)} /></span></label></form>
-        {narrowHost ? <div className="wb-task-browse-actions wb-task-browse-actions--compact"><TaskHelp content={{ summary: "Show namespace controls and Inbox triage.", details: "Show namespaces reveals the filtering panel. Manage namespaces opens a preview-based organizer. Triage inbox visibly selects Open status and Inbox attention; opening this menu does not change tasks." }} focusable><span>Actions</span></TaskHelp><ActionMenu label="Task actions" sections={[{ id: "task-browsing", items: [
-          { id: "namespaces", label: namespaceVisible ? "Hide namespaces" : "Show namespaces", onAction: () => setRail(!namespaceVisible) },
-          { id: "manage-namespaces", label: "Manage namespaces", onAction: () => navigate({ mode: "namespaces" }) },
-          { id: "triage", label: triage ? "Finish triage" : "Triage inbox", onAction: toggleTriage },
-        ] }]} /></div> : <div className="wb-task-browse-actions">{!namespaceVisible ? <Button size="small" variant="ghost" onClick={() => setRail(true)}>Show namespaces</Button> : null}<Button size="small" variant="ghost" onClick={() => navigate({ mode: "namespaces" })}>Manage namespaces</Button><Button size="small" variant={triage ? "primary" : "ghost"} onClick={toggleTriage}>{triage ? "Finish triage" : "Triage inbox"}</Button></div>}
+        <div className="wb-task-browse-actions"><Button size="small" variant={triage ? "primary" : "ghost"} onClick={toggleTriage}>{triage ? "Finish triage" : "Triage inbox"}</Button></div>
       </div>
       <div className="wb-task-filter-toolbar" aria-label="Task filters">
         <MultiSelect label="Status" values={queryValues(query, "statuses")} options={STATUS_OPTIONS} counts={input.facets.statuses} onChange={(statuses) => filter({ statuses })} />
@@ -167,18 +178,17 @@ export default function TaskWorkspace({ input, emit, presentation }: WidgetRende
         <Button size="small" variant="ghost" onClick={clearFilters}>Clear filters</Button>
       </div>
       {triage ? <InlineAlert tone="info">Inbox triage · choose how to handle each task, or skip it for this pass. The visible filters control this list.</InlineAlert> : null}
-      <div className={`wb-task-browse-grid${namespaceVisible ? " has-namespaces" : ""}`}>
-        {namespaceVisible ? <NamespaceRail noNamespaceCount={input.facets.namespaces.__none__ ?? 0} nodes={namespaceNodes} selected={queryValues(query, "namespaces")} exact={queryValues(query, "exact_namespaces")} onChange={(namespaces, exact_namespaces) => filter({ namespaces: [...namespaces], exact_namespaces: [...exact_namespaces] })} onHide={() => setRail(false)} onManage={() => navigate({ mode: "namespaces" })} /> : null}
-        <div className="wb-task-results" ref={browseRef}>
-          <div className="wb-task-results-bar"><div><h2 className={triage ? undefined : "wb-task-sr-only"}>{triage ? "Inbox triage" : "Tasks"}</h2><p role="status">{refreshing || input.refreshing ? "Updating… " : ""}{resultCount} {resultCount === 1 ? "task" : "tasks"}</p></div>
-            <div className="wb-task-sort" role="group" aria-label="Task sorting"><label><span>Sort by</span><TaskHelp content={TASK_HELP.sort}><select aria-label="Sort by" value={sort} onChange={(event) => { directionMemory.current[sort] = direction; const next = event.target.value as TaskSort; filter({ sort: next, direction: directionMemory.current[next] ?? defaults[next] }); }}>{SORTS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></TaskHelp></label><Button help={TASK_HELP.sortDirection} size="small" variant="ghost" title={`Reverse sort: ${orderLabel}`} aria-label={`Reverse sort direction, currently ${orderLabel}`} onClick={() => { const next = direction === "asc" ? "desc" : "asc"; directionMemory.current[sort] = next; filter({ direction: next }); }}>{direction === "desc" ? <ArrowDown aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}<span>{orderLabel}</span></Button></div>
+      <WorkspaceSidePanel className={`wb-task-browse-grid${namespaceVisible ? " has-namespaces" : ""}`} layoutId="wb.tasks.namespace-width" primaryId="namespaces" sideId="results" mode={!namespaceVisible ? "side-only" : narrowHost ? "stacked" : "split"} primaryDefaultSize="30%" primaryMinSize="240px" sideDefaultSize="70%" sideMinSize="40%" sideMaxSize="80%" resizeLabel="Resize namespaces" resizeHelp={{ summary: "Resize the namespace panel.", details: "Drag this divider, or focus it and use the Left and Right arrow keys. Your width is saved. Double-click to restore the default widths. Hide namespaces gives this space back to the task list." }}
+        primary={<NamespaceRail noNamespaceCount={input.facets.namespaces.__none__ ?? 0} nodes={namespaceNodes} selected={queryValues(query, "namespaces")} exact={queryValues(query, "exact_namespaces")} onChange={(namespaces, exact_namespaces) => filter({ namespaces: [...namespaces], exact_namespaces: [...exact_namespaces] })} onHide={() => setRail(false)} onManage={() => navigate({ mode: "namespaces" })} />}
+        side={<div className="wb-task-results" ref={browseRef}>
+          <div className="wb-task-results-bar"><div className="wb-task-results-summary">{!namespaceVisible ? <Button className="wb-task-show-namespaces" size="small" variant="ghost" onClick={() => setRail(true)}>Show namespaces</Button> : null}<div><h2 className={triage ? undefined : "wb-task-sr-only"}>{triage ? "Inbox triage" : "Tasks"}</h2><p role="status">{refreshing || input.refreshing ? "Updating… " : ""}{resultCount} {resultCount === 1 ? "task" : "tasks"}</p></div></div>
+            <div className="wb-task-sort" role="group" aria-label="Task sorting"><span className="wb-task-sort-label" aria-hidden="true">Sort by</span><SelectField label="Sort by" hideLabel className="wb-task-sort-field" help={TASK_HELP.sort} value={sort} options={SORTS} onChange={(next) => { directionMemory.current[sort] = direction; filter({ sort: next, direction: directionMemory.current[next] ?? defaults[next] }); }} /><Button help={TASK_HELP.sortDirection} className="wb-task-sort-direction" size="small" variant="ghost" title={`Reverse sort: ${orderLabel}`} aria-label={`Reverse sort direction, currently ${orderLabel}`} onClick={() => { const next = direction === "asc" ? "desc" : "asc"; directionMemory.current[sort] = next; filter({ direction: next }); }}>{direction === "desc" ? <ArrowDown aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}<span>{orderLabel}</span></Button></div>
           </div>
           {error ? <InlineAlert tone="danger">{error} Your previous results remain visible. <Button size="small" onClick={() => navigate({})}>Retry</Button></InlineAlert> : null}
-          {selected.length ? <div className="wb-task-selection-bar"><strong>{selected.length} selected</strong><Button size="small" disabled={readOnly} onClick={() => setBulkOpen(true)}>Change namespaces</Button><Button size="small" variant="ghost" onClick={() => setSelected([])}>Clear selection</Button></div> : null}
-          <TaskList tasks={orderedTasks} selectedTaskId={null} selectedTaskIds={selected} onToggleSelection={(id) => setSelected((current) => toggleValue(current, id))} projects={input.options.projects} sort={sort} triage={triage} readOnly={readOnly} focusRefs={taskRefs as RefObject<Map<string, HTMLButtonElement>>} onSelect={select} onAction={(task, action) => { if (action === "complete") setCompletionTask(task); else void runSummaryAction(task, action); }} onSkip={skip} />
+          <TaskList tasks={orderedTasks} namespaceOptions={input.options.namespaces} onNamespacesChange={changeNamespaces} projects={input.options.projects} sort={sort} triage={triage} readOnly={readOnly} focusRefs={taskRefs as RefObject<Map<string, HTMLButtonElement>>} onSelect={select} onAction={(task, action) => { if (action === "complete") setCompletionTask(task); else void runSummaryAction(task, action); }} onSkip={skip} />
           {input.page && (input.page.offset > 0 || input.page.has_more) ? <nav className="wb-task-pagination" aria-label="Task pages"><Button disabled={input.page.offset === 0 || refreshing} onClick={() => navigate({ offset: Math.max(0, input.page!.offset - input.page!.limit) })}>Previous</Button><span>{input.page.offset + 1}–{Math.min(input.page.offset + input.tasks.length, resultCount)} of {resultCount}</span><Button disabled={!input.page.has_more || refreshing} onClick={() => navigate({ offset: input.page!.offset + input.page!.limit })}>Next</Button></nav> : null}
-        </div>
-      </div>
+        </div>}
+      />
     </>}
   </section>;
 }

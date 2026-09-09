@@ -58,30 +58,36 @@ export function NamespaceRail({ nodes, selected, exact, onChange, onManage, onHi
   onChange(selected: readonly string[], exact: readonly string[]): void; onManage(): void; onHide(): void;
 }) {
   const [search, setSearch] = useState("");
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("wb.tasks.namespace-collapsed") ?? "[]") as string[]); } catch { return new Set(); }
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    try { const saved: unknown = JSON.parse(localStorage.getItem("wb.tasks.namespace-expanded") ?? "[]"); return new Set(Array.isArray(saved) ? saved.filter((path): path is string => typeof path === "string") : []); } catch { return new Set(); }
   });
   const paths = new Set(nodes.map((node) => node.path));
   const selectedNodes: TaskNamespaceNode[] = [...selected, ...exact].filter((path) => path !== "__none__" && !paths.has(path)).map((path) => ({ path, parent: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : null, label: path.split("/").slice(-1)[0]!, count: 0, direct_count: 0 }));
   const all = [...nodes, ...selectedNodes].filter((node) => node.path !== "__none__").sort((a, b) => a.path.localeCompare(b.path));
   const needle = search.trim().toLowerCase();
+  const byPath = new Map(all.map((node) => [node.path, node]));
   const visible = all.filter((node) => {
-    if (selected.includes(node.path) || exact.includes(node.path)) return true;
     if (needle) return node.path.toLowerCase().includes(needle) || all.some((child) => child.path.startsWith(`${node.path}/`) && child.path.toLowerCase().includes(needle));
-    return ![...collapsed].some((path) => node.path.startsWith(`${path}/`));
+    let parent = node.parent;
+    while (parent !== null && byPath.has(parent)) {
+      if (!expanded.has(parent)) return false;
+      parent = byPath.get(parent)!.parent;
+    }
+    return true;
   });
   return <aside className="wb-task-namespace-rail" aria-label="Namespaces">
     <div className="wb-task-section-heading"><h2>Namespaces</h2><Button size="small" variant="ghost" aria-label="Hide namespaces" onClick={onHide}><X aria-hidden="true" /></Button></div>
     <label className="wb-task-field"><span>Find namespaces</span><input type="search" value={search} placeholder="Search hierarchy…" onChange={(event) => setSearch(event.target.value)} /></label>
     <p className="wb-task-muted">Selecting a branch includes its descendants.</p>
-    <label className="wb-task-checkbox"><TaskHelp content={TASK_HELP.noNamespace}><input type="checkbox" aria-label="No namespace" checked={selected.includes("__none__")} onChange={() => onChange(toggleValue(selected, "__none__"), exact)} /></TaskHelp><span>No namespace</span><small>{noNamespaceCount}</small></label>
+    <label className="wb-task-checkbox wb-task-no-namespace"><TaskHelp content={TASK_HELP.noNamespace}><input type="checkbox" aria-label="No namespace" checked={selected.includes("__none__")} onChange={() => onChange(toggleValue(selected, "__none__"), exact)} /></TaskHelp><span>No namespace</span><small>{noNamespaceCount}</small></label>
     <ul className="wb-task-namespace-tree" aria-label="Namespace hierarchy">{visible.map((node) => {
       const children = all.some((child) => child.parent === node.path);
       const isExact = exact.includes(node.path);
-      return <li key={node.path} style={{ paddingInlineStart: `${Math.min(node.path.split("/").length - 1, 4) * 12}px` }}>
+      const isExpanded = Boolean(needle) || expanded.has(node.path);
+      return <li key={node.path} style={{ paddingInlineStart: `${Math.min(node.path.split("/").length - 1, 4) * 16}px` }}>
         <div className="wb-task-namespace-tree__row">
-          {children ? <TaskHelp content={{ summary: `${collapsed.has(node.path) ? "Expand" : "Collapse"} this branch of the namespace panel.`, details: "This only reveals or hides descendant rows in the panel. Active filters, task assignments, and the task-list width stay unchanged. Hide namespaces removes the entire panel and gives its width back to the list." }}><button className="wb-task-tree-toggle" type="button" aria-label={`${collapsed.has(node.path) ? "Expand" : "Collapse"} ${node.path}`} aria-expanded={!collapsed.has(node.path)} onClick={() => setCollapsed((current) => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); try { localStorage.setItem("wb.tasks.namespace-collapsed", JSON.stringify([...next])); } catch { /* Optional preference. */ } return next; })}>{collapsed.has(node.path) ? <CaretRight aria-hidden="true" /> : <CaretDown aria-hidden="true" />}</button></TaskHelp> : <span className="wb-task-tree-spacer" />}
-          <label className="wb-task-checkbox" title={`${node.path}: ${node.direct_count} direct, ${node.count} including descendants`}><TaskHelp content={isExact ? { ...TASK_HELP.namespaceFilter, summary: "Include tasks assigned directly to this exact namespace." } : TASK_HELP.namespaceFilter}><input type="checkbox" aria-label={`${node.path}${isExact ? " only" : " and descendants"}`} checked={selected.includes(node.path) || isExact} onChange={() => onChange(isExact ? selected : toggleValue(selected, node.path), exact.filter((path) => path !== node.path))} /></TaskHelp><span>{node.label}</span><small>{isExact ? node.direct_count : node.count}</small></label>
+          {children ? <TaskHelp content={{ summary: needle ? "Search reveals matching branches." : `${isExpanded ? "Collapse" : "Expand"} this branch of the namespace panel.`, details: "Branches start collapsed. Clear the namespace search to return to your saved expansions. Expanding a branch does not select it or change tasks. Hide namespaces gives the panel's width back to the list." }}><button className="wb-task-tree-toggle" type="button" aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.path}`} aria-expanded={isExpanded} aria-disabled={Boolean(needle)} onClick={() => { if (needle) return; setExpanded((current) => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); try { localStorage.setItem("wb.tasks.namespace-expanded", JSON.stringify([...next])); } catch { /* Optional preference. */ } return next; }); }}>{isExpanded ? <CaretDown aria-hidden="true" /> : <CaretRight aria-hidden="true" />}</button></TaskHelp> : <span className="wb-task-tree-spacer" />}
+          <label className="wb-task-checkbox" title={`${node.path}: ${node.direct_count} direct, ${node.count} including descendants, matching the current filters`}><TaskHelp content={isExact ? { ...TASK_HELP.namespaceFilter, summary: "Include tasks assigned directly to this exact namespace." } : TASK_HELP.namespaceFilter}><input type="checkbox" aria-label={`${node.path}${isExact ? " only" : " and descendants"}`} checked={selected.includes(node.path) || isExact} onChange={() => onChange(isExact ? selected : toggleValue(selected, node.path), exact.filter((path) => path !== node.path))} /></TaskHelp><span>{node.label || "(empty segment)"}</span><small>{isExact ? node.direct_count : node.count}</small></label>
         </div>
         {selected.includes(node.path) || isExact ? <TaskHelp content={TASK_HELP.namespaceExact}><button type="button" className="wb-task-namespace-scope" aria-label={`Change scope for ${node.path}`} onClick={() => onChange(isExact ? [...selected, node.path] : selected.filter((path) => path !== node.path), isExact ? exact.filter((path) => path !== node.path) : [...exact, node.path])}>{isExact ? "This namespace only" : "Including descendants"}</button></TaskHelp> : null}
       </li>;

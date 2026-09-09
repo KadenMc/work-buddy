@@ -63,28 +63,21 @@ const renderComposer = (
 ) => render(composerElement(emit, widgetInput));
 
 async function openCapture() {
-  const existing = screen.queryByRole("textbox", { name: "New task" });
-  if (existing) return existing;
-  await userEvent.click(await screen.findByRole("button", { name: /^(New task|Quick capture)$/ }));
   return screen.findByRole("textbox", { name: "New task" });
 }
 
 describe("TaskComposer", () => {
-  it("starts as one capture action on desktop and focuses its retained form on activation", async () => {
+  it("makes Quick Add directly usable while browsing without an extra disclosure", async () => {
     const user = userEvent.setup();
     const emit = vi.fn();
     renderComposer(emit);
-    const action = await screen.findByRole("button", { name: "New task" });
-    expect(action).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("textbox", { name: "New task" })).not.toBeInTheDocument();
-    await user.click(action);
-    const title = screen.getByRole("textbox", { name: "New task" });
-    await waitFor(() => expect(title).toHaveFocus());
+    const title = await screen.findByRole("textbox", { name: "New task" });
+    expect(title).toBeVisible();
+    expect(screen.queryByRole("button", { name: /^(New task|Quick capture|Hide quick capture)$/ })).not.toBeInTheDocument();
+    expect(title.closest(".wb-task-capture-shell")).not.toHaveAttribute("data-compact");
     await user.type(title, "Retain while browsing");
-    await user.click(screen.getByRole("button", { name: "Hide quick capture" }));
-    expect(screen.queryByRole("textbox", { name: "New task" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "New task" }));
     expect(title).toHaveValue("Retain while browsing");
+    expect(screen.getByRole("button", { name: "Add task" })).toBeEnabled();
     expect(emit).not.toHaveBeenCalled();
   });
 
@@ -106,12 +99,21 @@ describe("TaskComposer", () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
     const view = renderComposer(emit);
-    await user.type(await openCapture(), "Retained capture");
+    const title = await openCapture();
+    await user.type(title, "Retained capture");
     view.rerender(composerElement(emit, { ...input, compact: true }));
     expect(screen.queryByRole("textbox", { name: "New task" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Quick capture" }));
     expect(screen.getByRole("textbox", { name: "New task" })).toHaveValue("Retained capture");
     await waitFor(() => expect(screen.getByRole("textbox", { name: "New task" })).toHaveFocus());
+    expect(screen.getByRole("textbox", { name: "New task" })).toBe(title);
+    await user.click(screen.getByRole("button", { name: "Hide quick capture" }));
+    expect(screen.queryByRole("textbox", { name: "New task" })).not.toBeInTheDocument();
+    view.rerender(composerElement(emit));
+    expect(screen.getByRole("textbox", { name: "New task" })).toBe(title);
+    expect(title).toHaveValue("Retained capture");
+    expect(title).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Quick capture" })).not.toBeInTheDocument();
     expect(emit).not.toHaveBeenCalled();
   });
 
@@ -133,8 +135,6 @@ describe("TaskComposer", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent("New tasks default to Inbox");
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
-    await user.tab();
-    expect(screen.getByRole("button", { name: "Hide quick capture" })).toHaveFocus();
     await user.tab();
     expect(title).toHaveFocus();
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Press Enter to add the task");

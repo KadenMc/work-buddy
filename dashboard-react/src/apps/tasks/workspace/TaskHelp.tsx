@@ -6,9 +6,8 @@ const hint = (summary: string, details: string): HelpContent => ({ summary, deta
 
 /** Effects and recovery belong beside the control, including in compact layouts. */
 export const TASK_HELP = {
-  complete: hint("Open a confirmation before completing this task.", "The checkmark does not change anything until you confirm. Completion removes the task from an Open-only list; include Completed in Status and choose Reopen to recover it. The separate square checkbox only selects the task."),
+  complete: hint("Open a confirmation before completing this task.", "The checkmark does not change anything until you confirm. Completion removes the task from an Open-only list; include Completed in Status and choose Reopen to recover it."),
   reopen: hint("Reopen this completed task immediately.", "The task returns to the Open lifecycle. Complete it again if this was unintended; the task and its project links remain intact."),
-  selection: hint("Select this task for a bulk namespace change.", "Selection does not complete or edit the task. Select several rows, then choose Change namespaces to add, remove, or replace their assignments after a preview."),
   status: hint("Filter by lifecycle: Open, Completed, Archived, or Trash.", "Open includes snoozed tasks. Multiple statuses match any selected status; clearing them includes every lifecycle. Attention is a separate way to narrow work within these statuses. Filters update immediately."),
   attention: hint("Filter by how you are attending to the work.", "Inbox, Most Important, Active, Working on now, Waiting, and Snoozed describe attention. They do not replace lifecycle Status. Multiple attention values match any selection, combined with all other filters."),
   editAttention: hint("Choose how you are attending to this task.", "This changes the draft until you save. Lifecycle actions such as Complete, Archive, and Move to trash are separate. Snoozing uses the lifecycle controls and its chosen date."),
@@ -41,8 +40,6 @@ const BUTTON_HELP: Readonly<Record<string, HelpContent>> = {
   "Working on now": TASK_HELP.focus, Snooze: TASK_HELP.snooze,
   "Most Important this week": hint("Mark this task Most Important immediately.", "This changes its attention state to Most Important. It may leave the current Inbox triage results; use the Attention filter to find it."),
   "Skip this pass": hint("Move this task to the end of the current triage pass.", "Skipping changes only this browsing order. It does not complete, snooze, archive, or edit the task."),
-  "Change namespaces": hint("Preview a namespace change for the selected tasks.", "Choose Add, Remove, or Replace assignments, then review before applying. Opening the editor changes nothing; project links stay separate."),
-  "Clear selection": hint("Deselect these task rows.", "This clears your selection without changing task records or filters."),
   "Show namespaces": hint("Show the namespace browsing panel.", "The panel lets you filter by hierarchy and direct assignments. Showing it preserves every active filter."),
   "Hide namespaces": hint("Hide this panel and give its space back to the task list.", "Active namespace filters remain applied and visible as removable pills. Show namespaces restores the panel."),
   "Manage namespaces": hint("Open the namespace organizer.", "Choose existing namespaces, then rename, move, merge, promote children, or remove assignments. Every operation has a preview; your current task-list filters do not limit its all-lifecycle scope."),

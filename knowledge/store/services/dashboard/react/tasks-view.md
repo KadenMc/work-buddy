@@ -21,7 +21,7 @@ entry_points:
 dev_notes: |-
   The Tasks app contributes its view, widgets, schemas, and provider through the dashboard registry. Widget mutations receive a stable `client_mutation_id`; providers preserve in-flight composer/detail drafts across authoritative refreshes and surface revision conflicts with fresh server state.
 
-  The view opts into grid.contentFlow: Dashboard Core renders natural-height widgets and hides layout customization. Workspace browse reads use work_buddy.tasks.workspace_query with SQL filtering, sorting, pagination, and self-excluding facets in one collection-revision snapshot. Only a selected task loads full aggregate/detail data; list rows do not hydrate documents. HttpTasksProvider ignores superseded query responses and retains prior results on refresh failure.
+  Tasks uses the standard customizable dashboard grid and its persisted personalization. Keep view, slot, and widget instance IDs stable so saved placements, sizes, and additions survive upgrades. Browsing and detail are modes inside the workspace widget; neither bypasses Dashboard Core's Arrange/Preview modes or measured widget width. Workspace browse reads use work_buddy.tasks.workspace_query with SQL filtering, sorting, pagination, and self-excluding facets in one collection-revision snapshot. Only a selected task loads full aggregate/detail data; list rows do not hydrate documents. HttpTasksProvider ignores superseded query responses and retains prior results on refresh failure.
 
   TaskCompletionDialog shares React Aria's ModalOverlay, Modal, and Dialog primitives across browse and detail. Opening it freezes the saved task identity and revision; one client_mutation_id survives uncertain retries. TaskHelp uses Dashboard Core HelpTarget and native button titles to keep explanations attached to the controls, including compact layouts.
 
@@ -34,7 +34,7 @@ dev_notes: |-
 
 ## Capture and authoring
 
-Quick capture supports title-first entry, while the expanded composer exposes urgency, zero or more linked projects, independent namespace tags, dates, outcome, next action, definition of done, dependencies, and initial knowledge. Project selections carry stable registry IDs. Multi-line paste creates a review table, detects duplicates, and lets the user edit or exclude rows before a batch create. Successful requests return native IDs, revisions, receipts, and document metadata—never task lines or note paths.
+Quick Add is directly visible while browsing; dedicated task detail offers a compact Quick capture disclosure that preserves the draft. Quick capture supports title-first entry, while the expanded composer exposes urgency, zero or more linked projects, independent namespace tags, dates, outcome, next action, definition of done, dependencies, and initial knowledge. Project selections carry stable registry IDs. Multi-line paste creates a review table, detects duplicates, and lets the user edit or exclude rows before a batch create. Successful requests return native IDs, revisions, receipts, and document metadata—never task lines or note paths.
 
 **AI help** opens Dashboard Core's shared assisted-draft dock. It uses the same conversation primitives as Co-work and fills the visible form; it never creates a task or submits a form. See `services/dashboard/react/assisted-drafts` for disclosure, field conflicts, conditional Undo, and host-owned draft identity.
 
@@ -47,6 +47,11 @@ The Tasks provider retains its last validated proposal projection across the pro
 If a proposal carries standard task settings outside Quick Add's field set, Quick Add links to the full review instead of revising away those settings or accepting them unseen. The full review displays every additional parameter and preserves it when common fields are edited. An uncertain, already-recorded request can still be replayed exactly; replay never authorizes a different current revision.
 
 ## Workspace
+
+**Customize view** retains the dashboard's standard grid controls for arranging
+and resizing widgets, the Widgets catalog, Preview, Undo, and saved layouts.
+Task browsing and detail occupy the same workspace widget, so switching between
+them does not replace the view or its saved layout.
 
 Browsing starts with **Status: Open**, sorted by **Date created, newest first**.
 Open includes every attention state, including Snoozed; Completed, Archived,
@@ -64,6 +69,15 @@ debounced. Previous results stay visible while updating, and failed refreshes
 offer Retry without erasing the list.
 
 The namespace rail has its own hierarchy search, checkbox selection, and counts.
+It shows namespaces matching all other active filters, retaining selected zero-count
+paths and their ancestors. Namespace selection itself does not remove alternative
+choices. Manage namespaces always uses the complete inventory. Branches start
+collapsed; deliberate expansions are remembered and search reveals matching
+ancestors temporarily. The shared Co-work divider resizes the wider pane by pointer
+or keyboard, saves its width, and resets on double-click. Show namespaces sits at
+the left of the results toolbar; Manage namespaces is inside the open pane only.
+Legacy empty path segments have an explicit label, while filtering, saves, and Undo
+preserve their exact stored spelling until a reviewed organization operation changes it.
 Selecting a branch includes descendants; its scope control switches to direct
 assignments only. **No namespace** and **No project** are explicit choices.
 Hiding the rail gives its width to task results; selected namespace pills remain
@@ -110,7 +124,7 @@ selection, lifecycle actions, filters, sorting, project and namespace fields,
 triage, proposals, action items, and namespace organization. The explanations
 identify whether a control only changes browsing, edits a draft, opens a review,
 or writes immediately, with the relevant recovery action. In particular, the
-square checkbox selects a task for bulk namespace changes; the checkmark opens
+checkmark opens
 completion confirmation. Buttons also expose a brief native hover title. Reading
 Help does not perform the explained action.
 
@@ -120,17 +134,17 @@ Help does not perform the explained action.
 branches, then choose Rename, Move, Merge, Move children up one level, or Remove
 assignments. It starts from the hierarchy and intended action, without assuming
 a particular prefix transformation. To flatten `projects/`, Move children up one level
-lifts its children to root; direct assignments on `projects/` require an explicit
+lifts its children to root; direct assignments on `projects` require an explicit
 keep-or-move choice. Existing destination branches require reviewed merge
 handling. Namespace operations never change project associations.
 
-Checkboxes in task rows support **Change namespaces** for the selected tasks:
-Add, Remove, or Replace. Both entry points require Preview before Apply. Preview
-shows scope, old/new mappings, affected tasks, lifecycle counts, collisions,
-duplicates, and tasks that would have no namespace. Structural organization
-covers all statuses; assignment changes cover only the selection. Recent
-operations offer Undo only while all affected revisions still match. See
-`tasks/namespace-organization` for the API and conflict contract.
+Task namespaces are editable pills on a dedicated, consistently aligned row.
+Add namespace opens a searchable picker with existing paths and explicit path
+creation. Removing a saved pill opens a confirmation scoped to that task; it
+does not delete the namespace globally. Namespace changes save separately and
+preserve unrelated task-field drafts. The dashboard has no bulk task namespace
+replacement interface. Structural branch operations remain in Manage namespaces.
+See `tasks/namespace-organization` for the API and conflict contract.
 
 ## Workspace query contract
 

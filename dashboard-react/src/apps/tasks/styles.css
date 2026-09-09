@@ -707,14 +707,6 @@
 }
 
 @layer wb-apps {
-  .wb-view-host:has(.wb-tasks-chrome) .wb-dashboard-content-flow { gap:var(--wb-space-3); }
-  .wb-view-host:has(.wb-tasks-chrome) .wb-dashboard-content-flow .wb-widget-frame[data-widget-interaction-mode="operate"] { border:0; border-radius:0; background:transparent; box-shadow:none; }
-  .wb-view-host:has(.wb-tasks-chrome) .wb-dashboard-content-flow .wb-widget-frame[data-widget-interaction-mode="operate"] > .wb-widget-frame__content { padding:0; }
-  /* App-owned Tasks flow needs no duplicate card titles. Keep draft/menu
-     controls visible, and restore the help targets when Help is enabled. */
-  .wb-view-host:has(.wb-tasks-chrome):not(.is-helping) .wb-dashboard-content-flow .wb-widget-frame[data-widget-interaction-mode="operate"] > .wb-widget-frame__header:not(:has(button)) { display:none; }
-  .wb-view-host:has(.wb-tasks-chrome):not(.is-helping) .wb-dashboard-content-flow .wb-widget-frame[data-widget-interaction-mode="operate"] > .wb-widget-frame__header:has(button) { min-height:var(--wb-control-height-sm); padding:0; border:0; background:transparent; }
-  .wb-view-host:has(.wb-tasks-chrome):not(.is-helping) .wb-dashboard-content-flow .wb-widget-frame[data-widget-interaction-mode="operate"] .wb-widget-frame__icon { display:none; }
   .wb-task-workspace--redesigned, .wb-task-results { min-width: 0; }
   .wb-task-browse-tools, .wb-task-browse-actions, .wb-task-filter-toolbar, .wb-task-active-filters, .wb-task-sort, .wb-task-pagination, .wb-task-selection-bar { display:flex; flex-wrap:wrap; gap:var(--wb-space-2); align-items:center; }
   .wb-task-browse-tools { justify-content:space-between; align-items:end; }
@@ -738,28 +730,40 @@
   .wb-task-filter-count { background:var(--wb-color-surface-inset); border-radius:30px; padding:1px 6px; font-size:var(--wb-font-size-xs); }
   .wb-task-filter-pill { display:inline-flex; gap:6px; align-items:center; border-radius:30px; border:1px solid var(--wb-color-border-default); background:var(--wb-color-surface-inset); color:var(--wb-color-text-primary); padding:5px 9px; font:inherit; font-size:var(--wb-font-size-xs); cursor:pointer; overflow-wrap:anywhere; max-width:100%; text-align:left; }
   .wb-task-filter-pill svg { flex-shrink:0; }
-  .wb-task-browse-grid { display:grid; grid-template-columns:minmax(0,1fr); align-items:start; gap:var(--wb-space-5); }
-  .wb-task-browse-grid.has-namespaces { grid-template-columns:230px minmax(0,1fr); }
-  .wb-task-namespace-rail { min-width:0; display:grid; gap:var(--wb-space-3); border-right:1px solid var(--wb-color-border-default); padding-right:var(--wb-space-4); }
+  .wb-task-browse-grid { block-size:auto; align-items:stretch; }
+  .wb-task-browse-grid .wb-workspace-side-panel__panel { block-size:auto; }
+  .wb-task-browse-grid.has-namespaces [data-workspace-pane="side"] .wb-task-results { padding-inline-start:var(--wb-space-3); }
+  .wb-task-namespace-rail { min-width:0; display:flex; flex-direction:column; gap:var(--wb-space-2); padding-inline-end:var(--wb-space-3); }
+  .wb-task-namespace-rail > .wb-button { align-self:flex-start; }
+  .wb-task-no-namespace { padding-inline-start:22px; padding-inline-end:var(--wb-space-2); }
   .wb-task-namespace-rail h2, .wb-task-results-bar h2, .wb-task-organizer h2 { margin:0; font-size:var(--wb-font-size-lg); }
+  .wb-task-workspace--redesigned .wb-task-namespace-rail .wb-task-section-heading { flex-direction:row; align-items:center; }
   .wb-task-namespace-rail p { font-size:var(--wb-font-size-xs); margin:0; }
-  .wb-task-namespace-tree { list-style:none; margin:0; padding:0; max-height:65vh; overflow:auto; }
-  .wb-task-namespace-tree li { margin-block:2px; }
-  .wb-task-namespace-tree__row { display:flex; align-items:center; }
-  .wb-task-namespace-tree__row .wb-task-checkbox { flex:1; }
+  .wb-task-namespace-tree { list-style:none; margin:0; padding:0 var(--wb-space-2) 0 0; max-height:55vh; overflow:auto; scrollbar-gutter:stable; }
+  .wb-task-namespace-tree li { margin:0; }
+  .wb-task-namespace-tree__row { display:flex; align-items:flex-start; }
+  .wb-task-namespace-tree__row .wb-task-checkbox { flex:1; align-items:flex-start; padding-block:6px; min-height:32px; line-height:20px; }
+  .wb-task-namespace-tree__row input { margin-block-start:2px; }
+  .wb-task-namespace-rail small { font-variant-numeric:tabular-nums; }
   .wb-task-tree-toggle, .wb-task-tree-spacer { width:22px; flex:0 0 22px; }
   .wb-task-tree-toggle { display:grid; place-items:center; height:30px; border:none; color:inherit; background:transparent; cursor:pointer; }
   .wb-task-namespace-scope { margin-left:23px; border:0; background:transparent; padding:2px 0 5px; color:var(--wb-color-text-secondary); font:inherit; font-size:var(--wb-font-size-2xs); text-decoration:underline; cursor:pointer; }
-  .wb-task-results { display:grid; gap:var(--wb-space-3); }
+  .wb-task-results { display:grid; align-content:start; gap:var(--wb-space-3); }
+  .wb-task-results-summary { display:flex; align-items:center; flex-wrap:wrap; gap:var(--wb-space-3); }
   .wb-task-results-bar { display:flex; justify-content:space-between; align-items:center; gap:var(--wb-space-3); border-bottom:1px solid var(--wb-color-border-default); padding-bottom:var(--wb-space-3); flex-wrap:wrap; }
   .wb-task-results-bar p { margin:var(--wb-space-1) 0 0; font-size:var(--wb-font-size-xs); color:var(--wb-color-text-muted); }
   .wb-task-sort { border-left:1px solid var(--wb-color-border-default); padding-left:var(--wb-space-3); gap:var(--wb-space-1); }
-  .wb-task-sort label { display:flex; align-items:center; gap:var(--wb-space-2); font-size:var(--wb-font-size-xs); }
-  .wb-task-sort label > span { color:var(--wb-color-text-muted); }
-  .wb-task-sort select { max-width:150px; border:0; background:var(--wb-color-surface-workspace); color:var(--wb-color-text-primary); padding:7px 4px; font:inherit; font-weight:var(--wb-font-weight-semibold); }
+  .wb-task-sort-label { color:var(--wb-color-text-muted); font-size:var(--wb-font-size-xs); margin-inline-end:var(--wb-space-1); }
+  .wb-task-sort-field { min-width:0; }
+  .wb-task-sort-field .wb-select-field__trigger { min-height:var(--wb-control-height-md); background:var(--wb-color-surface-workspace); }
+  .wb-task-browse-grid[data-workspace-panel-mode="stacked"] { gap:var(--wb-space-3); }
+  .wb-task-browse-grid[data-workspace-panel-mode="stacked"] .wb-task-namespace-rail { border-bottom:1px solid var(--wb-color-border-default); padding:0 0 var(--wb-space-3); }
+  .wb-task-browse-grid[data-workspace-panel-mode="stacked"] .wb-task-namespace-tree { max-height:280px; }
+  .wb-task-browse-grid[data-workspace-panel-mode="stacked"] [data-workspace-pane="side"] .wb-task-results { padding-inline-start:0; }
   .wb-task-workspace--redesigned .wb-task-list { max-height:none; overflow:visible; }
   .wb-task-workspace--redesigned .wb-task-list > li { display:flex; align-items:flex-start; gap:var(--wb-space-2); padding:var(--wb-space-3) var(--wb-space-2); flex-wrap:wrap; }
-  .wb-task-workspace--redesigned .wb-task-list__select { flex:1; min-width:120px; padding:0; text-align:left; }
+  .wb-task-list__body { flex:1; min-width:0; display:grid; gap:var(--wb-space-2); }
+  .wb-task-workspace--redesigned .wb-task-list__select { width:100%; flex:1; min-width:120px; padding:0; text-align:left; }
   .wb-task-workspace--redesigned .wb-task-list__title { font-size:var(--wb-font-size-sm); overflow-wrap:anywhere; }
   .wb-task-row-checkbox { margin-top:8px; width:16px; height:16px; accent-color:var(--wb-color-focus-ring); }
   .wb-task-list__dates { display:flex; gap:var(--wb-space-3); flex-wrap:wrap; font-size:var(--wb-font-size-xs); color:var(--wb-color-text-muted); margin-top:var(--wb-space-2); }
@@ -793,10 +797,7 @@
     .wb-tasks-chrome h1 { font-size:var(--wb-font-size-xl); }
     .wb-tasks-chrome__eyebrow { display:none; }
     .wb-tasks-chrome__summary { font-size:var(--wb-font-size-xs); gap:var(--wb-space-1); }
-    .wb-view-host:has(.wb-tasks-chrome) .wb-dashboard-content-flow { gap:var(--wb-space-2); }
     .wb-task-workspace--redesigned { gap:var(--wb-space-2); }
-    .wb-task-browse-grid.has-namespaces { grid-template-columns:minmax(0,1fr); }
-    .wb-task-namespace-rail { border-right:0; border-bottom:1px solid var(--wb-color-border-default); padding:0 0 var(--wb-space-3); }
     .wb-task-namespace-tree { max-height:280px; }
     .wb-task-sort { border-left:0; padding-left:0; }
     .wb-task-browse-tools { width:100%; flex-wrap:nowrap; align-items:center; }
@@ -807,7 +808,7 @@
     .wb-task-results-bar { align-items:center; gap:var(--wb-space-1); padding-bottom:var(--wb-space-2); }
     .wb-task-results-bar p { margin:0; }
     .wb-task-sort { margin-left:auto; }
-    .wb-task-sort button > span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+    .wb-task-sort-direction > span { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
     .wb-task-workspace--redesigned .wb-task-list > li { padding:var(--wb-space-2) 0; }
     .wb-task-workspace--redesigned .wb-task-list__triage { margin-left:0; }
     .wb-task-dedicated-view .wb-task-detail__header { align-items:start; }

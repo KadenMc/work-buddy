@@ -298,6 +298,68 @@ def test_namespace_http_rejects_non_scalar_action_choices(tmp_path: Path, field,
     assert store.collection_revision() == 0
 
 
+def test_namespace_spelling_survives_detail_save_and_receipt_replay(tmp_path: Path) -> None:
+    app, store, _ = _app(tmp_path)
+    client = app.test_client()
+    namespaces = ["138", "projects/", "projects//nested"]
+    response = client.post("/api/tasks", json={
+        "client_mutation_id": "create-exact-namespaces", "title": "Before",
+        "namespaces": namespaces, "project_ids": [1],
+    })
+    assert response.status_code == 200
+    task = response.get_json()["result"]["task"]
+    assert task["namespaces"] == namespaces
+    viewed = client.get("/api/tasks/view", query_string={
+        "task": task["task_id"], "exact_namespaces": "projects/",
+    }).get_json()
+    assert viewed["total"] == 1
+    assert viewed["selected_task"]["namespaces"] == namespaces
+    blank = next(item for item in viewed["namespace_tree"] if item["path"] == "projects/")
+    assert blank["label"] == "(empty segment)"
+    body = {
+        "client_mutation_id": "save-exact-namespaces", "expected_revision": task["revision"],
+        "title": "After", "namespaces": viewed["selected_task"]["namespaces"], "project_ids": [1],
+    }
+    saved = client.patch(f"/api/tasks/{task['task_id']}", json=body)
+    assert saved.status_code == 200
+    assert saved.get_json()["result"]["task"]["namespaces"] == namespaces
+    assert client.patch(f"/api/tasks/{task['task_id']}", json=body).get_json()["result"]["replayed"]
+    current = store.get(task["task_id"])
+    assert current.namespace_tags == tuple(namespaces)
+    assert current.project_ids == (1,)
+    assert current.revision == task["revision"] + 1
+
+
+@pytest.mark.parametrize("namespace", ["/engineering", "#/engineering"])
+def test_leading_slash_namespaces_are_rejected_without_create_or_save_changes(tmp_path: Path, namespace: str) -> None:
+    app, store, _ = _app(tmp_path)
+    client = app.test_client()
+    rejected = client.post("/api/tasks", json={
+        "client_mutation_id": "invalid-leading-create", "title": "Invalid",
+        "namespaces": [namespace],
+    })
+    assert rejected.status_code == 422
+    assert rejected.get_json()["error"]["code"] == "task_validation_error"
+    assert "tags.0" in rejected.get_json()["error"]["field_errors"]
+    assert store.collection_revision() == 0
+    created = _create(client).get_json()["result"]["task"]
+    task_id = created["task_id"]
+    before = store.get(task_id)
+    rejected_save = client.patch(f"/api/tasks/{task_id}", json={
+        "client_mutation_id": "invalid-leading-save", "expected_revision": before.revision,
+        "title": "Must not persist", "namespaces": [namespace], "project_ids": [1],
+    })
+    assert rejected_save.status_code == 422
+    assert "tags.0" in rejected_save.get_json()["error"]["field_errors"]
+    assert store.get(task_id) == before
+    selected = client.get("/api/tasks/view", query_string={"task": task_id, "exact_namespaces": "engineering"}).get_json()
+    assert selected["total"] == 1
+    assert selected["selected_task"]["namespaces"] == ["engineering"]
+    with store.transaction() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM task_metadata").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM task_tags WHERE tag LIKE '/%'").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize('project_mode', ['set', 'clear', 'retain'])
 def test_http_update_replays_old_project_receipt_without_registry_or_new_writes(tmp_path, project_mode):
     from work_buddy.tasks.models import Tag
@@ -316,7 +378,7 @@ def test_http_update_replays_old_project_receipt_without_registry_or_new_writes(
                               changes={'description': 'After'}, tags=tags)
     legacy_project_receipt(store, 'old-http-update')
     body = {'client_mutation_id': 'old-http-update', 'expected_revision': task.revision,
-            'title': 'After', 'namespaces': ['review', 'projects/ignored-by-old-editor']}
+            'title': 'After', 'namespaces': ['review/', 'projects/ignored-by-old-editor']}
     if project_mode != 'retain':
         body['project'] = 'work-buddy' if project_mode == 'set' else ''
     store.project_db_path = tmp_path / 'registry-unavailable.db'

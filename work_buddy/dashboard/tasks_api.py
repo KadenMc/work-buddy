@@ -518,7 +518,7 @@ def _tag_set(body: Mapping[str, Any], current: Task | None = None) -> list[tuple
     if isinstance(body.get("tags"), list):
         ordinary = [str(value).strip(" #") for value in body["tags"] if str(value).strip(" #")]
     namespaces = (
-        [str(value).strip(" #/") for value in body.get("namespaces", [])]
+        [str(value).strip().lstrip("#") for value in body.get("namespaces", [])]
         if isinstance(body.get("namespaces"), list)
         else list(current.namespace_tags if current is not None else ())
     )
@@ -576,7 +576,12 @@ def _legacy_update_replay(
         if not isinstance(task_data, dict) or "project_ids" in task_data or "unresolved_projects" in task_data:
             return None
         previous = Task.from_dict(task_data)
-        tags = [(name, namespace) for name, namespace in _tag_set(body, previous)
+        legacy_body = dict(body)
+        if isinstance(body.get("namespaces"), list):
+            # The historical editor stripped separators. Reconstruct that
+            # fingerprint only for receipt comparison, never for a new write.
+            legacy_body["namespaces"] = [str(value).strip(" #/") for value in body["namespaces"]]
+        tags = [(name, namespace) for name, namespace in _tag_set(legacy_body, previous)
                 if not (namespace and name.casefold().startswith("projects/"))]
         project = body.get("project")
         if "project" not in body:

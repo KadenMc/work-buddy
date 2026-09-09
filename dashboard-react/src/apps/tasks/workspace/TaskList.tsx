@@ -1,20 +1,21 @@
 import { FileText, Flag, Moon, Trash } from "@phosphor-icons/react";
 import type { RefObject } from "react";
 
-import { TaskButton as Button, TaskHelp, TASK_HELP } from "./TaskHelp";
+import { TaskButton as Button, TASK_HELP } from "./TaskHelp";
+import type { IntentResult } from "../../../dashboard/contributions/contracts";
+import { TaskNamespacePills } from "./TaskNamespacePills";
 import type { TaskProjectOption, TaskSort, TaskSummary } from "../contracts";
 import { attentionLabel } from "./TaskFilters";
 
 export interface TaskListProps {
   readonly tasks: readonly TaskSummary[];
-  readonly selectedTaskId: string | null;
   readonly triage: boolean;
   readonly readOnly: boolean;
   readonly focusRefs: RefObject<Map<string, HTMLButtonElement>>;
-  readonly selectedTaskIds?: readonly string[];
+  readonly namespaceOptions?: readonly TaskProjectOption[];
   readonly projects?: readonly TaskProjectOption[];
   readonly sort?: TaskSort;
-  onToggleSelection?(taskId: string): void;
+  onNamespacesChange?(task: TaskSummary, nextNamespaces: readonly string[], mutationId?: string): Promise<IntentResult>;
   onSelect(taskId: string): void;
   onAction(task: TaskSummary, action: "complete" | "reopen" | "focus" | "mit" | "snooze" | "archive"): void;
   onSkip(task: TaskSummary): void;
@@ -33,15 +34,14 @@ const validDate = (value: string | null | undefined): Date | null => {
 
 export function TaskList({
   tasks,
-  selectedTaskId,
   triage,
   readOnly,
   focusRefs,
   onSelect,
   onAction,
   onSkip,
-  selectedTaskIds = [],
-  onToggleSelection,
+  namespaceOptions = [],
+  onNamespacesChange,
   projects = [],
   sort,
 }: TaskListProps) {
@@ -62,8 +62,7 @@ export function TaskList({
         const created = validDate(task.created_at);
         const updated = validDate(task.updated_at);
         return (
-          <li key={task.task_id} className={task.task_id === selectedTaskId || selectedTaskIds.includes(task.task_id) ? "is-selected" : ""}>
-            {onToggleSelection ? <TaskHelp content={TASK_HELP.selection}><input className="wb-task-row-checkbox" type="checkbox" title={TASK_HELP.selection.summary} aria-label={`Select ${task.title}`} checked={selectedTaskIds.includes(task.task_id)} onChange={() => onToggleSelection(task.task_id)} /></TaskHelp> : null}
+          <li key={task.task_id}>
             <Button
               help={completed ? TASK_HELP.reopen : TASK_HELP.complete}
               size="small"
@@ -75,14 +74,13 @@ export function TaskList({
             >
               <span aria-hidden="true">{completed ? "↻" : "✓"}</span>
             </Button>
-            <button
+            <div className="wb-task-list__body"><button
               ref={(node) => {
                 if (node === null) focusRefs.current?.delete(task.task_id);
                 else focusRefs.current?.set(task.task_id, node);
               }}
               type="button"
               className="wb-task-list__select"
-              aria-current={task.task_id === selectedTaskId ? "true" : undefined}
               onClick={() => onSelect(task.task_id)}
             >
               <span className="wb-task-list__title">{task.title}</span>
@@ -93,7 +91,6 @@ export function TaskList({
                 <span>{attentionLabel(task.attention_state)}</span>
                 {(task.project_ids ?? []).map((id) => <span key={id} className="wb-task-row-project">{projects.find((project) => project.value === String(id))?.label ?? `Project ${id}`}</span>)}
                 {(task.unresolved_projects ?? []).map((link) => <span key={`${link.legacy_value}:${link.source_tag}`}>Unresolved project: {link.legacy_value}</span>)}
-                {task.namespaces.map((namespace) => <span key={namespace} className="wb-task-row-namespace">{namespace}</span>)}
                 {dueLabel(task) ? <span>{dueLabel(task)}</span> : null}
                 {task.current_action ? <span>Next: {task.current_action}</span> : null}
                 {task.has_document ? <span><FileText aria-hidden="true" /> Knowledge</span> : null}
@@ -103,6 +100,8 @@ export function TaskList({
               </span>
               <span className="wb-task-list__dates"><span>Created {created ? <time dateTime={task.created_at ?? undefined} title={created.toLocaleString()}>{created.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}<span className="wb-task-sr-only"> at {created.toLocaleTimeString()}</span></time> : "at an unknown time"}</span>{sort === "updated_at" ? <span>Updated {updated ? <time dateTime={task.updated_at} title={updated.toLocaleString()}>{updated.toLocaleDateString()}</time> : "at an unknown time"}</span> : null}</span>
             </button>
+            <TaskNamespacePills compact namespaces={task.namespaces} options={namespaceOptions} readOnly={readOnly || Boolean(task.deleted_at) || task.status === "trash" || !onNamespacesChange} onChange={(next, mutationId) => onNamespacesChange ? onNamespacesChange(task, next, mutationId) : Promise.resolve({ intent_id: mutationId ?? "read-only", status: "unavailable", message: "Task editing is unavailable." })} />
+            </div>
             {triage ? (
               <div className="wb-task-list__triage" aria-label={`Triage ${task.title}`}>
                 <Button size="small" disabled={readOnly} onClick={() => onAction(task, "mit")}>

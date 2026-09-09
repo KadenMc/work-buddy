@@ -104,13 +104,11 @@ describe("NamespaceOrganizer", () => {
     expect(send.mock.calls).toHaveLength(1);
   });
 
-  it("supports selected task Replace with an explicit empty assignment warning", async () => {
-    const user = userEvent.setup();
+  it("keeps task assignment replacement out of namespace organization", async () => {
     const send = vi.fn(async () => accepted({ namespaces: nodes, operations: [] }));
-    render(<NamespaceOrganizer send={send} readOnly={false} selectedTaskIds={["t-1", "t-2"]} onClose={vi.fn()} onApplied={vi.fn()} />);
-    await user.click(screen.getByRole("radio", { name: "Replace namespaces" }));
-    expect(screen.getByText(/Replacing with no namespaces removes all/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Preview change" }));
-    await waitFor(() => expect(send).toHaveBeenCalledWith(TASK_INTENTS.namespacePreview, expect.objectContaining({ action: "assign", task_ids: ["t-1", "t-2"], assignment_mode: "replace", namespaces: [] })));
+    render(<NamespaceOrganizer send={send} readOnly={false} onClose={vi.fn()} onApplied={vi.fn()} />);
+    await screen.findByRole("checkbox", { name: "research" });
+    expect(screen.queryByRole("radio", { name: "Replace namespaces" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Change namespaces")).not.toBeInTheDocument();
   });
 });

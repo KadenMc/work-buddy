@@ -435,9 +435,19 @@ export default function TaskComposer({
   if (!draft.ready) return <p className="wb-tasks-loading" aria-busy="true">Restoring task draft…</p>;
 
   return (
-    <div className="wb-task-capture-shell" data-compact>
-    <div className="wb-task-capture-disclosure"><Button size="small" variant="ghost" aria-expanded={captureOpen} onClick={() => { setCaptureOpen(!captureOpen); if (!captureOpen) requestAnimationFrame(() => titleRef.current?.focus()); }}>{captureOpen ? "Hide quick capture" : input.compact ? "Quick capture" : "New task"}</Button>{draft.dirty ? <small>Capture draft retained</small> : null}</div>
-    <form ref={formRef} className="wb-task-composer" onSubmit={submitOne} noValidate hidden={!captureOpen}>
+    <div className="wb-task-capture-shell" data-compact={input.compact || undefined}>
+    {input.compact ? (
+      <div className="wb-task-capture-disclosure">
+        <Button size="small" variant="ghost" aria-expanded={captureOpen} onClick={() => {
+          setCaptureOpen(!captureOpen);
+          if (!captureOpen) requestAnimationFrame(() => titleRef.current?.focus());
+        }}>
+          {captureOpen ? "Hide quick capture" : "Quick capture"}
+        </Button>
+        {draft.dirty ? <small>Capture draft retained</small> : null}
+      </div>
+    ) : null}
+    <form ref={formRef} className="wb-task-composer" onSubmit={submitOne} noValidate hidden={input.compact === true && !captureOpen}>
       {draft.error ? <InlineAlert tone="danger">{draft.error} Your draft remains open.</InlineAlert> : null}
       {message ? <InlineAlert tone={message.tone}>{message.text}{message.taskId ? <> <a href={`/app/tasks?task=${encodeURIComponent(message.taskId)}`}>Open existing task</a></> : null}</InlineAlert> : null}
       {structureConfirmation.length > 0 ? (

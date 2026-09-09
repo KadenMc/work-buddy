@@ -74,3 +74,38 @@ failures. Verify that retrying cannot duplicate a worker, append, or completion,
 and that a dismissed or expired notification leaves the review accessible.
 Finally, test the actual dashboard journey from Check staleness through review and
 an explicit completion decision using an isolated task store.
+
+## Namespace suggestion review
+
+A separate namespace suggestion capability shares durable task-review execution
+and Dashboard AI model selection. It proposes additions only; it never rewrites
+namespaces, project links, or lifecycle state without a user's decision.
+
+Both the task-list namespace row and the dedicated task's namespace area offer
+**Suggest namespaces**, presented with a sparkle icon beside **Add namespace**.
+The searchable namespace picker also offers this same entry point. All entry
+points refer to the same task-scoped run; repeated clicks show progress instead
+of launching another worker. Place namespace controls on their own aligned row,
+independent of urgency or attention badge widths.
+
+The worker considers the task's saved content and the existing namespace
+inventory. It returns proposed paths with short rationales, distinguishing an
+existing namespace from a proposed new path. Proposed namespaces are visibly
+outlined and labeled as suggestions, independently of their color. Clicking a
+suggested pill accepts it; its X dismisses the suggestion without a confirmation.
+A saved namespace's X instead asks for confirmation before removing that
+assignment from this task. Manual additions use the same searchable picker and
+explicit Create namespace action.
+
+Progress, rationales, suggestions, and accepted/dismissed decisions survive
+navigation and restart. The task-list row and dedicated view render the same
+records, so starting in one place and reviewing in the other requires no second
+investigation. Use task revision and namespace membership checks when accepting;
+never replace the entire assignment set from an old worker snapshot. Already
+present paths become acknowledged suggestions without duplicate assignments.
+A new namespace requires the same explicit creation choice as manual entry.
+
+Validate shared entry points, duplicate launch suppression, concurrent task
+edits, stale suggestions, failed acceptance delivery and receipt replay,
+existing/new path distinctions, keyboard accept/dismiss, and reload recovery in
+the isolated harness before shipping the worker or its launch controls.

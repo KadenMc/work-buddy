@@ -79,6 +79,29 @@ def test_preview_is_readonly_and_new_matching_task_invalidates(task_service):
     assert task_service.store.get("a").namespace_tags == ("old",)
 
 
+def test_empty_segment_is_labeled_and_can_be_reviewed_renamed_and_restored(task_service):
+    seed(task_service, "a", "projects/")
+    seed(task_service, "b", "projects//nested")
+    seed(task_service, "c", "138")
+    with task_service.store.transaction() as conn:
+        conn.execute("UPDATE task_metadata SET archived_at='2026-06-27' WHERE task_id IN ('a','b')")
+        conn.execute("UPDATE task_metadata SET deleted_at='2026-05-28' WHERE task_id='c'")
+    organizer = TaskNamespaceService(task_service)
+    tree = {item["path"]: item for item in organizer.inventory()["namespaces"]}
+    assert tree["projects/"] == {
+        "path": "projects/", "parent": "projects", "label": "(empty segment)",
+        "count": 2, "direct_count": 1,
+        "status_counts": {"open": 0, "completed": 0, "archived": 2, "trash": 0},
+    }
+    assert tree["138"]["status_counts"]["trash"] == 1
+    changed = apply(organizer, {"action": "rename", "sources": ["projects/"], "name": "recovered"})
+    assert task_service.store.get("a").namespace_tags == ("projects/recovered",)
+    assert task_service.store.get("b").namespace_tags == ("projects/recovered/nested",)
+    organizer.undo(changed["operation"]["operation_id"], {"client_mutation_id": "restore-empty-segment"}, actor="dashboard:user")
+    assert task_service.store.get("a").namespace_tags == ("projects/",)
+    assert task_service.store.get("b").namespace_tags == ("projects//nested",)
+
+
 def test_apply_and_undo_have_durable_idempotent_receipts(task_service):
     seed(task_service, "a", "old")
     organizer = TaskNamespaceService(task_service)

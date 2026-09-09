@@ -35,7 +35,7 @@ export const TASKS_VIEW_DEFINITION = {
     pageId: asSettingsPageId("wb.settings.app.tasks"),
     label: "Task settings",
   },
-  grid: { columns: 24, contentFlow: true },
+  grid: { columns: 24 },
   defaultSlots: [
     {
       slotId: TASKS_SLOT_IDS.quickAdd,

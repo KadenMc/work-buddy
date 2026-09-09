@@ -128,7 +128,9 @@ def _where(
                     "AND nt.is_namespace = 1)"
                 )
                 continue
-            namespace = namespace.strip(" #/")
+            # A trailing separator can be a real historical assignment. Keep
+            # it distinct from its parent when filtering the inventory row.
+            namespace = namespace.strip().lstrip("#/")
             if not namespace:
                 continue
             condition = "nt.tag = ? COLLATE NOCASE"
@@ -233,13 +235,16 @@ def _namespace_inventory(
     conn: sqlite3.Connection, query: WorkspaceQuery, today: date
 ) -> tuple[list[dict[str, Any]], int]:
     where, params = _where(query, exclude="namespaces", today=today)
-    # Fetch only assignment identities and names. Building the ancestor sets
+    # The picker follows every other filter; selecting a namespace must still
+    # leave matching alternatives available. Manage namespaces has its own
+    # complete inventory. Fetch only matching assignment identities and names.
+    # Building the ancestor sets
     # here avoids SQLite repeatedly materializing/sorting the same recursive
     # paths (one row per task per ancestor) while retaining unique task counts.
     rows = conn.execute(
         f"WITH scoped AS MATERIALIZED (SELECT t.task_id FROM task_metadata t WHERE {where}) "
-        "SELECT nt.task_id, nt.tag, s.task_id IS NOT NULL AS matches "
-        "FROM task_tags nt LEFT JOIN scoped s ON s.task_id = nt.task_id "
+        "SELECT nt.task_id, nt.tag "
+        "FROM task_tags nt JOIN scoped s ON s.task_id = nt.task_id "
         "WHERE nt.is_namespace = 1 AND nt.tag != ''", params
     )
     members: dict[str, set[str]] = {}
@@ -250,31 +255,43 @@ def _namespace_inventory(
             path = "/".join(segments[:length])
             members.setdefault(path, set())
             direct.setdefault(path, set())
-            if row["matches"]:
-                members[path].add(row["task_id"])
-                if length == len(segments):
-                    direct[path].add(row["task_id"])
+            members[path].add(row["task_id"])
+            if length == len(segments):
+                direct[path].add(row["task_id"])
     inventory = {
         path: {"path": path, "count": len(task_ids), "direct_count": len(direct[path])}
         for path, task_ids in members.items()
     }
+    # Keep zero-result selections reachable so they can be removed, including
+    # every ancestor needed to render their hierarchy and exact path spelling.
     for selected in (*query.namespaces, *query.exact_namespaces):
         if selected == NONE:
             continue
-        segments = selected.strip(" #/").split("/")
+        segments = selected.strip().lstrip("#/").split("/")
         for length in range(1, len(segments) + 1):
             path = "/".join(segments[:length])
             if path:
                 inventory.setdefault(path, {"path": path, "count": 0, "direct_count": 0})
     for path, item in inventory.items():
         parent, _, label = path.rpartition("/")
-        item.update(parent=parent or None, label=label)
+        item.update(parent=parent or None, label=label or "(empty segment)")
     no_namespace = int(conn.execute(
         f"SELECT COUNT(*) FROM task_metadata t WHERE {where} "
         "AND NOT EXISTS (SELECT 1 FROM task_tags nt WHERE nt.task_id = t.task_id "
         "AND nt.is_namespace = 1)", params
     ).fetchone()[0])
     return sorted(inventory.values(), key=lambda node: (node["path"].casefold(), node["path"])), no_namespace
+
+
+def _namespace_options(conn: sqlite3.Connection) -> list[str]:
+    """Authoring can reuse any namespace regardless of browsing filters."""
+    paths: set[str] = set()
+    for row in conn.execute(
+        "SELECT DISTINCT tag FROM task_tags WHERE is_namespace = 1 AND tag != ''"
+    ):
+        segments = str(row["tag"]).split("/")
+        paths.update("/".join(segments[:length]) for length in range(1, len(segments) + 1))
+    return sorted(paths, key=lambda path: (path.casefold(), path))
 
 
 def _project_inventory(
@@ -411,7 +428,7 @@ def read_workspace(
             "facets": {"statuses": statuses, "attention": attention, "urgencies": urgencies,
                        "namespaces": namespaces, "projects": projects},
             "namespace_tree": namespace_tree,
-            "options": {"namespaces": [option(item["path"]) for item in namespace_tree],
+            "options": {"namespaces": [option(path) for path in _namespace_options(conn)],
                         "projects": [option(value) for value in projects],
                         "contracts": [option(value) for value in contracts],
                         "contexts": [option(value) for value in contexts]},

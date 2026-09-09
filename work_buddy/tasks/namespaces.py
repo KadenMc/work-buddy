@@ -151,7 +151,7 @@ class TaskNamespaceService:
             status_counts = _counts()
             for task_id in task_ids:
                 status_counts[statuses[task_id]] += 1
-            result.append({"path": path, "parent": path.rpartition("/")[0] or None, "label": path.rsplit("/", 1)[-1], "count": len(task_ids), "direct_count": len(direct[path]), "status_counts": status_counts})
+            result.append({"path": path, "parent": path.rpartition("/")[0] or None, "label": path.rsplit("/", 1)[-1] or "(empty segment)", "count": len(task_ids), "direct_count": len(direct[path]), "status_counts": status_counts})
         return result
 
     def inventory(self) -> dict[str, Any]:

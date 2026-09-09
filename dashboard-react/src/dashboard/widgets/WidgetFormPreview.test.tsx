@@ -96,9 +96,6 @@ function renderForm(fixture: FormFixture, repository = new InMemoryWidgetDraftRe
 }
 
 async function openCapture() {
-  const existing = screen.queryByRole("textbox", { name: "New task" });
-  if (existing) return existing;
-  await userEvent.click(await screen.findByRole("button", { name: /^(New task|Quick capture)$/ }, READY));
   return screen.findByRole("textbox", { name: "New task" }, READY);
 }
 

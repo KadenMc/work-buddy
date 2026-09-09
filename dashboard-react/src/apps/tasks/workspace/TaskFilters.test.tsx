@@ -1,8 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
-import { MultiSelect } from "./TaskFilters";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskNamespaceNode } from "../contracts";
+import { MultiSelect, NamespaceRail } from "./TaskFilters";
 
 const projects = [{ value: "1", label: "ECG research" }, { value: "2", label: "Work Buddy" }];
 
@@ -44,5 +45,74 @@ describe("Task multi-select overlays", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+});
+
+const namespaceNodes: TaskNamespaceNode[] = [
+  { path: "138", parent: null, label: "138", count: 1, direct_count: 1 },
+  { path: "projects", parent: null, label: "projects", count: 8, direct_count: 1 },
+  { path: "projects/", parent: "projects", label: "", count: 2, direct_count: 2 },
+  { path: "projects/ecg", parent: "projects", label: "ecg", count: 5, direct_count: 0 },
+  { path: "projects/ecg/analysis", parent: "projects/ecg", label: "analysis", count: 5, direct_count: 5 },
+];
+
+describe("Namespace hierarchy", () => {
+  beforeEach(() => localStorage.removeItem("wb.tasks.namespace-expanded"));
+  const tree = (onChange = vi.fn()) => <NamespaceRail nodes={namespaceNodes} selected={[]} exact={[]} noNamespaceCount={3} onChange={onChange} onHide={vi.fn()} onManage={vi.fn()} />;
+
+  it("starts every level collapsed and remembers deliberate expansions across remounts", async () => {
+    const user = userEvent.setup(); const onChange = vi.fn();
+    const view = render(tree(onChange));
+    expect(screen.getByRole("checkbox", { name: "projects and descendants" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "138 and descendants" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "projects/ecg and descendants" })).not.toBeInTheDocument();
+    const expand = screen.getByRole("button", { name: "Expand projects" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    await user.click(expand);
+    expect(screen.getByRole("checkbox", { name: "projects/ecg and descendants" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "projects/ecg/analysis and descendants" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand projects/ecg" }));
+    expect(screen.getByRole("checkbox", { name: "projects/ecg/analysis and descendants" })).toBeInTheDocument();
+    view.unmount();
+    render(tree(onChange));
+    expect(screen.getByRole("button", { name: "Collapse projects" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Collapse projects/ecg" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("checkbox", { name: "projects/ecg/analysis and descendants" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Collapse projects" }));
+    expect(screen.queryByRole("checkbox", { name: "projects/ecg/analysis and descendants" })).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("reveals search matches temporarily and restores the saved expansion after clearing", async () => {
+    const user = userEvent.setup(); const onChange = vi.fn();
+    localStorage.setItem("wb.tasks.namespace-expanded", JSON.stringify(["projects"]));
+    render(tree(onChange));
+    const search = screen.getByRole("searchbox", { name: "Find namespaces" });
+    expect(screen.getByRole("button", { name: "Expand projects/ecg" })).toBeInTheDocument();
+    await user.type(search, "analysis");
+    expect(screen.getByRole("checkbox", { name: "projects/ecg/analysis and descendants" })).toBeInTheDocument();
+    const temporaryExpansion = screen.getByRole("button", { name: "Collapse projects/ecg" });
+    expect(temporaryExpansion).toHaveAttribute("aria-disabled", "true");
+    await user.click(temporaryExpansion);
+    expect(JSON.parse(localStorage.getItem("wb.tasks.namespace-expanded")!)).toEqual(["projects"]);
+    await user.clear(search);
+    expect(screen.getByRole("button", { name: "Collapse projects" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand projects/ecg" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "projects/ecg/analysis and descendants" })).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("labels imported empty segments without changing the exact namespace selected", async () => {
+    const user = userEvent.setup(); const onChange = vi.fn();
+    render(tree(onChange));
+    await user.click(screen.getByRole("button", { name: "Expand projects" }));
+    const malformed = screen.getByRole("checkbox", { name: "projects/ and descendants" });
+    expect(malformed.closest("label")).toHaveTextContent("(empty segment)");
+    expect(malformed.closest("label")).toHaveAttribute("title", expect.stringContaining("projects/: 2 direct"));
+    await user.click(malformed);
+    expect(onChange).toHaveBeenLastCalledWith(["projects/"], []);
+    await user.click(screen.getByRole("checkbox", { name: "138 and descendants" }));
+    expect(onChange).toHaveBeenLastCalledWith(["138"], []);
+    expect(screen.getByRole("checkbox", { name: "No namespace" }).closest("label")).toHaveTextContent("3");
   });
 });

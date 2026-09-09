@@ -405,26 +405,6 @@
     gap: var(--wb-space-6);
   }
 
-  .wb-dashboard-content-flow {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--wb-space-6);
-  }
-
-  .wb-dashboard-content-flow > *,
-  .wb-dashboard-content-flow .wb-durable-cell,
-  .wb-dashboard-content-flow .wb-durable-slot,
-  .wb-dashboard-content-flow .wb-widget-frame {
-    height: auto;
-    min-width: 0;
-    min-height: 0;
-  }
-
-  .wb-dashboard-content-flow .wb-widget-frame,
-  .wb-dashboard-content-flow .wb-widget-frame__content {
-    overflow: visible;
-  }
-
   .wb-widget-catalog {
     position: fixed;
     z-index: var(--wb-z-modal);

@@ -78,9 +78,6 @@ function element(
 }
 
 async function openCapture() {
-  const existing = screen.queryByRole("textbox", { name: "New task" });
-  if (existing) return existing;
-  await userEvent.click(await screen.findByRole("button", { name: /^(New task|Quick capture)$/ }));
   return screen.findByRole("textbox", { name: "New task" });
 }
 

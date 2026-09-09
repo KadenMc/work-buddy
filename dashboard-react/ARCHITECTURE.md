@@ -195,16 +195,6 @@ one-column compact DOM flow from the persisted canonical mobile order, so visual
 focus, and assistive-technology order agree. Desktop Customize mode exposes explicit
 Earlier/Later controls for editing this mobile order without relying on drag geometry.
 
-A standard view may opt into `grid.contentFlow: true` for an app-owned natural-height
-stack. `ViewHost` uses `readingOrder` on desktop and `mobileOrder` on narrow screens,
-without mounting RGL or loading a saved layout patch. Existing personalization stays
-stored for a later return to grid mode. The shared Customize controller suppresses
-its navbar entry for this mode, including attempts to begin customization programmatically.
-Content-flow frames and durable wrappers have automatic height and normal document
-overflow. Widget hydration, identity, keep-alive placement, and assistance still use
-the standard host. Tasks uses this mode so short capture content does not reserve a
-fixed-height grid cell above the browsing workspace.
-
 ### Shared workspace side panels
 
 `src/dashboard/layout/WorkspaceSidePanel.tsx` owns the reusable horizontal split,
@@ -251,9 +241,10 @@ the minimum height, so short windows can use ordinary page scrolling to reach ev
 action. Message history remains in the canonical transcript scroller and does not
 inflate that minimum. A hidden pane retains its last valid measurement until shown.
 
-`ViewHost` also uses its existing keep-alive placement for standard widgets declaring
-`assistableDrafts`, preserving live form bindings through the actual desktop/mobile
-grid switch. This is presentation retention, not `definition.durable` authority:
+`ViewHost` uses its keep-alive placement for widgets declaring `drafts` or
+`assistableDrafts`, as well as widgets with `durable: true`, preserving live form
+bindings, dialogs, and local state through the actual desktop/mobile grid switch.
+For ordinary forms, this presentation retention grants no `definition.durable` authority:
 host-owned drafts, Arrange inertness, Preview forks, effect fences, and ordinary
 hide/remove controls still apply. Genuine removal, replacement, scope changes, reset,
 and leaving the form host retain their cancellation or revocation boundaries.

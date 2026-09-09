@@ -15,8 +15,6 @@ import {
  */
 export interface CustomizeModeHandle {
   begin(): void;
-  /** App-owned content layouts have no arrangement control to offer. */
-  readonly hideControl?: boolean;
 }
 
 /**
@@ -32,7 +30,6 @@ export interface CustomizeModeRegistration {
 export interface CustomizeModeController {
   /** True when some view host has registered, so the entry control has a target. */
   readonly available: boolean;
-  readonly hidden: boolean;
   /** True while the current host is running a customize session. */
   readonly customizing: boolean;
   /** Open the current host's customize machinery, or do nothing when none is registered. */
@@ -48,7 +45,6 @@ const NOOP_REGISTRATION: CustomizeModeRegistration = {
 
 const DISABLED_CONTROLLER: CustomizeModeController = {
   available: false,
-  hidden: false,
   customizing: false,
   begin: () => {},
   register: () => NOOP_REGISTRATION,
@@ -75,7 +71,6 @@ export function CustomizeModeProvider({
   // whether the current host is customizing, so the control re-renders when either changes.
   const handleRef = useRef<CustomizeModeHandle | null>(null);
   const [available, setAvailable] = useState(false);
-  const [hidden, setHidden] = useState(false);
   const [customizing, setCustomizing] = useState(false);
 
   const register = useCallback(
@@ -84,15 +79,14 @@ export function CustomizeModeProvider({
       // keeps route transitions correct even when the incoming host mounts before the outgoing
       // host unmounts. A new owner has not begun a session, so start from not-customizing.
       handleRef.current = handle;
-      setAvailable(!handle.hideControl);
-      setHidden(handle.hideControl === true);
+      setAvailable(true);
       setCustomizing(false);
       return {
         setCustomizing: (value: boolean) => {
           // Only the current owner may drive the shared state, so a superseded host tearing
           // down cannot clobber the view that replaced it.
           if (handleRef.current !== handle) return;
-          setCustomizing(handle.hideControl ? false : value);
+          setCustomizing(value);
         },
         unregister: () => {
           // Unregister only if still current. An outgoing host that was already superseded
@@ -100,7 +94,6 @@ export function CustomizeModeProvider({
           if (handleRef.current !== handle) return;
           handleRef.current = null;
           setAvailable(false);
-          setHidden(false);
           setCustomizing(false);
         },
       };
@@ -109,12 +102,12 @@ export function CustomizeModeProvider({
   );
 
   const begin = useCallback(() => {
-    if (!handleRef.current?.hideControl) handleRef.current?.begin();
+    handleRef.current?.begin();
   }, []);
 
   const controller = useMemo<CustomizeModeController>(
-    () => ({ available, hidden, customizing, begin, register }),
-    [available, hidden, customizing, begin, register],
+    () => ({ available, customizing, begin, register }),
+    [available, customizing, begin, register],
   );
 
   return (

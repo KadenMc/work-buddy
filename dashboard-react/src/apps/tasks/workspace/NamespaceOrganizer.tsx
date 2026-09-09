@@ -16,8 +16,8 @@ interface Preview {
   tasks: { task_id: string; title: string; revision: number; before: string[]; after: string[] }[];
   tasks_offset: number; tasks_limit: number; tasks_has_more: boolean; scope: string;
 }
-type Action = "rename" | "move" | "merge" | "promote" | "remove" | "assign";
-const labels: Record<Action, string> = { rename: "Rename", move: "Move", merge: "Merge", promote: "Move children up one level", remove: "Remove assignments", assign: "Change namespaces" };
+type Action = "rename" | "move" | "merge" | "promote" | "remove";
+const labels: Record<Action, string> = { rename: "Rename", move: "Move", merge: "Merge", promote: "Move children up one level", remove: "Remove assignments" };
 const asRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const compareNamespacePaths = (left: TaskNamespaceNode, right: TaskNamespaceNode) => {
   const a = left.path.split("/"); const b = right.path.split("/");
@@ -28,24 +28,20 @@ const compareNamespacePaths = (left: TaskNamespaceNode, right: TaskNamespaceNode
   return a.length - b.length;
 };
 
-export function NamespaceOrganizer({ send, readOnly, selectedTaskIds: initialSelectedTaskIds, onClose, onApplied }: {
+export function NamespaceOrganizer({ send, readOnly, onClose, onApplied }: {
   send(type: string, payload: JsonValue, mutation?: boolean, reuseId?: string): Promise<IntentResult>;
-  readonly readOnly: boolean; readonly selectedTaskIds?: readonly string[]; onClose(): void; onApplied(): void;
+  readonly readOnly: boolean; onClose(): void; onApplied(): void;
 }) {
-  const selectedTaskIds = useRef(initialSelectedTaskIds).current;
   const [nodes, setNodes] = useState<readonly TaskNamespaceNode[]>([]);
   const [operations, setOperations] = useState<readonly Operation[]>([]);
   const [search, setSearch] = useState("");
   const [sources, setSources] = useState<readonly string[]>([]);
-  const [action, setAction] = useState<Action | null>(selectedTaskIds ? "assign" : null);
+  const [action, setAction] = useState<Action | null>(null);
   const [name, setName] = useState("");
   const [destination, setDestination] = useState("");
   const [includeDescendants, setIncludeDescendants] = useState(true);
   const [parentAssignment, setParentAssignment] = useState<"" | "keep" | "move">("");
   const [parentDestination, setParentDestination] = useState("");
-  const [assignmentMode, setAssignmentMode] = useState("add");
-  const [assignments, setAssignments] = useState<readonly string[]>([]);
-  const [newNamespace, setNewNamespace] = useState("");
   const [mergeCollisions, setMergeCollisions] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [reviewing, setReviewing] = useState(false);
@@ -71,7 +67,6 @@ export function NamespaceOrganizer({ send, readOnly, selectedTaskIds: initialSel
     ...(action === "rename" ? { name } : {}),
     ...(action === "move" || action === "merge" ? { destination } : {}),
     ...(action === "promote" ? { ...(parentAssignment ? { parent_assignment: parentAssignment } : {}), ...(parentAssignment === "move" ? { parent_destination: parentDestination } : {}) } : {}),
-    ...(action === "assign" ? { task_ids: [...(selectedTaskIds ?? [])], assignment_mode: assignmentMode, namespaces: [...assignments] } : {}),
   });
   const getPreview = async (change?: Record<string, JsonValue>, offset = 0) => {
     setBusy(true); setMessage(null);
@@ -94,7 +89,7 @@ export function NamespaceOrganizer({ send, readOnly, selectedTaskIds: initialSel
       if (result.status !== "accepted") { if (result.status === "conflict") { pendingApply.current = null; setPreview({ ...preview, can_apply: false }); } throw new Error(result.message ?? "The change could not be confirmed. Retry to check the same operation."); }
       const operation = asRecord(result.value).operation as Operation;
       setApplied(operation); setReviewing(false); setPreview(null); pendingApply.current = null;
-      if (!selectedTaskIds) {
+      {
         setSources(sources.map((source) => preview.mapping.find((row) => row.from === source)?.to ?? source).filter((path): path is string => Boolean(path)));
         setAction(null);
       }
@@ -117,9 +112,9 @@ export function NamespaceOrganizer({ send, readOnly, selectedTaskIds: initialSel
   const destinationOptions = nodes.filter((node) => !sources.some((source) => node.path === source || node.path.startsWith(`${source}/`)));
   const sourceDirect = nodes.filter((node) => sources.includes(node.path)).reduce((count, node) => count + node.direct_count, 0);
 
-  return <section className="wb-task-organizer" aria-label={selectedTaskIds ? "Change selected tasks’ namespaces" : "Namespace organizer"}>
-    <div className="wb-task-section-heading"><div><p className="wb-task-muted">Task organization</p><h2 ref={headingRef} tabIndex={-1}>{reviewing ? `Review ${action ? labels[action].toLowerCase() : "change"}` : selectedTaskIds ? "Change namespaces" : "Manage namespaces"}</h2></div><Button size="small" disabled={busy} onClick={onClose}>Back to tasks</Button></div>
-    <p>{selectedTaskIds ? `${selectedTaskIds.length} selected tasks. Add, remove, or replace their namespace assignments.` : "Organize namespaces across all tasks, including Completed, Archived, and Trash. Select a namespace to choose an action."} Project links remain independent.</p>
+  return <section className="wb-task-organizer" aria-label="Namespace organizer">
+    <div className="wb-task-section-heading"><div><p className="wb-task-muted">Task organization</p><h2 ref={headingRef} tabIndex={-1}>{reviewing ? `Review ${action ? labels[action].toLowerCase() : "change"}` : "Manage namespaces"}</h2></div><Button size="small" disabled={busy} onClick={onClose}>Back to tasks</Button></div>
+    <p>Organize namespaces across all tasks, including Completed, Archived, and Trash. Select a namespace to choose an action. Project links remain independent.</p>
     {message ? <InlineAlert tone={message.tone}>{message.text}</InlineAlert> : null}
     {applied?.can_undo ? <Button help={TASK_HELP.undoNamespaces} disabled={readOnly || busy} onClick={() => void undo(applied)}>Undo {applied.label.toLowerCase()}</Button> : null}
     {reviewing && preview ? <div className="wb-task-namespace-review">
@@ -131,26 +126,25 @@ export function NamespaceOrganizer({ send, readOnly, selectedTaskIds: initialSel
       {preview.collisions.length > 0 && (action === "rename" || action === "move" || action === "promote") ? <label className="wb-task-checkbox"><input type="checkbox" checked={mergeCollisions} disabled={busy} onChange={(event) => { setMergeCollisions(event.target.checked); void getPreview({ ...preview.request, merge_collisions: event.target.checked }); }} /><span>Merge assignments into the existing destinations shown above. Duplicate assignments become one; tasks remain separate.</span></label> : null}
       <Button size="small" onClick={() => setInspecting(!inspecting)}>{inspecting ? "Hide affected tasks" : "Inspect affected tasks"}</Button>
       {inspecting ? <><ul className="wb-task-affected-list">{preview.tasks.map((task) => <li key={task.task_id}><strong>{task.title}</strong><span>{task.before.join(", ") || "No namespace"} → {task.after.join(", ") || "No namespace"}</span></li>)}</ul><div className="wb-task-pagination"><Button size="small" disabled={busy || preview.tasks_offset === 0} onClick={() => void getPreview(preview.request, Math.max(0, preview.tasks_offset - preview.tasks_limit))}>Previous tasks</Button><span>{preview.tasks_offset + (preview.tasks.length ? 1 : 0)}–{preview.tasks_offset + preview.tasks.length} of {preview.task_count}</span><Button size="small" disabled={busy || !preview.tasks_has_more} onClick={() => void getPreview(preview.request, preview.tasks_offset + preview.tasks_limit)}>More affected tasks</Button></div></> : null}
-      <div className="wb-task-actions"><Button disabled={busy} onClick={() => { setReviewing(false); }}>Back to edit</Button><Button variant="ghost" disabled={busy} onClick={() => { setReviewing(false); setPreview(null); pendingApply.current = null; if (!selectedTaskIds) setAction(null); }}>Cancel change</Button><Button disabled={busy} onClick={() => void getPreview()}>Refresh preview</Button><Button help={TASK_HELP.apply} variant="primary" disabled={readOnly || busy || !preview.can_apply} onClick={() => void apply()}>{busy ? "Working…" : pendingApply.current ? "Retry same change" : `${action ? labels[action] : "Apply change"} · ${preview.task_count} tasks`}</Button></div>
+      <div className="wb-task-actions"><Button disabled={busy} onClick={() => { setReviewing(false); }}>Back to edit</Button><Button variant="ghost" disabled={busy} onClick={() => { setReviewing(false); setPreview(null); pendingApply.current = null; setAction(null); }}>Cancel change</Button><Button disabled={busy} onClick={() => void getPreview()}>Refresh preview</Button><Button help={TASK_HELP.apply} variant="primary" disabled={readOnly || busy || !preview.can_apply} onClick={() => void apply()}>{busy ? "Working…" : pendingApply.current ? "Retry same change" : `${action ? labels[action] : "Apply change"} · ${preview.task_count} tasks`}</Button></div>
     </div> : <>
-      {!selectedTaskIds && !action ? <div className="wb-task-namespace-inventory">
+      {!action ? <div className="wb-task-namespace-inventory">
         <div className="wb-task-actions" aria-label="Namespace actions">{(["rename", "move", "merge", "promote", "remove"] as const).map((next) => <Button key={next} size="small" disabled={busy || sources.length === 0 || ((next === "rename" || next === "promote") && sources.length !== 1)} onClick={() => chooseAction(next)}>{labels[next]}</Button>)}</div>
         {sources.length ? <p>{sources.length} selected · {sources.join(", ")}</p> : null}
         <label className="wb-task-field"><span>Find namespaces</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search all namespaces…" /></label>
         <div className="wb-task-inventory-list" role="group" aria-label="All namespaces">{[...nodes].sort(compareNamespacePaths).filter((node) => sources.includes(node.path) || node.path.toLowerCase().includes(search.toLowerCase())).map((node) => <label className="wb-task-checkbox" key={node.path} style={{ paddingInlineStart: `${Math.min(node.path.split("/").length - 1, 5) * 16}px` }}><TaskHelp content={TASK_HELP.namespaceSelection}><input type="checkbox" aria-label={node.path} checked={sources.includes(node.path)} disabled={busy} onChange={() => { setSources(toggleValue(sources, node.path)); setAction(null); }} /></TaskHelp><span>{node.path}<small>{node.direct_count} direct · {node.count} including descendants</small></span></label>)}</div>
         {nodes.length === 0 && !busy ? <p>No namespace assignments yet.</p> : null}
       </div> : null}
-      {action && !(selectedTaskIds && applied) ? <form className="wb-task-namespace-action" onSubmit={(event) => { event.preventDefault(); void getPreview(); }}>
-        {!selectedTaskIds ? <Button type="button" size="small" variant="ghost" onClick={() => setAction(null)}>Back to namespace selection</Button> : null}<h3>{labels[action]}</h3>{sources.length ? <p>Selected: {sources.join(", ")}</p> : null}
+      {action ? <form className="wb-task-namespace-action" onSubmit={(event) => { event.preventDefault(); void getPreview(); }}>
+        <Button type="button" size="small" variant="ghost" onClick={() => setAction(null)}>Back to namespace selection</Button><h3>{labels[action]}</h3>{sources.length ? <p>Selected: {sources.join(", ")}</p> : null}
         {action === "rename" ? <label className="wb-task-field"><span>New name</span><input aria-label="New name" value={name} required onChange={(event) => setName(event.target.value)} /><small>Changes this final name segment and preserves descendants.</small></label> : null}
         {action === "move" || action === "merge" ? <MultiSelect purpose="selection" label={action === "move" ? "New parent" : "Existing destination"} single searchable values={destination ? [destination] : action === "move" ? ["__root__"] : []} options={[...(action === "move" ? [{ value: "__root__", label: "Root (no parent)" }] : []), ...destinationOptions.map((node) => ({ value: node.path, label: node.path }))]} onChange={(values) => setDestination(values[0] === "__root__" ? "" : values[0] ?? "")} /> : null}
         {action === "merge" || action === "remove" ? <label className="wb-task-checkbox"><input type="checkbox" checked={includeDescendants} onChange={(event) => setIncludeDescendants(event.target.checked)} /><span>Include descendants {action === "merge" ? "and preserve their suffixes" : "in removed assignments"}</span></label> : null}
         {action === "promote" ? <><p>Move this grouping’s children to its parent, preserving deeper paths.</p>{sourceDirect > 0 ? <fieldset><legend>{sourceDirect} direct assignments need a destination</legend><label className="wb-task-checkbox"><input type="radio" name="parent-assignment" value="keep" checked={parentAssignment === "keep"} onChange={() => setParentAssignment("keep")} /><span>Keep assignments on this namespace</span></label><label className="wb-task-checkbox"><input type="radio" name="parent-assignment" value="move" checked={parentAssignment === "move"} onChange={() => setParentAssignment("move")} /><span>Move direct assignments to another namespace</span></label>{parentAssignment === "move" ? <label className="wb-task-field"><span>Direct assignment destination</span><input value={parentDestination} required onChange={(event) => setParentDestination(event.target.value)} /></label> : null}</fieldset> : null}</> : null}
         {action === "remove" ? <p>Removes namespace assignments. Task records and their project links remain intact.</p> : null}
-        {action === "assign" ? <><fieldset><legend>Assignment operation</legend>{["add", "remove", "replace"].map((mode) => <label className="wb-task-checkbox" key={mode}><input type="radio" name="assignment-mode" checked={assignmentMode === mode} onChange={() => setAssignmentMode(mode)} /><span>{mode[0]!.toUpperCase() + mode.slice(1)} namespaces</span></label>)}</fieldset><MultiSelect purpose="selection" label="Namespaces" values={assignments} options={nodes.map((node) => ({ value: node.path, label: node.path }))} searchable onChange={setAssignments} /><div className="wb-task-active-filters">{assignments.map((namespace) => <Button key={namespace} size="small" aria-label={`Remove ${namespace} from assignment change`} onClick={() => setAssignments(toggleValue(assignments, namespace))}>{namespace} ×</Button>)}</div>{assignmentMode !== "remove" ? <div className="wb-task-action-create"><label className="wb-task-field wb-task-field--grow"><span>New namespace</span><input value={newNamespace} placeholder="Optional new path" onChange={(event) => setNewNamespace(event.target.value)} /></label><Button type="button" disabled={!newNamespace.trim()} onClick={() => { setAssignments([...new Set([...assignments, newNamespace.trim()])]); setNewNamespace(""); }}>Add path</Button></div> : null}{assignmentMode === "replace" && assignments.length === 0 ? <InlineAlert tone="warning">Replacing with no namespaces removes all namespace assignments from these tasks.</InlineAlert> : null}</> : null}
-        <div className="wb-task-actions"><Button type="button" disabled={busy} variant="ghost" onClick={() => selectedTaskIds ? onClose() : setAction(null)}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || readOnly || (action === "merge" && !destination) || (action === "promote" && sourceDirect > 0 && !parentAssignment)}>{busy ? "Loading…" : "Preview change"}</Button></div>
+        <div className="wb-task-actions"><Button type="button" disabled={busy} variant="ghost" onClick={() => setAction(null)}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || readOnly || (action === "merge" && !destination) || (action === "promote" && sourceDirect > 0 && !parentAssignment)}>{busy ? "Loading…" : "Preview change"}</Button></div>
       </form> : null}
-      {!selectedTaskIds && operations.length ? <details className="wb-task-namespace-history"><summary>Recent namespace changes</summary><ul>{operations.map((operation) => <li key={operation.operation_id}><span>{operation.label} · <time dateTime={operation.created_at}>{new Date(operation.created_at).toLocaleString()}</time>{operation.undone_at ? " · Undone" : ""}</span>{operation.can_undo ? <Button help={TASK_HELP.undoNamespaces} size="small" disabled={busy || readOnly} onClick={() => void undo(operation)}>Undo {operation.label.toLowerCase()}</Button> : null}</li>)}</ul></details> : null}
+      {operations.length ? <details className="wb-task-namespace-history"><summary>Recent namespace changes</summary><ul>{operations.map((operation) => <li key={operation.operation_id}><span>{operation.label} · <time dateTime={operation.created_at}>{new Date(operation.created_at).toLocaleString()}</time>{operation.undone_at ? " · Undone" : ""}</span>{operation.can_undo ? <Button help={TASK_HELP.undoNamespaces} size="small" disabled={busy || readOnly} onClick={() => void undo(operation)}>Undo {operation.label.toLowerCase()}</Button> : null}</li>)}</ul></details> : null}
       {message?.tone === "danger" && !action ? <Button disabled={busy} onClick={() => void inventory().catch((error: Error) => setMessage({ tone: "danger", text: error.message }))}>Retry loading namespaces</Button> : null}
     </>}
   </section>;

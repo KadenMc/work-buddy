@@ -135,6 +135,126 @@ def test_facets_ignore_only_their_own_filter(task_store):
     assert result["facets"]["attention"]["waiting"] == 0
 
 
+def test_historical_empty_segments_and_numeric_namespaces_remain_distinct(task_store):
+    insert_tasks(task_store, [
+        {"task_id": "trailing", "archived_at": "2026-06-27"},
+        {"task_id": "nested", "archived_at": "2026-06-27"},
+        {"task_id": "sibling", "archived_at": "2026-06-27"},
+        {"task_id": "numeric", "deleted_at": "2026-05-28"},
+        {"task_id": "ordinary"}, {"task_id": "project"},
+    ])
+    with task_store.transaction() as conn:
+        conn.executemany("INSERT INTO task_tags VALUES (?, ?, ?)", [
+            ("trailing", "projects/", 1), ("nested", "projects//nested", 1),
+            ("sibling", "projects/work", 1), ("numeric", "138", 1),
+            ("ordinary", "138", 0),
+        ])
+        conn.execute("INSERT INTO task_projects VALUES ('project',138)")
+    assert read_workspace(task_store)["namespace_tree"] == []
+    selected = WorkspaceQuery(namespaces=("138",), exact_namespaces=("projects//nested", "projects/"))
+    tree = {item["path"]: item for item in read_workspace(task_store, selected)["namespace_tree"]}
+    assert tree["projects/"] == {
+        "path": "projects/", "parent": "projects", "label": "(empty segment)",
+        "count": 0, "direct_count": 0,
+    }
+    assert tree["projects//nested"]["parent"] == "projects/"
+    assert tree["138"] == {
+        "path": "138", "parent": None, "label": "138", "count": 0, "direct_count": 0,
+    }
+    exact = read_workspace(task_store, WorkspaceQuery(statuses=("archived",), exact_namespaces=("projects/",)))
+    assert ids(exact) == ["trailing"]
+    branch = read_workspace(task_store, WorkspaceQuery(statuses=("archived",), namespaces=("projects/",)))
+    assert set(ids(branch)) == {"trailing", "nested"}
+    assert ids(read_workspace(task_store, WorkspaceQuery(statuses=("trash",), namespaces=("138",)))) == ["numeric"]
+    assert [item["path"] for item in read_workspace(task_store, WorkspaceQuery(statuses=("trash",)))["namespace_tree"]] == ["138"]
+    missing = read_workspace(task_store, WorkspaceQuery(namespaces=("missing/",)))
+    assert next(item for item in missing["namespace_tree"] if item["path"] == "missing/")["label"] == "(empty segment)"
+    assert task_store.get("trailing").namespace_tags == ("projects/",)
+
+
+@pytest.mark.parametrize("filters", [
+    {"q": "Needle"}, {"urgencies": ("high",)}, {"attention": ("active",)},
+    {"projects": ("1",)}, {"note": "yes"}, {"due": "today"},
+])
+def test_namespace_picker_honors_each_other_filter(task_store, filters):
+    insert_tasks(task_store, [
+        {"task_id": "matching", "description": "Needle", "state": "active", "urgency": "high", "due_date": "2026-09-09"},
+        {"task_id": "other", "description": "Other", "state": "waiting", "urgency": "low", "due_date": "2026-09-11"},
+    ])
+    with task_store.transaction() as conn:
+        conn.executemany("INSERT INTO task_tags VALUES (?, ?, 1)", [
+            ("matching", "work/matching/deep"), ("other", "work/other"),
+        ])
+        conn.executemany("INSERT INTO task_projects VALUES (?, ?)", [("matching", 1), ("other", 2)])
+        conn.execute("INSERT INTO task_document_links VALUES ('matching','matching','store','doc','binding','active','2026-09-01','2026-09-01',NULL)")
+    result = read_workspace(task_store, WorkspaceQuery(**filters), today=date(2026, 9, 9))
+    assert ids(result) == ["matching"]
+    assert {item["path"]: item["count"] for item in result["namespace_tree"]} == {
+        "work": 1, "work/matching": 1, "work/matching/deep": 1,
+    }
+    assert {item["value"] for item in result["options"]["namespaces"]} == {
+        "work", "work/matching", "work/matching/deep", "work/other",
+    }
+
+
+def test_authoring_namespace_options_include_filtered_statuses_and_exact_paths_without_hydration(task_store, monkeypatch):
+    insert_tasks(task_store, [
+        {"task_id": "visible", "description": "Needle", "state": "active"},
+        {"task_id": "archived", "archived_at": "2026-06-27"},
+        {"task_id": "trash", "deleted_at": "2026-05-28"},
+        {"task_id": "other", "state": "waiting"},
+    ])
+    with task_store.transaction() as conn:
+        conn.executemany("INSERT INTO task_tags VALUES (?, ?, ?)", [
+            ("visible", "work/current", 1), ("archived", "projects/", 1),
+            ("archived", "projects//nested", 1), ("trash", "projects/", 1),
+            ("trash", "138", 1), ("other", "other", 1), ("visible", "ordinary", 0),
+        ])
+        conn.execute("INSERT INTO task_projects VALUES ('visible',1)")
+    monkeypatch.setattr(Task, "from_row", lambda *_a, **_kw: pytest.fail("Hydrated full task"))
+    query = WorkspaceQuery(q="Needle", attention=("active",), projects=("1",))
+    result = read_workspace(task_store, query)
+    assert ids(result) == ["visible"]
+    assert [item["path"] for item in result["namespace_tree"]] == ["work", "work/current"]
+    assert result["options"]["namespaces"] == [
+        {"value": path, "label": path}
+        for path in ("138", "other", "projects", "projects/", "projects//nested", "work", "work/current")
+    ]
+    assert read_workspace(task_store, WorkspaceQuery(statuses=("trash",)))["options"]["namespaces"] == result["options"]["namespaces"]
+
+
+def test_namespace_picker_excludes_its_own_multi_selection_but_keeps_zero_selected_paths(task_store):
+    insert_tasks(task_store, [
+        {"task_id": "a"}, {"task_id": "b"}, {"task_id": "c"},
+        {"task_id": "old", "archived_at": "2026-06-27"},
+        {"task_id": "unselected-old", "archived_at": "2026-06-27"},
+    ])
+    with task_store.transaction() as conn:
+        conn.executemany("INSERT INTO task_tags VALUES (?, ?, 1)", [
+            ("a", "work/a"), ("b", "work/b"), ("c", "work/c"),
+            ("old", "archive/old"), ("unselected-old", "archive/unselected"),
+        ])
+    query = WorkspaceQuery(namespaces=("work/a", "archive/old"), exact_namespaces=("work/c", "missing/deep/"))
+    result = read_workspace(task_store, query)
+    assert set(ids(result)) == {"a", "c"}
+    assert {item["path"]: item["count"] for item in result["namespace_tree"]} == {
+        "work": 3, "work/a": 1, "work/b": 1, "work/c": 1,
+        "archive": 0, "archive/old": 0,
+        "missing": 0, "missing/deep": 0, "missing/deep/": 0,
+    }
+    empty = next(item for item in result["namespace_tree"] if item["path"] == "missing/deep/")
+    assert empty["label"] == "(empty segment)"
+    assert empty["parent"] == "missing/deep"
+    assert empty["direct_count"] == 0
+    from work_buddy.tasks.namespaces import TaskNamespaceService
+    from work_buddy.tasks.service import TaskApplicationService
+    management = TaskNamespaceService(TaskApplicationService(task_store)).inventory()
+    assert {item["path"]: item["count"] for item in management["namespaces"]} == {
+        "work": 3, "work/a": 1, "work/b": 1, "work/c": 1,
+        "archive": 2, "archive/old": 1, "archive/unselected": 1,
+    }
+
+
 @pytest.mark.parametrize("field", ["created_at", "updated_at", "due_date"])
 @pytest.mark.parametrize("direction,expected", [("asc", ["old", "new"]), ("desc", ["new", "old"])])
 def test_dates_handle_timezones_unknowns_and_ties(task_store, field, direction, expected):
