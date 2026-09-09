@@ -121,6 +121,10 @@ def test_build_then_ack_snapshots_events_and_replays_concurrent_lag(tmp_path):
         "parity_mismatches": 0,
         "ready": False,
     }
+    assert first["index_complete"] is True
+    assert first["delivery_complete"] is False
+    assert first["complete"] is False
+    assert index.store.get_meta(f"last_build:{partition.name}") is None
     assert partition.acknowledged == ["event-1"]
     assert lock_observations == [(True, True)]
 
@@ -129,6 +133,9 @@ def test_build_then_ack_snapshots_events_and_replays_concurrent_lag(tmp_path):
     assert replay["outbox"]["delivered"] == 1
     assert replay["outbox"]["pending_after"] == 0
     assert replay["outbox"]["ready"] is True
+    assert replay["delivery_complete"] is True
+    assert replay["complete"] is True
+    assert index.store.get_meta(f"last_build:{partition.name}") is not None
     assert partition.acknowledged == ["event-1", "event-2"]
     assert lock_observations == [(True, True), (True, True)]
 
@@ -164,6 +171,10 @@ def test_parity_mismatch_retains_entire_snapshot_until_replay(tmp_path):
     assert raced["outbox"]["delivered"] == 0
     assert raced["outbox"]["pending_after"] == 2
     assert raced["outbox"]["ready"] is False
+    assert raced["index_complete"] is True
+    assert raced["delivery_complete"] is False
+    assert raced["complete"] is False
+    assert index.store.get_meta(f"last_build:{partition.name}") is None
     assert partition.acknowledged == []
 
     replayed = index.build(partition.name)
@@ -171,7 +182,28 @@ def test_parity_mismatch_retains_entire_snapshot_until_replay(tmp_path):
     assert replayed["outbox"]["parity_mismatches"] == 0
     assert replayed["outbox"]["delivered"] == 2
     assert replayed["outbox"]["ready"] is True
+    assert replayed["delivery_complete"] is True
+    assert replayed["complete"] is True
+    assert index.store.get_meta(f"last_build:{partition.name}") is not None
     assert partition.acknowledged == ["event-1", "event-2"]
+
+
+def test_optional_pending_counter_does_not_wedge_acknowledged_delivery(tmp_path):
+    class NoCounterPartition(_OutboxPartition):
+        pending_search_event_count = None
+
+    partition = NoCounterPartition()
+    index = _unified(tmp_path, partition)
+
+    result = index.build(partition.name)
+
+    assert partition.events == []
+    assert result["outbox"]["pending_after"] is None
+    assert result["outbox"]["delivered"] == 1
+    assert result["outbox"]["ready"] is True
+    assert result["delivery_complete"] is True
+    assert result["complete"] is True
+    assert index.store.get_meta(f"last_build:{partition.name}") is not None
 
 
 def test_contract_and_personal_partitions_register_with_bootstrap():

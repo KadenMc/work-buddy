@@ -3,7 +3,7 @@
 Query encoding uses the lightweight ``leaf-ir-query`` model
 (MongoDB/mdbr-leaf-ir, 90 MB, eager-loaded at startup).  Document encoding
 uses the full asymmetric bundle ``leaf-ir`` (MongoDB/mdbr-leaf-ir-asym,
-526 MB, lazy-loaded only during indexing).  Both produce compatible 768-d
+526 MB, lazy-loaded only for document/passage embedding workloads).  Both produce compatible 768-d
 vectors per the model card's documented split-usage pattern.
 
 When running inside the embedding service process (``_IN_SERVICE = True``),
@@ -13,6 +13,7 @@ itself.  The flag is set by ``service.main()`` at startup.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
@@ -272,8 +273,8 @@ def _encode_bulk_direct(
     the LM Studio offload path's ``broker.slot`` row joins this provenance row,
     and writes one record per batch (best-effort). The description detail comes
     from the ambient ``inference_detail`` set by the caller (the IR source),
-    falling back to a count when none is set. ``provider`` is the *configured*
-    embedding provider (lmstudio vs sentence_transformer).
+    falling back to a count when none is set. ``provider`` records the backend
+    that actually produced the vectors (including local fallback).
     """
     import time as _time
     import uuid as _uuid
@@ -281,30 +282,43 @@ def _encode_bulk_direct(
     from work_buddy.inference.call_context import bind_call_id, current_detail
 
     model_key = "leaf-mt" if kind == "label" else "leaf-ir"
-    try:
-        from work_buddy.config import load_config
-        _mcfg = (
-            load_config().get("embedding", {}).get("models", {}).get(model_key, {})
-            or {}
-        )
-        provider = (_mcfg.get("provider") or "sentence_transformer").lower()
-    except Exception:
-        provider = "sentence_transformer"
+    routes: list[Any] = []
+    provider = "local"
 
     cid = _uuid.uuid4().hex[:12]
     status = "ok"
     t0 = _time.monotonic()
     try:
         with bind_call_id(cid):
-            return _encode_bulk_direct_impl(texts, batch_size=batch_size, kind=kind)
-    except Exception:
+            return _encode_bulk_direct_impl(
+                texts,
+                batch_size=batch_size,
+                kind=kind,
+                _routes=routes,
+                _call_id=cid,
+            )
+    except Exception as exc:
         status = "error"
+        route = getattr(exc, "route", None)
+        if route is not None:
+            routes.append(route)
         raise
     finally:
         try:
             from work_buddy.llm.provenance import record_inference_call
+            if routes:
+                actual = {route.provider for route in routes if route.provider}
+                if len(actual) == 1:
+                    provider = next(iter(actual))
+                elif actual:
+                    provider = "mixed"
+                else:
+                    provider = routes[-1].requested_provider
             n = len(texts)
             detail = current_detail() or f"{n} document{'s' if n != 1 else ''}"
+            reasons = sorted({route.reason for route in routes})
+            if reasons:
+                detail = f"{detail}; route={','.join(reasons)}"
             record_inference_call(
                 kind="embedding",
                 model=model_key,
@@ -325,14 +339,19 @@ def _encode_bulk_direct_impl(
     texts: list[str],
     batch_size: int = 32,
     kind: str = "passage",
+    *,
+    _routes: list[Any] | None = None,
+    _call_id: str | None = None,
 ) -> np.ndarray:
-    """Encode documents in-process (no HTTP to our own embedding service).
+    """Encode documents through the embedding component's routing authority.
 
-    Dispatches on the model's configured provider:
+    In the embedding service process, use its singleton
+    :class:`work_buddy.index.encode.ProviderRouter` directly. External callers
+    cross the service's ``/embed`` boundary, so a dashboard-activated policy,
+    breaker cooldown, and route telemetry cannot diverge across processes.
 
-    * ``provider: sentence_transformer`` (default) — in-process encode
-      via the ``SentenceTransformer`` loaded in the embedding service
-      registry (or a freshly-loaded one for CLI usage).
+    * ``provider: local`` / ``sentence_transformer`` (default): encode via the
+      ``SentenceTransformer`` loaded in the embedding service registry.
     * ``provider: lmstudio`` — POST to LM Studio's ``/v1/embeddings``
       endpoint. See ``docs/handbook/features_lmstudio-offload-setup.md``
       for the full setup procedure (GGUF audit, drift test, config).
@@ -341,8 +360,9 @@ def _encode_bulk_direct_impl(
           sentence_transformer path. The cosine drift between Q8 GGUF
           and fp32 sentence-transformers is ~0.0002 in practice, so
           mixed-provenance vectors cluster correctly for retrieval.
-        - ``on_error: fail`` — re-raises. Useful for research workflows
-          that need single-provenance vectors.
+        - ``on_error: fail`` raises ``ProviderRoutingError`` without
+          touching the local model. Useful for workflows that require
+          remote-only execution and single-provenance vectors.
 
     ``kind="passage"`` uses ``leaf-ir`` (asymmetric document encoder),
     ``kind="label"`` uses ``leaf-mt`` (symmetric).
@@ -353,99 +373,92 @@ def _encode_bulk_direct_impl(
     # leaf-mt encodes without a prompt; leaf-ir uses the "document" prompt.
     prompt = None if kind == "label" else "document"
 
-    # Load per-model config once so both provider dispatch and the
-    # local fallback path read from the same source of truth.
-    from work_buddy.config import load_config
-    cfg = load_config()
-    model_cfg = (
-        cfg.get("embedding", {}).get("models", {}).get(model_key, {}) or {}
+    # One router lives for the full batch so its remote failure cooldown
+    # prevents every subsequent chunk from retrying a known-bad endpoint.
+    from work_buddy.index.encode import (
+        ProviderRoutingError,
+        RouteInfo,
     )
-    provider = (model_cfg.get("provider") or "sentence_transformer").lower()
-
-    # Route to the LM Studio provider when opted in. Fallback logic is
-    # deliberately shallow: try once, on error either fail loudly or
-    # quietly drop to the local path. We do not silently retry LM
-    # Studio — a flaky link should surface as a provider error once,
-    # not hundreds of times across a 7k-row encode loop.
-    if provider == "lmstudio":
-        on_error = (model_cfg.get("on_error") or "fallback").lower()
-        lmstudio_model_id = model_cfg.get("lmstudio_model")
-        if not lmstudio_model_id:
-            msg = (
-                f"embedding.models.{model_key}.provider is 'lmstudio' "
-                "but lmstudio_model is not set. Refusing to proceed "
-                "with an unknown model id."
-            )
-            if on_error == "fail":
-                raise ValueError(msg)
-            logger.warning("%s — falling back to sentence_transformer", msg)
-        else:
-            try:
-                from work_buddy.embedding.providers.lmstudio import (
-                    encode as lmstudio_encode,
-                    resolve_base_url,
-                )
-                base_url = resolve_base_url(cfg)
-                logger.info(
-                    "Bulk-encoding %d texts via LM Studio "
-                    "(model_key=%s, lmstudio_model=%s, base_url=%s)",
-                    len(texts), model_key, lmstudio_model_id, base_url,
-                )
-                # LM Studio handles batching natively on the server;
-                # batch_size here bounds the HTTP payload size.
-                vecs = lmstudio_encode(
-                    texts,
-                    model_id=lmstudio_model_id,
-                    base_url=base_url,
-                    batch_size=batch_size,
-                )
-                print(
-                    f"  Encoded {len(texts)}/{len(texts)} documents "
-                    f"(via LM Studio).", file=sys.stderr,
-                )
-                return vecs
-            except Exception as exc:
-                if on_error == "fail":
-                    # Re-raise as-is to preserve the error_kind on
-                    # LocalInferenceError so callers can classify.
-                    raise
-                logger.warning(
-                    "LM Studio bulk encode failed (%s: %s) — falling "
-                    "back to local sentence_transformer for kind=%s",
-                    type(exc).__name__, exc, kind,
-                )
-                # fall through to the local path
-
-    # Local (sentence_transformers) path — the default, and the
-    # fallback when LM Studio is misconfigured or unreachable.
-    if _IN_SERVICE:
-        from work_buddy.embedding.service import _get_model
-        model = _get_model(model_key)  # may trigger lazy load on first call
-        logger.info("Using in-service %s model for bulk encoding (kind=%s)",
-                    model_key, kind)
-    else:
-        default_hf = "MongoDB/mdbr-leaf-mt" if kind == "label" else "MongoDB/mdbr-leaf-ir-asym"
-        model_name = model_cfg.get("name", default_hf)
-        from sentence_transformers import SentenceTransformer
-        logger.info("Loading %s for bulk encoding (kind=%s)...", model_name, kind)
-        model = SentenceTransformer(model_name)
-
     from work_buddy.inference import Priority
-    from work_buddy.inference.local_slot import local_embed_slot
 
-    all_vecs = []
+    if _IN_SERVICE:
+        # Share the service singleton: Settings activation, breaker cooldown,
+        # and health observability must all describe this exact policy object.
+        from work_buddy.embedding.service import _get_provider_router
+
+        router = _get_provider_router()
+    else:
+        # External callers must cross the same /embed policy boundary as every
+        # scheduled index client. Reading YAML and routing here would ignore a
+        # restart-gated dashboard override and hide the call from service health.
+        router = None
+
+    all_vecs: list[np.ndarray] = []
     total = len(texts)
     for i in range(0, total, batch_size):
         batch = texts[i : i + batch_size]
-        encode_kwargs = {"batch_size": batch_size, "show_progress_bar": False}
-        if prompt is not None:
-            encode_kwargs["prompt_name"] = prompt
-        # Per-batch BACKGROUND admission: the build holds the shared GPU slot only
-        # for one batch, so an INTERACTIVE query is admitted *between* batches
-        # rather than waiting out the whole rebuild.
-        with local_embed_slot(Priority.BACKGROUND):
-            vecs = model.encode(batch, **encode_kwargs)
-        all_vecs.append(vecs)
+        if router is not None:
+            routed = router.encode_with_route(
+                batch,
+                model_id=model_key,
+                prompt_name=prompt,
+                priority=Priority.BACKGROUND,
+                batch_size=batch_size,
+            )
+        else:
+            from work_buddy.embedding.client import embed_with_route
+
+            response = embed_with_route(
+                batch,
+                model=model_key,
+                prompt_name=prompt,
+                timeout_s=max(120, len(batch) * 2),
+                routing_role="document",
+                # _encode_bulk_direct writes one aggregate record spanning all
+                # chunks, with the actual route(s), after this loop completes.
+                record_provenance=False,
+                call_id=_call_id,
+            )
+            if response is None:
+                raise RuntimeError("Embedding service is unavailable")
+            route_payload = response.get("route")
+            route = (
+                RouteInfo.from_dict(route_payload, default_model=model_key)
+                if isinstance(route_payload, dict)
+                else RouteInfo(
+                    model=model_key,
+                    requested_provider="embedding-service",
+                    provider=None,
+                    provider_model=None,
+                    on_error="unknown",
+                    status="ok",
+                    fallback=False,
+                    reason="service_route_unreported",
+                    at=time.time(),
+                )
+            )
+            if response.get("vectors") is None:
+                if isinstance(route_payload, dict):
+                    raise ProviderRoutingError(
+                        str(response.get("error") or "Embedding provider unavailable"),
+                        code=str(
+                            response.get("code") or "embedding_provider_unavailable"
+                        ),
+                        route=route,
+                    )
+                raise RuntimeError(
+                    str(response.get("error") or "Embedding service returned no vectors")
+                )
+            from work_buddy.index.encode import RoutedEmbedding
+
+            routed = RoutedEmbedding(response["vectors"], route)
+        if _routes is not None:
+            _routes.append(routed.route)
+        if routed.vectors is None:
+            raise RuntimeError(
+                f"Embedding provider produced no vectors for model {model_key!r}"
+            )
+        all_vecs.append(np.asarray(routed.vectors, dtype=np.float32))
         done = min(i + batch_size, total)
         print(f"\r  Encoded {done}/{total} documents...", end="", file=sys.stderr)
 

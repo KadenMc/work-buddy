@@ -35,7 +35,9 @@ class FakeEncoder:
 
 @pytest.fixture
 def store(tmp_path):
-    return IndexStore(tmp_path / "search-index.db")
+    value = IndexStore(tmp_path / "search-index.db")
+    value.prepare_schema()
+    return value
 
 
 class TestSourceCap:

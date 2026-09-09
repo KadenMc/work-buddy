@@ -31,6 +31,26 @@ dev_notes: |-
 
   Keep this boundary intact on Windows. Calling `model.encode` from a fresh request thread can leave that thread's native OpenMP team resident after the Python thread exits, causing native workers to accumulate across requests. New in-service SentenceTransformer encode paths should go through `_brokered_encode` rather than calling `model.encode` directly.
 
+  `work_buddy.__init__` sets `OPENBLAS_NUM_THREADS=1` before NumPy can initialize,
+  and `compat.build_child_env` gives supervised children the same default. This is a
+  process-wide memory policy, not an encode-batch knob: OpenBLAS otherwise creates a
+  native worker team per Python service and reserves a large amount of private commit.
+  Both sites use `setdefault`, so an explicit operator override is preserved.
+
+  ## One document-routing authority
+
+  The embedding process owns one `ProviderRouter` singleton for document encodes.
+  In-process index work reuses it directly; sidecar and CLI index work call the local
+  service's `/embed` endpoint through `embedding.client.embed_with_route`. Do not add a
+  second config-backed router to a caller: it would bypass restart-gated Settings,
+  split circuit-breaker state, hide the actual route from `/health`, and could load the
+  local document model against a remote-only policy.
+
+  Provider availability probes are intentionally separated from provider execution.
+  `embedding/providers/lmstudio_config.py` resolves the endpoint and model alias without
+  importing NumPy, SentenceTransformers, or the model registry. Health and dashboard
+  probes must stay on that lightweight boundary.
+
   ## doc_count vs vector_count — read ``dense_eligible_docs``
 
   The IR index status output (``ir_index(action='status')``) exposes three count fields per source. Do **not** treat ``doc_count - vector_count`` as a "backlog" — it usually isn't. The right reading:
@@ -127,7 +147,7 @@ dev_notes: |-
 
   ## Adding a new model
 
-  Add an entry to `config.yaml` under `embedding.models` (or `_DEFAULT_MODELS` in `service.py` for the fallback). Required fields: HF name, dims, `eager` (bool). Eager-load only models on the critical path for interactive work; lazy-load large models (e.g. the 526 MB `leaf-ir` passage encoder) that are used only during indexing.
+  Add an entry to `config.yaml` under `embedding.models` (or `_DEFAULT_MODELS` in `service.py` for the fallback). Required fields: HF name, dims, `eager` (bool). Eager-load only models on the critical path for interactive work; lazy-load large models (e.g. the 526 MB `leaf-ir` passage encoder) that are used only for document and passage embedding workloads.
 
   ## Lazy models: cold-load timeout tolerance
 
@@ -141,13 +161,19 @@ dev_notes: |-
 
   'Default model for all' is a tempting shortcut. Every new semantic-scoring site should ask: am I comparing query-shaped things to query-shaped things (use `leaf-mt`), or query-shaped to passage-shaped (use `embed_for_ir` with the correct role)? The wrong answer produces subtle quality loss, not visible errors.
 
-  ## Consolidated index: resident-matrix prewarm at startup
+  ## Consolidated index: resident-matrix startup policy
 
-  The consolidated index (``work_buddy/index/``) serves search from per-(partition, projection) dense matrices held resident in this process (``index/resident.py`` — the generic ResidentCache the vault matrix and model registry reuse). They are lazy-loaded on a partition's first search, so a large partition (vault is ~88k×768) pays a tens-of-seconds load on that first query — long enough to exceed the request timeout, returning ``None`` and silently missing the consolidated index until something queries it again.
+  The consolidated index (``work_buddy/index/``) serves search from per-(partition,
+  projection) dense matrices held resident in this process. `index.startup_prewarm`
+  selects the startup policy. The default `lazy` mode does not materialize every built
+  partition; the first cold query serves lexical results and uses the warming signal
+  below. `all` starts the background largest-first prewarm for operators who explicitly
+  accept its memory and startup cost.
 
-  ``main()`` prewarms them: when ``index.enabled``, a background daemon (``index/partitioned.py::start_prewarm`` -> ``prewarm_resident_matrices``) loads every BUILT partition's matrices up front, **largest partition first** (so the slowest-to-load, highest-cold-cost partitions are protected soonest). It goes through the same ``HybridSearcher._resident`` caches the serving path reads (no key drift), does NO model encode (pure SQLite read + numpy reshape, so it doesn't contend for the inference broker / GPU), and is idempotent with the consolidated-index idle evictor (``resident.start_idle_evictor``: warm -> serve -> release after the idle TTL -> re-warm on next query). It is gated — a disabled or unbuilt index warms nothing, and the daemon never blocks ``/health`` or query serving.
-
-  Caveat: prewarm shrinks but does not eliminate the first-query cold window. Matrix loading is GIL-heavy (a ``b"".join`` over a partition's vector blobs), so on a contended boot — eager model load plus concurrent query-encodes competing for one GIL — warming all partitions can take minutes, and a query can still arrive while its partition is mid-warm. The **warming signal** (below) is what makes that residual window cheap to ride out instead of a hard cold-load stall.
+  Eager prewarm goes through the same ``HybridSearcher._resident`` caches as serving,
+  performs no model encode, and remains idempotent with the idle evictor. It can still
+  take minutes for a large corpus because matrix construction is allocation- and
+  GIL-heavy, which is why it is opt-in rather than the default.
 
   ## Consolidated index: warming signal (non-blocking cold serve)
 
@@ -159,7 +185,17 @@ dev_notes: |-
 
   **Client distinguishes three states.** ``embedding/client.py::index_search`` / ``index_search_many`` take ``warm_retry``. When enabled, a ``warming`` response waits ``min(retry_after_s, cap)`` then retries ONCE with ``block_until_warm=true`` and an extended timeout (mirrors ``knowledge/index.py::_CONTENT_COLD_LOAD_TIMEOUT_S``). This distinguishes ``None`` (service down, fall back), ``warming`` (cold, retry against the warming matrix), and a final result. ``knowledge/search.py`` and ``mcp_server/ops/context_consolidated.py`` opt in and retain their live-index or IR-engine fallback. ``dev/document.py`` explicitly disables warm retry: its single 25-second request accepts cold lexical results, while failure or empty hits use the existing grep matcher and canonical-entrypoint inclusion. This avoids starting a cold local dense rebuild inside the scan workflow's 90-second deadline; the non-consolidated scan path still uses the local index normally.
 
-  **Hot-path readiness invariant (load-bearing).** The readiness predicate (``UnifiedIndex.cold_partitions`` → ``IndexPartition.is_warm``) runs on every cold-eligible query, so it must stay O(projections) in RAM: it checks ONLY ``ResidentCache.is_cached()`` (a pure in-memory flag) and must NEVER call ``store.vector_count()`` — that's a ``COUNT(DISTINCT) … JOIN`` across the whole (all-partition) ``doc_vectors`` table, ~40s at vault scale, i.e. a 40-second query on the serving path. ``warm_eta_s`` likewise uses the cheap partition-indexed ``doc_count``, not ``vector_count``. The trade-off: a projection that legitimately has no vectors reads as "cold" forever (one redundant warm-retry, then graceful fallback) — deliberately accepted over probing vector counts per query.
+  **Hot-path readiness invariant (load-bearing).** The readiness predicate
+  (``UnifiedIndex.cold_partitions`` → ``IndexPartition.is_warm``) runs on every
+  cold-eligible query. It uses ``ResidentCache.is_current()`` so an allocated matrix or a
+  settled-empty result counts as warm only when its generation is still current; it never
+  loads a matrix.
+  It must NEVER call ``store.vector_count()``. That is a ``COUNT(DISTINCT) … JOIN``
+  across the whole all-partition ``doc_vectors`` table and is far too expensive per
+  query. ``warm_eta_s`` likewise uses the partition-indexed ``doc_count``. A projection
+  with no vectors caches a settled-empty result for the current generation, so it does
+  not advertise perpetual warming or force a redundant retry. A later generation bump
+  invalidates the sentinel and makes it eligible to warm again.
 
   ## Key dev files
 
@@ -176,11 +212,14 @@ dev_notes: |-
 
 ## Overview
 
-A long-running sidecar service providing dense vector embeddings for work-buddy's search and similarity features. Exposes an HTTP API on `localhost:5124` with eager-loaded models, so interactive calls are fast.
+A long-running sidecar service providing dense vector embeddings for work-buddy's search and similarity features. Exposes an HTTP API on `localhost:5124`. Interactive query models are eager; the larger document model is lazy and loads only if a document request actually resolves to a local route.
 
 ## Endpoints
 
-- `POST /embed` — embed a batch of texts, return vectors
+- `POST /embed`: embed a batch of texts. Document-model requests pass through the
+  service's authoritative provider router and return route provenance with the vectors.
+  A required remote route that cannot run returns a structured 503 instead of loading
+  the local model
 - `POST /similarity` — cosine similarity between a query and candidate texts
 - `POST /search` — BM25 + embedding hybrid search over candidates
 - `POST /ir/search`, `POST /ir/index` — indexed IR search over registered sources. Every IR
@@ -196,13 +235,17 @@ A long-running sidecar service providing dense vector embeddings for work-buddy'
   `POST /index/build` — incremental build of a partition (or all) into the separate
   `db/index-consolidated` DB. Run in-process so the resident matrices stay warm and the bulk
   encode shares the broker (see `architecture/consolidated-index`)
-- `GET /health` — liveness probe
+- `GET /health`: liveness plus model-residency and document-route evidence, including
+  configured policy, circuit-breaker cooldown, and the last actual provider route
 
 ## Client
 
 `work_buddy/embedding/client.py` wraps the HTTP API:
 
 - `embed(texts)` — plain batch embedding, uses the service's default model
+- `embed_with_route(texts)`: document-oriented batch embedding that preserves the
+  service's structured route or failure envelope
+- `health_status()`: full health and route-provenance snapshot for operator surfaces
 - `embed_for_ir(texts, role="query"|"document")` — asymmetric IR encoding via the query↔document model pair
 - `similarity_search(query, candidates)` — rank candidates by similarity
 - `hybrid_search(query, candidates)` — BM25 + dense blend
@@ -215,34 +258,61 @@ A long-running sidecar service providing dense vector embeddings for work-buddy'
 
 ## Graceful degradation
 
-Every client function returns `None` (or an empty list) when the service is unavailable. Callers must handle this — typically by falling back to BM25 alone or skipping the semantic step. Never assume the service is up; always handle the `None` path.
+Connection failures still return `None` (or an empty list) for clients that opt into
+graceful degradation. Provider failures are different: the route-aware client preserves
+the service's structured error. Under **Require LM Studio**, document and passage
+embedding fails closed; it must not silently load the local document model. Index builds
+remain resumable, while similarity and search callers use their lexical path or skip
+dense ranking where that fallback is supported.
 
 ## Consumers
 
-Knowledge search, IR conversation search, native vault search, task-triage similarity, and other semantic-scoring sites throughout the codebase all route through this service. Model loading happens once here; all callers share the loaded weights.
+Knowledge search, IR conversation search, native vault search, task-triage similarity,
+and other semantic-scoring sites throughout the codebase all route through this service.
+Local model loading happens once here; remote document vectors require no local
+`leaf-ir` load.
 
-## Optional: LM Studio offload for bulk document encoding
+## Document execution policy
 
-Bulk document encoding (the big passage-side model, ``leaf-ir`` / ``snowflake-arctic-embed-m-v1.5``) can route through LM Studio instead of loading locally — moves ~500 MB of RSS off the main machine, optionally via LM Link to a remote compute device. Opt-in per model via ``embedding.models.<key>.provider: lmstudio`` in config.
+The large passage encoder (`leaf-ir` / `snowflake-arctic-embed-m-v1.5`) has three
+restart-gated modes under **System → Embeddings**:
 
-When enabled, the call path is:
+- **Local only** runs every document batch in this process.
+- **Prefer LM Studio** tries the configured LM Studio model and deliberately loads the
+  local model as fallback when the remote route is unavailable.
+- **Require LM Studio** never loads `leaf-ir` locally. An unavailable endpoint, missing
+  model alias, failed embedding request, or provider cooldown blocks document-vector
+  production with a structured failure. Index refreshes still commit lexical documents
+  and durable ledger progress, but remain incomplete while dense work is pending;
+  similarity/search consumers use their supported non-dense fallback. Absence from
+  LM Studio's `/v1/models` snapshot alone is not treated as failure because LM Studio
+  may load the configured model on demand.
 
-```
-ir.dense._encode_bulk_direct
-  → work_buddy.embedding.providers.lmstudio.encode
-    → LocalInferenceBroker.slot(profile=f"lmstudio:{model_id}", priority=BACKGROUND, ...)
-      → httpx POST to LM Studio /v1/embeddings
-```
+The route is `caller → local /embed → ProviderRouter → LM Studio or local provider`.
+LM Studio may in turn place the model on an LM Link peer. Query-side encoders
+(`leaf-ir-query`, `leaf-mt`) remain local for latency and are unaffected by this setting.
 
-Query-side encoding (``leaf-ir-query``, ``leaf-mt``) is NOT offloaded — query latency is user-facing and the network hop would hurt.
+The dashboard distinguishes endpoint reachability from whether the configured model ID
+is currently advertised, without claiming that an unadvertised model is unavailable,
+and distinguishes the saved/effective setting from the policy reported by the running
+service. It also reports whether local document weights are
+resident and the last actual provider/fallback. Its approximately 526 MB figure is a
+model-weight estimate, not a guaranteed reduction in process private commit; runtime
+buffers and allocator high-water commit vary and may persist until process restart.
 
-On LM Studio errors, per-model ``on_error: fallback | fail`` decides the behavior. ``fallback`` (default) drops to the in-process sentence-transformers path. Measured drift between Q8 GGUF and fp32 sentence-transformers is ~0.0002 cosine, so mixed-provenance vectors in the same index cluster correctly.
-
-See ``architecture/inference/broker`` for the admission-control / priority / metrics layer, and ``features/lmstudio-offload-setup`` for the end-to-end setup procedure (GGUF download, metadata audit, drift test, config flip).
+YAML supplies the bootstrap default, LM Studio base URL, and remote model alias. Settings
+owns the user's execution mode after bootstrap, and the embedding service promotes a
+pending choice only when it starts. If Settings authority cannot be read at startup,
+the service keeps query models available but forces the document route to LM Studio with
+no local fallback and `eager: false`; `/health` and the dashboard expose that authority
+error. This fail-closed safety state avoids accidentally loading the large local model
+from stale YAML. See `architecture/inference/broker` for admission
+control and `features/lmstudio-offload-setup` for model setup and verification.
 
 ## Key files
 
 - `work_buddy/embedding/service.py` — Flask service, model registry, lazy loading. ``_get_model()`` uses a per-entry Condition so a cold load of one model doesn't block concurrent access to another.
-- `work_buddy/embedding/client.py` — HTTP client with role-aware wrappers.
+- `work_buddy/embedding/client.py`: HTTP client with role-aware and route-preserving wrappers.
+- `work_buddy/embedding/providers/lmstudio_config.py`: lightweight endpoint/model configuration used by probes.
 - `work_buddy/embedding/providers/lmstudio.py` — optional LM Studio provider (broker-wrapped).
 - `work_buddy/embedding/__main__.py` — service entry point (launched by the sidecar).

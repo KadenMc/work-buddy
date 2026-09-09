@@ -13,6 +13,8 @@ from work_buddy.settings import broker, store
 
 SETTING_ID = "wb.journal.day-boundary"
 COWORK_SETTING_ID = "wb.cowork.review.nav-binding"
+EMBEDDING_SETTING_ID = "wb.embedding.document-execution"
+EMBEDDING_CONTEXT_ID = "wb.settings.system.embeddings"
 DEFAULT_SHORTCUTS = {
     "previous": "j",
     "next": "k",
@@ -49,10 +51,10 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert registry.headers["Cache-Control"] == "no-store"
     body = registry.get_json()
     assert body["definitions"][0]["setting_id"] == SETTING_ID
-    assert len(body["placements"]) == 6
-    assert body["pages"][0]["navigation_group"] == "system"
-    assert body["pages"][0]["label"] == "Dashboard AI"
-    assert "navigation_category" not in body["pages"][0]
+    assert len(body["placements"]) == 7
+    dashboard_page = next(page for page in body["pages"] if page["label"] == "Dashboard AI")
+    assert dashboard_page["navigation_group"] == "system"
+    assert "navigation_category" not in dashboard_page
 
     values = client.get(
         "/api/settings/values?context_id=wb.settings.app.journal"
@@ -62,6 +64,62 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert snapshot["timezone"] == "America/New_York"
     assert snapshot["read_only"] is False
     assert snapshot["values"][0]["effective_value"] == "05:00"
+
+
+def test_embedding_setting_api_exposes_restart_required_state(client, monkeypatch) -> None:
+    monkeypatch.setattr(wb_config, "load_config", lambda: {})
+    snapshot = client.get(
+        f"/api/settings/values?context_id={EMBEDDING_CONTEXT_ID}"
+    )
+    assert snapshot.status_code == 200
+    initial = snapshot.get_json()["values"][0]
+    assert initial["setting_id"] == EMBEDDING_SETTING_ID
+    assert initial["effective_value"] == "local"
+
+    changed = client.patch(
+        f"/api/settings/values/{EMBEDDING_SETTING_ID}",
+        json={
+            "scope": "profile",
+            "value": "require-lmstudio",
+            "expected_revision": initial["revision"],
+        },
+    )
+    assert changed.status_code == 200
+    value = changed.get_json()["value"]
+    assert value["configured_value"] == "require-lmstudio"
+    assert value["effective_value"] == "local"
+    assert value["pending_value"] == "require-lmstudio"
+    assert value["apply_status"] == "restart-required"
+
+    preview = client.post(
+        f"/api/settings/values/{EMBEDDING_SETTING_ID}/preview",
+        json={
+            "scope": "profile",
+            "value": "prefer-lmstudio",
+            "expected_revision": value["revision"],
+        },
+    )
+    assert preview.status_code == 200
+    assert preview.get_json()["preview"]["apply_status"] == "restart-required"
+
+
+def test_embedding_runtime_endpoint_is_live_and_uncached(client, monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        dash_service,
+        "get_embedding_runtime_summary",
+        lambda *, probe_remote: calls.append(probe_remote) or {
+            "service_status": "ok",
+            "policy": {"effective": "local"},
+        },
+    )
+
+    response = client.get("/api/embeddings/runtime?probe=0")
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json()["policy"]["effective"] == "local"
+    assert calls == [False]
 
 
 def test_execution_catalog_is_probe_only_no_store_and_available_in_read_only(client, monkeypatch, tmp_path):
@@ -98,7 +156,7 @@ def test_cowork_context_and_immediate_shortcut_map_contract(client) -> None:
     )
     assert values.status_code == 200
     snapshot = values.get_json()
-    assert snapshot["registry_revision"] == "settings-registry:7"
+    assert snapshot["registry_revision"] == "settings-registry:8"
     assert snapshot["values"] == [
         {
             "apply_status": "effective",

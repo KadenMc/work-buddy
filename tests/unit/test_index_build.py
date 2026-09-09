@@ -207,6 +207,21 @@ class TestBuild:
         assert default_vectors[1] == deferred_vectors[1]
         assert callback_observation == {"vector_count": 5, "docs_indexed": 5}
 
+    def test_plain_completion_hook_observes_final_completion_state(self, store):
+        part = FakePartition({
+            "i1": {"hash": "h1", "docs": [("a", "alpha", "alpha passage")]},
+        })
+        callback_observation: dict = {}
+
+        result = _builder(store, part).build(
+            after_build=lambda stats: callback_observation.update(dict(stats)),
+        )
+
+        assert callback_observation["index_complete"] is True
+        assert callback_observation["delivery_complete"] is True
+        assert callback_observation["complete"] is True
+        assert result["complete"] is True
+
     def test_deferred_vector_build_resumes_after_lexical_progress(self, store):
         class InterruptingPartition(FakePartition):
             fail_item = "i2"
@@ -237,6 +252,192 @@ class TestBuild:
         assert set(store.get_indexed_items("fake")) == {"i1", "i2"}
         assert store.vector_count("fake", "content") == 2
         assert encoder.document_calls == [["alpha passage", "beta passage"]]
+
+    def test_bounded_build_commits_slices_without_claiming_completion(self, store):
+        items = {
+            f"i{n}": {
+                "hash": f"h{n}",
+                "docs": [(f"d{n}", f"name{n}", f"text {n}")],
+            }
+            for n in range(5)
+        }
+        part = FakePartition(items)
+        completed: list[dict] = []
+        builder = _builder(store, part, encoder=RecordingEncoder())
+
+        first = builder.build(
+            max_items=2,
+            max_vector_batches=1,
+            after_build=completed.append,
+        )
+        assert first["changed"] == 2
+        assert first["changed_total"] == 5
+        assert first["complete"] is False
+        assert first["remaining"] == {"items": 3, "vectors": {"content": 0}}
+        assert store.doc_count("fake") == 2
+        assert store.vector_count("fake", "content") == 2
+        assert store.get_meta("last_build:fake") is None
+        assert completed == []
+
+        second = builder.build(
+            max_items=2,
+            max_vector_batches=1,
+            after_build=completed.append,
+        )
+        assert second["changed_total"] == 3
+        assert second["remaining"]["items"] == 1
+        assert second["complete"] is False
+        assert completed == []
+
+        final = builder.build(
+            max_items=2,
+            max_vector_batches=1,
+            after_build=completed.append,
+        )
+        assert final["changed_total"] == 1
+        assert final["remaining"] == {"items": 0, "vectors": {"content": 0}}
+        assert final["complete"] is True
+        assert store.doc_count("fake") == 5
+        assert store.vector_count("fake", "content") == 5
+        assert store.get_meta("last_build:fake") is not None
+        assert completed == [final]
+
+    def test_bounded_first_build_prioritizes_unindexed_tail_over_rechanged_head(self, store):
+        part = FakePartition({
+            "head": {"hash": "h1", "docs": [("head", "head", "head text")]},
+            "middle": {"hash": "m1", "docs": [("middle", "middle", "middle text")]},
+            "tail": {"hash": "t1", "docs": [("tail", "tail", "tail text")]},
+        })
+        builder = _builder(store, part)
+        builder.build(max_items=1, max_vector_batches=1)
+        assert set(store.get_indexed_items("fake")) == {"head"}
+
+        # Simulate the newest/head session changing again before the next tick.
+        part.items["head"]["hash"] = "h2"
+        part.items["head"]["docs"] = [("head", "head changed", "changed text")]
+        second = builder.build(max_items=1, max_vector_batches=1)
+
+        assert second["changed_total"] == 3
+        assert set(store.get_indexed_items("fake")) == {"head", "middle"}
+        assert "fake:middle" in store.search_lexical("middle", partition="fake")
+
+    def test_vector_budget_resumes_missing_vectors_in_bounded_batches(
+        self, store, monkeypatch,
+    ):
+        items = {
+            f"i{n}": {
+                "hash": f"h{n}",
+                "docs": [(f"d{n}", f"name{n}", f"text {n}")],
+            }
+            for n in range(5)
+        }
+        part = FakePartition(items)
+        monkeypatch.setattr(IndexBuilder, "_ENCODE_MISSING_BATCH", 2)
+        unavailable = _builder(store, part, encoder=FakeEncoder(down=True)).build(
+            defer_changed_vectors=True,
+        )
+        assert unavailable["complete"] is False
+        assert unavailable["remaining"]["vectors"] == {"content": 5}
+
+        builder = _builder(store, part, encoder=RecordingEncoder())
+        first = builder.build(max_vector_batches=1)
+        assert first["changed"] == 0
+        assert first["vectors_encoded"] == 2
+        assert first["vector_batches"] == 1
+        assert first["remaining"]["vectors"] == {"content": 3}
+        assert first["complete"] is False
+
+        second = builder.build(max_vector_batches=2)
+        assert second["vectors_encoded"] == 3
+        assert second["remaining"]["vectors"] == {"content": 0}
+        assert second["complete"] is True
+        assert store.vector_count("fake", "content") == 5
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"max_items": 0},
+            {"max_items": True},
+            {"max_vector_batches": -1},
+            {"max_vector_batches": 1.5},
+            {"force": True, "max_items": 1},
+            {"force": True, "max_vector_batches": 1},
+        ],
+    )
+    def test_build_rejects_invalid_or_non_resumable_budgets(self, store, kwargs):
+        part = FakePartition({})
+        with pytest.raises(ValueError):
+            _builder(store, part).build(**kwargs)
+
+    def test_vector_generation_advances_before_a_committed_batch(self, store, monkeypatch):
+        part = FakePartition({
+            "i1": {"hash": "h1", "docs": [("a", "alpha", "alpha passage")]},
+        })
+        _builder(store, part, encoder=FakeEncoder(down=True)).build(
+            defer_changed_vectors=True,
+        )
+        assert store.build_version("fake") == 1
+        assert store.vector_count("fake", "content") == 0
+
+        original = store.upsert_vectors
+
+        def commit_then_crash(projection, rows):
+            original(projection, rows)
+            raise RuntimeError("synthetic crash after vector commit")
+
+        monkeypatch.setattr(store, "upsert_vectors", commit_then_crash)
+        with pytest.raises(RuntimeError, match="after vector commit"):
+            _builder(store, part).build()
+
+        # The committed vector remains fenced after the crash. No resident reader
+        # can load it under the prior generation; replay atomically publishes the
+        # next generation.
+        assert store.vector_count("fake", "content") == 1
+        assert store.build_version("fake") == 1
+        assert store.partition_mutation_in_progress("fake") is True
+        with pytest.raises(RuntimeError, match="being mutated"):
+            store.resident_version("fake")
+        assert store.get_meta("last_build:fake") is None
+
+        monkeypatch.setattr(store, "upsert_vectors", original)
+        recovered = _builder(store, part).build()
+        assert recovered["complete"] is True
+        assert recovered["version"] == 2
+        assert store.partition_mutation_in_progress("fake") is False
+        assert store.resident_version("fake") == "2"
+        assert store.get_meta("last_build:fake") is not None
+
+    def test_empty_pooled_projection_does_not_wedge_completion(self, store):
+        class EmptyPoolPartition(FakePartition):
+            def projection_schema(self):
+                return {"aliases": ProjectionSpec(kind=ProjectionKind.LABEL, pool="max")}
+
+            def parse(self, item_id):
+                return [Document(
+                    doc_id="fake:a",
+                    partition="fake",
+                    fields={"name": "alpha"},
+                    projections={"aliases": Projection(text=[""])},
+                )]
+
+        part = EmptyPoolPartition({
+            "i1": {"hash": "h1", "docs": [("a", "alpha", "")]},
+        })
+        first = _builder(store, part).build(
+            max_items=1,
+            max_vector_batches=1,
+        )
+        second = _builder(store, part).build(
+            max_items=1,
+            max_vector_batches=1,
+        )
+
+        assert first["complete"] is True
+        assert first["remaining"]["vectors"] == {"aliases": 0}
+        assert second["complete"] is True
+        assert second["remaining"]["vectors"] == {"aliases": 0}
+        assert store.vector_count("fake", "aliases") == 0
+        assert store.get_meta("last_build:fake") is not None
 
     def test_pooled_projection_build(self, store):
         class PooledPartition(FakePartition):

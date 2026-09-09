@@ -17,8 +17,10 @@ import logging
 from pathlib import Path
 
 from work_buddy.sidecar.daemon import (
+    ChildService,
     TickFailureTracker,
     _dispatch_stall_message,
+    _print_startup_banner,
     _run_dispatch_cycle,
     safe_port,
 )
@@ -47,6 +49,18 @@ class TestSafePort:
 
     def test_none_is_rejected(self):
         assert safe_port(None, service_name="telegram") is None
+
+
+class TestStartupBanner:
+    def test_windowless_python_without_stdout_is_a_noop(self, monkeypatch):
+        dashboard = ChildService(
+            name="dashboard",
+            module="work_buddy.dashboard.service",
+            port=5127,
+        )
+        monkeypatch.setattr("work_buddy.sidecar.daemon.sys.stdout", None)
+
+        _print_startup_banner([dashboard], {"dashboard": {}})
 
 
 class TestTickFailureTracker:

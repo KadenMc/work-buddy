@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from work_buddy.index.resident import ResidentCache, ResidentCacheRegistry
 
 
@@ -42,7 +44,7 @@ class TestResidentCache:
 
         cache = ResidentCache(loader, version_fn=lambda: version["v"])
         assert cache.get() == 1
-        version["v"] = "v2"          # rebuild bumped the version
+        version["v"] = "next"        # rebuild bumped the version
         assert cache.get() == 2      # reloaded
         assert calls["n"] == 2
 
@@ -60,10 +62,19 @@ class TestResidentCache:
         cache.get()
         assert calls["n"] == 2
 
-    def test_none_loader_not_cached(self):
-        cache = ResidentCache(lambda: None, version_fn=lambda: "v1")
+    def test_none_loader_caches_settled_empty_generation(self):
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return None
+
+        cache = ResidentCache(loader, version_fn=lambda: "v1")
         assert cache.get() is None
-        assert not cache.is_cached()
+        assert cache.get() is None
+        assert calls["n"] == 1
+        assert cache.is_cached()
+        assert cache.is_current()
 
     def test_release_if_idle(self):
         clock = _Clock()
@@ -81,6 +92,25 @@ class TestResidentCache:
 
         cache = ResidentCache(lambda: [1], version_fn=boom)
         assert cache.get() is None
+
+    def test_value_loaded_across_a_writer_fence_is_discarded(self):
+        checks = {"n": 0}
+
+        def version():
+            checks["n"] += 1
+            if checks["n"] == 1:
+                return "v1"
+            raise RuntimeError("partition is being mutated")
+
+        cache = ResidentCache(lambda: ["mixed snapshot"], version_fn=version)
+        assert cache.get() is None
+        assert not cache.is_cached()
+
+    def test_value_loaded_across_a_generation_change_is_discarded(self):
+        versions = iter(["prior", "current"])
+        cache = ResidentCache(lambda: ["old snapshot"], version_fn=lambda: next(versions))
+        assert cache.get() is None
+        assert not cache.is_cached()
 
     def test_get_if_cached_never_loads(self):
         calls = {"n": 0}
@@ -100,7 +130,7 @@ class TestResidentCache:
         version = {"v": "v1"}
         cache = ResidentCache(lambda: 1, version_fn=lambda: version["v"])
         cache.get()
-        version["v"] = "v2"                    # a rebuild bumped the version
+        version["v"] = "next"                  # a rebuild bumped the version
         assert cache.get_if_cached() is None   # stale cached value counts as absent
 
     def test_get_if_cached_none_after_invalidate(self):
@@ -108,6 +138,41 @@ class TestResidentCache:
         cache.get()
         cache.invalidate()
         assert cache.get_if_cached() is None
+
+    def test_settled_empty_becomes_stale_after_generation_change(self):
+        version = {"v": "v1"}
+        cache = ResidentCache(lambda: None, version_fn=lambda: version["v"])
+        assert cache.get() is None
+        assert cache.is_current()
+        version["v"] = "next"
+        assert not cache.is_current()
+
+    def test_concurrent_callers_join_one_slow_load(self):
+        entered = threading.Event()
+        release = threading.Event()
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            entered.set()
+            assert release.wait(timeout=5)
+            return ["matrix"]
+
+        cache = ResidentCache(loader, version_fn=lambda: "v1")
+        results: list[list[str] | None] = []
+        first = threading.Thread(target=lambda: results.append(cache.get()))
+        second = threading.Thread(target=lambda: results.append(cache.get()))
+
+        first.start()
+        assert entered.wait(timeout=5)
+        second.start()
+        release.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+        assert not first.is_alive() and not second.is_alive()
+        assert calls["n"] == 1
+        assert results == [["matrix"], ["matrix"]]
 
 
 class TestResidentCacheRegistry:

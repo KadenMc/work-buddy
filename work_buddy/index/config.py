@@ -10,6 +10,7 @@ Config shape (``config.yaml`` / ``config.local.yaml``):
 index:
   enabled: false                 # master flag — OFF by default
   db_path: null                  # null → paths.resolve("db/index-consolidated")
+  startup_prewarm: lazy          # lazy (RAM-aware) | all (lowest first-query latency)
   partitions:
     knowledge:
       rrf_k: 20                  # smaller default per the A/B finding (was hardcoded 60)
@@ -182,6 +183,13 @@ class IndexConfig:
     # once and retry against the now-warm matrix. False reverts to the inline blocking
     # load (the matrix loads within the request, which can exceed the request timeout).
     warming_signal: bool = True
+    # Startup resident-matrix policy. ``lazy`` is the RAM-aware default: no dense
+    # matrix is materialized merely because the embedding service restarted. A cold
+    # query still gets the existing lexical-first response, singleflight background
+    # warm, and one-shot retry. ``all`` restores the old eager startup behavior for
+    # deployments that prefer first-query latency over roughly 2x the stored float16
+    # vector payload in long-lived float32 matrices.
+    startup_prewarm: str = "lazy"
 
     def partition(self, name: str) -> PartitionConfig:
         """Config for ``name`` — falls back to defaults for an unlisted partition."""
@@ -231,10 +239,15 @@ def load_index_config(cfg: dict[str, Any] | None = None) -> IndexConfig:
         if isinstance(consumers_raw, dict) else {}
     )
 
+    startup_prewarm = raw.get("startup_prewarm", "lazy")
+    if startup_prewarm not in ("lazy", "all"):
+        startup_prewarm = "lazy"
+
     return IndexConfig(
         enabled=bool(raw.get("enabled", False)),
         db_path=db_path,
         partitions=partitions,
         consumers=consumers,
         warming_signal=bool(raw.get("warming_signal", True)),
+        startup_prewarm=startup_prewarm,
     )

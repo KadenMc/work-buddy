@@ -98,8 +98,8 @@ def check_lmstudio() -> dict[str, Any]:
     Probes ``GET /v1/models`` — a ``200`` confirms the server is both
     up and responding to the OpenAI-compatible API surface.
     """
-    from work_buddy.embedding.providers.lmstudio import resolve_base_url
     from work_buddy.config import load_config
+    from work_buddy.embedding.providers.lmstudio_config import resolve_base_url
 
     base_url = resolve_base_url(load_config())
     # Parse host/port from base_url for the TCP pre-check. Falls back
@@ -126,7 +126,56 @@ def check_lmstudio() -> dict[str, Any]:
                 f"local server (Developer tab → Start Server)."
             ),
         }
-    return _http_check(port, "/v1/models", timeout=5.0)
+    import http.client
+
+    models_path = f"{parsed.path.rstrip('/')}/v1/models" if parsed.path else "/v1/models"
+    connection_type = (
+        http.client.HTTPSConnection
+        if parsed.scheme.lower() == "https"
+        else http.client.HTTPConnection
+    )
+    connection = None
+    try:
+        connection = connection_type(host, port, timeout=5.0)
+        connection.request("GET", models_path)
+        response = connection.getresponse()
+        raw_body = response.read().decode("utf-8", errors="replace")
+        if response.status != 200:
+            return {
+                "ok": False,
+                "base_url": base_url,
+                "status_code": response.status,
+                "detail": (
+                    f"LM Studio returned HTTP {response.status} on "
+                    f"{models_path}: {raw_body[:200]}"
+                ),
+            }
+        body = json.loads(raw_body)
+        models = body.get("data") if isinstance(body, dict) else None
+        model_ids = [
+            item.get("id")
+            for item in (models or [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        return {
+            "ok": True,
+            "base_url": base_url,
+            "status_code": response.status,
+            "model_ids": model_ids,
+            "detail": (
+                f"LM Studio at {base_url} reports {len(model_ids)} available "
+                f"model{'s' if len(model_ids) != 1 else ''}"
+            ),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "base_url": base_url,
+            "detail": f"LM Studio model probe failed: {type(exc).__name__}: {exc}",
+        }
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def check_obsidian_bridge() -> dict[str, Any]:

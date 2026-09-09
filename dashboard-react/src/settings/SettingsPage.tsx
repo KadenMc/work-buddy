@@ -14,6 +14,10 @@ import { Button, IconButton, InlineAlert } from "../ui";
 import { HelpTarget } from "../dashboard/help";
 import { ChatExecutionPicker, useChatExecutionProfile } from "../widget-library/chat";
 import { JournalProfileConfigurator } from "../apps/journal/JournalProfileConfigurator";
+import {
+  EMBEDDING_SETTINGS_PAGE_ID,
+  EmbeddingRuntimePanel,
+} from "./EmbeddingRuntimePanel";
 import { SettingsExecutionProfileProvider } from "./SettingsExecutionProfileProvider";
 import { DASHBOARD_ASSISTANCE_HELP, DASHBOARD_ASSISTANCE_SETTING_ID } from "./dashboardAiContributions";
 import type {
@@ -567,6 +571,12 @@ function SelectSetting({
     values.mutationSettingId === definition.settingId;
   const changed = draft !== initialValue;
   const selectedOption = options.find((option) => option.value === draft);
+  const effectiveOption = options.find(
+    (option) => option.value === String(value?.effectiveValue),
+  );
+  const configuredOption = options.find(
+    (option) => option.value === String(value?.configuredValue),
+  );
   const controlId = `control-${settingElementId(definition.settingId)}`;
 
   return (
@@ -603,6 +613,15 @@ function SelectSetting({
           </Button>
         </InlineAlert>
       ) : null}
+      {definition.applyBehavior === "restart-component" &&
+      value?.applyStatus === "restart-required" ? (
+        <InlineAlert tone="info" role="status" aria-live="polite">
+          The effective setting remains{" "}
+          <strong>{effectiveOption?.label ?? String(value.effectiveValue)}</strong>.
+          Restart {definition.provenance.label} to activate{" "}
+          <strong>{configuredOption?.label ?? String(value.configuredValue)}</strong>.
+        </InlineAlert>
+      ) : null}
 
       <div className="wb-select-setting-control">
         <label htmlFor={controlId}>{definition.title}</label>
@@ -635,7 +654,11 @@ function SelectSetting({
       </div>
 
       <div className="wb-settings-control-actions">
-        <p>Changes apply as soon as they are saved.</p>
+        <p>
+          {definition.applyBehavior === "restart-component"
+            ? "Saved choices take effect when the owning service restarts. The running service keeps its current document route until then."
+            : "Changes apply as soon as they are saved."}
+        </p>
         <Button
           variant="secondary"
           size="small"
@@ -1006,6 +1029,9 @@ function PageProjection({
       ))}
       {page.pageId === JOURNAL_APP_SETTINGS_PAGE_ID && !pageSearchQuery.trim() ? (
         <JournalProfileConfigurator />
+      ) : null}
+      {page.pageId === EMBEDDING_SETTINGS_PAGE_ID && !pageSearchQuery.trim() ? (
+        <EmbeddingRuntimePanel />
       ) : null}
       {pageSearchQuery.trim() && visibleSettingCount === 0 ? (
         <p className="wb-settings-page-search-empty">

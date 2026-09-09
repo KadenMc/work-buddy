@@ -117,27 +117,15 @@ embedding:
       name: "MongoDB/mdbr-leaf-ir-asym"
       dims: 768
       eager: false
-      # Optional: offload document-side passage encoding to LM Studio.
-      # When omitted (default), bulk document encoding uses the
-      # sentence-transformers model above. When set to "lmstudio",
-      # _encode_bulk_direct POSTs to LM Studio's /v1/embeddings
-      # endpoint instead — moves ~500 MB of model RSS off the main
-      # machine and lets a remote compute device (via LM Link) do
-      # the work.
-      #
-      # Setup procedure (including the mandatory GGUF audit and drift
-      # test): docs/handbook/features_lmstudio-offload-setup.md.
-      # provider: lmstudio
+      # The large document-side route is selected in Dashboard Settings:
+      # System -> Embeddings (Local only / Prefer LM Studio / Require LM Studio).
+      # Settings is authoritative after bootstrap; do not set provider/on_error
+      # here. The HF name remains the local implementation used by Local mode and
+      # Prefer mode's deliberate fallback. Supply the LM Studio model alias below
+      # before selecting either remote mode. LM Studio may place it on an LM Link
+      # peer, so absence from one /v1/models snapshot is not proof it cannot load.
+      # Setup: knowledge/store/features/lmstudio-offload-setup.md.
       # lmstudio_model: text-embedding-snowflake-arctic-embed-m-v1.5
-      # on_error: fallback   # "fallback" (default) silently falls
-      #                      # back to sentence_transformer when LM
-      #                      # Studio errors. "fail" re-raises — use
-      #                      # for research workflows that require
-      #                      # single-provenance vectors in the
-      #                      # index. Observed drift between Q8
-      #                      # GGUF and fp32 sentence-transformers
-      #                      # is ~0.0002 cosine, so "fallback" is
-      #                      # safe for retrieval quality.
 
     # ---- Pluggable embedding models for the consolidated index (work_buddy/index/) ----
     # Point a projection at a model via ProjectionSpec.model_key. The OPTIONAL `encoding`
@@ -323,6 +311,12 @@ inference:
 index:
   enabled: false
   db_path: null            # null → paths.resolve("db/index-consolidated")
+  # RAM-aware default: materialize a partition's float32 search matrix only when a
+  # query needs it. The warming signal serves lexical results immediately, warms that
+  # partition in the background, and retries once; the idle evictor later releases it.
+  # Set "all" to restore eager startup warming of every built partition when first-query
+  # latency matters more than the startup peak and resident matrix footprint.
+  startup_prewarm: lazy    # "lazy" | "all"
   partitions:
     knowledge:
       rrf_k: 20            # smaller per-partition default (A/B: k=60≈k=15 at top-k)

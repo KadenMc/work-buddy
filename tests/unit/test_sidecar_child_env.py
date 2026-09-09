@@ -1,7 +1,7 @@
 """Tests for the child-spawn env injection shared by work-buddy's launchers.
 
-``compat.build_child_env()`` must emit PYTHONUTF8=1 so every spawned service
-starts in UTF-8 mode and cannot crash on non-ASCII log output.
+``compat.build_child_env()`` must emit the UTF-8 and native numerical runtime
+defaults every supervised child needs before its Python imports begin.
 """
 
 import os
@@ -23,10 +23,23 @@ def test_build_child_env_preserves_user_override(monkeypatch):
     assert env["PYTHONUTF8"] == "0"
 
 
+def test_build_child_env_caps_openblas_by_default(monkeypatch):
+    monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
+    env = compat.build_child_env()
+    assert env["OPENBLAS_NUM_THREADS"] == "1"
+
+
+def test_build_child_env_preserves_openblas_override(monkeypatch):
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "4")
+    env = compat.build_child_env()
+    assert env["OPENBLAS_NUM_THREADS"] == "4"
+
+
 def test_build_child_env_does_not_mutate_os_environ(monkeypatch):
     """Returning a copy is load-bearing: mutating os.environ would leak
     PYTHONUTF8 into the parent and any subprocess that bypasses this helper."""
     monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
     snapshot = dict(os.environ)
     _ = compat.build_child_env()
     assert dict(os.environ) == snapshot

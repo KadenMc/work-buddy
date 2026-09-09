@@ -31,6 +31,7 @@ from work_buddy.conversations.store import UserMessageIdConflictError
 from work_buddy.dashboard.api import (
     get_chats_summary,
     get_contracts_summary,
+    get_embedding_runtime_summary,
     get_embeddings_summary,
     get_fleet_summary,
     get_inference_activity,
@@ -1764,6 +1765,17 @@ def api_contracts():
 def api_embeddings():
     """System (IR/knowledge) + User (vaults) status for Settings › Embeddings."""
     return jsonify(get_embeddings_summary())
+
+
+@app.get("/api/embeddings/runtime")
+def api_embedding_runtime():
+    """Live document-provider policy and last-route diagnostics for Settings."""
+    probe_remote = request.args.get("probe", "1").strip().lower() not in {
+        "0", "false", "no",
+    }
+    response = jsonify(get_embedding_runtime_summary(probe_remote=probe_remote))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/inference-activity")

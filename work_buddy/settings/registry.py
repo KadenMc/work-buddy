@@ -14,7 +14,7 @@ from work_buddy.journal_day import DEFAULT_DAY_BOUNDARY, parse_local_time
 
 
 SCHEMA_VERSION = 1
-REGISTRY_REVISION = "settings-registry:7"
+REGISTRY_REVISION = "settings-registry:8"
 JOURNAL_DAY_BOUNDARY_ID = "wb.journal.day-boundary"
 JOURNAL_SMART_PROCESSING_ID = "wb.journal.smart-processing"
 JOURNAL_SMART_EXECUTION_ID = "wb.journal.smart-execution"
@@ -25,6 +25,11 @@ DASHBOARD_ASSISTANCE_TIER_ID = "wb.dashboard.assistance-tier"
 DASHBOARD_CHAT_EXECUTION_DEFAULT_ID = "wb.dashboard.chat-execution-default"
 DASHBOARD_AI_CONTEXT_ID = "wb.settings.system.dashboard-ai"
 COWORK_REVIEW_NAV_BINDING_ID = "wb.cowork.review.nav-binding"
+EMBEDDING_DOCUMENT_EXECUTION_ID = "wb.embedding.document-execution"
+EMBEDDING_SETTINGS_CONTEXT_ID = "wb.settings.system.embeddings"
+EMBEDDING_EXECUTION_LOCAL = "local"
+EMBEDDING_EXECUTION_PREFER_LMSTUDIO = "prefer-lmstudio"
+EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO = "require-lmstudio"
 PROFILE_SCOPE_ID = "default"
 
 COWORK_REVIEW_SHORTCUT_DEFAULTS = {
@@ -110,6 +115,78 @@ _ADDITIONAL_DEFINITIONS: tuple[dict[str, Any], ...] = (
             "note": "Sets the initial provider/model for new, unbound dashboard chats only.",
         }],
         "presentation": {"control": "execution-profile", "apply_behavior": "immediate"},
+        "visibility": "frontend",
+        "sensitivity": "ordinary",
+    },
+    {
+        "setting_id": EMBEDDING_DOCUMENT_EXECUTION_ID,
+        "definition_version": 1,
+        "value_version": 1,
+        "owner": {"kind": "system", "id": "wb.embedding", "label": "Embeddings"},
+        "provenance": {
+            "complement_id": "wb.embedding",
+            "label": "Embedding service",
+            "trust_tier": "native",
+        },
+        "title": "Document embedding execution",
+        "short_description": (
+            "Choose where the large passage encoder runs for document similarity and indexing."
+        ),
+        "long_description": (
+            "Interactive query encoders remain local. Requiring LM Studio keeps the large "
+            "document encoder off this computer. When the remote model is unavailable, "
+            "document and passage embedding workloads either pause or continue through "
+            "their non-dense fallback. The saved choice takes effect when the embedding "
+            "service next starts."
+        ),
+        "keywords": [
+            "embedding", "document", "indexing", "LM Studio", "LM Link", "remote",
+            "local", "memory", "RAM", "leaf-ir",
+        ],
+        "tags": ["embedding", "inference", "memory"],
+        "value_schema": {
+            "type": "string",
+            "enum": [
+                EMBEDDING_EXECUTION_LOCAL,
+                EMBEDDING_EXECUTION_PREFER_LMSTUDIO,
+                EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+            ],
+        },
+        "default_value": EMBEDDING_EXECUTION_LOCAL,
+        "allowed_scopes": ["profile"],
+        "default_scope": "profile",
+        "applies_to": [
+            {"kind": "system", "id": "wb.embedding", "label": "Embeddings"}
+        ],
+        "affects": [{
+            "ref": {"kind": "system", "id": "wb.embedding", "label": "Embedding service"},
+            "note": "Controls document and passage embedding; query-side models stay local.",
+        }],
+        "presentation": {
+            "control": "select",
+            "apply_behavior": "restart-component",
+            "options": [
+                {
+                    "value": EMBEDDING_EXECUTION_LOCAL,
+                    "label": "Local only",
+                    "description": "Always run document encoding in Work Buddy on this computer.",
+                },
+                {
+                    "value": EMBEDDING_EXECUTION_PREFER_LMSTUDIO,
+                    "label": "Prefer LM Studio",
+                    "description": (
+                        "Use LM Studio when available and deliberately fall back to the local model."
+                    ),
+                },
+                {
+                    "value": EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+                    "label": "Require LM Studio",
+                    "description": (
+                        "Never load the document encoder locally; document features pause or use their non-dense fallback when LM Studio is unavailable."
+                    ),
+                },
+            ],
+        },
         "visibility": "frontend",
         "sensitivity": "ordinary",
     },
@@ -338,6 +415,23 @@ _DEFINITIONS += _ADDITIONAL_DEFINITIONS
 
 _PAGES: tuple[dict[str, Any], ...] = (
     {
+        "page_id": EMBEDDING_SETTINGS_CONTEXT_ID,
+        "context_id": EMBEDDING_SETTINGS_CONTEXT_ID,
+        "context": {"kind": "system", "id": "wb.embedding", "label": "Embeddings"},
+        "owner": {"kind": "system", "id": "wb.embedding", "label": "Embeddings"},
+        "route": "/app/settings/system/embeddings",
+        "label": "Embeddings",
+        "description": "Control document-encoding placement and inspect the active route.",
+        "navigation_group": "system",
+        "order": 20,
+        "sections": [{
+            "section_id": "execution",
+            "label": "Execution",
+            "description": "Balance local memory use against document-feature availability.",
+            "order": 10,
+        }],
+    },
+    {
         "page_id": DASHBOARD_AI_CONTEXT_ID, "context_id": DASHBOARD_AI_CONTEXT_ID,
         "context": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
         "owner": {"kind": "system", "id": "wb.dashboard", "label": "Dashboard AI"},
@@ -390,6 +484,14 @@ _PAGES: tuple[dict[str, Any], ...] = (
 
 
 _PLACEMENTS: tuple[dict[str, Any], ...] = (
+    {
+        "placement_id": "wb.settings.placement.system.embeddings.document-execution",
+        "setting_id": EMBEDDING_DOCUMENT_EXECUTION_ID,
+        "page_id": EMBEDDING_SETTINGS_CONTEXT_ID,
+        "context_id": EMBEDDING_SETTINGS_CONTEXT_ID,
+        "section_id": "execution",
+        "order": 10,
+    },
     *tuple({
         "placement_id": f"wb.settings.placement.system.dashboard-ai.{suffix}",
         "setting_id": setting_id, "page_id": DASHBOARD_AI_CONTEXT_ID,
@@ -444,6 +546,7 @@ def _validate_native_registry() -> None:
         if definition["presentation"]["apply_behavior"] not in {
             "immediate",
             "next-boundary",
+            "restart-component",
         }:
             raise RuntimeError(
                 f"unsupported apply behavior for {definition['setting_id']}"

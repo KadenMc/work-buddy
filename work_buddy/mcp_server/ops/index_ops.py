@@ -17,7 +17,12 @@ import json
 from work_buddy.mcp_server.op_registry import register_op
 
 
-def _index_rebuild_dispatch(partition: str | None = None, force: bool = False) -> str:
+def _index_rebuild_dispatch(
+    partition: str | None = None,
+    force: bool = False,
+    max_items: int | None = None,
+    max_vector_batches: int | None = None,
+) -> str:
     """Incrementally (re)build the consolidated index — flag-gated.
 
     Returns ``{"skipped": ...}`` while ``index.enabled`` is false, or
@@ -26,7 +31,28 @@ def _index_rebuild_dispatch(partition: str | None = None, force: bool = False) -
     (e.g. ``"knowledge"``) into the
     separate ``db/index-consolidated``, or all partitions when omitted. ``force=True`` rebuilds
     from scratch; the default is incremental (content-hash diff — cheap when nothing changed).
+    Scheduled heavy partitions may pass positive ``max_items`` and
+    ``max_vector_batches`` budgets. Each partial run commits durable lexical/vector
+    progress and reports its remaining backlog instead of monopolizing the serial
+    scheduler. Budgets require a named partition; ``max_items`` is incompatible with
+    ``force`` because a forced slice has no stable resume cursor.
     """
+    if partition is not None and not isinstance(partition, str):
+        raise ValueError("partition must be a string when provided")
+    partition = partition.strip() if isinstance(partition, str) else None
+    partition = partition or None
+    for label, value in (
+        ("max_items", max_items),
+        ("max_vector_batches", max_vector_batches),
+    ):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise ValueError(f"{label} must be a positive integer")
+    if partition is None and (max_items is not None or max_vector_batches is not None):
+        raise ValueError("build budgets require a named partition")
+    if force and (max_items is not None or max_vector_batches is not None):
+        raise ValueError("work budgets cannot be combined with force=True")
     from work_buddy.index.config import load_index_config
 
     cfg = load_index_config()
@@ -55,7 +81,16 @@ def _index_rebuild_dispatch(partition: str | None = None, force: bool = False) -
     from work_buddy.index.partitioned import UnifiedIndex
 
     ui = UnifiedIndex(config=cfg)
-    result = ui.build(partition, force=force) if partition else ui.build_all(force=force)
+    result = (
+        ui.build(
+            partition,
+            force=force,
+            max_items=max_items,
+            max_vector_batches=max_vector_batches,
+        )
+        if partition
+        else ui.build_all(force=force)
+    )
     return json.dumps({"result": result}, default=str)
 
 

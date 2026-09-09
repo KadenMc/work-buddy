@@ -69,7 +69,7 @@ class HybridSearcher:
         return self._residents.get_or_create(
             key,
             loader=lambda: self._store.load_all_vectors(self._partition, projection),
-            version_fn=lambda: str(self._store.build_version(self._partition)),
+            version_fn=lambda: self._store.resident_version(self._partition),
         )
 
     def prewarm(self) -> int:
@@ -329,6 +329,12 @@ class HybridSearcher:
         hits: list[Hit] = []
         timestamps: dict[str, float | None] = {}
         for did in top_ids:
+            # Defense in depth for a cross-process writer that deletes a document
+            # after a candidate matrix was loaded but before hydration. The durable
+            # mutation fence normally suppresses that matrix; never emit a blank hit
+            # if a non-cooperating/raced writer still creates this narrow window.
+            if did not in docs:
+                continue
             d = docs.get(did, {})
             sig = {"fused": round(float(fused[did]), 6)}
             for name, sc in signal_scores.items():

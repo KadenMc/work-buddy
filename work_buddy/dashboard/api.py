@@ -1531,6 +1531,135 @@ def get_embeddings_summary() -> dict[str, Any]:
         return _embeddings_cache
 
 
+def get_embedding_runtime_summary(*, probe_remote: bool = True) -> dict[str, Any]:
+    """Live document-embedding placement, provenance, and reachability.
+
+    This intentionally bypasses the slower aggregate embeddings cache: the Settings
+    control needs to distinguish the saved restart-gated choice from the policy active
+    in the running embedding component, and to show the last provider that actually
+    produced vectors. The optional LM Studio probe runs only for a remote policy.
+    """
+    result: dict[str, Any] = {
+        "service_status": "unavailable",
+        "policy": {
+            "effective": None,
+            "configured": None,
+            "pending": None,
+            "apply_status": None,
+            "revision": None,
+            "running": None,
+            "authority_matches_runtime": None,
+        },
+        "document_model": None,
+        "lmstudio": None,
+    }
+
+    try:
+        from work_buddy.settings import broker as settings_broker
+        from work_buddy.settings.registry import EMBEDDING_SETTINGS_CONTEXT_ID
+
+        snapshot, _events = settings_broker.get_values(
+            context_id=EMBEDDING_SETTINGS_CONTEXT_ID,
+        )
+        values = snapshot.get("values") or []
+        if values:
+            value = values[0]
+            result["policy"] = {
+                "effective": value.get("effective_value"),
+                "configured": value.get("configured_value"),
+                "pending": value.get("pending_value"),
+                "apply_status": value.get("apply_status"),
+                "revision": value.get("revision"),
+                # Filled only from the running component's /health routing below.
+                # The settings database records authority, not proof that a process
+                # successfully restarted with that value.
+                "running": None,
+                "authority_matches_runtime": None,
+            }
+    except Exception as exc:
+        result["settings_error"] = str(exc)
+
+    try:
+        from work_buddy.embedding.client import health_status
+
+        health = health_status(timeout_s=3)
+        if health is not None:
+            result["service_status"] = health.get("status", "unknown")
+            result["default_model"] = health.get("default_model")
+            model = next(
+                (
+                    item
+                    for item in health.get("models", [])
+                    if isinstance(item, dict) and item.get("key") == "leaf-ir"
+                ),
+                None,
+            )
+            if model is not None:
+                result["document_model"] = {
+                    "key": model.get("key"),
+                    "name": model.get("name"),
+                    "dims": model.get("dims"),
+                    "load_status": model.get("status"),
+                    "loaded_locally": model.get("status") == "loaded",
+                    "error": model.get("error"),
+                    "routing": model.get("routing"),
+                }
+    except Exception as exc:
+        result["service_error"] = str(exc)
+
+    # Derive runtime mode exclusively from the service's own router snapshot. A
+    # restart may consume a pending setting and then fail before it owns the port;
+    # in that case the broker's effective value is not evidence about the process
+    # still answering /health. Preserve both facts and make disagreement explicit.
+    policy = result.get("policy")
+    routing = (result.get("document_model") or {}).get("routing") or {}
+    running_mode = None
+    requested_provider = routing.get("requested_provider")
+    on_error = routing.get("on_error")
+    if requested_provider == "local":
+        running_mode = "local"
+    elif requested_provider == "lmstudio":
+        running_mode = (
+            "require-lmstudio" if on_error == "fail" else "prefer-lmstudio"
+        )
+    if isinstance(policy, dict):
+        policy["running"] = running_mode
+        authoritative_mode = policy.get("effective")
+        policy["authority_matches_runtime"] = (
+            authoritative_mode == running_mode
+            if authoritative_mode is not None and running_mode is not None
+            else None
+        )
+
+    policy = policy or {}
+    wants_remote = running_mode in {"prefer-lmstudio", "require-lmstudio"}
+    if wants_remote and probe_remote:
+        try:
+            from work_buddy.health.checks import check_lmstudio
+
+            lmstudio = check_lmstudio()
+            provider_model = routing.get("provider_model")
+            model_ids = lmstudio.get("model_ids")
+            lmstudio["configured_model"] = provider_model
+            model_advertised = (
+                provider_model in model_ids
+                if lmstudio.get("ok") is True
+                and isinstance(provider_model, str)
+                and isinstance(model_ids, list)
+                else None
+            )
+            # /v1/models is an advertised/loaded snapshot. Absence is not proof
+            # of unavailability because LM Studio can JIT-load a cataloged model
+            # on the first embedding request. Only a successful advertisement is
+            # conclusive here; actual route failures remain in routing.last_route.
+            lmstudio["model_advertised"] = model_advertised
+            lmstudio["model_available"] = True if model_advertised is True else None
+            result["lmstudio"] = lmstudio
+        except Exception as exc:
+            result["lmstudio"] = {"ok": False, "detail": str(exc)}
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Inference activity (Settings › Inference — cross-provider provenance feed)
 # ---------------------------------------------------------------------------

@@ -258,7 +258,7 @@ def test_targeted_prune_ignores_ordinary_churn_and_replay_invalidates(
         "vault:content",
         ResidentCache(
             lambda: object(),
-            lambda: str(store.build_version("vault")),
+            lambda: store.resident_version("vault"),
         ),
     )
     assert cache.get() is not None and cache.is_cached()
@@ -267,14 +267,25 @@ def test_targeted_prune_ignores_ordinary_churn_and_replay_invalidates(
     gate = index_path.parent / f"{index_path.name}.build"
     identity = index_path.parent / f"{index_path.name}.vault"
     lock_observations = []
-    original_bump = store.bump_version
+    delete_fence_observations = []
+    original_finish = store.finish_partition_mutation
+    original_delete = store.delete_item_docs
 
-    def observed_bump(partition):
+    def observed_finish(partition):
         lock_observations.append((is_locked(gate), is_locked(identity)))
-        return original_bump(partition)
+        return original_finish(partition)
+
+    def observed_delete(item_id, partition=None):
+        assert partition == "vault"
+        delete_fence_observations.append((
+            store.partition_mutation_in_progress("vault"),
+            cache.get_if_cached(),
+        ))
+        return original_delete(item_id, partition=partition)
 
     with monkeypatch.context() as patch:
-        patch.setattr(store, "bump_version", observed_bump)
+        patch.setattr(store, "finish_partition_mutation", observed_finish)
+        patch.setattr(store, "delete_item_docs", observed_delete)
         patch.setattr(
             VaultChunkPartition,
             "discover",
@@ -322,6 +333,8 @@ def test_targeted_prune_ignores_ordinary_churn_and_replay_invalidates(
         assert not cache.is_cached()
 
     assert lock_observations == [(True, True), (True, True)]
+    assert delete_fence_observations
+    assert all(fenced and resident is None for fenced, resident in delete_fence_observations)
     assert encoder.document_batches == []
     assert store.get_meta("last_build:vault") == initial_last_build
     assert set(store.get_indexed_items("vault")) == {
@@ -363,7 +376,7 @@ def test_checkpoint_step_is_config_bounded_and_prepares_immutable_reads(tmp_path
     cfg, _roots, authority, index_path = _fixture(tmp_path)
     # Initialize the consolidated schema, then keep one idle WAL connection open
     # per database so every sidecar remains observable until the bounded step.
-    IndexStore(index_path).doc_count("vault")
+    IndexStore(index_path).prepare_schema()
     writers = []
     try:
         paths = [declaration[0] for declaration in authority.values()] + [index_path]

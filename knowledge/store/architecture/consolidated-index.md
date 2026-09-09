@@ -49,6 +49,56 @@ dev_notes: |-
   every batch, short writer holds, resumes from the last batch after an interruption.
   Builds never lose committed progress (per-item + per-batch commits).
 
+  The scheduled conversation refresh uses both limits: at most 25 changed/deleted source
+  items and four 256-document vector batches per run. An item is the atomic source unit, so
+  one unusually large conversation can exceed 25 parsed documents and makes `max_items` a
+  soft work bound rather than a wall-clock deadline. `max_vector_batches` is a hard cap on
+  document-vector batches. Partial runs do not stamp `last_build` or acknowledge the source
+  outbox until the full partition reconciliation reaches parity.
+
+  ## FTS storage schema and rollout
+
+  The current FTS storage schema makes `doc_fts` an external-content FTS5 table keyed to
+  `documents.rowid`; canonical title/body/tags stay in `documents`, and validated triggers
+  keep the index synchronized. Item deletion is therefore proportional to the deleted rows
+  instead of scanning the entire FTS corpus once per document. Upserts preserve rowids when
+  a document identity is unchanged and deliberately invalidate that document's vectors so
+  the resumable encoder always rebuilds them from the just-written projection text.
+
+  Ordinary opens, including dashboard status, search, and scheduled builds, do not repair an
+  existing legacy-layout database. Status uses an existing-file, query-only connection and
+  reports `repair_required`; builders fail closed. An operator must call the explicit
+  `IndexStore.prepare_schema()` boundary, which holds the same DB-wide writer gate as every
+  build, gives a competing legacy build up to eleven minutes to release it, and performs one
+  atomic rebuild with progress logs. A future schema version is rejected without DDL rather
+  than being destructively downgraded.
+
+  Plan a stop-the-world restart of every process that opens the consolidated database and
+  keep enough free space for the rebuilt table plus WAL. A production-sized rehearsal
+  produced roughly 1 GB of transient WAL and held a concurrent opener for several minutes.
+  Old code expects `doc_fts.doc_id` and cannot search a rowid-aligned database, so rollback is
+  database restore or forward-fix, not simply restarting an older binary. The safe order is:
+  stop the sidecar and every old DB opener, checkpoint and back up the DB, run the explicit
+  preparation once with the new binary, verify schema/integrity/counts, then start only new
+  binaries and resume bounded refresh jobs.
+
+  This is a storage-layout migration inside the consolidated index. It does not enable a
+  consumer gate, salvage legacy-only records, route searches away from a legacy engine, or
+  delete any legacy database or cron.
+
+  ## Resident generation fence and startup warming
+
+  A build writes `build_dirty:<partition>` before its first durable mutation. Resident
+  readers refuse to publish a matrix while that fence exists; a successful completion
+  atomically bumps the build generation and clears the fence. A replay finalizes a fence
+  left by interruption. Slow loaders check the generation both before and after loading so
+  a mid-load build cannot publish stale vectors.
+
+  `index.startup_prewarm` defaults to `lazy`: startup does not materialize every partition.
+  A cold query returns lexical results, singleflights a background matrix warm, and can retry
+  once for hybrid results. `all` restores eager all-partition warming for an operator who
+  explicitly accepts the memory and startup cost.
+
   ## Database outboxes and cutover evidence
   Journal, Projects, Contracts, and Personal Knowledge expose a small optional outbox
   port. `IndexPartition.build` snapshots a bounded pending batch, completes the locked
@@ -140,9 +190,10 @@ and kept fresh without changing live search behavior.
 ## Store
 
 One **single-writer** SQLite DB (`db/index-consolidated.db`) holds all partitions in shared
-tables keyed by a `partition` column: `documents`, `doc_fts` (standalone FTS5 over
-title/body/tags), `doc_vectors` (float16 blobs, FK-cascaded to documents), `indexed_items`
-(the mtime/content-hash change ledger), and `index_meta` (KV — per-partition `build_version`).
+tables keyed by a `partition` column: `documents`; `doc_fts`, an external-content FTS5 index
+over the canonical document row's title/body/tags; `doc_vectors` (float16 blobs,
+FK-cascaded to documents); `indexed_items` (the mtime/content-hash change ledger); and
+`index_meta` (KV, including schema and per-partition build generations).
 A fresh connection per operation (WAL, foreign keys on). Because one DB has many would-be
 writers across processes, writes use a busy timeout plus backoff-retry (see dev notes).
 
@@ -164,6 +215,11 @@ builds and verifies source/index parity, then acknowledges exactly the snapshot.
 `outbox` receipt uses `wb.search-outbox-delivery/v1`; `ready=true` requires zero remaining lag
 and zero parity mismatches. `force=true` is the explicit per-partition restore/backfill path.
 
+Incremental callers may bound changed/deleted source items and missing-vector batches.
+Reaching either limit returns explicit partial progress; the next run resumes from durable
+rows. The scheduled conversation job uses this path hourly so catch-up work yields the serial
+sidecar dispatch lane between slices.
+
 ## Search
 
 `HybridSearcher` (`search.py`) fuses three signals: FTS5 `bm25()` (title/body/tags column
@@ -178,6 +234,7 @@ bias and an optional per-source diversity cap (`max_per_source`). `UnifiedIndex.
 ```yaml
 index:
   enabled: false                   # master kill-switch — whole index inert when false
+  startup_prewarm: lazy            # lazy lexical-first warming; "all" eagerly warms matrices
   consumers:                       # per-consumer routing gates; a consumer routes here
     agent_docs: false              #   only when index.enabled AND its gate are true
   partitions:
@@ -206,7 +263,8 @@ score-guarded, so a genuinely dominant document with no competitive alternative 
 - **Ten `index-<partition>-refresh` sidecar crons** keep the active partitions fresh at
   corpus-matched cadences, including Journal every five minutes and Projects, Contracts,
   Personal Knowledge, and Task Notes every fifteen minutes. One job per partition preserves
-  replay and backfill isolation.
+  replay and backfill isolation. Conversation refresh runs hourly in bounded, resumable
+  slices so it cannot monopolize the serial dispatch lane for a full backlog drain.
 - **Embedding-service endpoints** `/index/search`, `/index/search_many`, `/index/build`, with
   `index_search` / `index_search_many` clients (see `architecture/embedding-service`).
 - **Status/dashboard seam** — registered as the `consolidated` index in `work_buddy/indexing/`
@@ -219,6 +277,11 @@ knowledge store, `IRSourcePartition` over the IR sources, `VaultChunkPartition` 
 chunker. Each consumer is re-pointed onto the consolidated partition behind its own flag and
 validated (blind A/B) before the corresponding legacy index is retired. See
 `architecture/vault-index`, `architecture/knowledge-system`, and `context/index-rebuild`.
+
+The consolidated-index rowid-aligned FTS storage repair and backfill are prerequisites,
+not consumer cutover. Until parity and
+the consumer's cutover evidence pass, legacy search remains authoritative and its database and
+scheduled maintenance remain intact.
 
 Authority-sealed Journal, Projects, Contracts, and Personal Knowledge Markdown roots are never
 ordinary Vault-search inputs. The filesystem source prunes each root before `os.walk` descends,

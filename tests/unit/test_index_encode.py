@@ -6,10 +6,12 @@ No real embedding service: a FakeProvider records calls + returns deterministic 
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from work_buddy.index.encode import (
     BrokeredEncoder,
     ProviderRouter,
+    ProviderRoutingError,
     resolve_model,
     score_dense,
 )
@@ -144,6 +146,13 @@ class TestBrokeredEncoder:
         assert out is not None and out.shape == (1, 4)  # fell back to local
         assert local.calls[-1][1] == "leaf-ir"  # alias never leaks into local fallback
 
+        route = router.describe("leaf-ir")["last_route"]
+        assert route["requested_provider"] == "lmstudio"
+        assert route["provider"] == "local"
+        assert route["fallback"] is True
+        assert route["reason"] == "provider_unavailable"
+        assert "unavailable" in route["provider_error"]
+
     def test_router_uses_configured_lmstudio_model_alias(self):
         local = FakeProvider(name="local")
         remote = FakeProvider(name="lmstudio")
@@ -206,6 +215,245 @@ class TestBrokeredEncoder:
         now[0] += 301.0
         router.encode(["probe"], model_id="leaf-ir")
         assert [call[0] for call in remote.calls] == [["first"], ["probe"]]
+
+    def test_concurrent_remote_failure_is_singleflight_then_cooldown(self):
+        """A burst at a dead peer makes one network attempt, not one per request."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        worker_count = 8
+        ready = threading.Barrier(worker_count)
+        entered = threading.Event()
+        release = threading.Event()
+
+        class _BlockingDown:
+            name = "lmstudio"
+
+            def __init__(self):
+                self.calls = 0
+                self.lock = threading.Lock()
+
+            def encode(self, texts, **_kwargs):
+                with self.lock:
+                    self.calls += 1
+                entered.set()
+                assert release.wait(timeout=5)
+                return None
+
+        remote = _BlockingDown()
+        local = FakeProvider(name="local")
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "remote-leaf-ir",
+                "on_error": "fail",
+            }}}},
+        )
+
+        def _call(index):
+            ready.wait(timeout=5)
+            try:
+                router.encode([str(index)], model_id="leaf-ir")
+            except ProviderRoutingError as exc:
+                return exc.route.reason
+            raise AssertionError("remote-required request unexpectedly succeeded")
+
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = [pool.submit(_call, index) for index in range(worker_count)]
+            assert entered.wait(timeout=5)
+            release.set()
+            reasons = [future.result(timeout=5) for future in futures]
+
+        assert remote.calls == 1
+        assert reasons.count("provider_unavailable") == 1
+        assert reasons.count("provider_cooldown") == worker_count - 1
+        assert not local.calls
+
+    def test_router_fail_closed_never_calls_local_when_remote_is_down(self):
+        local = FakeProvider(name="local")
+        remote = _NoneProvider()
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "remote-leaf-ir",
+                "on_error": "fail",
+            }}}},
+        )
+
+        with pytest.raises(ProviderRoutingError) as raised:
+            router.encode(["x"], model_id="leaf-ir")
+
+        assert raised.value.code == "embedding_provider_unavailable"
+        assert raised.value.route.fallback is False
+        assert not local.calls
+
+    def test_router_preserves_typed_remote_error_on_successful_fallback(self):
+        from work_buddy.llm.backends._errors import LocalInferenceError
+
+        class _TypedFailure:
+            name = "lmstudio"
+
+            def encode(self, texts, **_kwargs):
+                raise LocalInferenceError(
+                    "LM Link dropped",
+                    kind="lm_link_dropped",
+                    hint="Reconnect the peer.",
+                )
+
+        local = FakeProvider(name="local")
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": _TypedFailure()},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "remote-leaf-ir",
+                "on_error": "fallback",
+            }}}},
+        )
+
+        routed = router.encode_with_route(["x"], model_id="leaf-ir")
+
+        assert routed.vectors is not None
+        assert routed.route.status == "ok"
+        assert routed.route.provider == "local"
+        assert routed.route.error is None
+        assert "Reconnect the peer." in routed.route.provider_error
+        assert routed.route.provider_error_kind == "lm_link_dropped"
+        assert routed.route.provider_error_hint == "Reconnect the peer."
+
+    def test_router_preserves_typed_remote_error_on_fail_closed(self):
+        from work_buddy.llm.backends._errors import LocalInferenceError
+
+        class _TypedFailure:
+            name = "lmstudio"
+
+            def encode(self, texts, **_kwargs):
+                raise LocalInferenceError(
+                    "LM Studio timed out",
+                    kind="timeout",
+                    hint="Retry after the cold load.",
+                )
+
+        router = ProviderRouter(
+            providers={"local": FakeProvider(name="local"), "lmstudio": _TypedFailure()},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "remote-leaf-ir",
+                "on_error": "fail",
+            }}}},
+        )
+
+        with pytest.raises(ProviderRoutingError) as raised:
+            router.encode(["x"], model_id="leaf-ir")
+
+        route = raised.value.route
+        assert route.provider_error_kind == "timeout"
+        assert route.provider_error_hint == "Retry after the cold load."
+        assert "Retry after the cold load." in str(raised.value)
+
+    def test_router_fail_closed_missing_alias_never_calls_any_provider(self):
+        local = FakeProvider(name="local")
+        remote = FakeProvider(name="lmstudio")
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "on_error": "fail",
+            }}}},
+        )
+
+        with pytest.raises(ProviderRoutingError) as raised:
+            router.encode(["x"], model_id="leaf-ir")
+
+        assert raised.value.code == "embedding_provider_misconfigured"
+        assert raised.value.route.reason == "missing_lmstudio_model"
+        assert not local.calls and not remote.calls
+
+    def test_router_fail_closed_cooldown_does_not_retry_or_load_local(
+        self, monkeypatch,
+    ):
+        local = FakeProvider(name="local")
+        remote = _NoneProvider()
+        calls = []
+
+        def _remote_encode(texts, **kwargs):
+            calls.append((list(texts), kwargs))
+            return None
+
+        remote.encode = _remote_encode
+        now = [100.0]
+        monkeypatch.setattr("work_buddy.index.encode.monotonic", lambda: now[0])
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "lmstudio",
+                "lmstudio_model": "remote-leaf-ir",
+                "on_error": "fail",
+            }}}},
+        )
+
+        with pytest.raises(ProviderRoutingError) as first:
+            router.encode(["first"], model_id="leaf-ir")
+        with pytest.raises(ProviderRoutingError) as second:
+            router.encode(["second"], model_id="leaf-ir")
+
+        assert first.value.route.reason == "provider_unavailable"
+        assert second.value.code == "embedding_provider_cooldown"
+        assert second.value.route.reason == "provider_cooldown"
+        assert len(calls) == 1
+        assert not local.calls
+
+    def test_router_local_only_never_touches_remote(self):
+        local = FakeProvider(name="local")
+        remote = FakeProvider(name="lmstudio")
+        router = ProviderRouter(
+            providers={"local": local, "lmstudio": remote},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "local",
+                "lmstudio_model": "remote-leaf-ir",
+                "on_error": "fail",
+            }}}},
+        )
+
+        routed = router.encode_with_route(["x"], model_id="leaf-ir")
+
+        assert routed.vectors is not None
+        assert local.calls and not remote.calls
+        assert routed.route.reason == "configured_local"
+        assert routed.route.fallback is False
+
+    def test_sentence_transformer_provider_name_is_local_alias(self):
+        local = FakeProvider(name="local")
+        router = ProviderRouter(
+            providers={"local": local},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "sentence_transformer",
+            }}}},
+        )
+
+        routed = router.encode_with_route(["x"], model_id="leaf-ir")
+
+        assert routed.route.requested_provider == "local"
+        assert routed.route.provider == "local"
+        assert local.calls
+
+    def test_unknown_provider_honors_fail_closed_policy(self):
+        local = FakeProvider(name="local")
+        router = ProviderRouter(
+            providers={"local": local},
+            cfg={"embedding": {"models": {"leaf-ir": {
+                "provider": "not-installed",
+                "on_error": "fail",
+            }}}},
+        )
+
+        with pytest.raises(ProviderRoutingError) as raised:
+            router.encode(["x"], model_id="leaf-ir")
+
+        assert raised.value.code == "embedding_provider_not_configured"
+        assert raised.value.route.reason == "provider_not_configured"
+        assert not local.calls
 
     def test_router_routes_provider_st(self):
         from work_buddy.index.encode import SentenceTransformerProvider
@@ -367,7 +615,9 @@ class TestLocalProvider:
             return model.encode(texts, **kwargs)
 
         monkeypatch.setattr(dense, "_IN_SERVICE", True, raising=False)
-        monkeypatch.setattr(svc, "_get_model", lambda key: fake_model, raising=False)
+        monkeypatch.setattr(
+            svc, "_get_model", lambda key, **_kwargs: fake_model, raising=False,
+        )
         monkeypatch.setattr(svc, "_brokered_encode", _brokered, raising=False)
         out = LocalProvider().encode(
             ["x"], model_id="leaf-ir", prompt_name="document",
@@ -387,7 +637,7 @@ class TestLocalProvider:
         import work_buddy.embedding.service as svc
         from work_buddy.index.encode import LocalProvider
 
-        def _boom(key):
+        def _boom(key, **_kwargs):
             raise RuntimeError("model load failed")
 
         monkeypatch.setattr(dense, "_IN_SERVICE", True, raising=False)
@@ -429,7 +679,7 @@ class TestLmStudioProvider:
         out = LmStudioProvider().encode(["a", "b"], model_id="arctic")
         assert out.shape == (2, 3)
 
-    def test_returns_none_on_error(self, monkeypatch):
+    def test_preserves_provider_error_for_router_diagnostics(self, monkeypatch):
         import work_buddy.embedding.providers.lmstudio as lm
         from work_buddy.index.encode import LmStudioProvider
 
@@ -437,4 +687,5 @@ class TestLmStudioProvider:
             raise RuntimeError("peer down")
 
         monkeypatch.setattr(lm, "encode", _boom)
-        assert LmStudioProvider().encode(["a"], model_id="arctic") is None
+        with pytest.raises(RuntimeError, match="peer down"):
+            LmStudioProvider().encode(["a"], model_id="arctic")

@@ -21,6 +21,7 @@ Model registry:
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import re
 import sys
@@ -107,6 +108,9 @@ class ModelEntry:
 _registry: dict[str, ModelEntry] = {}
 _default_model_key: str = _DEFAULT_MODEL
 _device: str | None = None  # resolved device string ("cpu", "cuda", etc.)
+_provider_router: Any | None = None
+_provider_router_lock = threading.RLock()
+_document_policy_authority_error: str | None = None
 # Only protects the _registry dict itself (init, iteration for eviction).
 # Loading is coordinated per-entry via ModelEntry.load_cond so a slow
 # load of one model never blocks access to another.
@@ -190,15 +194,136 @@ def _init_registry(cfg: dict | None = None) -> None:
     print(f"Embedding device: {_device}", file=sys.stderr)
 
     for key, mcfg in models_cfg.items():
+        eager = bool(mcfg.get("eager", False))
+        provider = str(mcfg.get("provider") or "local").strip().lower()
+        if key == "leaf-ir" and provider == "lmstudio":
+            # A remote document policy must not preload the large local model.
+            # ``prefer`` may still load it later as one deliberate fallback;
+            # ``require`` never reaches the local provider at all.
+            eager = False
         _registry[key] = ModelEntry(
             key=key,
             hf_name=mcfg["name"],
             dims=mcfg.get("dims", 0),
-            eager=mcfg.get("eager", False),
+            eager=eager,
         )
 
     print(f"Model registry: {list(_registry.keys())} (default: {_default_model_key})",
           file=sys.stderr)
+
+
+def _configure_provider_router(cfg: dict | None = None) -> None:
+    """Install the process-wide provider policy used by document encodes."""
+    global _provider_router
+
+    from work_buddy.index.encode import (
+        LmStudioProvider,
+        LocalProvider,
+        ProviderRouter,
+        SentenceTransformerProvider,
+    )
+
+    router = ProviderRouter(
+        providers={
+            # Explicit service locus: local fallback must use this process's
+            # registry, never make an HTTP call back into the same Flask app.
+            "local": LocalProvider(in_service=True),
+            "lmstudio": LmStudioProvider(),
+            "st": SentenceTransformerProvider(),
+        },
+        cfg=cfg,
+    )
+    with _provider_router_lock:
+        _provider_router = router
+
+
+def _activate_document_execution_setting(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Overlay the restart-gated document-route setting onto process config.
+
+    The Settings broker owns the user's desired/effective choice; YAML remains the
+    bootstrap default and still supplies the LM Studio model alias. Promotion happens
+    exactly here, while the embedding component is starting, so the dashboard never
+    claims a pending value is active in an already-running process. A settings-store
+    failure keeps query/service startup available but forces document embedding into
+    a deterministic remote-required, fail-closed state until a clean restart.
+    """
+    global _document_policy_authority_error
+
+    effective_cfg = copy.deepcopy(cfg)
+
+    def _leaf_ir_config() -> dict[str, Any]:
+        embedding_cfg = effective_cfg.setdefault("embedding", {})
+        raw_models = embedding_cfg.get("models")
+        if not isinstance(raw_models, dict):
+            raw_models = copy.deepcopy(_DEFAULT_MODELS)
+            embedding_cfg["models"] = raw_models
+        raw_leaf = raw_models.get("leaf-ir")
+        if not isinstance(raw_leaf, dict):
+            raw_leaf = copy.deepcopy(_DEFAULT_MODELS["leaf-ir"])
+            raw_models["leaf-ir"] = raw_leaf
+        return raw_leaf
+
+    try:
+        from work_buddy.settings.broker import get_embedding_document_execution_mode
+        from work_buddy.settings.registry import (
+            EMBEDDING_EXECUTION_LOCAL,
+            EMBEDDING_EXECUTION_PREFER_LMSTUDIO,
+            EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+        )
+
+        mode, record, event = get_embedding_document_execution_mode(
+            activate_pending=True,
+        )
+        raw_leaf = _leaf_ir_config()
+
+        if mode == EMBEDDING_EXECUTION_LOCAL:
+            raw_leaf["provider"] = "local"
+            raw_leaf["on_error"] = "fallback"
+        elif mode == EMBEDDING_EXECUTION_PREFER_LMSTUDIO:
+            raw_leaf["provider"] = "lmstudio"
+            raw_leaf["on_error"] = "fallback"
+        elif mode == EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO:
+            raw_leaf["provider"] = "lmstudio"
+            raw_leaf["on_error"] = "fail"
+        else:  # defensive: registry validation should make this unreachable
+            raise ValueError(f"unsupported document embedding execution mode: {mode!r}")
+
+        transition = " (new saved choice applied)" if event is not None else ""
+        print(
+            "Document embedding execution: "
+            f"{mode}; setting revision={record['revision']}{transition}",
+            file=sys.stderr,
+        )
+        _document_policy_authority_error = None
+    except Exception as exc:
+        # The settings database is authoritative. If its state cannot be read,
+        # starting from a possibly-stale local YAML route would violate a saved
+        # remote-required policy before the dashboard could report the mismatch.
+        # Keep the service/query models available but fail the large document
+        # route safely until a clean component restart can read authority again.
+        raw_leaf = _leaf_ir_config()
+        raw_leaf["provider"] = "lmstudio"
+        raw_leaf["on_error"] = "fail"
+        raw_leaf["eager"] = False
+        _document_policy_authority_error = f"{type(exc).__name__}: {exc}"
+        print(
+            "Document embedding setting activation failed; document routing is "
+            f"fail-closed until restart: {exc}",
+            file=sys.stderr,
+        )
+    return effective_cfg
+
+
+def _get_provider_router() -> Any:
+    """Return the service router, lazily configuring imports used by tests/WSGI."""
+    with _provider_router_lock:
+        if _provider_router is None:
+            from work_buddy.config import load_config
+
+            _configure_provider_router(
+                _activate_document_execution_setting(load_config())
+            )
+        return _provider_router
 
 
 def _validate_lmstudio_providers(cfg: dict | None = None) -> None:
@@ -294,7 +419,11 @@ def _load_model(entry: ModelEntry) -> None:
         print(f"  FAILED to load '{entry.key}': {exc}", file=sys.stderr)
 
 
-def _get_model(key: str | None = None) -> Any:
+def _get_model(
+    key: str | None = None,
+    *,
+    provider_authorized: bool = False,
+) -> Any:
     """Return a loaded model by key, loading lazily if needed.
 
     Concurrency contract:
@@ -310,6 +439,16 @@ def _get_model(key: str | None = None) -> Any:
         5-second SentenceTransformer instantiation.
     """
     key = key or _default_model_key
+    if key == "leaf-ir" and not provider_authorized:
+        with _provider_router_lock:
+            router = _provider_router
+        if router is not None:
+            policy = router.describe(key)
+            if policy.get("requested_provider") != "local":
+                raise RuntimeError(
+                    "Model 'leaf-ir' is controlled by document-provider routing; "
+                    "use the provider-aware /embed document route"
+                )
     entry = _registry.get(key)
     if entry is None:
         raise ValueError(
@@ -440,6 +579,8 @@ def health():
     """Check model registry status."""
     models_info = []
     any_loaded = False
+    with _provider_router_lock:
+        router = _provider_router
     for key, entry in _registry.items():
         info: dict[str, Any] = {
             "key": key,
@@ -454,6 +595,11 @@ def health():
             info["error"] = entry.error
         if entry.status == "loaded":
             any_loaded = True
+        if router is not None:
+            routing = router.describe(key)
+            if key == "leaf-ir":
+                routing["authority_error"] = _document_policy_authority_error
+            info["routing"] = routing
         models_info.append(info)
 
     return jsonify({
@@ -469,7 +615,11 @@ def health():
 # (dashboard/api.py::_build_inference_activity).
 
 
-def _embed_priority(data: dict[str, Any], prompt_name: str | None) -> Any:
+def _embed_priority(
+    data: dict[str, Any],
+    prompt_name: str | None,
+    routing_role: str | None = None,
+) -> Any:
     """Pick a broker priority for an encode request.
 
     Explicit ``priority`` in the request body wins; otherwise derive from the
@@ -487,9 +637,9 @@ def _embed_priority(data: dict[str, Any], prompt_name: str | None) -> Any:
         explicit = None
     if explicit is not None:
         return explicit
-    if prompt_name == "query":
+    if routing_role == "query" or prompt_name == "query":
         return Priority.INTERACTIVE
-    if prompt_name == "document":
+    if routing_role == "document" or prompt_name == "document":
         return Priority.BACKGROUND
     return Priority.WORKFLOW
 
@@ -514,6 +664,68 @@ def _brokered_encode(model: Any, texts: list[str], *, priority: Any, **encode_kw
         return _run_on_encode_worker(model.encode, texts, **encode_kwargs)
 
 
+def _uses_document_provider_policy(
+    model_key: str,
+    prompt_name: str | None,
+    routing_role: str | None = None,
+) -> bool:
+    """Whether an online encode is document-side and therefore offloadable.
+
+    ``routing_role`` is the authoritative semantic signal for model-specific
+    prompts such as ``search_document``. The legacy model/prompt inference keeps
+    older clients compatible during a rolling restart.
+    """
+    if routing_role == "document":
+        return True
+    if routing_role == "query":
+        return False
+    return prompt_name == "document" or model_key == "leaf-ir"
+
+
+def _record_document_embed_route(
+    route: Any,
+    *,
+    count: int,
+    call_id: str,
+    latency_ms: float,
+) -> None:
+    """Persist actual provider/fallback provenance without affecting the call."""
+    try:
+        from work_buddy.llm.provenance import record_inference_call
+
+        actual = route.provider or route.requested_provider
+        detail = (
+            f"{count} document{'s' if count != 1 else ''}; "
+            f"requested={route.requested_provider}; actual={actual}; "
+            f"route={route.reason}"
+        )
+        provider_error = getattr(route, "provider_error", None)
+        provider_error_kind = getattr(route, "provider_error_kind", None)
+        if provider_error:
+            qualifier = (
+                f"{provider_error_kind}: " if provider_error_kind else ""
+            )
+            detail = f"{detail}; provider_error={qualifier}{provider_error}"
+        record_inference_call(
+            kind="embedding",
+            model=route.model,
+            provider=actual,
+            execution_mode="local",
+            status=route.status,
+            item_count=count,
+            call_id=call_id,
+            call_site="Embed",
+            detail=detail,
+            latency_ms=latency_ms,
+            # A successful local fallback is still operationally degraded.
+            # Keep status="ok" (vectors were produced), while preserving why
+            # the requested provider failed for diagnosis and trend analysis.
+            error=route.error or (provider_error if route.fallback else None),
+        )
+    except Exception:
+        pass
+
+
 @app.route("/embed", methods=["POST"])
 def embed():
     """Embed one or more texts.
@@ -521,7 +733,10 @@ def embed():
     Request body: {
         "texts": ["text1", "text2", ...],
         "model": "leaf-mt",          // optional, defaults to default_model
-        "prompt_name": "query"       // optional, for asymmetric models
+        "prompt_name": "query",      // optional, model-specific prompt
+        "routing_role": "query",     // optional semantic role: query | document
+        "record_provenance": true,    // optional; aggregate callers may disable
+        "call_id": "abc123"          // optional broker/provenance correlation id
     }
     Response: {"vectors": [[...], ...], "dims": 768, "count": 2, "model": "leaf-mt"}
     """
@@ -534,6 +749,83 @@ def embed():
 
     model_key = data.get("model") or _default_model_key
     prompt_name = data.get("prompt_name")
+    routing_role = data.get("routing_role")
+    record_provenance = data.get("record_provenance", True) is not False
+
+    if _uses_document_provider_policy(model_key, prompt_name, routing_role):
+        import uuid
+
+        from work_buddy.index.encode import ProviderRoutingError
+        from work_buddy.inference.call_context import bind_call_id
+
+        started = time.monotonic()
+        supplied_call_id = data.get("call_id")
+        call_id = (
+            supplied_call_id.strip()[:128]
+            if isinstance(supplied_call_id, str) and supplied_call_id.strip()
+            else uuid.uuid4().hex[:12]
+        )
+        route = None
+        try:
+            with bind_call_id(call_id):
+                routed = _get_provider_router().encode_with_route(
+                    list(texts),
+                    model_id=model_key,
+                    prompt_name=prompt_name,
+                    priority=_embed_priority(data, prompt_name, routing_role),
+                    batch_size=32,
+                    routing_role="document",
+                )
+            route = routed.route
+        except ProviderRoutingError as exc:
+            route = exc.route
+            if record_provenance:
+                _record_document_embed_route(
+                    route,
+                    count=len(texts),
+                    call_id=call_id,
+                    latency_ms=(time.monotonic() - started) * 1000.0,
+                )
+            return jsonify({
+                "error": str(exc),
+                "code": exc.code,
+                "model": model_key,
+                "route": route.as_dict(),
+            }), 503
+
+        if routed.vectors is None:
+            if record_provenance:
+                _record_document_embed_route(
+                    route,
+                    count=len(texts),
+                    call_id=call_id,
+                    latency_ms=(time.monotonic() - started) * 1000.0,
+                )
+            return jsonify({
+                "error": f"Embedding provider unavailable for model '{model_key}'",
+                "code": "embedding_provider_unavailable",
+                "model": model_key,
+                "route": route.as_dict(),
+            }), 503
+
+        vectors = np.asarray(routed.vectors, dtype=np.float32)
+        if record_provenance:
+            _record_document_embed_route(
+                route,
+                count=len(texts),
+                call_id=call_id,
+                latency_ms=(time.monotonic() - started) * 1000.0,
+            )
+        return Response(
+            json.dumps({
+                "vectors": vectors.tolist(),
+                "dims": int(vectors.shape[1]),
+                "count": len(texts),
+                "model": model_key,
+                "route": route.as_dict(),
+            }),
+            mimetype="application/json",
+        )
 
     try:
         model = _get_model(model_key)
@@ -545,7 +837,10 @@ def embed():
         encode_kwargs["prompt_name"] = prompt_name
 
     vectors = _brokered_encode(
-        model, texts, priority=_embed_priority(data, prompt_name), **encode_kwargs,
+        model,
+        texts,
+        priority=_embed_priority(data, prompt_name, routing_role),
+        **encode_kwargs,
     )
 
     return Response(
@@ -1184,11 +1479,12 @@ def main():
 
     from work_buddy.config import load_config
 
-    cfg = load_config()
+    cfg = _activate_document_execution_setting(load_config())
     port = cfg.get("embedding", {}).get("service_port", 5124)
 
     # Build model registry from config (cheap — just metadata)
     _init_registry(cfg)
+    _configure_provider_router(cfg)
     _configure_encode_executor(cfg)
 
     # Recover the IR vector store before serving: quarantine any crash-corrupted
@@ -1264,14 +1560,18 @@ def main():
         _start_index_evictor()
     except Exception as exc:  # never block service startup
         print(f"consolidated-index evictor start failed (non-fatal): {exc}", file=sys.stderr)
-    # Prewarm the consolidated index's resident matrices at startup (flag-gated; runs in
-    # a background daemon so it never blocks /health or query serving). Without it the
-    # FIRST post-restart search of a large partition pays the full cold matrix-load and
-    # can time out to None; warming up front removes that first-query penalty. Pairs with
-    # the idle evictor above (warm → serve → release when idle → re-warm on next query).
+    # Apply the consolidated index's configurable startup matrix policy. The RAM-aware
+    # default is lazy: a cold query serves lexical results, singleflights a background
+    # warm, and retries once through the existing warming-signal protocol. Operators who
+    # value first-query latency over startup/idle RAM can opt back into all-partition
+    # prewarming. Both modes pair with the idle evictor above.
     try:
-        from work_buddy.index.partitioned import start_prewarm as _start_index_prewarm
-        _start_index_prewarm()
+        from work_buddy.index.config import load_index_config
+        from work_buddy.index.partitioned import (
+            start_configured_prewarm as _start_index_prewarm,
+        )
+
+        _start_index_prewarm(load_index_config(cfg))
     except Exception as exc:  # never block service startup
         print(f"consolidated-index prewarm start failed (non-fatal): {exc}", file=sys.stderr)
     # Persist completed broker calls so the dashboard Inference panel keeps

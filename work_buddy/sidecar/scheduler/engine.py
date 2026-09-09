@@ -71,6 +71,30 @@ def _summarize_job_result(status: str, detail: Any) -> str:
             return f"{status} — {s[:80]}…"
         return f"{status} — {s}"
 
+    # Capability dispatch wraps the operation payload as {"result": ...}.
+    # Unwrap a single structured result so bounded index progress is not reduced
+    # to the uninformative fallback string "ok".
+    nested_result = detail.get("result")
+    if isinstance(nested_result, dict):
+        detail = nested_result
+
+    # --- Consolidated-index bounded build ---
+    remaining = detail.get("remaining")
+    if "complete" in detail and isinstance(remaining, dict):
+        remaining_items = int(remaining.get("items", 0) or 0)
+        vectors_by_projection = remaining.get("vectors", {})
+        remaining_vectors = (
+            sum(int(value or 0) for value in vectors_by_projection.values())
+            if isinstance(vectors_by_projection, dict)
+            else 0
+        )
+        partition = str(detail.get("partition") or "index")
+        completion = "complete" if detail.get("complete") else "partial"
+        return (
+            f"{status}: {partition} {completion}; "
+            f"{remaining_items} items, {remaining_vectors} vectors remaining"
+        )
+
     # --- Heartbeat / sidecar_status: summarize services ---
     services = detail.get("services")
     if isinstance(services, dict):

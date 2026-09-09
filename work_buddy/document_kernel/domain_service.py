@@ -23,6 +23,7 @@ from work_buddy.document_kernel.protocol import (
     sha256_bytes,
     structured_head_sha256,
 )
+from work_buddy.document_kernel.runtime_service import shared_document_kernel
 from work_buddy.paths import data_dir
 from work_buddy.sources import ReservedResolution, SourceStore
 from work_buddy.truth import documents, ydoc_store
@@ -180,7 +181,7 @@ class RunningNoteDocumentService:
         kernel: DocumentKernelClient | None = None,
         stores: DomainContentStoreManager | None = None,
     ) -> None:
-        self.kernel = kernel or DocumentKernelClient()
+        self.kernel = kernel or shared_document_kernel()
         self.stores = stores or DomainContentStoreManager()
 
     def _ensure_document(

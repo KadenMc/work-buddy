@@ -10,6 +10,11 @@ from work_buddy import config as wb_config
 from work_buddy.settings import broker, store
 from work_buddy.settings.registry import (
     COWORK_REVIEW_NAV_BINDING_ID,
+    EMBEDDING_DOCUMENT_EXECUTION_ID,
+    EMBEDDING_EXECUTION_LOCAL,
+    EMBEDDING_EXECUTION_PREFER_LMSTUDIO,
+    EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+    EMBEDDING_SETTINGS_CONTEXT_ID,
     JOURNAL_DAY_BOUNDARY_ID,
     JOURNAL_SMART_EXECUTION_ID,
     JOURNAL_SMART_PROCESSING_ID,
@@ -49,13 +54,14 @@ def _value(at: datetime):
 
 def test_registry_defines_app_owned_settings_with_canonical_placements() -> None:
     payload = broker.get_registry()
-    assert payload["registry_revision"] == "settings-registry:7"
+    assert payload["registry_revision"] == "settings-registry:8"
     assert [item["setting_id"] for item in payload["definitions"]] == [
         JOURNAL_DAY_BOUNDARY_ID,
         COWORK_REVIEW_NAV_BINDING_ID,
         DASHBOARD_ASSISTANCE_ID,
         DASHBOARD_ASSISTANCE_TIER_ID,
         DASHBOARD_CHAT_EXECUTION_DEFAULT_ID,
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
         JOURNAL_SMART_PROCESSING_ID,
         JOURNAL_SMART_EXECUTION_ID,
     ]
@@ -70,6 +76,7 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
     assert definition["default_value"] == "05:00"
     assert definition["allowed_scopes"] == ["profile"]
     assert [item["context_id"] for item in payload["placements"]] == [
+        EMBEDDING_SETTINGS_CONTEXT_ID,
         "wb.settings.system.dashboard-ai",
         "wb.settings.system.dashboard-ai",
         "wb.settings.app.journal",
@@ -94,6 +101,22 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
         if page["page_id"] == "wb.settings.app.cowork"
     )
     assert cowork_page["fallback_return_path"] == "/app/cowork"
+
+    embedding = next(
+        item
+        for item in payload["definitions"]
+        if item["setting_id"] == EMBEDDING_DOCUMENT_EXECUTION_ID
+    )
+    assert embedding["presentation"]["apply_behavior"] == "restart-component"
+    assert [option["value"] for option in embedding["presentation"]["options"]] == [
+        EMBEDDING_EXECUTION_LOCAL,
+        EMBEDDING_EXECUTION_PREFER_LMSTUDIO,
+        EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+    ]
+    embedding_page = next(
+        page for page in payload["pages"] if page["page_id"] == EMBEDDING_SETTINGS_CONTEXT_ID
+    )
+    assert embedding_page["route"] == "/app/settings/system/embeddings"
 
 
 def test_assistance_settings_keep_privacy_disclosure_without_repeating_it() -> None:
@@ -124,6 +147,136 @@ def test_model_features_are_off_until_explicit_settings_opt_in(monkeypatch):
     assert broker.get_dashboard_assistance_settings() == {"enabled": True, "tier": "frontier_balanced"}
     with pytest.raises(broker.SettingsError):
         broker.update_value(DASHBOARD_ASSISTANCE_ID, scope="profile", value=True, expected_revision="value:1")
+
+
+def test_embedding_execution_setting_is_restart_gated(monkeypatch) -> None:
+    monkeypatch.setattr(
+        wb_config,
+        "load_config",
+        lambda: {
+            "embedding": {
+                "models": {
+                    "leaf-ir": {"provider": "local"},
+                }
+            }
+        },
+    )
+    initial, events = broker.get_values(
+        context_id=EMBEDDING_SETTINGS_CONTEXT_ID,
+        observed_at=_at(15, 12),
+    )
+    assert events == []
+    value = initial["values"][0]
+    assert value["effective_value"] == EMBEDDING_EXECUTION_LOCAL
+    assert value["configured_value"] == EMBEDDING_EXECUTION_LOCAL
+    assert value["default_source"] == "config-bootstrap"
+    assert value["apply_status"] == "effective"
+
+    preview = broker.preview_value(
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
+        scope="profile",
+        value=EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+        expected_revision="value:0",
+        observed_at=_at(15, 12, 1),
+    )
+    assert preview["preview"]["apply_status"] == "restart-required"
+    assert preview["preview"]["impact_preview"]["component"] == "embedding"
+
+    saved, event = broker.update_value(
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
+        scope="profile",
+        value=EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+        expected_revision="value:0",
+        observed_at=_at(15, 12, 2),
+    )
+    assert saved["configured_value"] == EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO
+    assert saved["effective_value"] == EMBEDDING_EXECUTION_LOCAL
+    assert saved["pending_value"] == EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO
+    assert saved["apply_status"] == "restart-required"
+    assert event["reason"] == "restart-value-saved"
+
+    active, activated, event = broker.activate_restart_component_value(
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
+        observed_at=_at(15, 12, 3),
+    )
+    assert active == EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO
+    assert activated["effective_value"] == EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO
+    assert activated["pending_value"] is None
+    assert activated["source"] == "profile"
+    assert activated["apply_status"] == "effective"
+    assert event is not None and event["reason"] == "restart-value-applied"
+
+
+def test_embedding_execution_reset_waits_for_restart_then_clears_override(monkeypatch) -> None:
+    monkeypatch.setattr(
+        wb_config,
+        "load_config",
+        lambda: {
+            "embedding": {
+                "models": {
+                    "leaf-ir": {
+                        "provider": "lmstudio",
+                        "on_error": "fallback",
+                    }
+                }
+            }
+        },
+    )
+    assert broker.get_embedding_document_execution_mode()[0] == EMBEDDING_EXECUTION_PREFER_LMSTUDIO
+    configured, _ = broker.update_value(
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
+        scope="profile",
+        value=EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+        expected_revision="value:0",
+        observed_at=_at(15, 12),
+    )
+    broker.activate_restart_component_value(
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
+        observed_at=_at(15, 12, 1),
+    )
+
+    reset, event = broker.reset_value(
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
+        scope="profile",
+        expected_revision="value:2",
+        observed_at=_at(15, 12, 2),
+    )
+    assert configured["configured_value"] == EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO
+    assert reset["effective_value"] == EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO
+    assert reset["configured_value"] == EMBEDDING_EXECUTION_PREFER_LMSTUDIO
+    assert reset["configured_source"] == "default"
+    assert reset["apply_status"] == "restart-required"
+    assert event is not None and event["reason"] == "restart-value-saved"
+
+    active, applied, _ = broker.activate_restart_component_value(
+        EMBEDDING_DOCUMENT_EXECUTION_ID,
+        observed_at=_at(15, 12, 3),
+    )
+    assert active == EMBEDDING_EXECUTION_PREFER_LMSTUDIO
+    assert applied["source"] == "default"
+    assert applied["is_modified"] is False
+
+
+def test_embedding_execution_setting_rejects_invalid_values_and_read_only(monkeypatch) -> None:
+    monkeypatch.setattr(wb_config, "load_config", lambda: {})
+    with pytest.raises(broker.SettingsError) as invalid:
+        broker.update_value(
+            EMBEDDING_DOCUMENT_EXECUTION_ID,
+            scope="profile",
+            value="automatic",
+            expected_revision="value:0",
+        )
+    assert invalid.value.code == "validation_error"
+
+    with pytest.raises(broker.SettingsError) as blocked:
+        broker.update_value(
+            EMBEDDING_DOCUMENT_EXECUTION_ID,
+            scope="profile",
+            value=EMBEDDING_EXECUTION_REQUIRE_LMSTUDIO,
+            expected_revision="value:0",
+            read_only=True,
+        )
+    assert blocked.value.code == "read_only"
 
 
 def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:

@@ -75,3 +75,224 @@ def test_degrades_per_section(monkeypatch):
     out = api._build_embeddings_summary()
     assert "system_error" in out          # system failed...
     assert out["vaults"] and out["system"] == []  # ...but vaults still populated
+
+
+def test_runtime_summary_reports_effective_pending_and_actual_route(monkeypatch):
+    monkeypatch.setattr(
+        "work_buddy.settings.broker.get_values",
+        lambda **_kwargs: ({
+            "values": [{
+                "effective_value": "prefer-lmstudio",
+                "configured_value": "require-lmstudio",
+                "pending_value": "require-lmstudio",
+                "apply_status": "restart-required",
+                "revision": "value:4",
+            }],
+        }, []),
+    )
+    monkeypatch.setattr(
+        "work_buddy.embedding.client.health_status",
+        lambda **_kwargs: {
+            "status": "ok",
+            "default_model": "leaf-mt",
+            "models": [{
+                "key": "leaf-ir",
+                "name": "MongoDB/mdbr-leaf-ir-asym",
+                "dims": 768,
+                "status": "pending",
+                "routing": {
+                    "requested_provider": "lmstudio",
+                    "provider_model": "remote-leaf",
+                    "on_error": "fallback",
+                    "cooldown_remaining_s": 0,
+                    "last_route": {
+                        "provider": "lmstudio",
+                        "fallback": False,
+                        "status": "ok",
+                        "reason": "provider_success",
+                    },
+                },
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.checks.check_lmstudio",
+        lambda: {
+            "ok": True,
+            "detail": "reachable",
+            "model_ids": ["remote-leaf", "another-model"],
+        },
+    )
+
+    out = api.get_embedding_runtime_summary()
+
+    assert out["policy"] == {
+        "effective": "prefer-lmstudio",
+        "configured": "require-lmstudio",
+        "pending": "require-lmstudio",
+        "apply_status": "restart-required",
+        "revision": "value:4",
+        "running": "prefer-lmstudio",
+        "authority_matches_runtime": True,
+    }
+    assert out["document_model"]["loaded_locally"] is False
+    assert out["document_model"]["routing"]["last_route"]["provider"] == "lmstudio"
+    assert out["lmstudio"] == {
+        "ok": True,
+        "detail": "reachable",
+        "model_ids": ["remote-leaf", "another-model"],
+        "configured_model": "remote-leaf",
+        "model_advertised": True,
+        "model_available": True,
+    }
+
+
+def test_runtime_summary_does_not_treat_unadvertised_model_as_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        "work_buddy.settings.broker.get_values",
+        lambda **_kwargs: ({"values": [{
+            "effective_value": "require-lmstudio",
+            "configured_value": "require-lmstudio",
+            "pending_value": None,
+            "apply_status": "effective",
+            "revision": "value:1",
+        }]}, []),
+    )
+    monkeypatch.setattr(
+        "work_buddy.embedding.client.health_status",
+        lambda **_kwargs: {
+            "status": "ok",
+            "models": [{
+                "key": "leaf-ir",
+                "status": "pending",
+                "routing": {
+                    "requested_provider": "lmstudio",
+                    "provider_model": "required-model",
+                    "on_error": "fail",
+                    "last_route": None,
+                },
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.checks.check_lmstudio",
+        lambda: {"ok": True, "detail": "reachable", "model_ids": ["other-model"]},
+    )
+
+    out = api.get_embedding_runtime_summary()
+
+    assert out["lmstudio"]["ok"] is True
+    assert out["lmstudio"]["configured_model"] == "required-model"
+    assert out["lmstudio"]["model_advertised"] is False
+    assert out["lmstudio"]["model_available"] is None
+
+
+def test_runtime_summary_does_not_probe_lmstudio_for_local_policy(monkeypatch):
+    monkeypatch.setattr(
+        "work_buddy.settings.broker.get_values",
+        lambda **_kwargs: ({"values": [{
+            "effective_value": "local",
+            "configured_value": "local",
+            "pending_value": None,
+            "apply_status": "effective",
+            "revision": "value:0",
+        }]}, []),
+    )
+    monkeypatch.setattr(
+        "work_buddy.embedding.client.health_status",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.checks.check_lmstudio",
+        lambda: (_ for _ in ()).throw(AssertionError("local policy must not probe remote")),
+    )
+
+    out = api.get_embedding_runtime_summary()
+
+    assert out["service_status"] == "unavailable"
+    assert out["policy"]["running"] is None
+    assert out["policy"]["authority_matches_runtime"] is None
+    assert out["lmstudio"] is None
+
+
+def test_runtime_summary_exposes_running_policy_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        "work_buddy.settings.broker.get_values",
+        lambda **_kwargs: ({"values": [{
+            "effective_value": "require-lmstudio",
+            "configured_value": "require-lmstudio",
+            "pending_value": None,
+            "apply_status": "effective",
+            "revision": "value:5",
+        }]}, []),
+    )
+    monkeypatch.setattr(
+        "work_buddy.embedding.client.health_status",
+        lambda **_kwargs: {
+            "status": "ok",
+            "models": [{
+                "key": "leaf-ir",
+                "name": "MongoDB/mdbr-leaf-ir-asym",
+                "dims": 768,
+                "status": "pending",
+                "routing": {
+                    "requested_provider": "local",
+                    "provider_model": "leaf-ir",
+                    "on_error": "fallback",
+                    "last_route": None,
+                },
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.checks.check_lmstudio",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("actual local runtime must not probe LM Studio")
+        ),
+    )
+
+    out = api.get_embedding_runtime_summary()
+
+    assert out["policy"]["effective"] == "require-lmstudio"
+    assert out["policy"]["running"] == "local"
+    assert out["policy"]["authority_matches_runtime"] is False
+    assert out["lmstudio"] is None
+
+
+def test_runtime_summary_keeps_service_truth_when_settings_authority_fails(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "work_buddy.settings.broker.get_values",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("settings offline")),
+    )
+    monkeypatch.setattr(
+        "work_buddy.embedding.client.health_status",
+        lambda **_kwargs: {
+            "status": "ok",
+            "models": [{
+                "key": "leaf-ir",
+                "name": "MongoDB/mdbr-leaf-ir-asym",
+                "dims": 768,
+                "status": "pending",
+                "routing": {
+                    "requested_provider": "lmstudio",
+                    "provider_model": "remote-leaf",
+                    "on_error": "fail",
+                    "last_route": None,
+                },
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "work_buddy.health.checks.check_lmstudio",
+        lambda: {"ok": True, "model_ids": ["remote-leaf"]},
+    )
+
+    out = api.get_embedding_runtime_summary()
+
+    assert out["settings_error"] == "settings offline"
+    assert out["policy"]["effective"] is None
+    assert out["policy"]["running"] == "require-lmstudio"
+    assert out["policy"]["authority_matches_runtime"] is None
+    assert out["lmstudio"]["ok"] is True

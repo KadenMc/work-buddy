@@ -8,25 +8,31 @@ One DB (``index.db_path``, default ``db/index-consolidated``) holding ALL partit
 Tables:
 - ``documents`` — one row per doc (fields/projections/metadata as JSON; ``content_hash``
   for change detection; ``timestamp`` for recency).
-- ``doc_fts`` — a STANDALONE FTS5 index over canonical ``(title, body, tags)`` text
-  (not external-content: avoids rowid/trigger coupling and lets us delete by ``doc_id``).
+- ``doc_fts``: an external-content FTS5 index over canonical ``(title, body, tags)``
+  columns stored on ``documents``.  FTS rows share ``documents.rowid`` and database
+  triggers keep them synchronized.  This makes replacement and deletion indexed
+  rowid operations instead of full scans over an ``UNINDEXED doc_id`` column.
   Per-field importance is preserved via FTS5's native ``bm25(doc_fts, wt, wb, wg)``
-  column weights. Partition/metadata scoping is a JOIN to ``documents``.
+  column weights. Partition/metadata scoping is a rowid JOIN to ``documents``.
 - ``doc_vectors`` — one float16 blob per ``(doc_id, projection)``, FK-cascaded to
   ``documents`` (incremental O(1) writes; vectors auto-deleted with their doc).
 - ``indexed_items`` — the change-detection ledger (mtime + content_hash per item).
 - ``index_meta`` — KV (per-partition ``build_version`` etc.).
 
 Thread-safety: a fresh connection per public method (sqlite3 connections aren't
-shareable across threads; the embedding service is multi-threaded). ``CREATE … IF NOT
-EXISTS`` runs each open — cheap and idempotent, matching ``vault_index/store.py``.
+shareable across threads; the embedding service is multi-threaded). Ordinary opens
+are existing-schema-only: they never create, migrate, or repair the database. The
+one-time rowid-aligned FTS storage repair is an explicit
+``prepare_schema()`` operation serialized by the same advisory writer gate as every
+build and by ``BEGIN IMMEDIATE`` inside SQLite. It changes storage inside this index
+only; it is not a consumer cutover from the legacy IR engine.
 
 Write contention: SQLite allows ONE writer per DB. Builds serialize on a DB-wide
 advisory gate (``build.py``), but writers can still live in different processes
 (sidecar jobs, the embedding service, the CLI), so every write method additionally
 rides through transient ``database is locked`` with a bounded backoff-retry. Each
 write is a small self-contained connect→commit→close transaction, which is what
-makes the retry safe (idempotent INSERT OR REPLACE / DELETE).
+makes the retry safe (idempotent UPSERT / DELETE).
 """
 
 from __future__ import annotations
@@ -56,10 +62,15 @@ CREATE TABLE IF NOT EXISTS documents (
     metadata      TEXT NOT NULL DEFAULT '{}',   -- JSON, json_extract-filterable
     content_hash  TEXT NOT NULL DEFAULT '',
     timestamp     REAL,                          -- epoch seconds, nullable (recency)
-    indexed_at    TEXT NOT NULL
+    indexed_at    TEXT NOT NULL,
+    -- Canonical lexical columns are materialized from ``fields``.  Keeping them on
+    -- the content table lets FTS5 use documents.rowid as its indexed identity.
+    title         TEXT NOT NULL DEFAULT '',
+    body          TEXT NOT NULL DEFAULT '',
+    tags          TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_documents_partition ON documents(partition);
-CREATE INDEX IF NOT EXISTS idx_documents_item ON documents(item_id);
+CREATE INDEX IF NOT EXISTS idx_documents_item ON documents(item_id, partition);
 
 -- One row per (doc_id, projection, sub). ``sub`` lets a single projection carry
 -- MULTIPLE vectors per doc (e.g. one per alias) which are pooled (max/mean) at query
@@ -89,12 +100,50 @@ CREATE TABLE IF NOT EXISTS index_meta (
     value TEXT NOT NULL
 );
 
--- Standalone FTS5 (NOT external-content): canonical title/body/tags columns +
--- an UNINDEXED doc_id so we can delete by id and JOIN back to documents.
-CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
-    doc_id UNINDEXED, title, body, tags
-);
 """
+
+_FTS_SCHEMA_VERSION = "2"
+_FTS_SCHEMA_META_KEY = "fts_schema_version"
+_FTS_MIGRATION_BUSY_TIMEOUT_MS = 10 * 60 * 1000
+_FTS_MIGRATION_GATE_TIMEOUT_S = 11 * 60.0
+_FTS_MIGRATION_PROGRESS_EVERY = 20_000
+_FTS_TRIGGER_NAMES = (
+    "documents_fts_insert",
+    "documents_fts_delete",
+    "documents_fts_update",
+)
+
+# Kept outside ``_SCHEMA`` because a legacy database already has a virtual table
+# named doc_fts with a materially different layout.  ``IF NOT EXISTS`` would leave
+# that table untouched, so _ensure_fts_schema performs an atomic data migration.
+_CREATE_FTS_SQL = (
+    "CREATE VIRTUAL TABLE doc_fts USING fts5("
+    "title, body, tags, content='documents', content_rowid='rowid')"
+)
+
+_CREATE_FTS_TRIGGERS_SQL = (
+    """
+    CREATE TRIGGER documents_fts_insert AFTER INSERT ON documents BEGIN
+        INSERT INTO doc_fts(rowid, title, body, tags)
+        VALUES (new.rowid, new.title, new.body, new.tags);
+    END
+    """,
+    """
+    CREATE TRIGGER documents_fts_delete AFTER DELETE ON documents BEGIN
+        INSERT INTO doc_fts(doc_fts, rowid, title, body, tags)
+        VALUES ('delete', old.rowid, old.title, old.body, old.tags);
+    END
+    """,
+    """
+    CREATE TRIGGER documents_fts_update
+    AFTER UPDATE OF title, body, tags ON documents BEGIN
+        INSERT INTO doc_fts(doc_fts, rowid, title, body, tags)
+        VALUES ('delete', old.rowid, old.title, old.body, old.tags);
+        INSERT INTO doc_fts(rowid, title, body, tags)
+        VALUES (new.rowid, new.title, new.body, new.tags);
+    END
+    """,
+)
 
 # Default FTS5 bm25() column weights (title > tags > body), overridable per partition.
 _DEFAULT_FTS_WEIGHTS = (3.0, 1.0, 2.0)  # (title, body, tags)
@@ -116,6 +165,18 @@ _BUSY_TIMEOUT_S = 30.0
 # timeout this rides out a concurrent writer's longest single transaction
 # instead of killing a multi-hour build over one collision.
 _WRITE_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+class IndexSchemaError(RuntimeError):
+    """Base class for consolidated-index storage-layout errors."""
+
+
+class IndexSchemaRepairRequired(IndexSchemaError):
+    """The database is absent or older than this binary's required layout."""
+
+
+class UnsupportedIndexSchemaVersion(IndexSchemaError):
+    """The database was written by a newer binary and must not be downgraded."""
 
 
 def _is_locked_error(exc: sqlite3.OperationalError) -> bool:
@@ -170,6 +231,206 @@ def _fts_columns(fields: dict[str, str]) -> tuple[str, str, str]:
     return title, body, tags
 
 
+def _fts_schema_version(conn: sqlite3.Connection) -> int | None:
+    """Read the FTS schema version and reject layouts from a newer binary."""
+    meta_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'index_meta'"
+    ).fetchone()
+    if meta_exists is None:
+        return None
+    row = conn.execute(
+        "SELECT value FROM index_meta WHERE key = ?", (_FTS_SCHEMA_META_KEY,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        version = int(str(row[0]))
+    except (TypeError, ValueError) as exc:
+        raise UnsupportedIndexSchemaVersion(
+            f"unrecognized consolidated-index FTS schema version {row[0]!r}"
+        ) from exc
+    current = int(_FTS_SCHEMA_VERSION)
+    if version > current:
+        raise UnsupportedIndexSchemaVersion(
+            "consolidated-index FTS schema "
+            f"v{version} is newer than this binary supports (v{current}); "
+            "refusing a destructive downgrade"
+        )
+    return version
+
+
+def _database_has_user_schema(conn: sqlite3.Connection) -> bool:
+    """Whether an existing SQLite file contains any non-internal schema object."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type IN ('table', 'view', 'trigger') "
+        "AND name NOT LIKE 'sqlite_%' LIMIT 1"
+    ).fetchone() is not None
+
+
+def _fts_layout_is_current(conn: sqlite3.Connection) -> bool:
+    """Return whether the rowid-aligned external-content FTS layout is complete."""
+    if _fts_schema_version(conn) != int(_FTS_SCHEMA_VERSION):
+        return False
+
+    document_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+    }
+    if not {"title", "body", "tags"}.issubset(document_columns):
+        return False
+
+    fts_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'doc_fts'"
+    ).fetchone()
+    if fts_row is None:
+        return False
+    normalized_sql = "".join(str(fts_row[0] or "").lower().split())
+    if "content='documents'" not in normalized_sql:
+        return False
+    if "content_rowid='rowid'" not in normalized_sql:
+        return False
+
+    trigger_sql = {
+        str(row[0]): "".join(str(row[1] or "").lower().split())
+        for row in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name IN (?,?,?)",
+            _FTS_TRIGGER_NAMES,
+        ).fetchall()
+    }
+    expected_trigger_sql = {
+        name: "".join(statement.lower().split())
+        for name, statement in zip(_FTS_TRIGGER_NAMES, _CREATE_FTS_TRIGGERS_SQL)
+    }
+    return trigger_sql == expected_trigger_sql
+
+
+def _ensure_fts_schema(conn: sqlite3.Connection) -> None:
+    """Atomically migrate legacy standalone FTS rows to documents-rowid identity.
+
+    The legacy table stored ``doc_id UNINDEXED`` and every replacement/deletion
+    therefore scanned the complete FTS corpus.  The rowid-aligned layout materializes
+    canonical text on ``documents`` and uses an external-content FTS table whose rowid is the
+    indexed ``documents.rowid``.  FTS5's ``rebuild`` command reconstructs every row
+    from the authoritative documents table.
+
+    ``BEGIN IMMEDIATE`` serializes concurrent explicit repair attempts. When the
+    caller has already opened a transaction for a brand-new database, this helper
+    joins it so base tables, FTS objects, and the version marker commit atomically.
+    The version and physical layout are rechecked after acquiring the writer lock,
+    and every DDL, backfill, rebuild, and version update commits as one transaction.
+    If startup is interrupted, SQLite rolls back either to no user schema (fresh
+    initialization) or to the complete legacy layout (repair).
+    """
+    if _fts_layout_is_current(conn):
+        return
+
+    started = time.perf_counter()
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        # A different process may have completed the migration while this
+        # connection waited for the writer lock.
+        if _fts_layout_is_current(conn):
+            conn.commit()
+            return
+
+        logger.info("index store: starting rowid-aligned FTS storage repair")
+        for trigger_name in _FTS_TRIGGER_NAMES:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+
+        document_columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        for column in ("title", "body", "tags"):
+            if column not in document_columns:
+                conn.execute(
+                    f"ALTER TABLE documents ADD COLUMN {column} "
+                    "TEXT NOT NULL DEFAULT ''"
+                )
+
+        # Legacy databases have the same index name over item_id alone.  Rebuild it
+        # as a composite so partition-scoped item deletion constrains both columns.
+        conn.execute("DROP INDEX IF EXISTS idx_documents_item")
+        conn.execute(
+            "CREATE INDEX idx_documents_item ON documents(item_id, partition)"
+        )
+
+        # Backfill in bounded batches instead of holding every document's JSON in
+        # Python at once.  Recomputing from fields also repairs stale/missing legacy
+        # FTS rows rather than copying corruption into the new layout.
+        total_documents = int(
+            conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        )
+        last_rowid = 0
+        migrated = 0
+        malformed = 0
+        while True:
+            rows = conn.execute(
+                "SELECT rowid, fields FROM documents WHERE rowid > ? "
+                "ORDER BY rowid LIMIT 2000",
+                (last_rowid,),
+            ).fetchall()
+            if not rows:
+                break
+            updates: list[tuple[str, str, str, int]] = []
+            for row in rows:
+                try:
+                    fields = json.loads(row["fields"] or "{}")
+                    if not isinstance(fields, dict):
+                        raise TypeError("fields JSON is not an object")
+                    title, body, tags = _fts_columns(fields)
+                except (AttributeError, TypeError, ValueError):
+                    title, body, tags = "", "", ""
+                    malformed += 1
+                updates.append((title, body, tags, int(row["rowid"])))
+            conn.executemany(
+                "UPDATE documents SET title = ?, body = ?, tags = ? WHERE rowid = ?",
+                updates,
+            )
+            migrated += len(updates)
+            last_rowid = int(rows[-1]["rowid"])
+            if (
+                migrated == total_documents
+                or migrated // _FTS_MIGRATION_PROGRESS_EVERY
+                != (migrated - len(updates)) // _FTS_MIGRATION_PROGRESS_EVERY
+            ):
+                logger.info(
+                    "index store: rowid-aligned FTS storage repair backfill "
+                    "%d/%d documents (%.1f%%)",
+                    migrated,
+                    total_documents,
+                    100.0 * migrated / max(1, total_documents),
+                )
+
+        conn.execute("DROP TABLE IF EXISTS doc_fts")
+        conn.execute(_CREATE_FTS_SQL)
+        conn.execute("INSERT INTO doc_fts(doc_fts) VALUES ('rebuild')")
+        # rank=1 asks FTS5 to compare the rebuilt index against its external
+        # content table, not merely validate the internal b-tree structure.
+        conn.execute(
+            "INSERT INTO doc_fts(doc_fts, rank) VALUES ('integrity-check', 1)"
+        )
+        for statement in _CREATE_FTS_TRIGGERS_SQL:
+            conn.execute(statement)
+        conn.execute(
+            "INSERT INTO index_meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_FTS_SCHEMA_META_KEY, _FTS_SCHEMA_VERSION),
+        )
+        conn.commit()
+        logger.info(
+            "index store: rowid-aligned FTS storage ready "
+            "(%d documents, %d malformed, %.2fs)",
+            migrated,
+            malformed,
+            time.perf_counter() - started,
+        )
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def _fts_match_expr(query: str) -> str | None:
     """Reduce arbitrary user text to a safe FTS5 MATCH expr (OR of quoted tokens)."""
     terms = [t for t in re.split(r"\W+", (query or "").lower()) if len(t) > 1]
@@ -213,29 +474,251 @@ class IndexStore:
         self, db_path: str | Path, *, busy_timeout_s: float = _BUSY_TIMEOUT_S
     ) -> None:
         self._db_path = Path(db_path)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._busy_timeout_s = busy_timeout_s
 
     @property
     def db_path(self) -> Path:
         return self._db_path
 
-    # -- connection -------------------------------------------------------
+    # -- connection + explicit schema preparation ------------------------
+    def _existing_uri(self, *, mode: str) -> str:
+        return f"{self._db_path.resolve().as_uri()}?mode={mode}"
+
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), timeout=self._busy_timeout_s)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(_SCHEMA)
-        return conn
+        """Open an existing, current-schema database without mutating its layout."""
+        if not self._db_path.is_file():
+            raise IndexSchemaRepairRequired(
+                "consolidated index is absent; run an explicit build/schema preparation"
+            )
+        conn = sqlite3.connect(
+            self._existing_uri(mode="rw"),
+            uri=True,
+            timeout=self._busy_timeout_s,
+        )
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            if not _fts_layout_is_current(conn):
+                raise IndexSchemaRepairRequired(
+                    "consolidated-index rowid-aligned FTS storage repair is required; "
+                    "ordinary reads and writes never run it implicitly"
+                )
+            return conn
+        except Exception:
+            conn.close()
+            raise
+
+    def prepare_schema(self, *, repair_existing: bool = True) -> None:
+        """Create or repair the index under the shared DB-wide writer gate.
+
+        This is the sole schema-changing entry point. It intentionally waits long
+        enough for the measured production repair and for an already-running legacy
+        builder to release the same advisory gate. Ordinary status/search/store
+        opens cannot invoke it accidentally. Scheduled builders pass
+        ``repair_existing=False``: they may initialize an absent database, but a
+        forward-only repair of an existing database remains an operator action.
+        """
+        # Fast, side-effect-free current-schema check. The gate is only needed for
+        # an absent/legacy database, not on every normal incremental build.
+        if self._db_path.is_file():
+            logically_absent = False
+            try:
+                probe = sqlite3.connect(
+                    self._existing_uri(mode="ro"),
+                    uri=True,
+                    timeout=self._busy_timeout_s,
+                )
+                try:
+                    probe.row_factory = sqlite3.Row
+                    probe.execute("PRAGMA query_only=ON")
+                    if _fts_layout_is_current(probe):
+                        return
+                    logically_absent = not _database_has_user_schema(probe)
+                finally:
+                    probe.close()
+            except UnsupportedIndexSchemaVersion:
+                raise
+            except sqlite3.Error:
+                pass
+            if not repair_existing and not logically_absent:
+                raise IndexSchemaRepairRequired(
+                    "existing consolidated index requires the explicit "
+                    "rowid-aligned FTS storage repair; scheduled builds will not run it"
+                )
+
+        from work_buddy.index.locking import index_writer_gate
+
+        with index_writer_gate(
+            self._db_path,
+            timeout_s=_FTS_MIGRATION_GATE_TIMEOUT_S,
+            required=True,
+        ):
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            existed_before_open = self._db_path.is_file()
+            conn = sqlite3.connect(
+                str(self._db_path),
+                timeout=_FTS_MIGRATION_BUSY_TIMEOUT_MS / 1000.0,
+            )
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute(f"PRAGMA busy_timeout={_FTS_MIGRATION_BUSY_TIMEOUT_MS}")
+                # Reject a newer binary's schema before executing any DDL. If a
+                # peer initialized/repaired the DB while we waited for the gate,
+                # observe that committed state and return without touching it.
+                _fts_schema_version(conn)
+                if existed_before_open:
+                    try:
+                        if _fts_layout_is_current(conn):
+                            return
+                    except sqlite3.Error:
+                        pass
+                    if (
+                        not repair_existing
+                        and _database_has_user_schema(conn)
+                    ):
+                        raise IndexSchemaRepairRequired(
+                            "existing consolidated index requires the explicit "
+                            "rowid-aligned FTS storage repair; scheduled builds will not run it"
+                        )
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA foreign_keys=ON")
+                # Put the complete fresh bootstrap and an existing-database repair
+                # in one SQLite transaction. ``executescript`` otherwise commits
+                # each preceding transaction boundary before it runs; embedding
+                # BEGIN in the script leaves the transaction open for the FTS work.
+                conn.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
+                _ensure_fts_schema(conn)
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def status_snapshot(self) -> dict[str, Any]:
+        """Inspect status through one read-only connection, never preparing schema."""
+        size_mb = None
+        try:
+            size_mb = round(self._db_path.stat().st_size / 1024 / 1024, 2)
+        except OSError:
+            return {"state": "absent", "partitions": [], "size_on_disk_mb": None}
+
+        try:
+            conn = sqlite3.connect(
+                self._existing_uri(mode="ro"),
+                uri=True,
+                timeout=self._busy_timeout_s,
+            )
+        except sqlite3.Error as exc:
+            return {
+                "state": "error",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "partitions": [],
+                "size_on_disk_mb": size_mb,
+            }
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            tables = {
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            try:
+                # Version rejection precedes every current-layout table/column read.
+                # A future layout is free to rename those objects and must still
+                # be reported as unsupported, never absent or generically broken.
+                _fts_schema_version(conn)
+            except UnsupportedIndexSchemaVersion as exc:
+                return {
+                    "state": "unsupported",
+                    "detail": str(exc),
+                    "partitions": [],
+                    "size_on_disk_mb": size_mb,
+                }
+            if "documents" not in tables:
+                return {
+                    "state": "absent",
+                    "partitions": [],
+                    "size_on_disk_mb": size_mb,
+                }
+            current = _fts_layout_is_current(conn)
+            state = "current" if current else "repair_required"
+            detail = None if current else (
+                "consolidated-index rowid-aligned FTS storage repair required; "
+                "status inspection did not run it"
+            )
+            vector_counts = {
+                str(row["partition"]): int(row["n"])
+                for row in conn.execute(
+                    "SELECT d.partition AS partition, COUNT(DISTINCT v.doc_id) AS n "
+                    "FROM documents d LEFT JOIN doc_vectors v ON v.doc_id = d.doc_id "
+                    "GROUP BY d.partition"
+                ).fetchall()
+            } if "doc_vectors" in tables else {}
+            last_builds = {
+                str(row["key"])[len("last_build:"):]: str(row["value"])
+                for row in conn.execute(
+                    "SELECT key, value FROM index_meta WHERE key LIKE 'last_build:%'"
+                ).fetchall()
+            } if "index_meta" in tables else {}
+            partitions = []
+            for row in conn.execute(
+                "SELECT partition, COUNT(*) AS n FROM documents "
+                "GROUP BY partition ORDER BY partition"
+            ).fetchall():
+                partition = str(row["partition"])
+                total = int(row["n"])
+                vectors = min(total, vector_counts.get(partition, 0))
+                partitions.append({
+                    "key": partition,
+                    "total_items": total,
+                    "dense_eligible": total,
+                    "vector_count": vectors,
+                    "pending": max(0, total - vectors),
+                    "last_build": last_builds.get(partition),
+                    "health": "ok" if state == "current" else "error",
+                    "detail": detail,
+                })
+            if not partitions and detail:
+                partitions.append({
+                    "key": "schema",
+                    "total_items": 0,
+                    "dense_eligible": 0,
+                    "vector_count": 0,
+                    "pending": 0,
+                    "last_build": None,
+                    "health": "error",
+                    "detail": detail,
+                })
+            return {
+                "state": state,
+                "detail": detail,
+                "partitions": partitions,
+                "size_on_disk_mb": size_mb,
+            }
+        except sqlite3.Error as exc:
+            return {
+                "state": "error",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "partitions": [],
+                "size_on_disk_mb": size_mb,
+            }
+        finally:
+            conn.close()
 
     # -- writes -----------------------------------------------------------
     @_write_retry
     def upsert_documents(self, docs: list[Document], item_id: str = "") -> int:
-        """Insert/replace documents (tagged with ``item_id``) and refresh FTS rows.
+        """Insert/update documents (tagged with ``item_id``) and refresh FTS rows.
 
         ``item_id`` is the source item the docs came from (``parse(item_id)``), used
-        for per-item deletes. Returns the number of docs written.
+        for per-item deletes.  ``ON CONFLICT DO UPDATE`` preserves documents.rowid,
+        which is also the FTS row identity.  The document trigger refreshes FTS in
+        the same transaction.  Existing vectors are invalidated just as they were
+        under the former ``INSERT OR REPLACE`` implementation.
+
+        Returns the number of docs written.
         """
         if not docs:
             return 0
@@ -244,25 +727,29 @@ class IndexStore:
             now = _now_iso()
             for d in docs:
                 d.ensure_hash()
+                title, body, tags = _fts_columns(d.fields)
+                # REPLACE used to delete the documents row and FK-cascade vectors.
+                # Preserve that semantic explicitly while retaining the rowid.
+                conn.execute("DELETE FROM doc_vectors WHERE doc_id = ?", (d.doc_id,))
                 conn.execute(
-                    "INSERT OR REPLACE INTO documents "
+                    "INSERT INTO documents "
                     "(doc_id, partition, item_id, fields, projections, display_text, "
-                    " metadata, content_hash, timestamp, indexed_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    " metadata, content_hash, timestamp, indexed_at, title, body, tags) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(doc_id) DO UPDATE SET "
+                    "partition = excluded.partition, item_id = excluded.item_id, "
+                    "fields = excluded.fields, projections = excluded.projections, "
+                    "display_text = excluded.display_text, metadata = excluded.metadata, "
+                    "content_hash = excluded.content_hash, timestamp = excluded.timestamp, "
+                    "indexed_at = excluded.indexed_at, title = excluded.title, "
+                    "body = excluded.body, tags = excluded.tags",
                     (
                         d.doc_id, d.partition, item_id,
                         json.dumps(d.fields),
                         json.dumps({k: {"text": p.text} for k, p in d.projections.items()}),
                         d.display_text, json.dumps(d.metadata), d.content_hash,
-                        d.timestamp, now,
+                        d.timestamp, now, title, body, tags,
                     ),
-                )
-                # refresh FTS (standalone → manage explicitly)
-                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (d.doc_id,))
-                title, body, tags = _fts_columns(d.fields)
-                conn.execute(
-                    "INSERT INTO doc_fts (doc_id, title, body, tags) VALUES (?,?,?,?)",
-                    (d.doc_id, title, body, tags),
                 )
             conn.commit()
             return len(docs)
@@ -313,14 +800,9 @@ class IndexStore:
         """Delete all docs for an item (FTS rows + cascaded vectors). Returns rows."""
         conn = self._connect()
         try:
-            sql = "SELECT doc_id FROM documents WHERE item_id = ?"
             args: list[Any] = [item_id]
             if partition is not None:
-                sql += " AND partition = ?"
                 args.append(partition)
-            doc_ids = [r["doc_id"] for r in conn.execute(sql, args).fetchall()]
-            for did in doc_ids:
-                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (did,))
             cur = conn.execute(
                 "DELETE FROM documents WHERE item_id = ?"
                 + (" AND partition = ?" if partition is not None else ""),
@@ -343,13 +825,6 @@ class IndexStore:
         """Drop an entire partition (FTS + docs + cascaded vectors + ledger)."""
         conn = self._connect()
         try:
-            doc_ids = [
-                r["doc_id"] for r in conn.execute(
-                    "SELECT doc_id FROM documents WHERE partition = ?", (partition,)
-                ).fetchall()
-            ]
-            for did in doc_ids:
-                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (did,))
             cur = conn.execute("DELETE FROM documents WHERE partition = ?", (partition,))
             conn.execute("DELETE FROM indexed_items WHERE partition = ?", (partition,))
             conn.commit()
@@ -390,8 +865,8 @@ class IndexStore:
     @_write_retry
     def prune_orphans_older_than(self, partition: str, cutoff_ts: float) -> int:
         """TTL sweep: delete orphaned docs whose ``timestamp`` is older than ``cutoff_ts``
-        (FTS rows cleared explicitly; vectors FK-cascade). Bounds orphan growth under the
-        ``ttl`` retention mode. Returns docs deleted."""
+        (FTS rows and vectors are trigger/FK-cascaded). Bounds orphan growth under
+        the ``ttl`` retention mode. Returns docs deleted."""
         conn = self._connect()
         try:
             where = (
@@ -399,18 +874,25 @@ class IndexStore:
                 "AND json_extract(metadata, '$.lifecycle_state') = 'orphaned' "
                 "AND COALESCE(timestamp, 0) < ?"
             )
-            doc_ids = [
-                r["doc_id"] for r in conn.execute(
-                    f"SELECT doc_id FROM documents WHERE {where}", (partition, cutoff_ts)
-                ).fetchall()
-            ]
-            for did in doc_ids:
-                conn.execute("DELETE FROM doc_fts WHERE doc_id = ?", (did,))
             cur = conn.execute(
                 f"DELETE FROM documents WHERE {where}", (partition, cutoff_ts)
             )
             conn.commit()
             return cur.rowcount
+        finally:
+            conn.close()
+
+    def has_orphans_older_than(self, partition: str, cutoff_ts: float) -> bool:
+        """Cheap read-only preflight used to publish a cache generation first."""
+        conn = self._connect()
+        try:
+            return conn.execute(
+                "SELECT 1 FROM documents "
+                "WHERE partition = ? "
+                "AND json_extract(metadata, '$.lifecycle_state') = 'orphaned' "
+                "AND COALESCE(timestamp, 0) < ? LIMIT 1",
+                (partition, cutoff_ts),
+            ).fetchone() is not None
         finally:
             conn.close()
 
@@ -496,6 +978,76 @@ class IndexStore:
         except (TypeError, ValueError):
             return 0
 
+    def partition_mutation_in_progress(self, partition: str) -> bool:
+        """Whether a prior/current writer has an unfinalized durable mutation."""
+        return self.get_meta(f"build_dirty:{partition}") is not None
+
+    @_write_retry
+    def begin_partition_mutation(self, partition: str) -> None:
+        """Fence resident readers before the first independently committed write."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                (f"build_dirty:{partition}", _now_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @_write_retry
+    def finish_partition_mutation(self, partition: str) -> int:
+        """Atomically publish a new generation and remove its reader fence."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value FROM index_meta WHERE key = ?",
+                (f"build_version:{partition}",),
+            ).fetchone()
+            try:
+                current = int(row["value"]) if row is not None else 0
+            except (TypeError, ValueError):
+                current = 0
+            nxt = current + 1
+            conn.execute(
+                "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
+                (f"build_version:{partition}", str(nxt)),
+            )
+            conn.execute(
+                "DELETE FROM index_meta WHERE key = ?",
+                (f"build_dirty:{partition}",),
+            )
+            conn.commit()
+            return nxt
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def resident_version(self, partition: str) -> str:
+        """Stable generation for resident matrices; raises while writes are fenced.
+
+        Dirty state and version are read in one SQLite statement, so a reader cannot
+        observe the fence cleared without also observing the generation committed in
+        the same finalization transaction.
+        """
+        dirty_key = f"build_dirty:{partition}"
+        version_key = f"build_version:{partition}"
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT key, value FROM index_meta WHERE key IN (?, ?)",
+                (dirty_key, version_key),
+            ).fetchall()
+        finally:
+            conn.close()
+        values = {row["key"]: row["value"] for row in rows}
+        if dirty_key in values:
+            raise RuntimeError(f"partition {partition!r} is being mutated")
+        return str(values.get(version_key, "0"))
+
     def bump_version(self, partition: str) -> int:
         nxt = self.build_version(partition) + 1
         self.set_meta(f"build_version:{partition}", str(nxt))
@@ -522,11 +1074,10 @@ class IndexStore:
         meta_sql, meta_params = _metadata_where(filters)
         conn = self._connect()
         try:
-            # bm25() takes one weight per FTS column IN ORDER, including the leading
-            # UNINDEXED doc_id (col 0) — so a 0.0 placeholder precedes title/body/tags.
+            # FTS rowid is the documents rowid, so this is an indexed integer join.
             sql = (
-                f"SELECT f.doc_id AS doc_id, bm25(doc_fts, 0.0, {wt}, {wb}, {wg}) AS rank "
-                "FROM doc_fts f JOIN documents d ON d.doc_id = f.doc_id "
+                f"SELECT d.doc_id AS doc_id, bm25(doc_fts, {wt}, {wb}, {wg}) AS rank "
+                "FROM doc_fts f JOIN documents d ON d.rowid = f.rowid "
                 "WHERE doc_fts MATCH ?"
             )
             params: list[Any] = [match]
@@ -631,22 +1182,44 @@ class IndexStore:
         return matrix, doc_ids
 
     def docs_missing_vectors(
-        self, partition: str, projection: str
+        self,
+        partition: str,
+        projection: str,
+        *,
+        limit: int | None = None,
     ) -> list[tuple[str, Any]]:
         """``(doc_id, projection_text)`` for docs in the partition lacking a vector.
 
         The incremental/resumable encode work-list. ``projection_text`` is read from
-        the document's stored ``projections`` JSON (scalar or list).
+        the document's stored ``projections`` JSON (scalar or list). ``limit`` is
+        pushed into SQLite so a scheduled slice never materializes and JSON-decodes
+        the complete outstanding backlog merely to process its first few batches.
         """
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+        ):
+            raise ValueError("limit must be a positive integer")
+        projection_path = f"$.{projection}.text"
         conn = self._connect()
         try:
-            rows = conn.execute(
+            sql = (
                 "SELECT d.doc_id AS doc_id, d.projections AS projections "
                 "FROM documents d "
-                "LEFT JOIN doc_vectors v ON v.doc_id = d.doc_id AND v.projection = ? "
-                "WHERE d.partition = ? AND v.doc_id IS NULL ORDER BY d.doc_id",
-                (projection, partition),
-            ).fetchall()
+                "WHERE d.partition = ? "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM doc_vectors v "
+                "  WHERE v.doc_id = d.doc_id AND v.projection = ?"
+                ") "
+                "AND EXISTS ("
+                "  SELECT 1 FROM json_each(d.projections, ?) p "
+                "  WHERE trim(COALESCE(CAST(p.value AS TEXT), '')) != ''"
+                ") ORDER BY d.doc_id"
+            )
+            params: list[Any] = [partition, projection, projection_path]
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
         finally:
             conn.close()
         out: list[tuple[str, Any]] = []
@@ -656,9 +1229,43 @@ class IndexStore:
             if entry is None:
                 continue
             text = entry.get("text") if isinstance(entry, dict) else entry
-            if text:
+            # Match IndexBuilder's encode eligibility exactly. A pooled projection
+            # such as ``[""]`` is truthy as a container but has no encodable member;
+            # returning it would leave every bounded build permanently "partial".
+            if isinstance(text, list):
+                if any(text):
+                    out.append((r["doc_id"], text))
+            elif text:
                 out.append((r["doc_id"], text))
         return out
+
+    def missing_vector_count(self, partition: str, projection: str) -> int:
+        """Count encodable documents still missing ``projection`` vectors.
+
+        This is intentionally a database-side count: bounded builders load and
+        decode only their SQL-limited work slice while retaining exact progress and
+        completion reporting. ``json_each`` handles scalar and pooled-list text and
+        excludes empty projections that can never produce a vector.
+        """
+        projection_path = f"$.{projection}.text"
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM documents d "
+                "WHERE d.partition = ? "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM doc_vectors v "
+                "  WHERE v.doc_id = d.doc_id AND v.projection = ?"
+                ") "
+                "AND EXISTS ("
+                "  SELECT 1 FROM json_each(d.projections, ?) p "
+                "  WHERE trim(COALESCE(CAST(p.value AS TEXT), '')) != ''"
+                ")",
+                (partition, projection, projection_path),
+            ).fetchone()
+            return int(row["n"])
+        finally:
+            conn.close()
 
     # -- counts -----------------------------------------------------------
     def doc_count(self, partition: str | None = None) -> int:

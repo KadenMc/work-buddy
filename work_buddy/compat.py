@@ -114,17 +114,23 @@ def pythonw_variant(python_exe: str) -> str:
 def build_child_env() -> dict[str, str]:
     """Build the environment dict for a subprocess spawned by work-buddy.
 
-    Sets ``PYTHONUTF8=1`` so child interpreters wrap stdout/stderr in UTF-8
-    ``TextIOWrapper``s. Without it, on Windows the child picks cp1252 (the system
-    ANSI code page) and ``logging.StreamHandler`` raises ``UnicodeEncodeError``
-    on any non-Latin-1 codepoint reaching a log line, a recurring bug class since
-    log messages routinely interpolate vault content and other user data.
+    Sets two process-start defaults:
 
-    ``setdefault`` preserves an explicit user override (e.g. ``PYTHONUTF8=0``).
+    * ``PYTHONUTF8=1`` so child interpreters wrap stdout/stderr in UTF-8
+      ``TextIOWrapper``s. Without it, on Windows the child picks cp1252 (the
+      system ANSI code page) and ``logging.StreamHandler`` raises
+      ``UnicodeEncodeError`` on non-Latin-1 log content.
+    * ``OPENBLAS_NUM_THREADS=1`` before a child can import NumPy. Work Buddy
+      supervises several independent Python services, and a machine-wide BLAS
+      pool in every service reserves far more memory than request-sized vector
+      scoring needs.
+
+    ``setdefault`` preserves explicit user overrides for either variable.
     Returns a fresh dict; never mutates ``os.environ``.
     """
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("OPENBLAS_NUM_THREADS", "1")
     return env
 
 

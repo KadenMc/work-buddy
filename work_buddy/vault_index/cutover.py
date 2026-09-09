@@ -58,6 +58,11 @@ def refresh_vault_for_prospective_seal(
     partition = VaultChunkPartition(source=source)
     resident_registry = residents if residents is not None else get_registry()
 
+    # The targeted writer shares the build gate but does not use IndexBuilder, so
+    # it must cross the explicit schema-preparation boundary itself before taking
+    # its normal partition locks.
+    store.prepare_schema(repair_existing=False)
+
     # This is deliberately not an ordinary build.  A full discovery/diff would
     # parse and encode unrelated Vault edits, making a bounded authority operation
     # depend on arbitrary workspace churn.  Classify only already-represented item
@@ -66,13 +71,14 @@ def refresh_vault_for_prospective_seal(
     with index_writer_locks(store.db_path, partition.name):
         item_ids = store.partition_item_ids(partition.name)
         excluded_item_ids = source.authority_excluded_item_ids(item_ids)
+        # Fence cross-process resident readers before the first committed delete.
+        # Empty replays still publish a new generation, preserving the former
+        # bump_version behavior used by crash recovery.
+        store.begin_partition_mutation(partition.name)
         for item_id in excluded_item_ids:
             store.delete_item_docs(item_id, partition=partition.name)
 
-        # Always advance the version, even on an empty replay.  A previous process
-        # may have durably deleted every target and crashed before publishing the
-        # version/cache boundary.
-        store.bump_version(partition.name)
+        store.finish_partition_mutation(partition.name)
         for projection in get_projection_schema(partition):
             resident_registry.invalidate(f"{partition.name}:{projection}")
 
