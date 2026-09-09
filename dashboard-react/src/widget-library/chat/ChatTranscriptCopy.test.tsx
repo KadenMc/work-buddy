@@ -87,7 +87,7 @@ describe("ChatCopyAction", () => {
     await user.tab();
     const copy = screen.getByRole("button", { name: "Copy chat" });
     expect(copy).toHaveFocus();
-    expect(copy).not.toHaveAttribute("title");
+    expect(copy).toHaveAttribute("title", "");
     const tooltip = await screen.findByRole("tooltip");
     expect(tooltip).toHaveTextContent("Copy this conversation.");
     expect(tooltip).toHaveTextContent(

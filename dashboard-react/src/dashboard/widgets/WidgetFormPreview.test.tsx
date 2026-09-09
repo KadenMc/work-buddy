@@ -95,6 +95,13 @@ function renderForm(fixture: FormFixture, repository = new InMemoryWidgetDraftRe
   return { ...view, provider, assistantFetch, rendererIntents, setMode: (next: Mode) => view.rerender(element(next)) };
 }
 
+async function openCapture() {
+  const existing = screen.queryByRole("textbox", { name: "New task" });
+  if (existing) return existing;
+  await userEvent.click(await screen.findByRole("button", { name: /^(New task|Quick capture)$/ }, READY));
+  return screen.findByRole("textbox", { name: "New task" }, READY);
+}
+
 describe("Manual forms in real WidgetHost Preview", () => {
   beforeAll(async () => {
     // The real Workspace renderer imports the document/editor graph. Resolve
@@ -115,9 +122,9 @@ describe("Manual forms in real WidgetHost Preview", () => {
     const original = await seedDraft(repository, quickAdd, { ...EMPTY_TASK_CREATE_DRAFT, title: "Original task draft" });
     const saves = vi.spyOn(ForkedWidgetDraftRepository.prototype, "save");
     const view = renderForm(quickAdd, repository, "operate");
-    expect(await screen.findByRole("textbox", { name: "New task" }, READY)).toHaveValue("Original task draft");
+    expect(await openCapture()).toHaveValue("Original task draft");
     view.setMode("preview");
-    const title = await screen.findByRole("textbox", { name: "New task" }, READY);
+    const title = await openCapture();
     expect(title).toBeEnabled();
     await userEvent.clear(title);
     await userEvent.type(title, "Disposable task draft");
@@ -136,7 +143,7 @@ describe("Manual forms in real WidgetHost Preview", () => {
     expect(await repository.load(identityFor(quickAdd))).toEqual(original);
 
     view.setMode("operate");
-    expect(await screen.findByRole("textbox", { name: "New task" }, READY)).toHaveValue("Original task draft");
+    expect(await openCapture()).toHaveValue("Original task draft");
     expect(await repository.load(identityFor(quickAdd))).toEqual(original);
   });
 
@@ -144,7 +151,7 @@ describe("Manual forms in real WidgetHost Preview", () => {
     const repository = new InMemoryWidgetDraftRepository();
     const original = await seedDraft(repository, quickAdd, { ...EMPTY_TASK_CREATE_DRAFT, title: "Retained title" });
     const view = renderForm(quickAdd, repository);
-    const title = await screen.findByRole("textbox", { name: "New task" }, READY);
+    const title = await openCapture();
     fireEvent.paste(title, { clipboardData: { getData: () => "First pasted task\nSecond pasted task" } });
     const batch = await screen.findByRole("region", { name: "Review pasted tasks" }, READY);
     await within(batch).findByText("3 local rows · validation and creation are paused in Preview.");
@@ -155,7 +162,7 @@ describe("Manual forms in real WidgetHost Preview", () => {
     expect(view.rendererIntents.map((intent) => intent.intent_type)).toEqual([TASK_INTENTS.batchPreview]);
     expect(view.rendererIntents[0]?.payload).not.toHaveProperty("preview_token");
     await userEvent.click(within(batch).getByRole("button", { name: "Cancel" }));
-    expect(await screen.findByRole("textbox", { name: "New task" }, READY)).toHaveValue("Retained title");
+    expect(await openCapture()).toHaveValue("Retained title");
     expect(view.provider).not.toHaveBeenCalled();
     expect(view.assistantFetch).not.toHaveBeenCalled();
     expect(await repository.load(identityFor(quickAdd))).toEqual(original);
@@ -199,7 +206,7 @@ describe("Manual forms in real WidgetHost Preview", () => {
     const original = await seedDraft(repository, quickAdd, value);
     const saves = vi.spyOn(ForkedWidgetDraftRepository.prototype, "save");
     const view = renderForm(quickAdd, repository);
-    const title = await screen.findByRole("textbox", { name: "New task" }, READY);
+    const title = await openCapture();
     if (binding !== "pending ingress") expect(screen.getByRole("button", { name: "Create task from proposal" })).toBeDisabled();
     await userEvent.type(title, " local edit");
     const save = screen.getByRole("button", { name: binding === "linked" ? "Save proposal changes" : "Retry proposal save" });

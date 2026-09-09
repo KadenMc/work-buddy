@@ -96,6 +96,11 @@ authenticated session and origin.
   43 focused cases; the provider passed 60 and route/security passed 12.
 - Knowledge store: 524 units validated with zero blocking errors; isolated BM25
   rebuild and retrieval checks passed.
+- The complete CI component run exposed old capture-visibility and hover-title
+  expectations plus synchronous focus assertions. These tests now open capture,
+  assert the deliberate empty native title in Help mode, and await focus return.
+  All 84 cases across the five affected suites passed after correction; no
+  application behavior was changed for this follow-up.
 - `npm run test:e2e:live -- --app tasks`: all seven journeys passed, including
   Chromium mutations and Firefox browsing; teardown succeeded. This runner
   builds production assets, exercises real isolated HTTP mutations, and records

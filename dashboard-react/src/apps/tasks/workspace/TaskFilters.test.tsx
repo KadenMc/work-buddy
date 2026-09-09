@@ -30,7 +30,7 @@ describe("Task multi-select overlays", () => {
     expect(screen.getByLabelText("Selected project IDs")).toHaveTextContent("1,2");
     await user.click(within(picker).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Linked projects, 2 selected" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Linked projects, 2 selected" })).toHaveFocus());
   });
 
   it("keeps match-any semantics for browsing filters and restores focus on Escape", async () => {
@@ -43,6 +43,6 @@ describe("Task multi-select overlays", () => {
     expect(within(picker).getByText("Any projects")).toBeInTheDocument();
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });
