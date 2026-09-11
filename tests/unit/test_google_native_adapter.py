@@ -342,6 +342,26 @@ def test_auth_token_status(monkeypatch, tmp_path):
     assert ga.token_status({})["token_present"] is True
 
 
+def test_auth_persist_is_atomic_and_owner_only(tmp_path):
+    import os
+    import stat
+
+    from work_buddy.calendar import google_auth as ga
+
+    class _Creds:
+        @staticmethod
+        def to_json():
+            return '{"refresh_token":"secret"}'
+
+    token = tmp_path / "credentials" / "token.json"
+    ga._persist(_Creds(), token)
+
+    assert token.read_text(encoding="utf-8") == '{"refresh_token":"secret"}'
+    if os.name != "nt":
+        assert stat.S_IMODE(token.stat().st_mode) == 0o600
+    assert list(token.parent.glob(f".{token.name}.*.tmp")) == []
+
+
 def test_client_secret_convention_discovery(monkeypatch, tmp_path):
     from work_buddy import paths
     from work_buddy.calendar import google_auth as ga

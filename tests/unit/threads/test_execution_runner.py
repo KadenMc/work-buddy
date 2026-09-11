@@ -14,12 +14,52 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from work_buddy.threads import execution_runner, models
+from work_buddy.threads.enums import FSMState
+from work_buddy.threads.events import KIND_EXECUTION_FINISHED
 
 
 def _entry(*, is_action: bool, params: dict):
     """Minimal stand-in for a registry ``Capability`` entry — only the
     attributes ``_bind_runtime_parameters`` reads."""
     return SimpleNamespace(is_action=is_action, parameters=params)
+
+
+def test_missing_action_proposal_records_failure_and_advances(monkeypatch):
+    thread = models.Thread(fsm_state=FSMState.EXECUTING)
+    recorded = []
+    transitions = []
+
+    monkeypatch.setattr(
+        execution_runner.store, "get_thread", lambda _thread_id: thread,
+    )
+    monkeypatch.setattr(
+        execution_runner, "_latest_action_proposal", lambda _thread_id: None,
+    )
+    monkeypatch.setattr(
+        execution_runner.store, "latest_event_id", lambda _thread_id: "event-1",
+    )
+    monkeypatch.setattr(
+        execution_runner.store, "append_event", recorded.append,
+    )
+    monkeypatch.setattr(
+        execution_runner.store, "update_thread_state", lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        execution_runner.engine,
+        "transition",
+        lambda *args, **kwargs: transitions.append((args, kwargs)),
+    )
+
+    execution_runner.execution_state_entry_handler(SimpleNamespace(
+        next_state=FSMState.EXECUTING,
+        thread_id=thread.thread_id,
+    ))
+
+    assert len(recorded) == 1
+    assert recorded[0].kind == KIND_EXECUTION_FINISHED
+    assert recorded[0].data["success"] is False
+    assert recorded[0].data["error"] == "no action_inferred event found"
+    assert transitions[0][0][1] == execution_runner.TRIG_EXECUTION_FAILED
 
 
 class TestBindRuntimeThreadId:
