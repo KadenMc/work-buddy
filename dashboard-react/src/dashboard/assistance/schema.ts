@@ -64,7 +64,10 @@ export function restoreField(value: JsonObject, path: readonly string[], next: J
 }
 
 export function validateFieldValue(field: AssistedField, value: unknown): asserts value is JsonValue {
-  if (typeof value !== field.type || (typeof value === "number" && !Number.isFinite(value))) throw new Error("Invalid assisted field type");
+  if (field.type === "array") {
+    if (!Array.isArray(value)) throw new Error("Invalid assisted field type");
+    if (field.items?.type !== "integer" || value.length > (field.maxItems ?? 100) || value.some((item) => typeof item !== "number" || !Number.isSafeInteger(item) || item < (field.items?.minimum ?? 1))) throw new Error("Invalid assisted field value");
+  } else if (typeof value !== field.type || (typeof value === "number" && !Number.isFinite(value))) throw new Error("Invalid assisted field type");
   if (field.enum && !field.enum.some((candidate) => equalJson(candidate, value))) throw new Error("Invalid assisted field value");
   if (typeof value === "string" && (Array.from(value).length > (field.maxLength ?? 8192) || (field.pattern && !new RegExp(field.pattern).test(value)))) throw new Error("Invalid assisted field value");
   if (typeof value === "number" && (value < (field.minimum ?? -Infinity) || value > (field.maximum ?? Infinity))) throw new Error("Invalid assisted field value");

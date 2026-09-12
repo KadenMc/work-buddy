@@ -68,6 +68,8 @@ def match_clusters_to_tasks(
                     task_text=task["text"],
                     project=task.get("project"),
                     score=score,
+                    project_ids=task.get("project_ids", []),
+                    projects=task.get("projects", []),
                 ))
 
         matches.sort(key=lambda m: m.score, reverse=True)
@@ -91,6 +93,8 @@ def _load_active_tasks(states: list[str]) -> list[dict[str, Any]]:
         from work_buddy.tasks.store import TaskStore
 
         store = TaskStore()
+        from work_buddy.tasks.project_links import registry_snapshot
+        registry = registry_snapshot(store.project_db_path) or {}
         result: list[dict[str, Any]] = []
         for state in states:
             for task in store.list(
@@ -109,7 +113,9 @@ def _load_active_tasks(states: list[str]) -> list[dict[str, Any]]:
                         "task_id": task.task_id,
                         "text": task.description,
                         "state": task.state,
-                        "project": task.contract or "",
+                        "project": (registry.get(task.project_ids[0], {}).get("slug") if len(task.project_ids) == 1 and not task.unresolved_projects else None),
+                        "project_ids": list(task.project_ids),
+                        "projects": [str(registry.get(project_id, {}).get("slug") or f"Project {project_id}") for project_id in task.project_ids] + [item["legacy_value"] for item in task.unresolved_projects],
                     }
                 )
         return result

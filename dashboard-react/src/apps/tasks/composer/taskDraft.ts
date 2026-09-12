@@ -19,6 +19,7 @@ export interface TaskCreateDraft {
   readonly due_date: string;
   readonly deadline_date: string;
   readonly project: string;
+  readonly project_ids?: readonly number[];
   readonly namespaces: string;
   readonly summary: string;
   readonly desired_outcome: string;
@@ -67,7 +68,7 @@ const optional = (value: string): string | null => value.trim() || null;
 export const taskDraftFields = (value: TaskCreateDraft): Readonly<Record<string, JsonValue>> => ({
   title: value.title.trim(), attention_state: value.attention_state, urgency: value.urgency,
   due_date: optional(value.due_date), deadline_date: optional(value.deadline_date),
-  project: optional(value.project), namespaces: taskDraftCsv(value.namespaces),
+  ...(value.project_ids !== undefined ? { project_ids: [...value.project_ids] } : value.project.trim() ? { project: optional(value.project) } : { project_ids: [] }), namespaces: taskDraftCsv(value.namespaces),
   summary: optional(value.summary), desired_outcome: optional(value.desired_outcome),
   next_action: optional(value.next_action), definition_of_done: optional(value.definition_of_done),
   dependencies: taskDraftCsv(value.dependencies),
@@ -137,6 +138,7 @@ export function draftFromTaskProposal(proposal: TaskProposal): TaskCreateDraft {
     title: text("task_text", text("title")), attention_state: text("state", text("attention_state", "inbox")),
     urgency: fields.urgency === "low" || fields.urgency === "high" ? fields.urgency : "medium",
     due_date: text("due_date"), deadline_date: text("deadline_date"), project: text("project"),
+    ...(Array.isArray(fields.project_ids) ? { project_ids: fields.project_ids.filter((value): value is number => typeof value === "number") } : {}),
     namespaces: csv("tags") || csv("namespaces"), summary: text("summary"), desired_outcome: text("outcome_text", text("desired_outcome")),
     next_action: text("next_action_text", text("next_action")), definition_of_done: text("definition_of_done"), dependencies: csv("dependencies"),
     create_note: fields.requested_note_role === "working_document/v1" || fields.note_role === "working_document/v1",
@@ -151,7 +153,7 @@ export function newTaskStructures(value: TaskCreateDraft, options: TaskOptions):
   const projects = new Set(options.projects.map((option) => option.value.toLocaleLowerCase()));
   const namespaces = new Set(options.namespaces.map((option) => option.value.toLocaleLowerCase()));
   return [
-    ...(value.project.trim() && !projects.has(value.project.trim().toLocaleLowerCase()) ? [`project “${value.project.trim()}”`] : []),
+    ...(value.project_ids === undefined && value.project.trim() && !projects.has(value.project.trim().toLocaleLowerCase()) ? [`project “${value.project.trim()}”`] : []),
     ...taskDraftCsv(value.namespaces).filter((namespace) => !namespaces.has(namespace.toLocaleLowerCase())).map((namespace) => `namespace “${namespace}”`),
   ];
 }

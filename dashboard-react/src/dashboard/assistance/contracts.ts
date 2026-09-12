@@ -4,7 +4,9 @@ import type { ChatExecutionSnapshot } from "../../widget-library/chat";
 
 export interface AssistedField {
   readonly path: readonly string[];
-  readonly type: "string" | "number" | "boolean";
+  readonly type: "string" | "number" | "boolean" | "array";
+  readonly items?: { readonly type: "integer"; readonly minimum?: number };
+  readonly maxItems?: number;
   readonly enum?: readonly JsonValue[];
   readonly maxLength?: number;
   readonly pattern?: string;

@@ -89,6 +89,66 @@ def _request(runner: TaskAggregateCreationService, *, note: str = "Prepared note
     )
 
 
+def test_completed_legacy_project_aggregate_replays_exact_request_without_new_participants(tmp_path, monkeypatch):
+    from work_buddy.tasks.models import Tag
+    from .conftest import legacy_project_receipt
+
+    runner, store, documents = _runner(tmp_path)
+    original = runner.create(
+        client_mutation_id='legacy-project-aggregate', actor='human:test', session_id='session-test',
+        task_values={'description': 'Legacy aggregate', 'tags': [Tag('z-last', True), Tag('projects/old-buddy', True)]},
+        initial_note='Original reviewed note',
+    )
+    legacy_project_receipt(store, 'legacy-project-aggregate')
+    monkeypatch.setattr(documents, 'create', lambda **kwargs: pytest.fail('Replay must not create a document'))
+    replay_values = {'description': 'Legacy aggregate', 'tags': [Tag('z-last', True)], 'project': 'old-buddy'}
+    replay = runner.create(
+        client_mutation_id='legacy-project-aggregate', actor='human:test', session_id='session-test',
+        task_values=replay_values, initial_note='Original reviewed note',
+    )
+    assert replay.replayed
+    assert replay.task.task_id == original.task.task_id
+    assert replay.receipt.receipt_id == original.receipt.receipt_id
+    assert store.get(replay.task.task_id).revision == original.task.revision
+    for values, note in (
+        (replay_values, 'Changed note'),
+        ({**replay_values, 'description': 'Changed task'}, 'Original reviewed note'),
+        ({**replay_values, 'project': 'other'}, 'Original reviewed note'),
+    ):
+        with pytest.raises(TaskIdempotencyConflict):
+            runner.create(client_mutation_id='legacy-project-aggregate', actor='human:test', session_id='session-test',
+                          task_values=values, initial_note=note)
+    assert len(store.history(original.task.task_id)) == len(store.pending_outbox()) == 1
+
+
+def test_modern_tagged_aggregate_cannot_replay_as_legacy_project_input(tmp_path):
+    from work_buddy.tasks.models import Tag
+
+    runner, store, _ = _runner(tmp_path)
+    original = runner.create(
+        client_mutation_id='modern-tagged-aggregate', actor='human:test', session_id='session-test',
+        task_values={'description': 'Modern aggregate', 'tags': [Tag('projects/old-buddy', True)]}, initial_note='Note',
+    )
+    with pytest.raises(TaskIdempotencyConflict):
+        runner.create(
+            client_mutation_id='modern-tagged-aggregate', actor='human:test', session_id='session-test',
+            task_values={'description': 'Modern aggregate', 'tags': [], 'project': 'old-buddy'}, initial_note='Note',
+        )
+    assert store.get(original.task.task_id).project_ids == ()
+
+
+def test_new_project_aggregate_accepts_supported_string_tags(tmp_path):
+    runner, store, _ = _runner(tmp_path)
+    result = runner.create(
+        client_mutation_id='new-project-string-tags', actor='human:test', session_id='session-test',
+        task_values={'description': 'Normal new aggregate', 'tags': ['research/notes'], 'project': 'unregistered'},
+        initial_note='New note',
+    )
+    assert result.task.namespace_tags == ('research/notes',)
+    assert result.task.unresolved_projects[0]['legacy_value'] == 'unregistered'
+    assert store.get(result.task.task_id).note_uuid is not None
+
+
 @pytest.mark.parametrize(
     "invalid_values",
     [

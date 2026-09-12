@@ -500,7 +500,7 @@ describe("Dashboard assisted draft host", () => {
     expect(heading).toHaveAttribute("data-help-target", "true");
     const close = screen.getByRole("button", { name: "Close assistance" });
     expect(close.querySelector("svg")).not.toBeNull();
-    expect(close).not.toHaveAttribute("title");
+    expect(close).toHaveAttribute("title", "");
     act(() => close.focus());
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Closing this panel keeps your draft and conversation. Reopen AI help to continue.");
     await userEvent.keyboard("{Escape}");

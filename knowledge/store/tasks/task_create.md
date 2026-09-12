@@ -17,7 +17,11 @@ parameters:
     required: false
   project:
     type: str
-    description: Project slug stored as a structured project tag.
+    description: Legacy scalar project slug or alias resolved to a registry reference; never creates a namespace. Prefer project_ids for multiple projects.
+    required: false
+  project_ids:
+    type: list[int]
+    description: Zero or more stable registry project IDs. Independent of namespace tags; a shared task may serve several projects.
     required: false
   due_date:
     type: str

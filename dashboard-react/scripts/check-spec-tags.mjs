@@ -6,6 +6,11 @@ import ts from "typescript";
 export const CI_TAG_PATTERN = "(^|\\s)@ci(?=\\s|$)";
 
 const separateSpecs = Object.freeze({
+  "live/tasks.spec.ts": {
+    config: "playwright.live.config.ts",
+    reason: "Requires the disposable Tasks authority, registered projects, namespace fixtures, and authenticated local session.",
+    tags: ["@live", "@no-ci"],
+  },
   "live/cowork-truth.spec.ts": {
     config: "playwright.live.config.ts",
     reason: "Requires the disposable truth-panel seed and isolated human session authority.",

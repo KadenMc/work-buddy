@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,11 @@ from work_buddy.truth.registry import TruthStoreRegistry
 
 
 def _app(tmp_path: Path):
-    store = TaskStore(tmp_path / "tasks.db")
+    project_path = tmp_path / "projects.db"
+    with sqlite3.connect(project_path) as conn:
+        conn.executescript("CREATE TABLE projects(id INTEGER PRIMARY KEY,slug TEXT,name TEXT,status TEXT); CREATE TABLE project_aliases(project_id INTEGER,alias_norm TEXT);")
+        conn.executemany("INSERT INTO projects VALUES(?,?,?,?)", [(1, "work-buddy", "Work Buddy", "active"), (2, "research", "Research", "active")])
+    store = TaskStore(tmp_path / "tasks.db", project_db_path=project_path)
     store.initialize()
     state = store.system_state()
     arm_native_authority_latch(
@@ -72,7 +77,7 @@ def _create(client, *, mutation_id: str = "create-1", title: str = "Native task"
             "attention_state": "inbox",
             "urgency": "medium",
             "summary": "Useful context",
-            "project": "work-buddy",
+            "project_ids": [1],
             "namespaces": ["engineering"],
             "dependencies": ["Review design"],
         },
@@ -89,7 +94,8 @@ def test_native_task_api_create_view_update_lifecycle_and_conflict(tmp_path: Pat
     assert first["title"] == "Native task"
     assert first["summary"] == "Useful context"
     assert first["dependencies"] == ["Review design"]
-    assert first["project"] == "work-buddy"
+    assert first["project_ids"] == [1]
+    assert first["namespaces"] == ["engineering"]
     task_id = first["task_id"]
 
     view = client.get(f"/api/tasks/view?lens=inbox&task={task_id}")
@@ -108,7 +114,7 @@ def test_native_task_api_create_view_update_lifecycle_and_conflict(tmp_path: Pat
             "attention_state": "active",
             "urgency": "high",
             "summary": "Edited context",
-            "project": "work-buddy",
+            "project_ids": [1],
             "namespaces": ["engineering", "dashboard"],
             "dependencies": [],
         },
@@ -152,7 +158,7 @@ def test_native_task_api_preserves_mit_and_allows_project_removal(tmp_path: Path
             "title": "Protect MIT semantics",
             "attention_state": "mit",
             "urgency": "high",
-            "project": "work-buddy",
+            "project_ids": [1],
         },
     ).get_json()["result"]["task"]
 
@@ -164,7 +170,7 @@ def test_native_task_api_preserves_mit_and_allows_project_removal(tmp_path: Path
             "expected_revision": created["revision"],
             "title": "MIT remains an MIT",
             "attention_state": "mit",
-            "project": None,
+            "project_ids": [],
         },
     )
 
@@ -172,6 +178,233 @@ def test_native_task_api_preserves_mit_and_allows_project_removal(tmp_path: Path
     task = updated.get_json()["result"]["task"]
     assert task["attention_state"] == "mit"
     assert task["project"] is None
+
+
+def test_workspace_defaults_visible_filters_project_independence_and_sort(tmp_path: Path) -> None:
+    app, store, _ = _app(tmp_path)
+    client = app.test_client()
+    first = _create(client).get_json()["result"]["task"]
+    second = client.post("/api/tasks", json={
+        "client_mutation_id": "two-projects", "title": "A recent task",
+        "project_ids": [1, 2], "namespaces": ["projects/research/deep", "personal"],
+    }).get_json()["result"]["task"]
+    with store.transaction() as conn:
+        conn.execute("UPDATE task_metadata SET created_at='2026-01-01' WHERE task_id=?", (first["task_id"],))
+        conn.execute("UPDATE task_metadata SET created_at='2026-09-01',state='snoozed' WHERE task_id=?", (second["task_id"],))
+    payload = client.get("/api/tasks/view").get_json()
+    assert payload["query"]["statuses"] == ["open"]
+    assert payload["query"]["attention"] == []
+    assert payload["query"]["sort"] == "created_at"
+    assert [task["task_id"] for task in payload["tasks"]] == [second["task_id"], first["task_id"]]
+    assert payload["tasks"][0]["created_at"] == "2026-09-01"
+    assert {option["value"]: option["label"] for option in payload["options"]["projects"]} == {"1": "Work Buddy", "2": "Research"}
+    filtered = client.get("/api/tasks/view?projects=2&namespaces=projects/research").get_json()
+    assert filtered["total"] == 1 and filtered["tasks"][0]["project_ids"] == [1, 2]
+    assert client.get("/api/tasks/view?projects=2&namespaces=engineering").get_json()["total"] == 0
+    exact = client.get("/api/tasks/view?exact_namespaces=projects/research").get_json()
+    assert exact["total"] == 0
+    page = client.get("/api/tasks/view?sort=title&limit=1").get_json()
+    assert page["query"]["direction"] == "asc" and page["page"]["has_more"]
+    assert page["tasks"][0]["task_id"] == second["task_id"]
+    with store.transaction() as conn:
+        conn.execute("UPDATE task_metadata SET archived_at='2026-09-01' WHERE task_id=?", (first["task_id"],))
+    assert client.get("/api/tasks/view").get_json()["total"] == 1
+    assert client.get("/api/tasks/view?statuses=").get_json()["total"] == 2
+    assert client.get("/api/tasks/view?statuses=open&statuses=archived").get_json()["total"] == 2
+    assert client.get("/api/tasks/view?sort=not-a-field").status_code == 422
+
+
+def test_namespace_http_preview_authorization_apply_undo_and_stale_preview(tmp_path: Path) -> None:
+    app, store, authorized = _app(tmp_path)
+    client = app.test_client()
+    task = _create(client).get_json()["result"]["task"]
+    before_authorizations = len(authorized)
+    preview = client.post("/api/tasks/namespaces/preview", json={"action": "rename", "sources": ["engineering"], "name": "work"}).get_json()["preview"]
+    assert len(authorized) == before_authorizations
+    assert preview["task_count"] == 1
+    body = {"request": preview["request"], "expected_fingerprint": preview["fingerprint"], "client_mutation_id": "namespace-apply"}
+    response = client.post("/api/tasks/namespaces/apply", json=body)
+    assert response.status_code == 200
+    operation = response.get_json()["operation"]
+    assert authorized[-1] == ("namespace_apply", "task-namespaces", "POST", "/api/tasks/namespaces/apply")
+    assert store.get(task["task_id"]).project_ids == (1,)
+    assert store.get(task["task_id"]).namespace_tags == ("work",)
+    assert client.post("/api/tasks/namespaces/apply", json=body).get_json()["replayed"]
+    inventory = client.get("/api/tasks/namespaces").get_json()
+    assert inventory["operations"][0]["operation_id"] == operation["operation_id"]
+    path = f"/api/tasks/namespaces/{operation['operation_id']}/undo"
+    response = client.post(path, json={"client_mutation_id": "namespace-undo"})
+    assert response.status_code == 200
+    assert authorized[-1] == ("namespace_undo", "task-namespace-operation:" + operation["operation_id"], "POST", path)
+    assert store.get(task["task_id"]).namespace_tags == ("engineering",)
+    response = client.post("/api/tasks/namespaces/apply", json={**body, "client_mutation_id": "stale-preview"})
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "task_namespace_conflict"
+
+
+def test_workspace_legacy_ambiguous_project_remains_unresolved(tmp_path: Path) -> None:
+    app, store, _ = _app(tmp_path)
+    with sqlite3.connect(store.project_db_path) as conn:
+        conn.executemany("INSERT INTO project_aliases VALUES(?,?)", [(1, "shared"), (2, "shared")])
+    client = app.test_client()
+    created = client.post("/api/tasks", json={"client_mutation_id": "legacy-project", "title": "Resolve historical association", "project": "shared"})
+    assert created.status_code == 200
+    assert created.get_json()["result"]["task"]["project_ids"] == []
+    view = client.get("/api/tasks/view?project=shared").get_json()
+    assert view["query"]["projects"] == ["unresolved:shared"]
+    assert view["total"] == 1
+    assert client.get("/api/tasks/view?projects=garbage").status_code == 422
+
+
+def test_workspace_legacy_numeric_project_name_is_distinct_from_registry_id(tmp_path: Path) -> None:
+    app, store, _ = _app(tmp_path)
+    with sqlite3.connect(store.project_db_path) as conn:
+        conn.execute("UPDATE projects SET slug='2026' WHERE id=1")
+        conn.execute("INSERT INTO projects VALUES(2026,'other-project','Other project','active')")
+    client = app.test_client()
+    legacy_task = _create(client).get_json()["result"]["task"]
+    other_task = client.post("/api/tasks", json={
+        "client_mutation_id": "numeric-registry-id", "title": "A different project",
+        "project_ids": [2026],
+    }).get_json()["result"]["task"]
+
+    legacy = client.get("/api/tasks/view?project=2026").get_json()
+    assert legacy["query"]["projects"] == ["1"]
+    assert [task["task_id"] for task in legacy["tasks"]] == [legacy_task["task_id"]]
+    canonical = client.get("/api/tasks/view?projects=2026").get_json()
+    assert canonical["query"]["projects"] == ["2026"]
+    assert [task["task_id"] for task in canonical["tasks"]] == [other_task["task_id"]]
+    unmatched = client.get("/api/tasks/view?project=9999").get_json()
+    assert unmatched["query"]["projects"] == ["unresolved:9999"]
+    assert unmatched["total"] == 0
+
+
+@pytest.mark.parametrize("invalid", [[], {}])
+@pytest.mark.parametrize("field,valid_request", [
+    ("action", {"action": "rename", "sources": ["engineering"], "name": "work"}),
+    ("assignment_mode", {"action": "assign", "task_ids": ["t-selected"], "assignment_mode": "add", "namespaces": ["work"]}),
+    ("parent_assignment", {"action": "promote", "sources": ["engineering"], "parent_assignment": "keep"}),
+])
+def test_namespace_http_rejects_non_scalar_action_choices(tmp_path: Path, field, valid_request, invalid) -> None:
+    app, store, authorized = _app(tmp_path)
+    response = app.test_client().post(
+        "/api/tasks/namespaces/preview", json={**valid_request, field: invalid},
+    )
+    assert response.status_code == 422
+    error = response.get_json()["error"]
+    assert error["code"] == "task_validation_error"
+    assert set(error["field_errors"]) == {field}
+    assert not authorized
+    assert store.collection_revision() == 0
+
+
+def test_namespace_spelling_survives_detail_save_and_receipt_replay(tmp_path: Path) -> None:
+    app, store, _ = _app(tmp_path)
+    client = app.test_client()
+    namespaces = ["138", "projects/", "projects//nested"]
+    response = client.post("/api/tasks", json={
+        "client_mutation_id": "create-exact-namespaces", "title": "Before",
+        "namespaces": namespaces, "project_ids": [1],
+    })
+    assert response.status_code == 200
+    task = response.get_json()["result"]["task"]
+    assert task["namespaces"] == namespaces
+    viewed = client.get("/api/tasks/view", query_string={
+        "task": task["task_id"], "exact_namespaces": "projects/",
+    }).get_json()
+    assert viewed["total"] == 1
+    assert viewed["selected_task"]["namespaces"] == namespaces
+    blank = next(item for item in viewed["namespace_tree"] if item["path"] == "projects/")
+    assert blank["label"] == "(empty segment)"
+    body = {
+        "client_mutation_id": "save-exact-namespaces", "expected_revision": task["revision"],
+        "title": "After", "namespaces": viewed["selected_task"]["namespaces"], "project_ids": [1],
+    }
+    saved = client.patch(f"/api/tasks/{task['task_id']}", json=body)
+    assert saved.status_code == 200
+    assert saved.get_json()["result"]["task"]["namespaces"] == namespaces
+    assert client.patch(f"/api/tasks/{task['task_id']}", json=body).get_json()["result"]["replayed"]
+    current = store.get(task["task_id"])
+    assert current.namespace_tags == tuple(namespaces)
+    assert current.project_ids == (1,)
+    assert current.revision == task["revision"] + 1
+
+
+@pytest.mark.parametrize("namespace", ["/engineering", "#/engineering"])
+def test_leading_slash_namespaces_are_rejected_without_create_or_save_changes(tmp_path: Path, namespace: str) -> None:
+    app, store, _ = _app(tmp_path)
+    client = app.test_client()
+    rejected = client.post("/api/tasks", json={
+        "client_mutation_id": "invalid-leading-create", "title": "Invalid",
+        "namespaces": [namespace],
+    })
+    assert rejected.status_code == 422
+    assert rejected.get_json()["error"]["code"] == "task_validation_error"
+    assert "tags.0" in rejected.get_json()["error"]["field_errors"]
+    assert store.collection_revision() == 0
+    created = _create(client).get_json()["result"]["task"]
+    task_id = created["task_id"]
+    before = store.get(task_id)
+    rejected_save = client.patch(f"/api/tasks/{task_id}", json={
+        "client_mutation_id": "invalid-leading-save", "expected_revision": before.revision,
+        "title": "Must not persist", "namespaces": [namespace], "project_ids": [1],
+    })
+    assert rejected_save.status_code == 422
+    assert "tags.0" in rejected_save.get_json()["error"]["field_errors"]
+    assert store.get(task_id) == before
+    selected = client.get("/api/tasks/view", query_string={"task": task_id, "exact_namespaces": "engineering"}).get_json()
+    assert selected["total"] == 1
+    assert selected["selected_task"]["namespaces"] == ["engineering"]
+    with store.transaction() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM task_metadata").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM task_tags WHERE tag LIKE '/%'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('project_mode', ['set', 'clear', 'retain'])
+def test_http_update_replays_old_project_receipt_without_registry_or_new_writes(tmp_path, project_mode):
+    from work_buddy.tasks.models import Tag
+    from work_buddy.tasks.service import TaskApplicationService
+    from .conftest import legacy_project_receipt
+
+    app, store, _ = _app(tmp_path)
+    service = TaskApplicationService(store)
+    task = service.create(description='Before', tags=[Tag('projects/work-buddy', True)],
+                          actor='human:local-test', client_mutation_id='old-create').task
+    tags = [Tag('review', True)]
+    if project_mode != 'clear':
+        tags.append(Tag('projects/work-buddy', True))
+    original = service.update(task.task_id, expected_revision=task.revision,
+                              client_mutation_id='old-http-update', actor='human:local-test',
+                              changes={'description': 'After'}, tags=tags)
+    legacy_project_receipt(store, 'old-http-update')
+    body = {'client_mutation_id': 'old-http-update', 'expected_revision': task.revision,
+            'title': 'After', 'namespaces': ['review/', 'projects/ignored-by-old-editor']}
+    if project_mode != 'retain':
+        body['project'] = 'work-buddy' if project_mode == 'set' else ''
+    store.project_db_path = tmp_path / 'registry-unavailable.db'
+    client = app.test_client()
+    response = client.patch(f'/api/tasks/{task.task_id}', json=body)
+    assert response.status_code == 200
+    assert response.get_json()['result']['replayed']
+    assert store.get(task.task_id).revision == original.task.revision
+    assert store.get(task.task_id).tags == original.task.tags
+    assert len(store.history(task.task_id)) == 2
+    with store.transaction() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM task_event_outbox').fetchone()[0] == 2
+    # A newly explicit project selection is a different request, even when an
+    # old receipt could otherwise be matched by its historical namespace tags.
+    refused = client.patch(f'/api/tasks/{task.task_id}', json={**body, 'project_ids': []})
+    assert refused.status_code == 409
+
+
+def test_namespace_mutations_refuse_readonly_dashboard(tmp_path: Path) -> None:
+    _app_instance, store, _ = _app(tmp_path)
+    app = Flask(__name__)
+    app.register_blueprint(create_tasks_blueprint(store_factory=lambda: store, dashboard_read_only=lambda: True))
+    client = app.test_client()
+    response = client.post("/api/tasks/namespaces/apply", json={"client_mutation_id": "forbidden", "request": {}, "expected_fingerprint": "x"})
+    assert response.status_code == 422
+    assert response.get_json()["error"]["message"] == "The dashboard is read-only."
 
 
 @pytest.mark.parametrize(

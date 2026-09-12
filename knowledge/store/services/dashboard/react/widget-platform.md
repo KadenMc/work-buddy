@@ -22,11 +22,13 @@ entry_points:
 - dashboard-react/src/dashboard
 - dashboard-react/src/widget-library
 dev_notes: |-
-  The desktop grid engine is private behind `ReactGridLayoutAdapter`; persisted personalization remains library-neutral. The desktop layout uses preserved outer gaps, collision prevention, explicit tidy behavior, and all-edge resize affordances. Mobile renders normal document flow from a persisted canonical order.
+  The desktop grid engine is private behind `ReactGridLayoutAdapter`; persisted personalization remains library-neutral. The desktop layout uses preserved outer gaps, collision prevention, explicit tidy behavior, and all-edge resize affordances. Mobile renders normal document flow from a persisted canonical order. App-owned browsing/detail modes remain inside their widgets and must preserve the host's grid personalization and Arrange/Preview contract.
 
   Durable widgets live in `dashboard-react/src/dashboard/widgets/durable/`: a keep-alive host above the grid owns one permanent wrapper per instance, portals the live `WidgetHost` in once, and light placeholder cells re-home the wrapper with appendChild when the grid remounts. The durable path pins `interactionMode` to operate (the draft-scope re-key is also structurally unreachable because durable forbids drafts) and maps a failed re-hydration with a previous good snapshot to a stale banner instead of unmounting. The navbar entry seam is `dashboard-react/src/dashboard/customize/` (a registration-handle controller; only the grid view host registers). Validation enforces durable implies single-instance and no drafts. Contract prose lives in `dashboard-react/ARCHITECTURE.md`.
 
   The placeholder cell's callback ref must keep the same identity across ordinary parent renders. React cleans up a changed callback ref before invoking its replacement; on the durable path that unnecessary release/adopt cycle reparents the permanent wrapper through the offstage stash, and Chromium resets descendant scroll positions during the move. Memoize the ref on the host operations and widget-instance identity so real unmounts, instance changes, and host changes still release and adopt normally. Regression coverage must prove that a data-only parent rerender performs no wrapper append/reparent and preserves nested `scrollTop`.
+
+  Draft-owning widgets use the same presentation keep-alive mechanism so live edits and open confirmations survive desktop/mobile cell remounts. This does not grant durable-widget authority: ordinary forms still participate in Arrange/Preview, removal, and stale/error handling.
 
   Draft repositories use schema-versioned records, compare-and-swap revisions, retention metadata, and cross-tab signaling. Production uses IndexedDB; tests inject in-memory repositories. Arrange and Preview safety is enforced by the host from declared intent effects, not by inspecting DOM elements or HTTP methods.
 
@@ -139,6 +141,14 @@ A widget definition may declare itself durable. Dashboard Core then keeps its re
 ## Host-owned working state and interaction surfaces
 
 Widgets declare meaningful drafts; the host owns persistence, schema versions, revisions, clearing, and cross-tab behavior. Draft identity includes profile/workspace, publisher App, view, widget instance, widget type, draft name, and scope. Widgets do not persist arbitrary DOM inputs or create incompatible storage formats.
+
+Host-owned working state can also represent a saved browsing query. A draft
+declaration may supply `clearPresentation` text so the shared header eraser
+truthfully describes resetting a view instead of discarding field edits.
+`useWidgetDraft` can set `includeInClear: false` for a mounted background scope;
+its state still persists while the visible card's eraser affects only its active
+scope. Tasks uses this for saved filters and sorting while task-field drafts
+remain independent.
 
 An eligible widget may additionally declare `assistableDrafts`, referencing the shared machine-readable form schema. Dashboard Core binds a contextual assistance dock to that exact host-owned draft; it is not a separate placeable chat widget or a Co-work editor adapter. Typed allowlisted patches update visible fields, preserve concurrent user edits, and expose conditional Undo. Submission remains the App's explicit human action. See `services/dashboard/react/assisted-drafts`.
 

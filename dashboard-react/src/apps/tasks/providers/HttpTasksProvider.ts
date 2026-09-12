@@ -34,9 +34,11 @@ import {
   parseMutationEnvelope,
   parseTaskApiError,
   parseTaskViewPayload,
+  parseTaskQuery,
   type TasksApiError,
 } from "./taskApiContract";
 import { isProposalId, parseTaskProposalEnvelope } from "./proposalApiContract";
+import { hasTaskBrowseQuery } from "../workspace/taskBrowseState";
 
 export interface HttpTasksProviderOptions {
   readonly fetchImpl?: typeof fetch;
@@ -110,6 +112,12 @@ function mutationSpec(intent: DashboardIntent, body: Record<string, unknown>): M
         operation: "create",
         subject: `task:new:${mutationId(intent)}`,
       };
+    case TASK_INTENTS.namespacePreview:
+      return { method: "POST", path: "/api/tasks/namespaces/preview", operation: "namespace_preview", subject: "task-namespaces", preview: true };
+    case TASK_INTENTS.namespaceApply:
+      return { method: "POST", path: "/api/tasks/namespaces/apply", operation: "namespace_apply", subject: "task-namespaces" };
+    case TASK_INTENTS.namespaceUndo:
+      return typeof body.operation_id === "string" ? { method: "POST", path: `/api/tasks/namespaces/${encodeURIComponent(body.operation_id)}/undo`, operation: "namespace_undo", subject: `task-namespace-operation:${body.operation_id}` } : null;
     case TASK_INTENTS.batchPreview:
       return {
         method: "POST",
@@ -186,15 +194,32 @@ function mutationSpec(intent: DashboardIntent, body: Record<string, unknown>): M
   }
 }
 
-const canonicalSearch = (current: string, payload: Record<string, unknown>): string => {
+const canonicalSearch = (current: string, payload: Record<string, unknown>, resolved?: TasksViewModel["query"]): string => {
   const params = new URLSearchParams(current.startsWith("?") ? current.slice(1) : current);
-  const next = isRecord(payload.patch) ? payload.patch : payload;
-  const keys = ["lens", "q", "project", "namespace", "urgency", "due", "state", "note", "task", "proposal"];
+  const patch = isRecord(payload.patch) ? payload.patch : payload;
+  const filterKeys = ["statuses", "projects", "namespaces", "exact_namespaces", "attention", "urgencies"] as const;
+  const legacyKeys = ["lens", "project", "namespace", "urgency", "state"];
+  const replacingFilters = filterKeys.some((key) => key in patch);
+  // The API resolves old project names and lens semantics. Preserve every
+  // resolved dimension when changing just one filter on an old bookmark.
+  const normalized = resolved && replacingFilters && legacyKeys.some((key) => params.has(key))
+    ? Object.fromEntries(filterKeys.filter((key) => !params.has(key)).map((key) => [key, resolved[key] ?? []]))
+    : {};
+  const next = { ...normalized, ...patch };
+  const keys = ["lens", "q", "project", "namespace", "urgency", "due", "state", "note", "task", "proposal", "statuses", "projects", "namespaces", "exact_namespaces", "attention", "urgencies", "sort", "direction", "mode", "limit", "offset"];
   for (const key of keys) {
     if (!(key in next)) continue;
     const value = next[key];
     if (value === null || value === undefined || value === "") params.delete(key);
-    else if (typeof value === "string") params.set(key, value);
+    else if (Array.isArray(value)) {
+      params.delete(key);
+      if (value.length === 0) params.set(key, "");
+      else value.forEach((item) => { if (typeof item === "string") params.append(key, item); });
+    }
+    else if (typeof value === "string" || typeof value === "number") params.set(key, String(value));
+  }
+  if (replacingFilters) {
+    legacyKeys.forEach((key) => params.delete(key));
   }
   if (typeof next.proposal === "string" && next.proposal) params.delete("task");
   else if (typeof next.task === "string" && next.task) params.delete("proposal");
@@ -245,6 +270,7 @@ export class HttpTasksProvider implements ViewProvider {
   readonly #navigate: (href: string) => void;
   readonly #clock: () => string;
   #last: TasksSnapshot | undefined;
+  #lastSuccessful: TasksSnapshot | undefined;
   // A single validated read projection, not a proposal authority or history.
   // Canonical task navigation must not discard the outcome the widgets observed.
   #observedProposal: TaskProposal | null = null;
@@ -274,14 +300,34 @@ export class HttpTasksProvider implements ViewProvider {
     taskQuery.delete("proposal");
     if (proposalId !== null) taskQuery.delete("task");
     const taskSearch = proposalId === null ? search : taskQuery.size ? `?${taskQuery.toString()}` : "";
-    const response = await this.#fetch(`/api/tasks/view${taskSearch}`, {
-      method: "GET",
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    });
-    const payload = await readJsonResponse(response);
-    if (!response.ok) throw parseTaskApiError(response.status, payload);
-    let model = parseTaskViewPayload(payload);
+    let model: TasksViewModel;
+    try {
+      const response = await this.#fetch(`/api/tasks/view${taskSearch}`, {
+        method: "GET", credentials: "same-origin", headers: { Accept: "application/json" },
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw parseTaskApiError(response.status, payload);
+      model = parseTaskViewPayload(payload);
+    } catch (error) {
+      const previous = this.#lastSuccessful;
+      if (!previous?.model) throw error;
+      const attempted: Record<string, unknown> = Object.fromEntries(query);
+      for (const key of ["statuses", "projects", "namespaces", "exact_namespaces", "attention", "urgencies"]) {
+        if (query.has(key)) attempted[key] = query.getAll(key).filter(Boolean);
+      }
+      const nextQuery = { ...parseTaskQuery(attempted), proposal: proposalId };
+      const selectedTask = nextQuery.task === previous.model.selectedTask?.task_id ? previous.model.selectedTask : null;
+      const message = error instanceof Error ? error.message : "Tasks could not refresh.";
+      const workspace = previous.widgetInputs[TASKS_INSTANCE_IDS.workspace] as TaskWorkspaceInput;
+      const fallback: TasksSnapshot = {
+        ...previous, revision: `${previous.revision}:refresh-error:${loadGeneration}`, status: "stale",
+        quality: { kind: "partial", message },
+        model: { ...previous.model, query: nextQuery, selectedTask, selectedProposal: null },
+        widgetInputs: { ...previous.widgetInputs, [TASKS_INSTANCE_IDS.workspace]: { ...workspace, browseQueryExplicit: hasTaskBrowseQuery(search), query: nextQuery, selectedTask, selectedProposal: null, refreshing: false, refresh_error: message } },
+      };
+      if (canPublish()) this.#last = fallback;
+      return fallback;
+    }
     let selection: TaskProposalSelection | null = null;
     if (proposalId !== null) {
       if (query.has("task")) {
@@ -311,6 +357,7 @@ export class HttpTasksProvider implements ViewProvider {
       model = { ...model, query: { ...model.query, task: null, proposal: proposalId }, selectedTask: null, selectedProposal: selection };
     }
     const quickAdd: TaskQuickAddInput = {
+      compact: Boolean(model.query.task || model.query.proposal || model.query.mode === "namespaces"),
       instanceId: TASKS_INSTANCE_IDS.quickAdd,
       revision: model.revision,
       access: model.access,
@@ -319,6 +366,10 @@ export class HttpTasksProvider implements ViewProvider {
       observedProposal: this.#observedProposal,
     };
     const workspace: TaskWorkspaceInput = {
+      browseQueryExplicit: hasTaskBrowseQuery(search),
+      total: model.total,
+      page: model.page,
+      namespace_tree: model.namespace_tree,
       instanceId: TASKS_INSTANCE_IDS.workspace,
       revision: model.revision,
       access: model.access,
@@ -346,7 +397,7 @@ export class HttpTasksProvider implements ViewProvider {
         [TASKS_INSTANCE_IDS.workspace]: workspace,
       },
     };
-    if (canPublish()) this.#last = snapshot;
+    if (canPublish()) { this.#last = snapshot; this.#lastSuccessful = snapshot; }
     return snapshot;
   }
 
@@ -400,7 +451,7 @@ export class HttpTasksProvider implements ViewProvider {
     if (intent.view_id !== TASKS_VIEW_ID) return this.#result(intent, "rejected", "Intent targets another view.");
     if (!isRecord(intent.payload)) return this.#result(intent, "rejected", "Task action payload is invalid.");
     if (intent.intent_type === TASK_INTENTS.locationChange) {
-      const search = canonicalSearch(this.#location.getSearch(), intent.payload);
+      const search = canonicalSearch(this.#location.getSearch(), intent.payload, this.#lastSuccessful?.model?.query);
       intent.payload.replace === true
         ? this.#location.replaceSearch(search)
         : this.#location.pushSearch(search);
@@ -412,6 +463,15 @@ export class HttpTasksProvider implements ViewProvider {
     }
     if (intent.intent_type === TASK_INTENTS.openDocument) {
       return this.#openDocument(intent, intent.payload);
+    }
+    if (intent.intent_type === TASK_INTENTS.namespaceLoad) {
+      try {
+        const response = await this.#fetch("/api/tasks/namespaces", { method: "GET", credentials: "same-origin", headers: { Accept: "application/json" } });
+        const payload = await readJsonResponse(response);
+        if (!response.ok) throw parseTaskApiError(response.status, payload);
+        if (!isRecord(payload) || payload.ok !== true || !Array.isArray(payload.namespaces) || !Array.isArray(payload.operations)) throw new Error("Namespace inventory is invalid.");
+        return { ...this.#result(intent, "accepted", "Namespace inventory loaded."), value: payload as JsonValue };
+      } catch (error) { return this.#errorResult(intent, error); }
     }
     const body = safeBody(intent);
     const spec = mutationSpec(intent, body);
@@ -462,11 +522,20 @@ export class HttpTasksProvider implements ViewProvider {
         return { ...this.#result(intent, "accepted", proposal.status === "realized" ? "Task created from proposal." : proposal.status === "rejected" ? "Proposal dismissed. No task was created." : "Task proposal saved. No task has been created."), value: { proposal } as unknown as JsonValue };
       }
       if (spec.preview === true) {
+        if (spec.operation === "namespace_preview") {
+          if (!isRecord(payload) || payload.ok !== true || !isRecord(payload.preview) || typeof payload.preview.fingerprint !== "string") throw new Error("Namespace preview is invalid.");
+          return { ...this.#result(intent, "accepted", "Namespace preview ready."), value: { preview: payload.preview } as JsonValue };
+        }
         const preview = parseBatchPreview(payload);
         return {
           ...this.#result(intent, "accepted", "Task batch preview is ready.", preview.collection_revision),
           value: { preview },
         };
+      }
+      if (spec.operation === "namespace_apply" || spec.operation === "namespace_undo") {
+        if (!isRecord(payload) || payload.ok !== true || !isRecord(payload.operation) || typeof payload.operation.operation_id !== "string") throw new Error("Namespace change response is invalid. Retry this same operation to confirm the outcome.");
+        this.#last = undefined;
+        return { ...this.#result(intent, "accepted", spec.operation === "namespace_undo" ? "Namespace change undone." : "Namespaces updated.", typeof payload.collection_revision === "number" ? payload.collection_revision : undefined), value: payload as JsonValue };
       }
       if (spec.operation === "local_file_action") {
         if (!isRecord(payload) || payload.ok !== true) {

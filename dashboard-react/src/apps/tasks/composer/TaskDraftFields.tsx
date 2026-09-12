@@ -1,6 +1,8 @@
-import { TextAreaField } from "../../../ui";
+import { Button, InlineAlert, TextAreaField } from "../../../ui";
 import type { TaskOptions, TaskUrgency } from "../contracts";
 import type { TaskCreateDraft } from "./taskDraft";
+import { MultiSelect } from "../workspace/TaskFilters";
+import { TaskHelp, TASK_HELP } from "../workspace/TaskHelp";
 
 /** The same visible fields serve direct creation and Threads-backed proposal review. */
 export function TaskDraftFields({ value, options, disabled, idPrefix, errors = {}, update, fieldProps }: {
@@ -22,13 +24,12 @@ export function TaskDraftFields({ value, options, disabled, idPrefix, errors = {
   const hint = (key: string, ...aliases: string[]) => error(key, ...aliases)
     ? <small id={`${idPrefix}-${key}-error`} className="wb-task-field-error">{error(key, ...aliases)}</small> : null;
   return <div className="wb-task-composer__details">
-    <label className="wb-task-field"><span>State</span><select {...props("attention_state", "state")} value={value.attention_state} onChange={(event) => update("attention_state", event.target.value)}><option value="inbox">Inbox</option><option value="mit">Most Important</option><option value="active">Active</option><option value="focused">Focused</option><option value="waiting">Waiting</option></select>{hint("attention_state", "state")}</label>
+    <label className="wb-task-field"><span>Attention</span><TaskHelp content={{ ...TASK_HELP.editAttention, details: "Choose an attention value for this new-task draft. It takes effect when you create the task. Completion, archive, and trash are separate lifecycle actions on existing tasks." }}><select {...props("attention_state", "state")} value={value.attention_state} onChange={(event) => update("attention_state", event.target.value)}><option value="inbox">Inbox</option><option value="mit">Most Important</option><option value="active">Active</option><option value="focused">Working on now</option><option value="waiting">Waiting</option><option value="snoozed">Snoozed</option></select></TaskHelp>{hint("attention_state", "state")}</label>
     <label className="wb-task-field"><span>Urgency</span><select {...props("urgency")} value={value.urgency} onChange={(event) => update("urgency", event.target.value as TaskUrgency)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>{hint("urgency")}</label>
     <label className="wb-task-field"><span>Due date</span><input {...props("due_date")} type="date" value={value.due_date} onChange={(event) => update("due_date", event.target.value)} />{hint("due_date")}</label>
     <label className="wb-task-field"><span>Hard deadline</span><input {...props("deadline_date")} type="date" value={value.deadline_date} onChange={(event) => update("deadline_date", event.target.value)} />{hint("deadline_date")}</label>
-    <label className="wb-task-field"><span>Project</span><input {...props("project")} list={`${idPrefix}-projects`} value={value.project} onChange={(event) => update("project", event.target.value)} />{hint("project")}</label>
-    <label className="wb-task-field"><span>Namespaces</span><input {...props("namespaces")} value={value.namespaces} placeholder="personal, errands" onChange={(event) => update("namespaces", event.target.value)} />{hint("namespaces")}</label>
-    <datalist id={`${idPrefix}-projects`}>{options.projects.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</datalist>
+    <div className="wb-task-field"><span>Projects</span><MultiSelect purpose="selection" label="Linked projects" values={(value.project_ids ?? []).map(String)} options={options.projects.filter((option) => /^\d+$/.test(option.value))} disabled={disabled} searchable onChange={(values) => update("project_ids", values.map(Number))} /><small>{(value.project_ids ?? []).map((id) => options.projects.find((option) => option.value === String(id))?.label ?? `Project ${id}`).join(", ") || "No linked projects"}</small>{hint("project_ids", "project")}{value.project && value.project_ids === undefined ? <InlineAlert tone="warning">This saved draft has a historical project reference: {value.project}. Selecting registered projects replaces that reference. <Button size="small" disabled={disabled} onClick={() => { update("project_ids", []); update("project", ""); }}>Remove historical project reference</Button></InlineAlert> : null}</div>
+    <label className="wb-task-field"><span>Namespaces</span><TaskHelp content={TASK_HELP.namespaceField}><input {...props("namespaces")} value={value.namespaces} placeholder="personal, errands" onChange={(event) => update("namespaces", event.target.value)} /></TaskHelp>{hint("namespaces")}</label>
     {([
       ["summary", "Summary", "summary_text"], ["desired_outcome", "Desired outcome", "outcome_text"],
       ["next_action", "Next action", "next_action_text"], ["definition_of_done", "Definition of done", "definition_of_done"],

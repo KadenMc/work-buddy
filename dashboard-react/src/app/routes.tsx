@@ -85,16 +85,24 @@ function StandardWidgetViewMount({
         ? search
         : `?${search}`;
       const current = currentLocationRef.current;
+      // Identity startup consumes this one-time fragment with replaceState.
+      // React Router can still hold its initial location until navigation;
+      // never copy the consumed credential back into the next history entry.
+      const fragment = new URLSearchParams(current.hash.slice(1));
+      const restoredHash = fragment.get("wb-next") ?? "";
+      const hash = fragment.has("wb-bootstrap")
+        ? restoredHash.startsWith("#") ? restoredHash : ""
+        : current.hash;
       // Providers reconcile immediately after accepting a location intent. Keep
       // the adapter coherent during the gap before React Router commits its next
       // render so that reconciliation loads the requested query, not the one the
       // user just left.
-      currentLocationRef.current = { ...current, search: normalized };
+      currentLocationRef.current = { ...current, search: normalized, hash };
       void navigateRef.current(
         {
           pathname: current.pathname,
           search: normalized,
-          hash: current.hash,
+          hash,
         },
         { replace },
       );

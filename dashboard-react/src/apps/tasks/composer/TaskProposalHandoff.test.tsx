@@ -77,6 +77,10 @@ function element(
   </InteractionSurfaceProvider></DashboardAnnouncer>;
 }
 
+async function openCapture() {
+  return screen.findByRole("textbox", { name: "New task" });
+}
+
 describe("Quick Add proposal completion handoff", () => {
   it("supersedes the actual Save success notice when full review creates the task", async () => {
     const repository = await seed(EMPTY_TASK_CREATE_DRAFT);
@@ -91,7 +95,7 @@ describe("Quick Add proposal completion handoff", () => {
       return { intent_id: intent.intent_id, status: "accepted", value: { proposal: intent.intent_type === TASK_INTENTS.proposalAccept ? realized : ready } };
     });
     const view = render(element(repository, emit));
-    const title = await screen.findByRole("textbox", { name: "New task" });
+    const title = await openCapture();
     await user.type(title, "Reviewed task");
     await user.click(screen.getByRole("button", { name: "Save proposal" }));
     const saveNotice = "Proposal saved. No task has been created. Review it below, or share its link.";
@@ -114,6 +118,7 @@ describe("Quick Add proposal completion handoff", () => {
       ? { intent_id: intent.intent_id, status: "conflict", message: "Review the competing revision. Your local edits are preserved." }
       : { intent_id: intent.intent_id, status: "accepted" });
     const view = render(element(repository, emit, { ...input, observedProposal: ready }));
+    await openCapture();
     await user.click(await screen.findByRole("button", { name: "Save proposal changes" }));
     const conflict = "Review the competing revision. Your local edits are preserved.";
     await screen.findByText(conflict);
@@ -136,7 +141,7 @@ describe("Quick Add proposal completion handoff", () => {
       return { intent_id: intent.intent_id, status: "accepted", value: { proposal: realized } as unknown as JsonValue };
     });
     const view = render(element(repository, emit, { ...input, selectedProposal: ready, observedProposal: ready }, { review: ready }));
-    const title = await screen.findByRole("textbox", { name: "New task" });
+    const title = await openCapture();
     await screen.findByRole("textbox", { name: "Proposed task title" });
     if (edited) await user.type(title, " with later edits");
     await user.click(screen.getByRole("button", { name: "Create task" }));
@@ -161,11 +166,11 @@ describe("Quick Add proposal completion handoff", () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
     const first = render(element(repository, emit, { ...input, observedProposal: realized }));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("My later task");
+    expect(await openCapture()).toHaveValue("My later task");
     await waitFor(async () => expect((await stored(repository))?.proposal_ref?.resolution).toEqual({ status: "realized", proposalEventId: 7, taskId: "t-created" }));
     first.unmount();
     render(element(repository, emit));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("My later task");
+    expect(await openCapture()).toHaveValue("My later task");
     expect(screen.getByRole("button", { name: "Task already created" })).toBeDisabled();
     expect(screen.getByRole("link", { name: "Open existing task" })).toHaveAttribute("href", "/app/tasks?task=t-created");
     const deleted = vi.spyOn(repository, "delete");
@@ -188,7 +193,7 @@ describe("Quick Add proposal completion handoff", () => {
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
     const deleted = vi.spyOn(repository, "delete");
     render(element(repository, emit, { ...input, observedProposal: { ...ready, status: "rejected" } }));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("Reviewed task");
+    expect(await openCapture()).toHaveValue("Reviewed task");
     expect(screen.getByText(/This proposal was dismissed. Your source draft is preserved/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Proposal dismissed" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Save proposal changes" })).toBeDisabled();
@@ -208,7 +213,7 @@ describe("Quick Add proposal completion handoff", () => {
     const deleted = vi.spyOn(repository, "delete");
     const emit = vi.fn();
     const view = render(element(repository, emit));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("Reviewed task");
+    expect(await openCapture()).toHaveValue("Reviewed task");
     expect(screen.getByRole("button", { name: "Task already created" })).toBeDisabled();
     view.rerender(element(repository, emit, { ...input, observedProposal: realized }));
     await act(async () => { await Promise.resolve(); });
@@ -223,7 +228,7 @@ describe("Quick Add proposal completion handoff", () => {
     const user = userEvent.setup();
     const emit = vi.fn();
     const view = render(element(repository, emit));
-    await screen.findByRole("textbox", { name: "New task" });
+    await openCapture();
     expect(screen.getByText(/Review the saved proposal before making another decision/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create task from proposal" })).toBeDisabled();
     await user.type(screen.getByRole("textbox", { name: "New task" }), " later");
@@ -241,6 +246,7 @@ describe("Quick Add proposal completion handoff", () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "unavailable", message: "Still uncertain. Retry this same save." }));
     render(element(repository, emit));
+    await openCapture();
     expect(await screen.findByRole("button", { name: "Retry proposal save" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Create task from proposal" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Retry proposal save" }));
@@ -258,7 +264,7 @@ describe("Quick Add proposal completion handoff", () => {
     const repository = await seed({ ...linked, proposal_pending: pending });
     const emit = vi.fn();
     render(element(repository, emit, { ...input, observedProposal: realized }));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("Reviewed task");
+    expect(await openCapture()).toHaveValue("Reviewed task");
     expect(screen.getByRole("button", { name: "Retry proposal save" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Task already created" })).toBeDisabled();
     await waitFor(async () => expect((await stored(repository))?.proposal_ref?.resolution?.status).toBe("realized"));
@@ -276,7 +282,7 @@ describe("Quick Add proposal completion handoff", () => {
     const emit = vi.fn();
     const deleted = vi.spyOn(repository, "delete");
     render(element(repository, emit, { ...input, observedProposal: proposal }));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("Reviewed task");
+    expect(await openCapture()).toHaveValue("Reviewed task");
     if (terminal) await waitFor(async () => expect((await stored(repository))?.proposal_ref?.resolution?.status).toBe("realized"));
     else expect((await stored(repository))?.proposal_ref?.resolution).toBeUndefined();
     expect(deleted).not.toHaveBeenCalled();
@@ -293,7 +299,7 @@ describe("Quick Add proposal completion handoff", () => {
     const deleted = vi.spyOn(repository, "delete");
     const emit = vi.fn();
     render(element(repository, emit, { ...input, access, observedProposal: realized }, { mode }));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("Reviewed task");
+    expect(await openCapture()).toHaveValue("Reviewed task");
     expect(screen.getByRole("button", { name: "Use retained fields for a new draft" })).toBeDisabled();
     await act(async () => { await Promise.resolve(); });
     expect(await stored(repository)).toEqual(linked);
@@ -307,7 +313,7 @@ describe("Quick Add proposal completion handoff", () => {
     const repository = await seed(value);
     const emit = vi.fn();
     render(element(repository, emit));
-    expect(await screen.findByRole("textbox", { name: "New task" })).toHaveValue("Reviewed task");
+    expect(await openCapture()).toHaveValue("Reviewed task");
     expect(screen.queryByRole("link", { name: "Open existing task" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create task from proposal" })).toBeDisabled();
     expect(emit).not.toHaveBeenCalled();

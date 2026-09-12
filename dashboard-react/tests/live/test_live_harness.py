@@ -25,6 +25,8 @@ def harness_env(tmp_path):
         "vault_root": str(root / "host-folders"),
         "paths": {"data_root": str(root / "data")},
         "dashboard": {"cowork_allowed_roots": [str(root / "host-folders")]},
+        "tasks": {"db_path": str(root / 'data' / 'db' / 'tasks.db')},
+        "projects": {"db_path": str(root / 'data' / 'db' / 'projects.db')},
     }), encoding="utf-8")
     return {
         **os.environ,
@@ -94,6 +96,55 @@ def test_seed_manifest_must_remain_inside_marked_root(harness_env, tmp_path):
     assert result.returncode != 0
     assert "must remain inside" in result.stderr
     assert not (tmp_path / "outside.json").exists()
+
+
+def test_tasks_seed_preserves_world_and_proves_independent_links(harness_env):
+    harness_env.update(WB_LIVE_APP='tasks', WB_LIVE_SCENARIO='organization')
+    seeder = LIVE_ROOT / 'seeds' / 'tasks.py'
+    first = run_python([seeder], harness_env)
+    assert first.returncode == 0, first.stdout + first.stderr
+    manifest_path = Path(harness_env['WB_LIVE_FIXTURE_FILE'])
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    assert manifest['tasks']['task_count'] == 142
+    probe = """
+import json, os
+from pathlib import Path
+from work_buddy.tasks.store import TaskStore
+from work_buddy.tasks.service import TaskApplicationService
+manifest=json.loads(Path(os.environ['WB_LIVE_FIXTURE_FILE']).read_text())['tasks']
+store=TaskStore(manifest['task_db_path'], project_db_path=manifest['project_db_path'])
+shared=store.get(manifest['task_ids']['shared'])
+assert set(shared.project_ids)=={manifest['project_ids']['work_buddy'],manifest['project_ids']['ecg']}
+assert set(shared.namespace_tags)=={'projects/work-buddy/ui','research/analysis'}
+assert store.get(manifest['task_ids']['snoozed']).state=='snoozed'
+assert store.get(manifest['task_ids']['trash'],include_deleted=True).deleted_at
+assert store.get(manifest['task_ids']['ambiguous']).unresolved_projects[0]['reason']=='ambiguous'
+assert store.get(manifest['task_ids']['unresolved']).unresolved_projects[0]['reason']=='unmatched'
+TaskApplicationService(store).update(shared.task_id,expected_revision=shared.revision,client_mutation_id='walkthrough-edit',actor='dashboard:test',changes={'description':'Edited during isolated walkthrough'})
+print(store.collection_revision())
+"""
+    observed = run_python(['-c', probe], harness_env)
+    assert observed.returncode == 0, observed.stdout + observed.stderr
+    second = run_python([seeder], harness_env)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert json.loads(manifest_path.read_text(encoding='utf-8')) == manifest
+    checked = run_python(['-c', "from work_buddy.tasks.store import TaskStore; s=TaskStore(); assert s.get('t-live-shared').description=='Edited during isolated walkthrough'; print(s.collection_revision())"], harness_env)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert checked.stdout.splitlines()[-1] == observed.stdout.splitlines()[-1]
+
+
+@pytest.mark.parametrize('domain', ['tasks', 'projects'])
+def test_tasks_seed_refuses_configured_database_outside_disposable_root(harness_env, tmp_path, domain):
+    config_path = Path(harness_env['WORK_BUDDY_CONFIG_DIR']) / 'config.yaml'
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    outside = tmp_path / f'outside-{domain}.db'
+    config[domain] = {'db_path': str(outside)}
+    config_path.write_text(json.dumps(config), encoding='utf-8')
+    harness_env.update(WB_LIVE_APP='tasks', WB_LIVE_SCENARIO='browse')
+    result = run_python([LIVE_ROOT / 'seeds' / 'tasks.py'], harness_env)
+    assert result.returncode != 0
+    assert 'must be contained by the isolated data root' in result.stderr
+    assert not outside.exists()
 
 
 def test_truth_panel_seed_has_reviewable_claims_and_preserves_reseeded_state(harness_env):

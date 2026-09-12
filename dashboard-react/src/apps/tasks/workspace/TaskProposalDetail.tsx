@@ -1,13 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { IntentResult, JsonValue, WidgetIntent, WidgetPresentationContext } from "../../../dashboard/contributions/contracts";
 import { useDashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
 import { useWidgetDraft } from "../../../dashboard/drafts";
 import { HelpTarget } from "../../../dashboard/help";
-import { Button, InlineAlert } from "../../../ui";
+import { InlineAlert } from "../../../ui";
 import { createCorrelationId, createWidgetIntent } from "../../../widget-library/shared";
 import { TASK_INTENTS, type TaskOptions, type TaskProposal, type TaskProposalSelection } from "../contracts";
 import { TaskDraftFields } from "../composer/TaskDraftFields";
 import { additionalTaskProposalParameters, draftFromTaskProposal, newTaskStructures, taskDraftFingerprint, taskProposalParameters, type TaskCreateDraft } from "../composer/taskDraft";
+import { TaskButton as Button, TASK_HELP } from "./TaskHelp";
 
 interface ProposalDraft extends TaskCreateDraft { readonly baseProposalEventId: number }
 
@@ -26,7 +27,7 @@ export function TaskProposalDetail(props: TaskProposalDetailProps) {
       <HelpTarget content={{ summary: "This proposal could not be opened.", details: "Opening a proposal link only reads its saved state. No task is created by opening this link." }} focusable>
         <h2>Task proposal unavailable</h2>
       </HelpTarget>
-      <Button size="small" onClick={props.onClose}>Close</Button>
+      <Button size="small" onClick={props.onClose}>Back to tasks</Button>
     </div>
     <InlineAlert tone="warning">{props.selection.message}</InlineAlert>
   </section>;
@@ -35,10 +36,12 @@ export function TaskProposalDetail(props: TaskProposalDetailProps) {
 
 function ProposalEditor({ proposal, options, readOnly: accessReadOnly, presentation, emit, onClose }: TaskProposalDetailProps & { readonly proposal: TaskProposal }) {
   const { announce } = useDashboardAnnouncer();
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const seed = useMemo<ProposalDraft>(() => ({ ...draftFromTaskProposal(proposal), baseProposalEventId: proposal.proposal_event_id }), [proposal]);
   const draft = useWidgetDraft("task-proposal-edit", seed, {
     isPristine: (value) => value.baseProposalEventId === proposal.proposal_event_id && taskDraftFingerprint(value) === taskDraftFingerprint(seed),
   });
+  useEffect(() => { if (draft.ready) headingRef.current?.focus(); }, [draft.ready, proposal.thread_id]);
   const [busy, setBusy] = useState(false);
   const [dismissConfirm, setDismissConfirm] = useState(false);
   const [structureConfirm, setStructureConfirm] = useState<readonly string[]>([]);
@@ -106,10 +109,10 @@ function ProposalEditor({ proposal, options, readOnly: accessReadOnly, presentat
     <div className="wb-task-detail__header">
       <div><p className="wb-task-detail__kicker">Task proposal · {originLabel}</p>
         <HelpTarget content={{ summary: "Review a proposal before creating a task.", details: "A saved proposal is not a task. Review its fields and choose Create task to add it to your task list; opening or editing the proposal does not create one." }} focusable>
-          <h2>Review before creating</h2>
+          <h2 ref={headingRef} tabIndex={-1}>Review before creating</h2>
         </HelpTarget>
       </div>
-      <Button size="small" onClick={onClose}>Close</Button>
+      <Button size="small" onClick={() => void draft.flush().then(onClose).catch((error: unknown) => setNotice({ tone: "danger", text: error instanceof Error ? error.message : "The proposal draft could not be retained." }))}>Back to tasks</Button>
     </div>
     {proposal.status === "rejected" ? <p className="wb-task-muted">This proposal was dismissed. No task was created; its original capture is preserved.</p> : null}
     <a href={proposal.href}>Link to this proposal</a>
@@ -135,9 +138,7 @@ function ProposalEditor({ proposal, options, readOnly: accessReadOnly, presentat
       </section> : null}
       {editable ? <div className="wb-task-actions">
         <Button type="submit" disabled={decisionDisabled || stale || !changed || !draft.value.title.trim()}>Save proposal changes</Button>
-        <HelpTarget content={{ summary: "Create the task from this reviewed proposal.", details: "Accept the saved fields and any additional proposed settings shown here. Retrying this same proposal resolves to the same task, not a second copy." }} reactAriaComposite>
-          <Button variant="primary" disabled={decisionDisabled || stale || changed || !draft.value.title.trim()} onClick={() => void act(TASK_INTENTS.proposalAccept)}>{busy ? "Saving…" : "Create task"}</Button>
-        </HelpTarget>
+        <Button help={TASK_HELP.createFromProposal} variant="primary" disabled={decisionDisabled || stale || changed || !draft.value.title.trim()} onClick={() => void act(TASK_INTENTS.proposalAccept)}>{busy ? "Saving…" : "Create task"}</Button>
         <Button variant="ghost" disabled={decisionDisabled || stale} onClick={() => setDismissConfirm(true)}>Dismiss proposal</Button>
       </div> : null}
     </form>

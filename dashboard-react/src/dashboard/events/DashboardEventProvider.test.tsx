@@ -151,6 +151,20 @@ describe("DashboardEventProvider", () => {
 });
 
 describe("normalizeDashboardEvent", () => {
+  it("routes a coalesced task backlog to the Tasks view at its latest revision", () => {
+    expect(normalizeDashboardEvent({
+      event_type: "task.collection_changed",
+      payload: {
+        app_id: "wb.tasks", view_ids: ["wb.tasks.workspace"],
+        revision: 6000, scope: "collection", event_count: 6000,
+      },
+      ts: 1_789_000_000,
+    }, "fallback")).toMatchObject({
+      appId: "wb.tasks", viewIds: ["wb.tasks.workspace"],
+      revision: 6000, reason: "task.collection_changed",
+    });
+  });
+
   it("accepts CloudEvents-shaped invalidations and preserves routing metadata", () => {
     expect(
       normalizeDashboardEvent(

@@ -13,6 +13,15 @@ export const TASK_LENSES = [
 export type TaskLens = (typeof TASK_LENSES)[number];
 export type TaskUrgency = "low" | "medium" | "high";
 export type TaskAttentionState = "inbox" | "mit" | "focused" | "active" | "waiting" | "snoozed";
+export type TaskStatus = "open" | "completed" | "archived" | "trash";
+export type TaskSort = "created_at" | "updated_at" | "title" | "due_date" | "urgency";
+export interface TaskNamespaceNode {
+  readonly path: string;
+  readonly parent: string | null;
+  readonly label: string;
+  readonly count: number;
+  readonly direct_count: number;
+}
 
 export interface TaskAccess {
   readonly mode: "read_write" | "read_only";
@@ -32,6 +41,17 @@ export interface TaskOptions {
 }
 
 export interface TaskQueryState {
+  readonly statuses?: readonly string[];
+  readonly projects?: readonly string[];
+  readonly namespaces?: readonly string[];
+  readonly exact_namespaces?: readonly string[];
+  readonly attention?: readonly string[];
+  readonly urgencies?: readonly string[];
+  readonly sort?: TaskSort;
+  readonly direction?: "asc" | "desc";
+  readonly mode?: "browse" | "triage" | "namespaces";
+  readonly offset?: number;
+  readonly limit?: number;
   readonly lens: TaskLens;
   readonly q: string;
   readonly project: string;
@@ -65,6 +85,8 @@ export type TaskProposalSelection =
   | { readonly kind: "unavailable"; readonly threadId: string; readonly code: string; readonly message: string };
 
 export interface TaskFacets {
+  readonly statuses?: Readonly<Record<string, number>>;
+  readonly attention?: Readonly<Record<string, number>>;
   readonly counts: Readonly<Record<TaskLens, number>>;
   readonly projects: Readonly<Record<string, number>>;
   readonly namespaces: Readonly<Record<string, number>>;
@@ -72,6 +94,10 @@ export interface TaskFacets {
 }
 
 export interface TaskSummary {
+  readonly created_at?: string | null;
+  readonly project_ids?: readonly number[];
+  readonly unresolved_projects?: readonly { readonly legacy_value: string; readonly source_tag: string; readonly reason: string; readonly candidate_ids: readonly number[] }[];
+  readonly status?: TaskStatus;
   readonly task_id: string;
   readonly title: string;
   readonly revision: number;
@@ -172,6 +198,7 @@ export interface TaskDetail extends TaskSummary {
 }
 
 export interface TaskQuickAddInput {
+  readonly compact?: boolean;
   readonly instanceId: string;
   readonly revision: number;
   readonly access: TaskAccess;
@@ -183,6 +210,13 @@ export interface TaskQuickAddInput {
 }
 
 export interface TaskWorkspaceInput {
+  /** The URL supplied browsing parameters; its complete resolved query overrides saved card state. */
+  readonly browseQueryExplicit?: boolean;
+  readonly total?: number;
+  readonly page?: { readonly limit: number; readonly offset: number; readonly has_more: boolean };
+  readonly namespace_tree?: readonly TaskNamespaceNode[];
+  readonly refreshing?: boolean;
+  readonly refresh_error?: string;
   readonly instanceId: string;
   readonly revision: number;
   readonly access: TaskAccess;
@@ -195,6 +229,9 @@ export interface TaskWorkspaceInput {
 }
 
 export interface TasksViewModel {
+  readonly total?: number;
+  readonly page?: { readonly limit: number; readonly offset: number; readonly has_more: boolean };
+  readonly namespace_tree?: readonly TaskNamespaceNode[];
   readonly schemaVersion: 1;
   readonly revision: number;
   readonly observedAt: string;
@@ -236,6 +273,10 @@ export const TASK_INTENTS = {
   actionItemDelete: "wb.tasks.action-item.delete",
   actionItemRestore: "wb.tasks.action-item.restore",
   locationChange: "wb.tasks.location.change",
+  namespacePreview: "wb.tasks.namespaces.preview",
+  namespaceLoad: "wb.tasks.namespaces.load",
+  namespaceApply: "wb.tasks.namespaces.apply",
+  namespaceUndo: "wb.tasks.namespaces.undo",
 } as const;
 
 export type TaskIntentType = (typeof TASK_INTENTS)[keyof typeof TASK_INTENTS];

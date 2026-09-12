@@ -1250,7 +1250,7 @@ def _action_payload_for_record(
         # in the payload for the audit trail but don't go into params.
         # ``project_tag`` (decided by the verdict from the project-picker
         # sub-LLM's candidate list) routes to ``create_task(project=...)``
-        # which applies ``#projects/<slug>`` automatically. Null means
+        # which resolves a native registry association. Null means
         # no project — leave the kwarg unset.
         project_slug = proposal.get("project_tag")
         if not isinstance(project_slug, str) or not project_slug.strip():

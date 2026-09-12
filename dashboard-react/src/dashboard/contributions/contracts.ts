@@ -122,6 +122,16 @@ export interface WidgetDraftDeclaration {
   readonly retentionDays?: number;
   readonly maxBytes: number;
   readonly clearPolicy: WidgetDraftClearPolicy;
+  /** Optional copy when recoverable working state represents a view, rather than unfinished field edits. */
+  readonly clearPresentation?: {
+    readonly label: string;
+    readonly title: string;
+    readonly description: string;
+    readonly confirmLabel: string;
+    readonly cancelLabel: string;
+    readonly successMessage: string;
+    readonly failureMessage: string;
+  };
   readonly scope: WidgetDraftScope;
 }
 

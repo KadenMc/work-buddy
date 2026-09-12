@@ -26,6 +26,12 @@ Provenance: each row carries `origin` (`vault` if scan discovered a canonical di
 
 Slugs are renameable: the surrogate integer `id` is the stable identifier, slug is a mutable UNIQUE label. Aliases capture prior names (e.g. `ElectricRAG`, `ECG-CRED`) so `resolve_slug` routes them to the canonical row. Aliases prefer non-deleted canonical matches over deleted ones.
 
+Task membership uses these stable IDs. A task can serve several projects,
+independently of its namespace paths. Project task counts follow those links;
+renaming a project or reorganizing task namespaces does not rewrite membership.
+Historical ambiguous or unmatched task associations remain visible for explicit
+resolution. See `tasks/native-task-system` for `project_ids` and recovery.
+
 **Git attribution is folder-driven**: each registered project's git activity comes from scanning the `.git/` directory inside its non-archived folders, not from matching the repo's folder name against the slug. This handles cases like `ecg-fm` ↔ `repos/foundational-ecg/` where the repo name differs from the project slug, and folders outside `repos_root` entirely. The legacy slug-matched scan still runs as a candidate-discovery surface for unregistered repos. See `_scan_git_activity` (candidate discovery) + `_read_git_repo_activity` (per-folder probe) in `sync.py`.
 
 **Activity scoring** (`work_buddy/projects/activity.py`): the dashboard's `/api/projects` endpoint sorts active rows by an exponentially-decayed score combining project_revisions (weight 1.5), folder mtimes (weight 2.0), and git commits (weight 1.0). Half-life 14 days, window 60 days. Score is computed on demand with a 5-minute per-folder git cache; non-active rows are not scored.

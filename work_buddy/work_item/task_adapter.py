@@ -145,8 +145,6 @@ def create(
         authority = _native_authority("create", client_mutation_id)
         session_id = authority.pop("session_id")
         native_tags = [Tag(str(tag).strip(" #"), True) for tag in (tags or [])]
-        if project:
-            native_tags.append(Tag(f"projects/{project.strip().strip('#/')}", True))
         accepted = {
             key: kwargs[key]
             for key in (
@@ -170,6 +168,7 @@ def create(
                 "agent_required_contexts",
                 "user_required_contexts",
                 "required_contexts_source",
+                "project_ids",
             )
             if key in kwargs
         }
@@ -184,6 +183,8 @@ def create(
             tags=native_tags,
             **accepted,
         )
+        if project:
+            task_values["project"] = project
         requested_role = kwargs.get("requested_note_role")
         explicit_note = kwargs.get("initial_note", kwargs.get("note_markdown"))
         requested_truth_resolution = kwargs.get("requested_truth_policy_resolution")

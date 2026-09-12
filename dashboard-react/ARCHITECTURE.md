@@ -241,9 +241,10 @@ the minimum height, so short windows can use ordinary page scrolling to reach ev
 action. Message history remains in the canonical transcript scroller and does not
 inflate that minimum. A hidden pane retains its last valid measurement until shown.
 
-`ViewHost` also uses its existing keep-alive placement for standard widgets declaring
-`assistableDrafts`, preserving live form bindings through the actual desktop/mobile
-grid switch. This is presentation retention, not `definition.durable` authority:
+`ViewHost` uses its keep-alive placement for widgets declaring `drafts` or
+`assistableDrafts`, as well as widgets with `durable: true`, preserving live form
+bindings, dialogs, and local state through the actual desktop/mobile grid switch.
+For ordinary forms, this presentation retention grants no `definition.durable` authority:
 host-owned drafts, Arrange inertness, Preview forks, effect fences, and ordinary
 hide/remove controls still apply. Genuine removal, replacement, scope changes, reset,
 and leaving the form host retain their cancellation or revocation boundaries.

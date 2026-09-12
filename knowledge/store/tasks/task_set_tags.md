@@ -1,7 +1,7 @@
 ---
 name: Task Set Tags
 kind: capability
-description: Replace a native task's complete structured tag and namespace set. Project slugs are validated against the project registry.
+description: Replace a native task's complete structured tag and namespace set. Namespace spelling is independent of registered project associations; this operation does not change project links.
 capability_name: task_set_tags
 category: tasks
 op: op.wb.task_set_tags
@@ -13,7 +13,7 @@ parameters:
     required: true
   namespace_tags:
     type: list[str]
-    description: Replacement list of tags (no leading '#'). Includes project tags (e.g. 'projects/work-buddy/systems/task-system') and free-form namespace tags. An empty list strips all user-modifiable tags.
+    description: Complete replacement set, with every supplied entry stored as a namespace (no leading '#'). Existing ordinary tags are also replaced; use the dashboard's separate tag/namespace fields when that distinction must be preserved. A projects/ prefix has no special project-link meaning. An empty list strips tags while preserving project associations.
     required: true
   expected_revision:
     type: int
@@ -38,9 +38,6 @@ aliases:
 - add namespace to task
 - remove tag from task
 - set task namespace
-- set task project
-- assign project to task
-- retroactively tag with project
 parents:
 - tasks
 requires: []

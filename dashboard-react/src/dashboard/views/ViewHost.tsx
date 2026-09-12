@@ -123,11 +123,11 @@ const sizeModeFor = (
   return "standard";
 };
 
-// Presentation keep-alive is not durable-widget authority. Assistable forms must
-// retain their live draft binding across desktop/mobile cell remounts, but still
+// Presentation keep-alive is not durable-widget authority. Draft-owning forms must
+// retain their live edits and confirmations across desktop/mobile cell remounts, but still
 // enter Arrange/Preview and remain removable just like other standard widgets.
 const keepsLiveWidget = (definition: WidgetDefinition): boolean =>
-  definition.durable === true || (definition.assistableDrafts?.length ?? 0) > 0;
+  definition.durable === true || (definition.assistableDrafts?.length ?? 0) > 0 || (definition.drafts?.length ?? 0) > 0;
 
 export const definitionWithEffectiveComposition = (
   definition: ViewDefinition,

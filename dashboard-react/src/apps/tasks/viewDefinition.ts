@@ -51,7 +51,7 @@ export const TASKS_VIEW_DEFINITION = {
       lockedReason:
         "Tasks keeps Quick Add available so creating work stays one gesture away.",
       defaultSettings: {},
-      defaultLayout: { x: 0, y: 0, w: 24, h: 6 },
+      defaultLayout: { x: 0, y: 0, w: 24, h: 5 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
     {
@@ -63,12 +63,12 @@ export const TASKS_VIEW_DEFINITION = {
       help: {
         summary: "Find, triage, and manage tasks.",
         details:
-          "Lenses and filters narrow the task collection; the detail pane edits task fields and opens the bound Co-work knowledge document.",
+          "Filters narrow the task collection. Open a task to edit its fields; Back restores browsing. Namespace organization preserves project links.",
       },
       lockedReason:
         "Tasks needs the workspace to show and manage your task collection.",
       defaultSettings: {},
-      defaultLayout: { x: 0, y: 6, w: 24, h: 20 },
+      defaultLayout: { x: 0, y: 5, w: 24, h: 20 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
   ],

@@ -517,6 +517,14 @@ const validateWidgetDefinition = (
         "input-field scope requires a non-empty path",
       );
     }
+    if (draft.clearPresentation !== undefined) {
+      const copy = draft.clearPresentation;
+      if (copy === null || typeof copy !== "object" || Array.isArray(copy) ||
+          (["label", "title", "description", "confirmLabel", "cancelLabel", "successMessage", "failureMessage"] as const)
+            .some((key) => typeof copy[key] !== "string" || copy[key].trim().length === 0)) {
+        addIssue(issues, "invalid_widget_draft_clear_presentation", `${draftPath}.clearPresentation`, "must provide non-empty labels, confirmation copy, and outcome messages");
+      }
+    }
   });
   const assistedNames = widget.assistableDrafts?.map((draft) => draft.draftName) ?? [];
   if (findDuplicates(assistedNames).length > 0) addIssue(issues, "duplicate_assisted_draft", `${path}.assistableDrafts`, "must not contain duplicate draft names");

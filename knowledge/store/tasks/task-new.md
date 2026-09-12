@@ -1,7 +1,7 @@
 ---
 name: Task New
 kind: workflow
-description: Interactive task creation with project + namespace-tag inference. Plans the task, enriches with project-registry + tag-universe context, confirms with the user (only when minting a new project, new project subtree, or new namespace), then applies via task_create.
+description: Interactive task creation with independent registered project associations and namespace choices. Plans the task, enriches with registry and namespace context, resolves uncertain new organization, then applies via task_create.
 workflow_name: task-new
 execution: main
 allow_override: false
@@ -17,6 +17,7 @@ steps:
       task_text: str
       urgency: str
       project: str
+      project_ids: list
       due_date: str
       contract: str
       summary: str
@@ -41,7 +42,7 @@ steps:
     - universe_size
   invokes: []
 - id: confirm
-  name: Confirm plan with user (especially any new namespaces or new project assignments)
+  name: Resolve uncertain project or namespace choices
   step_type: reasoning
   depends_on:
   - enrich
@@ -96,28 +97,36 @@ Advance with a dict of this exact shape (omit optional fields when unknown; do N
 {
   "task_text": "short single-line description (required)",
   "urgency": "low | medium | high",
-  "project": "slug, if obvious or explicit",
+  "project_ids": [12, 34],
   "contract": "contract slug the task serves, if known",
   "due_date": "YYYY-MM-DD, only if the user mentioned a date",
-  "summary": "initial Co-work knowledge, when useful or requested",
-  "proposed_tags": ["projects/work-buddy/systems/task-system", "admin/uhn"]
+  "summary": "scalar task summary, when useful or requested",
+  "proposed_tags": ["work-buddy/task-system", "admin/uhn"]
 }
 ```
 
-Reason about both project assignment and free-form namespace tags here, using whatever context you have (session, active contract, recent git, recent conversation, current working directory, the task_text itself):
+The numeric IDs above are illustrative: use actual registered IDs, never invent
+them. The optional legacy `project` slug/alias field remains available for
+existing single-project callers. Reason about membership and namespaces
+independently using the request and available context:
 
-1. **Project**: try to infer one. If a project is obvious (the user named it, the cwd is a project repo, the task is clearly an ECG-paper task, etc.), set `project` to its slug. If you also have a sensible subtree, include the full path as a tag in `proposed_tags` — `projects/<slug>/<area>/<subarea>` matches the in-vault convention better than the bare slug. Skip only when the project is genuinely ambiguous; don't default to skipping.
-2. **Namespace tags**: free-form user namespaces (`#admin/uhn`, `#paper/ecg-classifier`, etc.) go in `proposed_tags`.
-3. Propose only structured project and namespace tags. Native state and completion are separate fields.
+1. **Projects**: use `project_ids` for every intended registered association.
+   A task can have none, one, or several. The project registry supplies the IDs;
+   a contract slug or repository spelling is context, not an ID.
+2. **Namespaces**: user organization such as `admin/uhn` or
+   `work-buddy/task-system` goes in `proposed_tags`. Do not generate `projects/`
+   paths from project links.
+3. Native attention, completion, and lifecycle are separate fields.
 
-The next step enriches your proposal with project-registry checks, existing-subtree lookups, and near-match data against the namespace universe.
+The next step enriches the proposal with registered project choices and
+near-matches against the namespace universe.
 
 ## enrich
 
 Auto-run. Calls the native `work_buddy.tasks.capabilities.enrich_plan` on the plan from the prior step. Returns:
-- `suggestions`: ranked existing namespaces relevant to task_text (includes #projects/* tags)
+- `suggestions`: ranked existing namespaces relevant to task_text, including any historical projects/ paths still assigned
 - `tag_status`: per proposed_tag, whether it already exists, and if not, the closest near-matches
-- `project_status`: registry-aware project info — `known_projects` (the registered project list), `proposed_slug` (echoed back), `slug_exists` (whether plan.project / the project slug from proposed_tags is in the registry), `near_subtrees` (existing #projects/<slug>/... paths under the proposed slug), `subtree_matches` (did-you-mean ranker output if a full subtree path was proposed)
+- `project_status`: registry context — `known_projects` includes `project_id`, slug, name, and status. `proposed_slug` and `slug_exists` describe the explicit legacy `plan.project` field; tag spelling does not infer that field. `near_subtrees` and `subtree_matches` retain historical namespace hints only. The task service validates final project IDs at creation.
 - `universe_size`: total registered namespaces
 You don't call this directly — the conductor does.
 
@@ -126,12 +135,19 @@ You don't call this directly — the conductor does.
 Agentic step. Using the enriched output:
 
 1. **Project gate**:
-   - If `project_status.proposed_slug` is set and `project_status.slug_exists` is true, accept the slug silently — it's a registered project.
-   - If `proposed_slug` is set but `slug_exists` is false, the agent is about to mint a new project. Ask: is this a real new project (then call `project_create` first) or did you mean one of the existing slugs (`project_status.known_projects`)? Do NOT silently call task_create — the native service rejects unknown project slugs.
-   - If a full subtree path was proposed (`projects/<slug>/<subtree>`) and `near_subtrees` shows existing paths, surface them only when the proposed subtree is novel under an existing project (e.g., proposing `systems/artifacts` when only `systems/knowledge` and `systems/projects` exist). Default-silent when the subtree already exists or when the user clearly named it.
+   - Accept supported existing project selections without extra prompting. Resolve
+     legacy slugs or aliases to registry IDs when preparing the final plan.
+   - When a proposed project cannot be uniquely resolved, use the known registry
+     choices to resolve the ambiguity. Create a new registry project only when
+     the user requested that organization; never substitute a namespace for a link.
+   - Preserve all intended associations. Do not choose a primary project merely
+     because an older example used a scalar field.
 2. **Tag gate**:
    - If all proposed_tags have `tag_status[tag].exists == true`, accept silently.
-   - If any proposed_tag has `exists: false`, you're minting a new namespace. Present the tag, its near-matches, and ask: keep as new / use an existing near-match / rename.
+   - If a proposed_tag has `exists: false` and the user has not already chosen it,
+     use near-matches to resolve uncertain organization. Honor explicit new-path
+     requests without repeating confirmation. New namespace spelling never
+     creates or requires a registered project.
 3. **Suggestion gate** (lowest-priority): if `suggestions` includes a strong match you hadn't proposed, consider it briefly and surface to the user only if it changes the answer.
 
 Advance with:
@@ -140,8 +156,8 @@ Advance with:
 {
   "final_plan": {
     "task_text": "...",
-    "tags": ["projects/work-buddy/systems/task-system", "admin/uhn"],
-    "project": "work-buddy",
+    "tags": ["work-buddy/task-system", "admin/uhn"],
+    "project_ids": [12, 34],
     "urgency": "medium",
     "contract": "optional",
     "due_date": "optional",
@@ -162,7 +178,7 @@ Otherwise, read the confirm step's `final_plan` and call task_create via the gat
 ```
 final_plan = <confirm.final_plan>
 params = {"task_text": final_plan["task_text"]}
-for k in ("urgency", "project", "due_date", "contract", "summary", "tags"):
+for k in ("urgency", "project_ids", "project", "due_date", "contract", "summary", "tags"):
     if final_plan.get(k) is not None:
         params[k] = final_plan[k]
 result = mcp__work-buddy__wb_run("task_create", params)

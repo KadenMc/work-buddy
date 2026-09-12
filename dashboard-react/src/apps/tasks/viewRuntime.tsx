@@ -33,11 +33,7 @@ export function createRuntime(
             </div>
             {model === null ? null : (
               <p className="wb-tasks-chrome__summary">
-                <strong>{model.facets.counts.active ?? model.tasks.length}</strong> active
-                <span aria-hidden="true"> · </span>
-                <strong>{model.facets.counts.focused ?? 0}</strong> focused
-                <span aria-hidden="true"> · </span>
-                <strong>{model.facets.counts.inbox ?? 0}</strong> inbox
+                <strong>{model.total ?? model.tasks.length}</strong> matching tasks
               </p>
             )}
           </header>

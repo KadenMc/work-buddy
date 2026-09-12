@@ -63,6 +63,8 @@ class TaskMatch:
     task_text: str
     project: str | None
     score: float
+    project_ids: list[int] = field(default_factory=list)
+    projects: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +72,8 @@ class TaskMatch:
             "task_text": self.task_text,
             "project": self.project,
             "score": round(self.score, 4),
+            "project_ids": list(self.project_ids),
+            "projects": list(self.projects),
         }
 
     @classmethod
@@ -79,6 +83,8 @@ class TaskMatch:
             task_text=d["task_text"],
             project=d.get("project"),
             score=d["score"],
+            project_ids=list(d.get("project_ids") or []),
+            projects=list(d.get("projects") or []),
         )
 
 

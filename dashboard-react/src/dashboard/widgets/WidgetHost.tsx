@@ -111,24 +111,33 @@ function WidgetClearDraftButton({
   onCleared(): void;
   onCanceled(): void;
 }) {
-  const { hasDirtyDraft, clearAll } = useWidgetDraftScopeStatus();
+  const { hasDirtyDraft, prepareClear, clearPresentation } = useWidgetDraftScopeStatus();
   const { confirm, notify } = useInteractionSurfaces();
   if (!hasDirtyDraft) return null;
+  const copy = clearPresentation ?? {
+    label: `Clear ${widgetTitle} draft`,
+    title: "Clear this draft?",
+    description: `Clear the unfinished ${widgetTitle} content on this device? Saved items, widget settings, and the view layout will not be affected.`,
+    confirmLabel: "Clear draft", cancelLabel: "Keep draft",
+    successMessage: `${widgetTitle} draft cleared.`,
+    failureMessage: `${widgetTitle} draft could not be cleared.`,
+  };
   const clearDraft = async () => {
+    const clearChosenDrafts = prepareClear();
     const accepted = await confirm({
-      title: "Clear this draft?",
-      description: `Clear the unfinished ${widgetTitle} content on this device? Saved items, widget settings, and the view layout will not be affected.`,
-      confirmLabel: "Clear draft",
-      cancelLabel: "Keep draft",
+      title: copy.title,
+      description: copy.description,
+      confirmLabel: copy.confirmLabel,
+      cancelLabel: copy.cancelLabel,
       tone: "danger",
     });
     if (!accepted) {
       onCanceled();
       return;
     }
-    const cleared = await clearAll();
+    const cleared = await clearChosenDrafts();
     notify({
-      message: cleared ? `${widgetTitle} draft cleared.` : `${widgetTitle} draft could not be cleared.`,
+      message: cleared ? copy.successMessage : copy.failureMessage,
       tone: cleared ? "success" : "danger",
       dedupeKey: `widget-draft-clear:${widgetTitle}`,
     });
@@ -137,15 +146,15 @@ function WidgetClearDraftButton({
   return (
     <HelpTarget
       content={{
-        summary: "Clear the unfinished working state for this widget.",
+        summary: clearPresentation ? copy.label : "Clear the unfinished working state for this widget.",
         details:
-          "This removes the recoverable draft stored for this widget. It does not delete saved records, change widget settings, or alter the view layout.",
+          clearPresentation ? copy.description : "This removes the recoverable draft stored for this widget. It does not delete saved records, change widget settings, or alter the view layout.",
       }}
       placement="bottom end"
       reactAriaComposite
     >
     <IconButton
-      label={`Clear ${widgetTitle} draft`}
+      label={copy.label}
       icon={<Eraser weight="duotone" />}
       variant="ghost"
       size="small"

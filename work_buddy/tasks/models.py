@@ -137,6 +137,8 @@ class Task:
     dependencies: tuple[str, ...] = ()
     tags: tuple[Tag, ...] = ()
     action_items: tuple[TaskActionItem, ...] = ()
+    project_ids: tuple[int, ...] = ()
+    unresolved_projects: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_row(
@@ -145,6 +147,8 @@ class Task:
         *,
         tags: Sequence[Tag] = (),
         action_items: Sequence[TaskActionItem] = (),
+        project_ids: Sequence[int] = (),
+        unresolved_projects: Sequence[dict[str, Any]] = (),
     ) -> "Task":
         values = dict(row)
         return cls(
@@ -190,6 +194,8 @@ class Task:
             dependencies=_optional_json_array(values.get("dependencies_json")),
             tags=tuple(tags),
             action_items=tuple(action_items),
+            project_ids=tuple(project_ids),
+            unresolved_projects=tuple(unresolved_projects),
         )
 
     @property
@@ -198,10 +204,9 @@ class Task:
 
     @property
     def project(self) -> str | None:
-        for tag in self.tags:
-            if tag.name.casefold().startswith("projects/"):
-                remainder = tag.name.split("/", 1)[1]
-                return remainder.split("/", 1)[0] or None
+        """Deprecated scalar boundary: never choose a primary association."""
+        if len(self.project_ids) == 1 and not self.unresolved_projects:
+            return str(self.project_ids[0])
         return None
 
     def to_dict(self) -> dict[str, Any]:
@@ -211,6 +216,8 @@ class Task:
         result["action_items"] = [item.to_dict() for item in self.action_items]
         result["namespace_tags"] = list(self.namespace_tags)
         result["project"] = self.project
+        result["project_ids"] = list(self.project_ids)
+        result["unresolved_projects"] = list(self.unresolved_projects)
         result["agent_required_contexts"] = list(self.agent_required_contexts)
         result["user_required_contexts"] = list(self.user_required_contexts)
         result["completed"] = self.state == "done"
@@ -253,6 +260,8 @@ class Task:
         raw_task["agent_required_contexts"] = tuple(raw_task.get("agent_required_contexts") or ())
         raw_task["user_required_contexts"] = tuple(raw_task.get("user_required_contexts") or ())
         raw_task["dependencies"] = tuple(raw_task.get("dependencies") or ())
+        raw_task["project_ids"] = tuple(int(value) for value in raw_task.get("project_ids") or ())
+        raw_task["unresolved_projects"] = tuple(raw_task.get("unresolved_projects") or ())
         return cls(**raw_task)
 
 

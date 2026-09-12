@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, useMemo, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   IntentResult,
@@ -8,7 +8,8 @@ import type {
 } from "../../../dashboard/contributions/contracts";
 import { useDashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
 import { useWidgetDraft } from "../../../dashboard/drafts";
-import { Button, InlineAlert, TextAreaField } from "../../../ui";
+import { InlineAlert, TextAreaField } from "../../../ui";
+import { TaskButton as Button, TaskHelp, TASK_HELP } from "./TaskHelp";
 import { createCorrelationId, createWidgetIntent } from "../../../widget-library/shared";
 import { formatActorLabel } from "../../../widget-library/shared/format";
 import { LinkedLocalFilesPanel } from "../../cowork/documents/LinkedLocalFilesPanel";
@@ -21,15 +22,21 @@ import {
   TASK_INTENTS,
   type TaskDetail as TaskDetailModel,
   type TaskUrgency,
+  type TaskOptions,
 } from "../contracts";
+import { attentionLabel, MultiSelect } from "./TaskFilters";
+import { TaskCompletionDialog, type CompletionTask } from "./TaskCompletionDialog";
+import { TaskNamespacePills } from "./TaskNamespacePills";
 
 interface TaskEditDraft {
+  readonly base_revision?: number;
+  readonly remove_unresolved_projects?: readonly string[];
   readonly title: string;
   readonly attention_state: string;
   readonly urgency: TaskUrgency;
   readonly due_date: string;
   readonly deadline_date: string;
-  readonly project: string;
+  readonly project_ids: readonly number[];
   readonly namespaces: string;
   readonly tags: string;
   readonly summary: string;
@@ -43,14 +50,16 @@ interface TaskEditDraft {
 }
 
 const fromTask = (task: TaskDetailModel): TaskEditDraft => ({
+  base_revision: task.revision,
+  remove_unresolved_projects: [],
   title: task.title,
   attention_state: task.attention_state,
   urgency: task.urgency,
   due_date: task.due_date ?? "",
   deadline_date: task.deadline_date ?? "",
-  project: task.project ?? "",
+  project_ids: task.project_ids ?? [],
   namespaces: task.namespaces.join(", "),
-  tags: task.tags.join(", "),
+  tags: task.tags.filter((tag) => !task.namespaces.includes(tag)).join(", "),
   summary: task.summary,
   desired_outcome: task.desired_outcome,
   next_action: task.next_action,
@@ -63,9 +72,11 @@ const fromTask = (task: TaskDetailModel): TaskEditDraft => ({
 
 const csv = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
 const optional = (value: string): string | null => value.trim() || null;
+const comparable = ({ base_revision: _revision, ...fields }: TaskEditDraft) => JSON.stringify(fields);
 
 export interface TaskDetailProps {
   readonly task: TaskDetailModel;
+  readonly options?: TaskOptions;
   readonly readOnly: boolean;
   readonly presentation: WidgetPresentationContext;
   emit(intent: WidgetIntent): Promise<IntentResult>;
@@ -76,7 +87,8 @@ export interface TaskDetailProps {
 }
 
 export function TaskDetail({
-  task,
+  task: suppliedTask,
+  options,
   readOnly,
   presentation,
   emit,
@@ -85,28 +97,52 @@ export function TaskDetail({
   onDeleteAcknowledged,
   onDeleteUndone,
 }: TaskDetailProps) {
+  const [acknowledgedTask, setAcknowledgedTask] = useState<TaskDetailModel | null>(null);
+  // A successful receipt can arrive before the provider's refreshed snapshot.
+  const task = acknowledgedTask?.task_id === suppliedTask.task_id && acknowledgedTask.revision > suppliedTask.revision
+    ? acknowledgedTask : suppliedTask;
   const initial = useMemo(() => fromTask(task), [task.task_id]);
+  const baselineRef = useRef(initial);
+  const latestTaskRef = useRef(task); latestTaskRef.current = task;
   const draft = useWidgetDraft("task-edit", initial, {
-    isPristine: (value) => JSON.stringify(value) === JSON.stringify(fromTask(task)),
+    isPristine: (value) => comparable(value) === comparable(fromTask(task)),
   });
+  useEffect(() => {
+    if (!draft.ready || baselineRef.current.base_revision === task.revision) return;
+    const next = fromTask(task);
+    if (comparable(draft.value) === comparable(baselineRef.current)) {
+      baselineRef.current = next;
+      draft.setValue(next);
+    }
+  }, [task.revision, draft.ready]);
   const { announce } = useDashboardAnnouncer();
   const titleRef = useRef<HTMLInputElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { if (draft.ready) headingRef.current?.focus(); }, [draft.ready, task.task_id]);
   const formRef = useRef<HTMLFormElement>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const deleteDialogRef = useRef<HTMLDivElement>(null);
-  const [busy, setBusy] = useState(false);
+  const [actionBusy, setBusy] = useState(false);
+  const [namespaceBusy, setNamespaceBusy] = useState(false);
+  const busy = actionBusy || namespaceBusy;
+  const namespaceInFlight = useRef(false);
+  const namespaceRequests = useRef(new Map<string, { task_id: string; expected_revision: number; namespaces: string[] }>());
   const [message, setMessage] = useState<{ tone: "danger" | "success" | "warning"; text: string } | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Readonly<Record<string, string>>>({});
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [completionTask, setCompletionTask] = useState<CompletionTask | null>(null);
   const [snoozeDate, setSnoozeDate] = useState(task.snooze_until?.slice(0, 10) ?? "");
   const [actionText, setActionText] = useState("");
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
   const [editingActionText, setEditingActionText] = useState("");
   const value = draft.value;
+  const stale = (value.base_revision ?? initial.base_revision) !== task.revision;
   const activeActionItems = task.action_items.filter((item) => !item.deleted_at);
   const deletedActionItems = task.action_items.filter((item) => item.deleted_at);
   const deleted = task.deleted_at !== null;
   const canMutate = !readOnly && !deleted;
+  const namespaceAllowedRef = useRef(false);
+  namespaceAllowedRef.current = canMutate && !actionBusy;
 
   const fieldError = (...keys: readonly string[]): string | undefined => {
     for (const [key, message] of Object.entries(fieldErrors)) {
@@ -124,13 +160,58 @@ export function TaskDetail({
     draft.setValue((current) => ({ ...current, [key]: next }));
   };
 
-  const dispatch = async (type: string, payload: JsonValue): Promise<IntentResult> => {
+  const dispatch = async (type: string, payload: JsonValue, reuseId?: string): Promise<IntentResult> => {
     const parts = type.split(".");
-    const id = createCorrelationId(parts[parts.length - 1] ?? "task");
+    const id = reuseId ?? createCorrelationId(parts[parts.length - 1] ?? "task");
     return emit(createWidgetIntent(presentation, type, payload, {
       intentId: id,
       clientMutationId: id,
     }) as WidgetIntent);
+  };
+
+  // The pill control retains this revision closure with the reviewed change.
+  const namespaceRevision = value.base_revision ?? task.revision;
+  const changeNamespaces = async (namespaces: readonly string[], mutationId = createCorrelationId("task-namespace")): Promise<IntentResult> => {
+    if (!namespaceAllowedRef.current || namespaceInFlight.current) {
+      return { intent_id: mutationId, status: "unavailable", message: "Namespace changes are unavailable while this task cannot be edited." };
+    }
+    let request = namespaceRequests.current.get(mutationId);
+    if (!request) {
+      request = { task_id: task.task_id, expected_revision: namespaceRevision, namespaces: [...namespaces] };
+      namespaceRequests.current.set(mutationId, request);
+    }
+    namespaceInFlight.current = true;
+    setNamespaceBusy(true);
+    setMessage(null);
+    try {
+      const result = await dispatch(TASK_INTENTS.update, request, mutationId);
+      if (result.status === "accepted") {
+        const saved = (result.value as { task?: TaskDetailModel } | undefined)?.task;
+        if (!saved || saved.task_id !== request.task_id || saved.revision <= request.expected_revision) {
+          return { ...result, status: "unavailable", message: "The saved namespace change could not be verified. Retry the same change to confirm its outcome." };
+        }
+        if (saved.revision >= (baselineRef.current.base_revision ?? 0)) {
+          const next = fromTask(saved);
+          baselineRef.current = next;
+          setAcknowledgedTask(saved);
+          // Only namespace assignments were submitted. Keep edits made before
+          // or during the request, rebased against its acknowledged revision.
+          draft.setValue((current) => ({ ...current, namespaces: next.namespaces, base_revision: saved.revision }));
+        }
+        setFieldErrors({});
+        const text = "Namespaces saved. Other field edits remain in your draft.";
+        setMessage({ tone: "success", text });
+        announce(text);
+      } else if (result.status === "conflict") {
+        await dispatch(TASK_INTENTS.locationChange, { patch: { task: task.task_id }, replace: true }).catch(() => undefined);
+      }
+      return result;
+    } catch (error) {
+      return { intent_id: mutationId, status: "unavailable", message: error instanceof Error ? error.message : "The namespace change could not be confirmed." };
+    } finally {
+      namespaceInFlight.current = false;
+      setNamespaceBusy(false);
+    }
   };
 
   const localFileClient = useMemo<CoworkLocalFileClient>(() => {
@@ -241,16 +322,21 @@ export function TaskDetail({
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    await draft.flush().catch((error: unknown) => {
+    if (stale || !draft.ready) return;
+    try { await draft.flush(); } catch (error: unknown) {
       setMessage({ tone: "danger", text: error instanceof Error ? error.message : "Draft could not be saved." });
-    });
+      return;
+    }
+    const submittedDraftRevision = draft.getSnapshot().revision;
     const result = await action(TASK_INTENTS.update, {
+      expected_revision: value.base_revision ?? task.revision,
       title: value.title.trim(),
       attention_state: value.attention_state,
       urgency: value.urgency,
       due_date: optional(value.due_date),
       deadline_date: optional(value.deadline_date),
-      project: optional(value.project),
+      project_ids: [...(value.project_ids ?? task.project_ids ?? [])],
+      remove_unresolved_projects: [...(value.remove_unresolved_projects ?? [])],
       namespaces: csv(value.namespaces),
       tags: csv(value.tags),
       summary: value.summary,
@@ -262,7 +348,14 @@ export function TaskDetail({
       required_contexts: csv(value.required_contexts),
       automation_tier: optional(value.automation_tier),
     });
-    if (result?.status === "accepted") await draft.clear();
+    if (result?.status === "accepted") {
+      const saved = (result.value as unknown as { task?: TaskDetailModel } | undefined)?.task ?? latestTaskRef.current;
+      const next = fromTask(saved);
+      baselineRef.current = next;
+      const current = draft.getSnapshot();
+      setAcknowledgedTask(saved);
+      draft.setValue(current.revision === submittedDraftRevision ? next : { ...current.value, base_revision: saved.revision });
+    }
   };
 
   const openDocument = async () => {
@@ -340,13 +433,20 @@ export function TaskDetail({
   };
 
   const closeOnEscape = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Escape") return;
+    if (event.key !== "Escape" || event.defaultPrevented) return;
     event.preventDefault();
     if (deleteConfirm) {
       closeDeleteDialog();
       return;
     }
-    onClose();
+    // Portalled overlays still bubble through this article. Their own Escape
+    // handling controls dismissal, including keeping a pending mutation open.
+    if (event.target instanceof Element && event.target.closest('[role="dialog"], [role="alertdialog"]')) return;
+    void closePreservingDraft();
+  };
+  const closePreservingDraft = async () => {
+    try { await draft.flush(); onClose(); }
+    catch (error) { setMessage({ tone: "danger", text: error instanceof Error ? error.message : "Your draft could not be saved. Keep this view open to retain your edits." }); }
   };
 
   if (!draft.ready) return <p className="wb-tasks-loading" aria-busy="true">Restoring task edits…</p>;
@@ -355,12 +455,14 @@ export function TaskDetail({
     <article className="wb-task-detail" aria-labelledby="wb-task-detail-title" onKeyDown={closeOnEscape}>
       <div className="wb-task-detail__header">
         <div>
-          <p className="wb-task-detail__kicker">{task.attention_state} · Revision {task.revision}</p>
-          <h2 id="wb-task-detail-title">Task details</h2>
+          <p className="wb-task-detail__kicker">{attentionLabel(task.attention_state)} · Revision {task.revision}</p>
+          <h2 ref={headingRef} tabIndex={-1} id="wb-task-detail-title">Task details</h2>
         </div>
-        <Button size="small" variant="ghost" onClick={onClose}>Close details</Button>
+        <Button size="small" variant="ghost" onClick={() => void closePreservingDraft()}>Back to tasks</Button>
       </div>
       {message ? <InlineAlert tone={message.tone}>{message.text}</InlineAlert> : null}
+      {draft.error ? <InlineAlert tone="danger">{draft.error} Your edits remain in this view.</InlineAlert> : null}
+      {stale ? <InlineAlert tone="warning">This task changed elsewhere. Your draft is preserved; review the saved values before saving again.<details><summary>Compare with saved task</summary><dl>{Object.entries(fromTask(task)).filter(([key, saved]) => key !== "base_revision" && JSON.stringify(saved) !== JSON.stringify(value[key as keyof TaskEditDraft])).map(([key, saved]) => <div key={key}><dt>{key.replace(/_/g, " ")}</dt><dd>Saved: {Array.isArray(saved) ? saved.join(", ") : String(saved || "Empty")}</dd><dd>Your draft: {String(value[key as keyof TaskEditDraft] || "Empty")}</dd></div>)}</dl></details><div className="wb-task-actions"><Button size="small" disabled={busy} onClick={() => { const next = fromTask(task); baselineRef.current = next; draft.setValue(next); }}>Discard my edits and load saved task</Button><Button size="small" disabled={busy || readOnly} onClick={() => { baselineRef.current = fromTask(task); draft.setValue({ ...value, base_revision: task.revision }); }}>Keep my draft against this saved version</Button></div></InlineAlert> : null}
       {undoDeleteRevision !== null ? (
         <InlineAlert tone="success">
           Task moved to trash. <Button size="small" disabled={readOnly || busy} onClick={() => void undoDelete()}>Undo delete</Button>
@@ -382,8 +484,8 @@ export function TaskDetail({
           {errorDescription("wb-task-edit-title-error", fieldError("title", "description"))}
         </label>
         <label className="wb-task-field">
-          <span>State</span>
-          <select
+          <span>Attention</span>
+          <TaskHelp content={TASK_HELP.editAttention}><select
             value={value.attention_state}
             disabled={!canMutate}
             aria-invalid={fieldError("attention_state", "state") ? "true" : undefined}
@@ -393,11 +495,11 @@ export function TaskDetail({
             <option value="inbox">Inbox</option>
             <option value="mit">Most Important</option>
             <option value="active">Active</option>
-            <option value="focused">Focused</option>
+            <option value="focused">Working on now</option>
             <option value="waiting">Waiting</option>
             {value.attention_state === "snoozed" ? <option value="snoozed" disabled>Snoozed</option> : null}
             {value.attention_state === "done" ? <option value="done" disabled>Done</option> : null}
-          </select>
+          </select></TaskHelp>
           {errorDescription("wb-task-edit-state-error", fieldError("attention_state", "state"))}
         </label>
         <label className="wb-task-field">
@@ -415,8 +517,8 @@ export function TaskDetail({
         </label>
         <label className="wb-task-field"><span>Due date</span><input type="date" value={value.due_date} disabled={!canMutate} aria-invalid={fieldError("due_date") ? "true" : undefined} aria-describedby={fieldError("due_date") ? "wb-task-edit-due-error" : undefined} onChange={(event) => update("due_date", event.target.value)} />{errorDescription("wb-task-edit-due-error", fieldError("due_date"))}</label>
         <label className="wb-task-field"><span>Hard deadline</span><input type="date" value={value.deadline_date} disabled={!canMutate} aria-invalid={fieldError("deadline_date") ? "true" : undefined} aria-describedby={fieldError("deadline_date") ? "wb-task-edit-deadline-error" : undefined} onChange={(event) => update("deadline_date", event.target.value)} />{errorDescription("wb-task-edit-deadline-error", fieldError("deadline_date"))}</label>
-        <label className="wb-task-field"><span>Project</span><input value={value.project} disabled={!canMutate} aria-invalid={fieldError("project") ? "true" : undefined} aria-describedby={fieldError("project") ? "wb-task-edit-project-error" : undefined} onChange={(event) => update("project", event.target.value)} />{errorDescription("wb-task-edit-project-error", fieldError("project"))}</label>
-        <label className="wb-task-field"><span>Namespaces</span><input value={value.namespaces} disabled={!canMutate} aria-invalid={fieldError("namespaces") ? "true" : undefined} aria-describedby={fieldError("namespaces") ? "wb-task-edit-namespaces-error" : undefined} onChange={(event) => update("namespaces", event.target.value)} />{errorDescription("wb-task-edit-namespaces-error", fieldError("namespaces"))}</label>
+        <div className="wb-task-field"><span>Projects</span><MultiSelect purpose="selection" label="Linked projects" values={(value.project_ids ?? task.project_ids ?? []).map(String)} options={options?.projects.filter((option) => /^\d+$/.test(option.value)) ?? []} searchable disabled={!canMutate} onChange={(values) => update("project_ids", values.map(Number))} /><small>{(value.project_ids ?? task.project_ids ?? []).map((id) => options?.projects.find((option) => option.value === String(id))?.label ?? `Project ${id}`).join(", ") || "No linked projects"}</small>{errorDescription("wb-task-edit-project-error", fieldError("project_ids"))}{task.unresolved_projects?.length ? <InlineAlert tone="warning"><p>Historical project links need review. Choose the correct registered projects above, then remove any resolved historical references below. Unchecked references are retained.</p>{[...new Set(task.unresolved_projects.map((link) => link.legacy_value))].map((legacy) => <label className="wb-task-checkbox" key={legacy}><input type="checkbox" disabled={!canMutate} checked={value.remove_unresolved_projects?.includes(legacy) ?? false} onChange={() => update("remove_unresolved_projects", value.remove_unresolved_projects?.includes(legacy) ? value.remove_unresolved_projects.filter((item) => item !== legacy) : [...(value.remove_unresolved_projects ?? []), legacy])} /><span>Remove historical project link {legacy}</span></label>)}</InlineAlert> : null}</div>
+        <div className="wb-task-field"><span>Namespaces</span><TaskNamespacePills taskId={task.task_id} namespaces={csv(value.namespaces)} options={options?.namespaces ?? []} readOnly={!canMutate} disabled={busy || stale} onChange={changeNamespaces} />{errorDescription("wb-task-edit-namespaces-error", fieldError("namespaces"))}</div>
         <label className="wb-task-field wb-task-field--wide"><span>Tags</span><input value={value.tags} disabled={!canMutate} aria-invalid={fieldError("tags") ? "true" : undefined} aria-describedby={fieldError("tags") ? "wb-task-edit-tags-error" : undefined} onChange={(event) => update("tags", event.target.value)} />{errorDescription("wb-task-edit-tags-error", fieldError("tags"))}</label>
         <TextAreaField label="Summary" value={value.summary} rows={3} disabled={!canMutate} aria-invalid={fieldError("summary", "summary_text") ? "true" : undefined} description={fieldError("summary", "summary_text")} onChange={(next) => update("summary", next)} />
         <TextAreaField label="Desired outcome" value={value.desired_outcome} rows={3} disabled={!canMutate} aria-invalid={fieldError("desired_outcome", "outcome_text") ? "true" : undefined} description={fieldError("desired_outcome", "outcome_text")} onChange={(next) => update("desired_outcome", next)} />
@@ -426,7 +528,7 @@ export function TaskDetail({
         <label className="wb-task-field"><span>Contract</span><input value={value.contract} disabled={!canMutate} aria-invalid={fieldError("contract") ? "true" : undefined} aria-describedby={fieldError("contract") ? "wb-task-edit-contract-error" : undefined} onChange={(event) => update("contract", event.target.value)} />{errorDescription("wb-task-edit-contract-error", fieldError("contract"))}</label>
         <label className="wb-task-field"><span>Required contexts</span><input value={value.required_contexts} disabled={!canMutate} aria-invalid={fieldError("required_contexts", "user_required_contexts") ? "true" : undefined} aria-describedby={fieldError("required_contexts", "user_required_contexts") ? "wb-task-edit-contexts-error" : undefined} onChange={(event) => update("required_contexts", event.target.value)} />{errorDescription("wb-task-edit-contexts-error", fieldError("required_contexts", "user_required_contexts"))}</label>
         <label className="wb-task-field"><span>Automation tier</span><input type="number" min="0" max="4" value={value.automation_tier} disabled={!canMutate} aria-invalid={fieldError("automation_tier", "automation_tier_achievable") ? "true" : undefined} aria-describedby={fieldError("automation_tier", "automation_tier_achievable") ? "wb-task-edit-automation-error" : undefined} onChange={(event) => update("automation_tier", event.target.value)} />{errorDescription("wb-task-edit-automation-error", fieldError("automation_tier", "automation_tier_achievable"))}</label>
-        <div className="wb-task-detail__save"><Button type="submit" variant="primary" disabled={!canMutate || busy || value.title.trim().length === 0}>{busy ? "Saving…" : "Save changes"}</Button><span>{draft.dirty ? "Unsaved changes" : "All changes saved"}</span></div>
+        <div className="wb-task-detail__save"><Button type="submit" variant="primary" disabled={!canMutate || busy || stale || !draft.ready || value.title.trim().length === 0}>{busy ? "Saving…" : "Save changes"}</Button><span>{draft.dirty ? "Unsaved changes · draft kept on this device" : "All changes saved"}</span></div>
       </form>
 
       <section className="wb-task-detail__actions" aria-labelledby="wb-task-lifecycle-title">
@@ -436,7 +538,7 @@ export function TaskDetail({
             <Button size="small" disabled={readOnly || busy} onClick={() => void restoreTask()}>Restore</Button>
           ) : (
             <>
-              <Button size="small" disabled={readOnly || busy} onClick={() => void action(task.completed_at ? TASK_INTENTS.reopen : TASK_INTENTS.complete)}>{task.completed_at ? "Reopen" : "Complete"}</Button>
+              <Button size="small" disabled={readOnly || busy} onClick={() => { if (task.attention_state === "done" || task.completed_at) void action(TASK_INTENTS.reopen); else setCompletionTask({ task_id: task.task_id, title: task.title, revision: task.revision }); }}>{task.attention_state === "done" || task.completed_at ? "Reopen" : "Complete"}</Button>
               <Button size="small" disabled={readOnly || busy} onClick={() => void action(TASK_INTENTS.focus)}>Working on now</Button>
               <label className="wb-task-field wb-task-field--inline"><span>Snooze until</span><input type="date" value={snoozeDate} disabled={readOnly || busy} onChange={(event) => setSnoozeDate(event.target.value)} /></label>
               <Button size="small" disabled={readOnly || busy || !snoozeDate} onClick={() => void action(TASK_INTENTS.snooze, { snooze_until: snoozeDate })}>Snooze</Button>
@@ -445,6 +547,11 @@ export function TaskDetail({
             </>
           )}
         </div>
+        {completionTask ? <TaskCompletionDialog task={completionTask} onClose={() => setCompletionTask(null)} onConfirm={async (id) => {
+          const result = await dispatch(TASK_INTENTS.complete, { task_id: completionTask.task_id, expected_revision: completionTask.revision }, id);
+          if (result.status === "accepted") { const text = result.message ?? "Task completed."; setMessage({ tone: "success", text }); announce(text); }
+          return result;
+        }} /> : null}
         {deleteConfirm ? (
           <div
             className="wb-task-delete-backdrop"
@@ -465,7 +572,7 @@ export function TaskDetail({
               <p id="wb-task-delete-description">The task and knowledge document remain recoverable.</p>
               <div>
                 <Button autoFocus size="small" onClick={closeDeleteDialog}>Cancel</Button>
-                <Button size="small" variant="danger" disabled={readOnly || busy} onClick={() => void deleteTask()}>Move to trash</Button>
+                <Button help={TASK_HELP.confirmTrash} size="small" variant="danger" disabled={readOnly || busy} onClick={() => void deleteTask()}>Move to trash</Button>
               </div>
             </div>
           </div>

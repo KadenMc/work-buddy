@@ -1,0 +1,17 @@
+.wb-task-namespace-pills { display:flex; flex-wrap:wrap; align-items:center; gap:var(--wb-space-2); min-inline-size:0; }
+.wb-task-namespace-pills__pill { display:inline-flex; align-items:center; gap:var(--wb-space-1); max-inline-size:100%; box-sizing:border-box; padding-inline-start:var(--wb-space-5); border:1px solid var(--wb-color-border-default); border-radius:999px; background:var(--wb-color-surface-inset); color:var(--wb-color-text-secondary); font-size:var(--wb-font-size-xs); }
+.wb-task-namespace-pills__pill > span { min-inline-size:0; overflow-wrap:anywhere; }
+.wb-task-namespace-pills__pill > .wb-button { flex:none; padding:var(--wb-space-1); min-inline-size:28px; min-block-size:28px; }
+.wb-task-namespace-pills__pill svg { inline-size:14px; block-size:14px; }
+.wb-task-namespace-pills__empty { color:var(--wb-color-text-muted); font-size:var(--wb-font-size-xs); }
+.wb-task-namespace-pills__add { font-size:var(--wb-font-size-xs); }
+.wb-task-namespace-pills--compact { margin-block-start:var(--wb-space-2); }
+.wb-task-namespace-pills__popover { inline-size:min(360px,calc(100vw - 24px)); max-block-size:min(560px,calc(100dvh - 24px)); overflow:auto; }
+.wb-task-namespace-pills__picker { display:grid; gap:var(--wb-space-3); min-inline-size:0; padding:var(--wb-space-3); outline:none; }
+.wb-task-namespace-pills__picker h2, .wb-task-namespace-pills__picker p { margin:0; font-size:var(--wb-font-size-sm); overflow-wrap:anywhere; }
+.wb-task-namespace-pills__options { display:grid; gap:var(--wb-space-1); max-block-size:240px; overflow:auto; padding:0; margin:0; list-style:none; }
+.wb-task-namespace-pills__options .wb-button { justify-content:flex-start; text-align:start; inline-size:100%; overflow-wrap:anywhere; }
+.wb-task-namespace-pills__create { display:grid; gap:var(--wb-space-2); padding-block-start:var(--wb-space-3); border-block-start:1px solid var(--wb-color-border-default); }
+.wb-task-namespace-pills__preference { font-size:var(--wb-font-size-xs); }
+.wb-task-namespace-pills__confirmation-choice { display:flex; align-items:flex-start; gap:var(--wb-space-2); font-size:var(--wb-font-size-sm); }
+.wb-task-namespace-pills__confirmation-choice input { flex:none; margin-block-start:var(--wb-space-1); }

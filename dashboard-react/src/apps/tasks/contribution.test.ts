@@ -39,10 +39,14 @@ describe("Tasks contribution", () => {
       clearPolicy: "confirm",
       retentionDays: 30,
     });
-    expect(workspace.drafts?.[0]).toMatchObject({
+    expect(workspace.drafts?.find((draft) => draft.draftName === "task-edit")).toMatchObject({
       draftName: "task-edit",
       persistence: "device",
       scope: { kind: "input-field", path: ["selectedTask", "task_id"] },
+    });
+    expect(workspace.drafts?.find((draft) => draft.draftName === "task-browse")).toMatchObject({
+      persistence: "device", scope: { kind: "view" },
+      clearPresentation: { label: "Reset Task Workspace view", title: "Reset task view?", confirmLabel: "Reset view", cancelLabel: "Keep view" },
     });
     for (const widget of [quickAdd, workspace]) {
       expect(widget.theme).toMatchObject({

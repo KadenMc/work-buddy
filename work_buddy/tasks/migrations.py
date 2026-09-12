@@ -872,6 +872,96 @@ def _m022_document_attachment_intents(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m023_independent_project_links(conn: sqlite3.Connection) -> None:
+    """Snapshot historical project tags once; retain namespaces verbatim.
+
+    Registry resolution is deliberately separate: schema upgrades must work
+    with an unavailable project store and must never create registry entries.
+    """
+    conn.execute("""
+        CREATE TABLE task_projects (
+            task_id TEXT NOT NULL REFERENCES task_metadata(task_id) ON DELETE CASCADE,
+            project_id INTEGER NOT NULL CHECK (project_id > 0),
+            PRIMARY KEY (task_id, project_id)
+        )
+    """)
+    conn.execute("CREATE INDEX idx_task_projects_project ON task_projects(project_id,task_id)")
+    conn.execute("""
+        CREATE TABLE task_project_unresolved (
+            task_id TEXT NOT NULL REFERENCES task_metadata(task_id) ON DELETE CASCADE,
+            legacy_value TEXT NOT NULL,
+            source_tag TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL,
+            candidate_ids_json TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY (task_id, legacy_value, source_tag)
+        )
+    """)
+    conn.execute("CREATE INDEX idx_task_project_unresolved_value ON task_project_unresolved(legacy_value,task_id)")
+    conn.execute("""
+        CREATE TABLE task_project_migration_log (
+            task_id TEXT NOT NULL,
+            source_tag TEXT NOT NULL,
+            legacy_value TEXT NOT NULL,
+            project_id INTEGER,
+            resolution TEXT NOT NULL,
+            PRIMARY KEY (task_id,source_tag)
+        )
+    """)
+    for row in conn.execute("SELECT task_id,tag FROM task_tags WHERE LOWER(tag) LIKE 'projects/%'").fetchall():
+        slug = str(row[1]).split('/', 2)[1]
+        if not slug:
+            continue
+        conn.execute(
+            "INSERT INTO task_project_unresolved(task_id,legacy_value,source_tag,reason) VALUES(?,?,?,'pending')",
+            (row[0], slug, row[1]),
+        )
+        conn.execute(
+            "INSERT INTO task_project_migration_log(task_id,source_tag,legacy_value,resolution) VALUES(?,?,?,'pending')",
+            (row[0], row[1], slug),
+        )
+
+
+def _m024_namespace_operations(conn: sqlite3.Connection) -> None:
+    """Retain namespace operation inverses and revision fences for durable undo."""
+    conn.execute(
+        """
+        CREATE TABLE task_namespace_operations (
+            operation_id TEXT PRIMARY KEY,
+            receipt_id TEXT NOT NULL REFERENCES task_mutation_receipts(receipt_id),
+            action TEXT NOT NULL,
+            label TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            changes_json TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            undone_at TEXT,
+            undo_receipt_id TEXT REFERENCES task_mutation_receipts(receipt_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX idx_task_namespace_operations_created "
+        "ON task_namespace_operations(created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_task_tags_task_namespace "
+        "ON task_tags(task_id,is_namespace,tag COLLATE NOCASE)"
+    )
+    conn.execute(
+        "CREATE INDEX idx_task_workspace_facets "
+        "ON task_metadata(state,deleted_at,archived_at,urgency,task_id,due_date)"
+    )
+    for field in ("created_at", "updated_at"):
+        instant = (
+            f"CASE WHEN {field} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' "
+            f"THEN julianday({field}) END"
+        )
+        conn.execute(
+            f"CREATE INDEX idx_task_workspace_{field} ON task_metadata("
+            f"({instant} IS NULL) ASC, ({instant}) DESC, task_id ASC)"
+        )
+
+
 class NativeTaskMigrationRunner(MigrationRunner):
     """Migration runner that treats versions 1..11 as an immutable baseline."""
 
@@ -932,6 +1022,10 @@ class NativeTaskMigrationRunner(MigrationRunner):
                 return 19
             if "task_document_attachment_intents" not in tables:
                 return 21
+            if "task_projects" not in tables:
+                return 22
+            if "task_namespace_operations" not in tables:
+                return 23
             return self.target_version
         return LEGACY_SCHEMA_VERSION
 
@@ -955,6 +1049,8 @@ TASK_MIGRATIONS = NativeTaskMigrationRunner(
         Migration(20, "aggregate task and document creation intents", _m020_aggregate_creation_intents),
         Migration(21, "aggregate creation participant receipts", _m021_aggregate_creation_decision_receipts),
         Migration(22, "existing-task document attachment intents", _m022_document_attachment_intents),
+        Migration(23, "independent many-to-many project links", _m023_independent_project_links),
+        Migration(24, "namespace operations and browse ordering indexes", _m024_namespace_operations),
     ],
 )
 

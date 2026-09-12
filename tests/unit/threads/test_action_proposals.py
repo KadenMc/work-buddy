@@ -33,6 +33,7 @@ def stack(tmp_path, monkeypatch):
     from work_buddy.tasks.store import TaskStore
 
     thread_path, task_path = tmp_path / "threads.db", tmp_path / "tasks.db"
+    monkeypatch.setattr('work_buddy.tasks.project_links.project_database_path', lambda: tmp_path / 'projects.db')
     monkeypatch.setattr(store, "_db_path", lambda: thread_path)
     monkeypatch.setattr(task_store_module, "default_task_db_path", lambda: task_path)
     monkeypatch.setattr(runtime, "default_task_db_path", lambda: task_path)
@@ -562,7 +563,7 @@ def test_rich_task_fields_and_scalar_summary_replay(stack):
     assert list(task.dependencies) == parameters["dependencies"]
     assert task.due_date == parameters["due_date"]
     assert task.deadline_date == parameters["deadline_date"]
-    assert set(task.namespace_tags) == {"systems/tasks", "projects/work-buddy"}
+    assert set(task.namespace_tags) == {"systems/tasks"}
     assert task.revision == 1
     assert task.note_uuid is None
 
@@ -580,6 +581,13 @@ def test_explicit_task_note_parameters_preserve_exact_reviewed_content():
 
     assert parameters["initial_note"] == initial_note
     assert parameters.get("requested_truth_policy_resolution") is None
+
+
+def test_multiple_project_parameters_are_preserved_and_validated():
+    assert validate_task_parameters({'task_text': 'Shared task', 'project_ids': [2, 1, 2]})['project_ids'] == [1, 2]
+    for invalid in ([True], [-1], ['project'], [1.5], '1', [1] * 101):
+        with pytest.raises(ProposalError):
+            validate_task_parameters({'task_text': 'Invalid', 'project_ids': invalid})
 
 
 @pytest.mark.parametrize(
