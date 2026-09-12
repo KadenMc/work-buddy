@@ -46,7 +46,9 @@ dev_notes: |-
 
   ### Defense 1 — takeover reaps children itself
 
-  `work_buddy/sidecar/pid.py:takeover_existing_daemon` enumerates the old daemon's direct children via `compat.find_child_pids(old_pid)` and force-kills each **before** killing the daemon. The new daemon doesn't depend on the old daemon's cleanup at all — it has the OS authority to kill processes itself, so it does.
+  `work_buddy/sidecar/pid.py:takeover_existing_daemon` first proves that the recorded PID still names the sidecar instance which wrote it. `write_pid_file` keeps the human-readable integer in `sidecar.pid` and writes a companion `sidecar.pid.identity.json` containing the PID plus an OS process-start token (Windows creation `FILETIME`, Linux `/proc` start ticks, or the POSIX `ps` start value). A live PID with a different start token is PID reuse, not a daemon; its stale records are removed without enumerating or terminating that process. Historical integer-only PID files are accepted through a one-time process-name/command-line check. An unreadable identity fails closed: takeover refuses instead of treating liveness as authority to kill.
+
+  Once identity is proven, takeover enumerates the old daemon's direct children via `compat.find_child_pids(old_pid)` and force-kills each **before** killing the daemon. The process-start token is checked again after child enumeration, before the parent signal, and throughout termination polling, closing the PID-reuse race around those slower operations. The new daemon doesn't depend on the old daemon's cleanup at all — it has the OS authority to kill verified sidecar processes itself, so it does.
 
   **Order is load-bearing**: kill children first, then the daemon. Once the parent dies its children reparent (PPID=1 on Unix, orphaned on Windows) and enumeration via the original PID returns empty — you lose the only handle you had on them. Don't "simplify" by reordering.
 
@@ -141,7 +143,7 @@ A single long-lived Python process that replaces multiple independent Windows Ta
 
 Starting: uv run python -m work_buddy.sidecar
 
-Manages its own lifecycle via PID file (`<data_root>/runtime/sidecar.pid`) and state file (`<data_root>/runtime/sidecar_state.json`).
+Manages its own lifecycle via PID file (`<data_root>/runtime/sidecar.pid`), process-identity companion (`sidecar.pid.identity.json`), and state file (`<data_root>/runtime/sidecar_state.json`).
 
 Two loops split the daemon's work by blocking behavior. The **supervisor loop** (main thread) evaluates cached health probes, restarts failed children, and writes `sidecar_state.json` every tick — everything on it is fast and bounded, so the state file's freshness is a true daemon-liveness signal (`wbuddy status` classifies ~90s of staleness as wedged). The **dispatch loop** (a background thread) runs scheduler cron ticks, message-driven dispatch, and retry sweeps — the phases that execute jobs and replays inline and can legitimately block for minutes (agent spawns, index rebuilds, local-LLM leases). A slow job therefore reads as a busy dispatch phase in the state file, never as a hung daemon, and can never delay child restarts.
 
