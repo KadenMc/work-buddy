@@ -28,6 +28,7 @@ from work_buddy.sidecar.pid import (
     write_pid_file,
     cleanup_pid_file,
 )
+from work_buddy.utils.process import process_start_token
 from work_buddy.sidecar.scheduler.jobs import (
     Job,
     create_user_job_file,
@@ -53,6 +54,11 @@ def test_is_process_alive_bogus():
     assert _is_process_alive(99999999) is False
 
 
+def test_process_start_token_distinguishes_live_from_missing_process():
+    assert process_start_token(os.getpid())
+    assert process_start_token(99999999) is None
+
+
 def test_pid_write_read_cleanup():
     # Ensure clean state
     cleanup_pid_file()
@@ -62,9 +68,15 @@ def test_pid_write_read_cleanup():
     assert pid_mod.PID_FILE.exists()
     content = pid_mod.PID_FILE.read_text().strip()
     assert content == str(os.getpid())
+    identity = json.loads(pid_mod._identity_file().read_text(encoding="utf-8"))
+    assert identity == {
+        "pid": os.getpid(),
+        "start_token": process_start_token(os.getpid()),
+    }
 
     cleanup_pid_file()
     assert not pid_mod.PID_FILE.exists()
+    assert not pid_mod._identity_file().exists()
 
 
 def test_check_existing_daemon_none():
@@ -78,6 +90,44 @@ def test_check_existing_daemon_stale():
     result = check_existing_daemon()
     assert result is None
     assert not pid_mod.PID_FILE.exists()  # Should auto-clean stale
+
+
+def test_check_existing_daemon_rejects_reused_live_pid(monkeypatch):
+    pid_mod.PID_FILE.write_text("4242\n")
+    monkeypatch.setattr(pid_mod, "_is_process_alive", lambda _pid: True)
+    monkeypatch.setattr(pid_mod, "_record_matches_process", lambda _pid: False)
+
+    assert check_existing_daemon() is None
+    assert not pid_mod.PID_FILE.exists()
+
+
+def test_check_existing_daemon_preserves_unverifiable_live_pid(monkeypatch):
+    pid_mod.PID_FILE.write_text("4242\n")
+    monkeypatch.setattr(pid_mod, "_is_process_alive", lambda _pid: True)
+    monkeypatch.setattr(pid_mod, "_record_matches_process", lambda _pid: None)
+
+    assert check_existing_daemon() == 4242
+    assert pid_mod.PID_FILE.exists()
+
+
+def test_record_match_rejects_same_pid_with_different_start_token(monkeypatch):
+    pid_mod._identity_file().write_text(
+        json.dumps({"pid": 4242, "start_token": "original"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pid_mod, "process_start_token", lambda _pid: "replacement")
+    monkeypatch.setattr(
+        pid_mod,
+        "_legacy_process_is_sidecar",
+        lambda _pid: (_ for _ in ()).throw(AssertionError("must not fall back")),
+    )
+
+    assert pid_mod._record_matches_process(4242) is False
+
+
+def test_record_match_validates_legacy_integer_pid(monkeypatch):
+    monkeypatch.setattr(pid_mod, "_legacy_process_is_sidecar", lambda _pid: True)
+    assert pid_mod._record_matches_process(4242) is True
 
 
 def test_cleanup_leaves_foreign_pid_file():

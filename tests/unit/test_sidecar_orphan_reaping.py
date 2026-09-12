@@ -167,6 +167,14 @@ def test_takeover_kills_children_before_daemon(monkeypatch):
 
     monkeypatch.setattr(sidecar_pid.os, "kill", fake_os_kill)
     monkeypatch.setattr(sidecar_pid, "_is_process_alive", fake_is_alive)
+    monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: True)
+
+    def fake_start_token(pid):
+        if any(c[0] in ("os_kill", "force_kill") and c[1] == pid for c in call_order):
+            return None
+        return "start-token"
+
+    monkeypatch.setattr(sidecar_pid, "process_start_token", fake_start_token)
     monkeypatch.setattr(sidecar_pid, "_remove_pid_file", lambda: None)
     # Patch the late-bound imports inside takeover_existing_daemon:
     monkeypatch.setattr(compat, "find_child_pids", fake_find)
@@ -197,11 +205,137 @@ def test_takeover_with_no_children_still_kills_daemon(monkeypatch):
     monkeypatch.setattr(compat, "_force_kill_pid", lambda pid: fk_calls.append(pid))
     monkeypatch.setattr(sidecar_pid.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(sidecar_pid, "_is_process_alive", lambda pid: False)
+    monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: True)
+    tokens = iter(
+        ["start-token", "start-token", "start-token", "start-token", None]
+    )
+    monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: next(tokens))
     monkeypatch.setattr(sidecar_pid, "_remove_pid_file", lambda: None)
 
     assert sidecar_pid.takeover_existing_daemon(7260, wait_seconds=0.3) is True
     # No children → no force-kill calls during the children-reap step.
     assert fk_calls == []
+
+
+def test_takeover_reused_pid_never_enumerates_or_kills(monkeypatch):
+    """A live unrelated process behind a stale PID file is never touched."""
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: "start-token")
+    monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: False)
+    monkeypatch.setattr(
+        compat,
+        "find_child_pids",
+        lambda pid: calls.append(("find_children", pid)) or {999},
+    )
+    monkeypatch.setattr(
+        compat,
+        "_force_kill_pid",
+        lambda pid: calls.append(("force_kill", pid)),
+    )
+    monkeypatch.setattr(
+        sidecar_pid.os,
+        "kill",
+        lambda pid, sig: calls.append(("os_kill", pid)),
+    )
+    monkeypatch.setattr(
+        sidecar_pid,
+        "_remove_pid_file",
+        lambda: calls.append(("remove", 4242)),
+    )
+
+    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is True
+    assert calls == [("remove", 4242)]
+
+
+def test_takeover_unverifiable_pid_fails_closed(monkeypatch):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: "start-token")
+    monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: None)
+    monkeypatch.setattr(
+        compat,
+        "find_child_pids",
+        lambda pid: calls.append(("find_children", pid)) or set(),
+    )
+    monkeypatch.setattr(
+        sidecar_pid.os,
+        "kill",
+        lambda pid, sig: calls.append(("os_kill", pid)),
+    )
+
+    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is False
+    assert calls == []
+
+
+def test_takeover_stops_if_pid_is_reused_during_enumeration(monkeypatch):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: True)
+    tokens = iter(["original", "original", "replacement"])
+    monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: next(tokens))
+    monkeypatch.setattr(
+        compat,
+        "find_child_pids",
+        lambda pid: calls.append(("find_children", pid)) or {99},
+    )
+    monkeypatch.setattr(
+        compat,
+        "_force_kill_pid",
+        lambda pid: calls.append(("force_kill", pid)),
+    )
+    monkeypatch.setattr(
+        sidecar_pid.os,
+        "kill",
+        lambda pid, sig: calls.append(("os_kill", pid)),
+    )
+    monkeypatch.setattr(
+        sidecar_pid,
+        "_remove_pid_file",
+        lambda: calls.append(("remove", 4242)),
+    )
+
+    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is True
+    assert calls == [("find_children", 4242), ("remove", 4242)]
+
+
+def test_takeover_stops_if_pid_is_reused_during_identity_verification(monkeypatch):
+    calls: list[tuple[str, int]] = []
+    tokens = iter(["original", "replacement"])
+    monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: next(tokens))
+    monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: True)
+    monkeypatch.setattr(
+        compat,
+        "find_child_pids",
+        lambda pid: calls.append(("find_children", pid)) or {99},
+    )
+    monkeypatch.setattr(
+        sidecar_pid.os,
+        "kill",
+        lambda pid, sig: calls.append(("os_kill", pid)),
+    )
+    monkeypatch.setattr(
+        sidecar_pid,
+        "_remove_pid_file",
+        lambda: calls.append(("remove", 4242)),
+    )
+
+    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is True
+    assert calls == [("remove", 4242)]
+
+
+def test_legacy_process_classifier_requires_sidecar_command():
+    assert sidecar_pid._looks_like_sidecar_process(
+        "python.exe",
+        r'python.exe -m work_buddy.sidecar',
+    ) is True
+    assert sidecar_pid._looks_like_sidecar_process(
+        "wbuddy.exe",
+        r'wbuddy.exe start --foreground',
+    ) is True
+    assert sidecar_pid._looks_like_sidecar_process("ctfmon.exe", "") is False
+    assert sidecar_pid._looks_like_sidecar_process(
+        "python.exe",
+        r'python.exe -m unrelated.worker',
+    ) is False
+    assert sidecar_pid._looks_like_sidecar_process("python.exe", "") is None
 
 
 # ---------------------------------------------------------------------------
