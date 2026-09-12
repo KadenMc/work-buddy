@@ -16,6 +16,14 @@ buttons and their corresponding pills share restrained theme-aware colors.
 Assigned namespace pills have a larger text inset and retain a visible removal
 control when their labels wrap.
 
+The subsequent count-spacing correction increases the tree's scrollbar-side
+inset from 4px to 12px, in addition to the reserved native scrollbar gutter.
+Geometry checks measure the actual count-to-usable-edge gap in Chromium and
+Firefox, including an overflowing tree and the 160px pane with a deep path.
+The completed production run includes this correction: typecheck, build and
+all 14 journeys passed, with successful isolated cleanup. The count gutter and
+minimum-width screenshots were inspected for spacing and label clipping.
+
 Quick Add's default height increases by one grid row so its bottom controls fit.
 The default Workspace position moves down by the same row; saved user sizes and
 placements remain respected. Both browser engines check the initial controls
@@ -49,7 +57,7 @@ URL precedence, whole-card reset cancellation/confirmation, and cooldown
 isolation, navigation, reload and interrupted-response retry. Existing grid,
 completion, organizer/Undo, task drafts and narrow-layout journeys also passed.
 
-Twenty-two screenshots from that final run are retained below. Independent
+Twenty-three screenshots from that final run are retained below. Independent
 visual review found no material clipping or overflow in the compact namespace
 pane, default Quick Add, reset/cooldown dialogs or wrapped long namespace pill.
 Earlier attempts exposed stale checkbox selectors and a search-settlement race
@@ -236,6 +244,7 @@ Current screenshots from the final fourteen-journey production run show
 also have captures of the
 [collapsed namespace pane](task-workspace/namespace-collapsed-default-width.png),
 [160px minimum width](task-workspace/namespace-minimum-width.png),
+[count spacing beside the scrollbar](task-workspace/namespace-count-scrollbar-gutter.png),
 [branch checkbox](task-workspace/namespace-branch-checkbox.png),
 [exact checkbox](task-workspace/namespace-exact-checkbox.png),
 [desktop pill padding](task-workspace/namespace-pill-padding-desktop.png),
@@ -244,7 +253,7 @@ also have captures of the
 [interrupted-response retry](task-workspace/namespace-cooldown-safe-retry.png),
 [restored browsing state](task-workspace/task-browse-state-restored.png), and
 [whole-card reset confirmation](task-workspace/task-browse-reset-confirmation.png).
-These 22 captures use synthetic data. Busy-overlay keyboard behavior is
+These 23 captures use synthetic data. Busy-overlay keyboard behavior is
 established by the passing interaction checks, rather than static images.
 
 The independent reviewer inspected screenshots and raised viewport-density and

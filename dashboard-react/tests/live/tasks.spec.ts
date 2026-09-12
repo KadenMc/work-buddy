@@ -24,6 +24,22 @@ async function chooseSort(page: Page, label: string) {
   await expect(sortField(page)).toContainText(label);
 }
 
+async function expectNamespaceCountGutter(page: Page) {
+  const tree = namespaceRail(page).getByRole("list", { name: "Namespace hierarchy", exact: true });
+  await expect(tree).toBeVisible();
+  const gaps = await tree.evaluate((element) => {
+    // clientWidth stops before the scrollbar (including its reserved gutter).
+    // Measure the usable edge rather than the scroller's outer border.
+    const usableRight = element.getBoundingClientRect().left + element.clientLeft + element.clientWidth;
+    return Array.from(element.querySelectorAll(".wb-task-namespace-tree__row small"), (count) => usableRight - count.getBoundingClientRect().right);
+  });
+  expect(gaps.length).toBeGreaterThan(0);
+  for (const gap of gaps) {
+    expect(gap, "Namespace count has a 12px scrollbar-side gutter").toBeGreaterThanOrEqual(11);
+    expect(gap, "Namespace counts share the same inset").toBeLessThanOrEqual(14);
+  }
+}
+
 async function bringWorkspaceIntoView(page: Page) {
   const heading = page.getByRole("region", { name: "Task Workspace", exact: true }).getByRole("heading", { name: "Task Workspace", exact: true });
   await heading.evaluate((element) => element.scrollIntoView({ block: "start" }));
@@ -66,6 +82,7 @@ test.describe.serial("Task Workspace live journeys", { tag: ["@live", "@no-ci"] 
   test("defaults, immediate multiselect filters and global sort @firefox-smoke", async ({ page }) => {
     await expect(rows(page).first()).toContainText("Recently captured task");
     await expect(rows(page).first()).toContainText("Created");
+    await expectNamespaceCountGutter(page);
     const capture = page.getByRole("region", { name: "Quick Add", exact: true });
     const frameBox = (await capture.boundingBox())!;
     const contentBox = (await capture.locator(".wb-widget-frame__content").boundingBox())!;
@@ -173,6 +190,12 @@ test.describe.serial("Task Workspace live journeys", { tag: ["@live", "@no-ci"] 
     expect(initialWidth).toBeLessThanOrEqual(310);
     await bringWorkspaceIntoView(page);
     await page.screenshot({ path: test.info().outputPath("namespace-collapsed-default-width.png") });
+    await rail.getByRole("searchbox", { name: "Find namespaces", exact: true }).fill("/");
+    const tree = rail.getByRole("list", { name: "Namespace hierarchy", exact: true });
+    await expect.poll(() => tree.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    await expectNamespaceCountGutter(page);
+    await page.screenshot({ path: test.info().outputPath("namespace-count-scrollbar-gutter.png") });
+    await rail.getByRole("searchbox", { name: "Find namespaces", exact: true }).clear();
     await divider.scrollIntoViewIfNeeded();
     const dividerBox = (await divider.boundingBox())!;
     const pointerY = Math.max(10, Math.min(dividerBox.y + 24, page.viewportSize()!.height - 24));
@@ -207,6 +230,7 @@ test.describe.serial("Task Workspace live journeys", { tag: ["@live", "@no-ci"] 
     await expect(deep).toBeVisible();
     const deepName = deep.locator("xpath=ancestor::label").locator(":scope > span").last();
     expect((await deepName.boundingBox())!.width).toBeGreaterThanOrEqual(30);
+    await expectNamespaceCountGutter(page);
     await page.screenshot({ path: test.info().outputPath("namespace-minimum-width.png") });
     await rail.getByRole("searchbox", { name: "Find namespaces", exact: true }).clear();
     await divider.dblclick();

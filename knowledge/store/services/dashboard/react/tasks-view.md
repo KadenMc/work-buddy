@@ -77,6 +77,8 @@ selections, to Open / Date created / newest first / first page. Task-field draft
 and the customizable grid layout retain their separate scopes.
 
 The namespace rail has its own hierarchy search, checkbox selection, and counts.
+Tree counts retain a 12-pixel inset from the usable scrolling edge, in addition
+to the reserved native scrollbar gutter, including at the minimum pane width.
 It shows namespaces matching all other active filters, retaining selected zero-count
 paths and their ancestors. Namespace selection itself does not remove alternative
 choices. Manage namespaces always uses the complete inventory. Branches start

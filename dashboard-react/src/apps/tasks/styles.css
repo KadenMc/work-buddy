@@ -748,7 +748,7 @@
   .wb-task-workspace--redesigned .wb-task-namespace-rail .wb-task-section-heading { flex-direction:row; align-items:center; flex-wrap:wrap; gap:var(--wb-space-1); }
   .wb-task-namespace-rail__actions { display:flex; margin-inline-start:auto; }
   .wb-task-namespace-rail p { font-size:var(--wb-font-size-xs); margin:0; }
-  .wb-task-namespace-tree { list-style:none; margin:0; padding:0 var(--wb-space-2) 0 0; max-height:55vh; overflow:auto; scrollbar-gutter:stable; }
+  .wb-task-namespace-tree { list-style:none; margin:0; padding:0; padding-inline-end:var(--wb-space-5); max-height:55vh; overflow:auto; scrollbar-gutter:stable; }
   .wb-task-namespace-tree li { margin:0; padding-inline-start:calc(var(--namespace-depth,0) * 16px); }
   @container task-namespaces (max-width:220px) {
     .wb-task-namespace-tree li { padding-inline-start:min(calc(var(--namespace-depth,0) * 8px),16px); }
