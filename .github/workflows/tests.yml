@@ -33,7 +33,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          uv run pytest tests/ \
+          uv run pytest tests/ -n auto \
             --cov=work_buddy \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
