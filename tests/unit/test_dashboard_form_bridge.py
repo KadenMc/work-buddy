@@ -73,4 +73,19 @@ def test_jobs_schema_is_registered() -> None:
     assert schema is not None, "jobs-add-job schema should be registered"
     assert schema.submit_label == "Create job"
     field_names = {f.name for f in schema.fields}
-    assert {"name", "schedule", "job_type"} <= field_names
+    assert {"name", "schedule", "job_type", "skill"} <= field_names
+    assert "capability" not in field_names
+    job_type = next(field for field in schema.fields if field.name == "job_type")
+    assert job_type.enum_values == ("skill", "workflow", "prompt")
+
+
+def test_legacy_jobs_ui_uses_the_canonical_skill_contract() -> None:
+    from work_buddy.dashboard.frontend.scripts.tabs.jobs import script
+
+    source = script()
+    assert "_jobRegistry.skills" in source
+    assert "payload.skill = invokeName" in source
+    assert "data.skill" in source
+    assert "_jobRegistry.capabilities" not in source
+    assert "payload.capability" not in source
+    assert "data.capability" not in source

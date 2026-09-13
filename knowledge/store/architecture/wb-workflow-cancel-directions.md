@@ -4,7 +4,7 @@ kind: directions
 description: How to cancel a workflow run — finding the run id, the reason argument, and how cancel relates to the automatic idle sweep.
 trigger: User or agent wants to cancel, abort, or clean up a workflow run that is stuck, abandoned mid-run, or no longer wanted.
 command: wb-workflow-cancel
-capabilities:
+skills:
 - context/workflow_cancel
 tags:
 - workflow

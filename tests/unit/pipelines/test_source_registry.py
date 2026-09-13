@@ -1,4 +1,4 @@
-"""Tests for ``work_buddy.pipelines.capability.run_source_pipeline``
+"""Tests for ``work_buddy.pipelines.source_registry.run_source_pipeline``
 — the unified MCP entry point.
 """
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from work_buddy.pipelines.capability import (
+from work_buddy.pipelines.source_registry import (
     PIPELINES,
     UnknownSourceError,
     run_source_pipeline,
@@ -44,7 +44,7 @@ class TestDispatch:
             cluster_count=0,
         )
         with patch(
-            "work_buddy.pipelines.capability.run_pipeline",
+            "work_buddy.pipelines.source_registry.run_pipeline",
             return_value=fake_run,
         ):
             result = run_source_pipeline(

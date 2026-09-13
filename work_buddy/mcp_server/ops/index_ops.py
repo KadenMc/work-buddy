@@ -1,6 +1,6 @@
 """Index-domain ops — drive the consolidated index's flag-aware build.
 
-Referenced by the ``index_rebuild`` capability declaration. The sidecar's per-partition
+Referenced by the ``index_rebuild`` skill declaration. The sidecar's per-partition
 ``index-<partition>-refresh`` jobs call this on a schedule; it no-ops while ``index.enabled``
 is false and runs an incremental build of the named partition when enabled. It also
 self-skips (read-only advisory-lock probe) while ANY index build is running — the

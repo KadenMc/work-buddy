@@ -1,8 +1,7 @@
 ---
 name: Task Read
-kind: capability
+kind: skill
 description: Read native structured task context plus the current projection-free Co-work knowledge-document head without claiming it.
-capability_name: task_read
 category: tasks
 parameters:
   task_id:
@@ -10,7 +9,8 @@ parameters:
     description: Task ID (e.g., 't-xxxxxxxx')
     required: true
 op: op.wb.task_read
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: task_read
 tags:
 - tasks
 - task
@@ -23,7 +23,6 @@ aliases:
 - look at task
 parents:
 - tasks
-requires: []
 ---
 
 The document content includes the current structured head and uncompacted Yjs

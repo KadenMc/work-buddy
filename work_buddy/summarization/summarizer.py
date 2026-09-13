@@ -38,7 +38,7 @@ class RefreshReport:
 
     def to_op_dict(self) -> dict:
         """Map to the `conversation_observability_summarize` op's result shape
-        — the four-key dict consumers (sidecar job, MCP capability) expect."""
+        — the four-key dict consumers (sidecar job, MCP skill) expect."""
         return {
             "summarized": self.summarized,
             "skipped_fresh": self.skipped_fresh,

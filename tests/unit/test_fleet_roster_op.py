@@ -1,4 +1,4 @@
-"""Tests for the fleet_roster capability dispatch (config.local.yaml writer).
+"""Tests for the fleet_roster skill dispatch (config.local.yaml writer).
 
 Monkeypatches the config read/write seam so no real config file is touched.
 Hardware is multi-GPU: ``gpus`` is a list of {name, vram_gb}.

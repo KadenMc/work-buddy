@@ -1,6 +1,6 @@
 """Tests for ``work_buddy.email.thread_actions`` — the per-thread
 email_close / email_create_tasks / email_create_umbrella_task
-capability backers.
+skill backers.
 """
 
 from __future__ import annotations

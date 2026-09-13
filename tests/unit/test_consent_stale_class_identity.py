@@ -15,7 +15,7 @@ exception falls through to the broad ``except Exception:`` clause
 that produces the double-prefix ``"Execution failed: ConsentRequired:
 ConsentRequired: ..."`` pattern.
 
-Same root-cause family as the registry's stale-Capability bug
+Same root-cause family as the registry's stale-Skill bug
 (fixed defensively for ``_entry_to_dict``).  The mechanism is general:
 any captured class reference is invalidated by ``sys.modules`` purges.
 

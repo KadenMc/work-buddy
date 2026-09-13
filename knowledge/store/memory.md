@@ -2,7 +2,7 @@
 name: Memory
 kind: system
 description: Personal memory subsystem — semantic store, mental models, retention, reflection
-summary: 'Personal memory subsystem backed by Hindsight. Capabilities: read, write, reflect, prune. Builds a digital twin from preferences, habits, and patterns.'
+summary: 'Personal memory subsystem backed by Hindsight. Skills: read, write, reflect, prune. Builds a digital twin from preferences, habits, and patterns.'
 tags:
 - memory
 - hindsight
@@ -28,9 +28,9 @@ Backed by Hindsight, the external server that handles storage, semantic search, 
 Two paths share one local Hindsight server:
 
 1. **Claude Code plugin (hooks)** — ambient auto-recall before every prompt, auto-retain after responses.
-2. **Python adapter** (`work_buddy/memory/`) — programmatic retain/recall/reflect for context collection, workflows, and MCP gateway capabilities.
+2. **Python adapter** (`work_buddy/memory/`) — programmatic retain/recall/reflect for context collection, workflows, and MCP gateway skills.
 
-## MCP capabilities
+## MCP skills
 
 - `memory_read` — semantic + keyword search over stored memories
 - `memory_write` — store a fact, preference, or constraint

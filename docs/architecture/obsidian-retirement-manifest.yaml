@@ -17,71 +17,71 @@ invariants:
 
 items:
   - id: contracts-active
-    kind: capability
+    kind: skill
     asset: knowledge/store/contracts/active_contracts.md
     decision: retarget
     status: implemented
     owner: contracts-sqlite
     prerequisite: contracts-store-schema-and-provider
     evidence:
-      - "Capability declaration has no Obsidian requirement and names Contracts SQLite authority."
+      - "Skill declaration has no Obsidian requirement and names Contracts SQLite authority."
   - id: contracts-constraints
-    kind: capability
+    kind: skill
     asset: knowledge/store/contracts/contract_constraints.md
     decision: retarget
     status: implemented
     owner: contracts-sqlite
     prerequisite: contracts-store-schema-and-provider
     evidence:
-      - "Capability declaration reads structured SQLite constraints and has no Obsidian requirement."
+      - "Skill declaration reads structured SQLite constraints and has no Obsidian requirement."
   - id: contracts-health
-    kind: capability
+    kind: skill
     asset: knowledge/store/contracts/contract_health.md
     decision: retarget
     status: implemented
     owner: contracts-sqlite
     prerequisite: contracts-store-schema-and-provider
     evidence:
-      - "Capability declaration names Contracts SQLite health and has no Obsidian requirement."
+      - "Skill declaration names Contracts SQLite health and has no Obsidian requirement."
   - id: contracts-wip
-    kind: capability
+    kind: skill
     asset: knowledge/store/contracts/contract_wip_check.md
     decision: retarget
     status: implemented
     owner: contracts-sqlite
     prerequisite: contracts-store-schema-and-provider
     evidence:
-      - "Capability declaration reads the SQLite active count and has no Obsidian requirement."
+      - "Skill declaration reads the SQLite active count and has no Obsidian requirement."
   - id: contracts-summary
-    kind: capability
+    kind: skill
     asset: knowledge/store/contracts/contracts_summary.md
     decision: retarget
     status: implemented
     owner: contracts-sqlite
     prerequisite: contracts-store-schema-and-provider
     evidence:
-      - "Capability declaration formats SQLite records rather than claiming Markdown authority."
+      - "Skill declaration formats SQLite records rather than claiming Markdown authority."
   - id: contracts-overdue
-    kind: capability
+    kind: skill
     asset: knowledge/store/contracts/overdue_contracts.md
     decision: retarget
     status: implemented
     owner: contracts-sqlite
     prerequisite: contracts-store-schema-and-provider
     evidence:
-      - "Capability declaration queries structured deadlines and has no Obsidian requirement."
+      - "Skill declaration queries structured deadlines and has no Obsidian requirement."
   - id: contracts-stale
-    kind: capability
+    kind: skill
     asset: knowledge/store/contracts/stale_contracts.md
     decision: retarget
     status: implemented
     owner: contracts-sqlite
     prerequisite: contracts-store-schema-and-provider
     evidence:
-      - "Capability declaration queries structured review dates and has no Obsidian requirement."
+      - "Skill declaration queries structured review dates and has no Obsidian requirement."
 
-  - id: datacore-capability-family
-    kind: capability
+  - id: datacore-skill-family
+    kind: skill
     asset: knowledge/store/context/datacore_query.md
     decision: disable
     status: implemented-by-preference-gate
@@ -90,15 +90,15 @@ items:
     evidence:
       - "Datacore declarations require obsidian and datacore; probe_all cascades an Obsidian opt-out without calling child probes."
       - "Legacy directions remove the slash command and forbid setup advice when opted out."
-  - id: vault-recon-capabilities
-    kind: capability
+  - id: vault-recon-skills
+    kind: skill
     asset: knowledge/store/context/vault_recon_collect.md
     decision: disable
     status: implemented-for-normal-path
     owner: legacy-obsidian-compatibility
     prerequisite: explicit-operator-request-during-grace-period
     evidence:
-      - "The scheduled job is disabled and the capability declaration labels the path legacy explicit-only."
+      - "The scheduled job is disabled and the skill declaration labels the path legacy explicit-only."
   - id: inline-todos-workflow
     kind: workflow
     asset: knowledge/store/tasks/inline-todos.md
@@ -108,8 +108,8 @@ items:
     prerequisite: native-task-actions
     evidence:
       - "The workflow declaration is deleted; retirement directions forbid vault scans and point to native Tasks."
-  - id: inline-capability-family
-    kind: capability
+  - id: inline-skill-family
+    kind: skill
     asset: knowledge/store/inline/
     decision: remove
     status: implemented
@@ -164,17 +164,17 @@ items:
     evidence:
       - "The callable workflow declaration is deleted so it cannot read or rewrite daily Markdown through an ordinary user path."
   - id: journal-backlog-source-pipeline
-    kind: capability-path
-    asset: work_buddy/pipelines/capability.py
+    kind: source-registry-path
+    asset: work_buddy/pipelines/source_registry.py
     decision: remove
     status: implemented
     owner: journal-sqlite
     prerequisite: native-running-notes-surface
     evidence:
-      - "journal_backlog is absent from the live source-pipeline registry and the generic capability schema."
+      - "journal_backlog is absent from the live source-pipeline registry and its generic source schema."
       - "Archived parser and clustering modules remain inert for migration evidence and old receipt interpretation."
   - id: journal-content-migration-operator
-    kind: capability
+    kind: retired-concept
     asset: knowledge/store/journal/journal-content-migration-operator.md
     decision: remove
     status: implemented
@@ -183,7 +183,7 @@ items:
     evidence:
       - "The knowledge unit is a non-callable retired concept; the old Markdown-to-Co-work path is not a database-only Journal end state."
   - id: journal-backlog-actions
-    kind: capability-family
+    kind: skill-family
     asset: knowledge/store/journal/journal_route_to_tasks.md
     decision: disable
     status: explicit-legacy-fallback
@@ -444,7 +444,7 @@ items:
     owner: runtime
     prerequisite: feature-preferences
     evidence:
-      - "recheck_tool and recheck_disabled_capability treat opt-out as authoritative even with force=true."
+      - "recheck_tool and recheck_disabled_skill treat opt-out as authoritative even with force=true."
   - id: retry-sidecar-replay
     kind: retry-operation
     asset: work_buddy/sidecar/retry_sweep.py
@@ -453,7 +453,7 @@ items:
     owner: runtime
     prerequisite: feature-preferences
     evidence:
-      - "Direct and wrapper retries cancel quietly before probing or invoking an opted-out capability."
+      - "Direct and wrapper retries cancel quietly before probing or invoking an opted-out skill."
 
   - id: setup-diagnostics
     kind: setup-reference
@@ -481,7 +481,7 @@ items:
     owner: control-graph
     prerequisite: feature-preferences
     evidence:
-      - "Disabled component, requirement, capability, and grouping briefs explain the preference without diagnostic or fix instructions."
+      - "Disabled component, requirement, skill, and grouping briefs explain the preference without diagnostic or fix instructions."
   - id: vault-investigation-knowledge
     kind: knowledge-reference
     asset: knowledge/store/vault/investigation-directions.md
@@ -512,23 +512,23 @@ items:
       - "The legacy day_planner context source is fenced before collector access when Obsidian is opted out."
       - "Legacy implementation remains isolated under work_buddy/obsidian for explicit compatibility."
   - id: hot-files-family
-    kind: capability
+    kind: skill
     asset: knowledge/store/journal/hot_files.md
     decision: disable
     status: implemented-by-preference-gate
     owner: legacy-obsidian-compatibility
     prerequisite: explicit-obsidian-opt-in
     evidence:
-      - "The capability requires obsidian and is described as explicit legacy compatibility only."
+      - "The skill requires obsidian and is described as explicit legacy compatibility only."
   - id: activity-timeline-family
-    kind: capability
+    kind: skill
     asset: knowledge/store/journal/activity_timeline.md
     decision: retarget
     status: implemented
     owner: journal-sqlite
     prerequisite: journal-native-authority
     evidence:
-      - "The capability has no Obsidian requirement and projects current native Journal revisions after seal."
+      - "The skill has no Obsidian requirement and projects current native Journal revisions after seal."
       - "Markdown compatibility is confined to the pre-seal authority epoch; cutover-paused reads fail closed."
   - id: keep-the-rhythm
     kind: compatibility-code
@@ -538,7 +538,7 @@ items:
     owner: legacy-obsidian-compatibility
     prerequisite: explicit-obsidian-opt-in
     evidence:
-      - "Only the Obsidian-gated hot-files capability consumes KTR; knowledge labels it retired app-only compatibility."
+      - "Only the Obsidian-gated hot-files skill consumes KTR; knowledge labels it retired app-only compatibility."
   - id: tag-wrangler
     kind: compatibility-code
     asset: work_buddy/obsidian/tags/
@@ -547,7 +547,7 @@ items:
     owner: legacy-obsidian-compatibility
     prerequisite: explicit-obsidian-opt-in
     evidence:
-      - "The scheduled inline consumer and public inline capability family are removed; knowledge labels Tag Wrangler retired app-only compatibility."
+      - "The scheduled inline consumer and public inline skill family are removed; knowledge labels Tag Wrangler retired app-only compatibility."
   - id: vault-event-ledger
     kind: compatibility-code
     asset: work_buddy/obsidian/vault_events/
@@ -556,4 +556,4 @@ items:
     owner: legacy-obsidian-compatibility
     prerequisite: explicit-obsidian-opt-in
     evidence:
-      - "Only Obsidian-gated activity capabilities retain this implementation; knowledge forbids bootstrap on the opted-out path."
+      - "Only Obsidian-gated activity skills retain this implementation; knowledge forbids bootstrap on the opted-out path."

@@ -1,11 +1,10 @@
 ---
 name: Read Message
-kind: capability
+kind: skill
 description: Fetch a single message with full body content
-capability_name: read_message
 category: messaging
 op: op.wb.read_message
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   msg_id:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: str
     description: Session ID for read-tracking
     required: false
+skill_name: read_message
 tags:
 - messaging
 - read

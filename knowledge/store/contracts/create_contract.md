@@ -1,10 +1,7 @@
 ---
 name: Create Contract
-kind: capability
+kind: skill
 description: Create one revisioned contract in the sealed Contracts SQLite authority after the user confirms the draft.
-requires:
-- contracts
-capability_name: create_contract
 category: contracts
 parameters:
   payload:
@@ -20,11 +17,14 @@ retry_policy: verify_first
 consent_operations:
 - contracts.create
 op: op.wb.create_contract
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: create_contract
 tags:
 - contracts
 - create
 parents:
+- contracts
+requires:
 - contracts
 ---
 

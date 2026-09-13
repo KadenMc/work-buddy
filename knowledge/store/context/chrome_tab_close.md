@@ -1,11 +1,10 @@
 ---
 name: Chrome Tab Close
-kind: capability
+kind: skill
 description: Close specified Chrome tabs by tab ID. Returns count of closed/missing tabs.
-capability_name: chrome_tab_close
 category: context
 op: op.wb.chrome_tab_close
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   tab_ids:
     type: list
@@ -17,6 +16,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: moderate
   regret_potential: moderate
+skill_name: chrome_tab_close
 tags:
 - context
 - chrome

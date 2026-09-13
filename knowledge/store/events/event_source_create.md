@@ -1,11 +1,10 @@
 ---
 name: Event Source Create
-kind: capability
+kind: skill
 description: Author an event source — validate the structured fields and write <event_sources>/<name>.md. Builds a polling watcher that fetches state, reacts on a meaningful change, evaluates a CEL condition, and fires a scoped action (notify). Refuses to overwrite unless overwrite=true; a malformed source returns its validation errors.
-capability_name: event_source_create
 category: events
 op: op.wb.event_source_create
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   name:
     type: str
@@ -81,6 +80,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: event_source_create
 tags:
 - events
 - source

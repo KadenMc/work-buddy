@@ -1,11 +1,11 @@
 ---
 name: Knowledge Index Status
-kind: capability
+kind: skill
 description: 'Check the knowledge search index status: whether it''s built, unit count, and whether dense vectors are available.'
-capability_name: knowledge_index_status
 category: context
 op: op.wb.knowledge_index_status
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: knowledge_index_status
 tags:
 - context
 - knowledge

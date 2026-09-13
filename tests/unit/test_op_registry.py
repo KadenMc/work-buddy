@@ -1,7 +1,7 @@
 """Unit tests for the Op registry (``work_buddy.mcp_server.op_registry``).
 
-The Op registry is the Core lookup table that capability declarations resolve
-their ``op`` field against — see the data-first-capabilities refactor.
+The Op registry is the Core lookup table that skill declarations resolve
+their ``op`` field against — see the data-first-skills refactor.
 """
 
 from __future__ import annotations

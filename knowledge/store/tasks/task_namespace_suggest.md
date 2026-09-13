@@ -1,11 +1,10 @@
 ---
 name: Task Namespace Suggest
-kind: capability
+kind: skill
 description: Rank existing namespace tags by relevance to a task text (hybrid BM25+embedding via the shared embedding service; falls back to token overlap). Returns ranked candidates from the existing universe only — it does not propose new namespaces. The calling agent decides whether to apply suggestions, add more, or mint a new namespace.
-capability_name: task_namespace_suggest
 category: tasks
 op: op.wb.task_namespace_suggest
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_text:
     type: str
@@ -23,6 +22,7 @@ parameters:
     type: int
     description: Max suggestions (default 3)
     required: false
+skill_name: task_namespace_suggest
 tags:
 - tasks
 - task

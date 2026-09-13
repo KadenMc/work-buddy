@@ -1,8 +1,7 @@
 ---
 name: Entity Resolve
-kind: capability
+kind: skill
 description: Federated lookup across the entity store + the project registry. Returns all matches in parallel, flagged by provider. Optionally records a reference when source_path + source_kind are supplied.
-capability_name: entity_resolve
 category: entities
 parameters:
   query:
@@ -18,7 +17,8 @@ parameters:
     description: One of document, chat, task, agent, manual. Required alongside source_path for side-effect reference recording.
     required: false
 op: op.wb.entity_resolve
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_resolve
 tags:
 - entities
 - entity

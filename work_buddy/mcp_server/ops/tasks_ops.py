@@ -1,6 +1,6 @@
 """Task-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). The declaration supplies
 the prose, parameter schema, and runtime metadata; the op supplies the callable.
 
@@ -46,9 +46,9 @@ def _task_dispatch(
         else native_authority_active()
     )
     if native:
-        from work_buddy.tasks import capabilities
+        from work_buddy.tasks import skills
 
-        return getattr(capabilities, native_name)(*args, **kwargs)
+        return getattr(skills, native_name)(*args, **kwargs)
     compatibility = import_module(compatibility_module)
     return getattr(compatibility, compatibility_name)(*args, **kwargs)
 
@@ -181,7 +181,7 @@ def session_tasks_get(session_id: str) -> dict[str, Any]:
     from work_buddy.tasks.runtime import native_authority_active
 
     if native_authority_active():
-        from work_buddy.tasks.capabilities import session_tasks_get as native_get
+        from work_buddy.tasks.skills import session_tasks_get as native_get
 
         return native_get(session_id)
 
@@ -204,13 +204,13 @@ def session_tasks_get(session_id: str) -> dict[str, Any]:
 
 def _register() -> None:
     # Lazy imports inside the registration function, matching the
-    # lazy-import discipline of the registry's capability builders
+    # lazy-import discipline of the registry's skill builders
     # (see architecture/mcp-import-discipline).
     from work_buddy import contracts
     from work_buddy.projects.authority import reconcile_projects_authoritatively
     from work_buddy.obsidian.effects import EffectSpec
     from work_buddy.threads.models import Task
-    from work_buddy.tasks.capabilities import task_creation_reconcile
+    from work_buddy.tasks.skills import task_creation_reconcile
     from work_buddy.work_item import task_adapter
 
     # Every task read resolves authority on each invocation.  A registry built

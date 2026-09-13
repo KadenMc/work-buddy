@@ -10,9 +10,9 @@ timezone: "America/New_York"   # IANA timezone for your location
 
 # MCP gateway behavior.
 gateway:
-  # Max serialized chars of a capability result returned inline over MCP.
+  # Max serialized chars of a skill result returned inline over MCP.
   # Oversized results are replaced with a truncation marker; the full result
-  # stays in the operation record and is retrievable via wb_capability_result.
+  # stays in the operation record and is retrievable via wb_skill_result.
   result_cap_chars: 100000
 
 # Centralized data directory for artifacts, runtime state, caches, and databases.
@@ -540,9 +540,9 @@ websearch:
   cache:
     ttl_hours: 12                  # only used by opt-in router.search(cache=True); web_search itself is ephemeral
 
-# Tool-availability probes used to gate capability dispatch. Set the
+# Tool-availability probes used to gate skill dispatch. Set the
 # matching `enabled` flag to false to skip a probe entirely (the
-# capabilities that depend on it move into DISABLED_CAPABILITIES with
+# skills that depend on it move into DISABLED_SKILLS with
 # "Disabled in config" as the reason).
 tools:
   obsidian:
@@ -558,7 +558,7 @@ tools:
   messaging:
     enabled: true
   # Datacore plugin (vault structural query). Gates the MCP datacore_*
-  # capabilities (datacore_query, datacore_run_plan, vault_recon, etc.) —
+  # skills (datacore_query, datacore_run_plan, vault_recon, etc.) —
   # NOT the bundle-collection pipeline. The datacore_collector under
   # work_buddy/collectors/ is a no-op until CONTEXT_QUERIES is populated;
   # there is no separate "collection enabled" knob.

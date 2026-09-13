@@ -1,11 +1,10 @@
 ---
 name: Reply To Message
-kind: capability
+kind: skill
 description: Reply to an existing message
-capability_name: reply_to_message
 category: messaging
 op: op.wb.reply_to_message
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   msg_id:
     type: str
@@ -23,6 +22,7 @@ parameters:
     type: str
     description: 'Reply type (default: ack)'
     required: false
+skill_name: reply_to_message
 tags:
 - messaging
 - reply

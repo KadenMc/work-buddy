@@ -235,11 +235,11 @@ def review_script() -> str:
 //   conservative default shape on network errors. Never raises.
 //
 // _wvExtractErrorKind(data) -> string | null
-//   Reads the response's nested capability-result error_kind. The
+//   Reads the response's nested skill-result error_kind. The
 //   /api/palette/execute envelope shape is:
 //      {success: true, result: <stringified-json>, provider: "work-buddy"}
 //   for short results, or a palette_result view for long ones. The
-//   underlying capability's error_kind lives inside the parsed result.
+//   underlying skill's error_kind lives inside the parsed result.
 //
 // _wvQuarantineEntry(group, item, errorKind, btn, row) -> Promise<void>
 //   Self-heal helper: when an action click learns the source is gone,
@@ -269,7 +269,7 @@ if (!window._wvExecuteAction) {
 if (!window._wvExtractErrorKind) {
     window._wvExtractErrorKind = function(envelope) {
         // Envelope is the /api/palette/execute response. The wrapped
-        // capability's verdict lives in `result` as a JSON string when
+        // skill's verdict lives in `result` as a JSON string when
         // small, or as a payload.result for palette_result views.
         if (!envelope) return null;
         // Newer-style envelope already exposes error_kind directly.

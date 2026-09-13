@@ -1,4 +1,4 @@
-"""Bounded recovery capability for committed Truth source usages."""
+"""Bounded recovery skill for committed Truth source usages."""
 
 from __future__ import annotations
 

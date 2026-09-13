@@ -1,9 +1,9 @@
 """Universal thread actions — primitives that apply to any thread
 regardless of source.
 
-These are the implementations behind the universal-action capabilities
+These are the implementations behind the universal-action skills
 (``thread_dismiss``, ``thread_defer``, ``thread_rename``) registered in
-the capability registry with ``is_action=True``. They surface in:
+the skill registry with ``is_action=True``. They surface in:
 
 - The dashboard's per-group action chip dropdown (alongside any
   source-specific actions).

@@ -1,9 +1,9 @@
-"""Read-only capability callables for the calendar integration.
+"""Read-only skill callables for the calendar integration.
 
 Registered as ops in :mod:`work_buddy.mcp_server.ops.calendar_ops` and declared
-as ``kind: capability`` knowledge units (gated by the ``google_calendar`` tool
+as ``kind: skill`` knowledge units (gated by the ``google_calendar`` tool
 probe). All callables instantiate the configured provider on demand and return
-JSON-serialisable dicts, mirroring :mod:`work_buddy.email.capabilities`.
+JSON-serialisable dicts, mirroring :mod:`work_buddy.email.skills`.
 
 Read-only surface:
   - ``calendar_health``       Provider readiness payload.
@@ -202,14 +202,14 @@ def calendar_coverage(
 # Writes — heavy, per-change consent
 # ---------------------------------------------------------------------------
 #
-# The change-specific prompt body is rendered by the public capability (which has
+# The change-specific prompt body is rendered by the public skill (which has
 # the call arguments), stashed in ``_PENDING_BODY``, and read no-arg by
 # ``body_extras`` when the gateway builds the consent prompt. This works because
-# the write capabilities declare **no** ``consent_operations`` in their knowledge
+# the write skills declare **no** ``consent_operations`` in their knowledge
 # units, so the gateway uses the *runtime* ``ConsentRequired`` path: the
-# capability runs (stashing the body) and the inner ``@requires_consent`` raises,
+# skill runs (stashing the body) and the inner ``@requires_consent`` raises,
 # and only then is the prompt built — by which point the body is set. (Pre-flight
-# consent, which fires before the capability runs, would render only the static
+# consent, which fires before the skill runs, would render only the static
 # reason.) ``_PENDING_BODY`` is process-global, mirroring the archive-consent
 # precedent that re-derives its body from process state; the single-user sidecar
 # makes cross-call clobber a non-issue, and each call overwrites before raising.
@@ -361,7 +361,7 @@ def _update_body(current, changes: dict, cal_name: str, ref) -> str:
     return "\n".join(lines) + _shared_line(ref)
 
 
-# --- public write capabilities ----------------------------------------------
+# --- public write skills ----------------------------------------------
 
 
 def create_calendar_event(

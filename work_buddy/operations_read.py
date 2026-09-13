@@ -73,7 +73,7 @@ def operation_status(op_id: str) -> dict[str, Any]:
           "operation_id": str,
           "state": "running" | "completed" | "failed" | "stale" | "not_found",
           "terminal": bool,          # True for completed/failed
-          "name": str | None,        # the capability/workflow name
+          "name": str | None,        # the skill/workflow name
           "error": str | None,
           "error_kind": str | None,
           "created_at": str | None,

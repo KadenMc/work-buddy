@@ -1,11 +1,11 @@
 ---
 name: Consent List
-kind: capability
+kind: skill
 description: List all consent entries with their status (mode, tier, expiry for temporary grants).
-capability_name: consent_list
 category: consent
 op: op.wb.consent_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: consent_list
 tags:
 - consent
 - list

@@ -78,7 +78,7 @@ def test_retired_slash_commands_and_inline_workflow_are_not_declared():
     assert not (
         REPO / "knowledge" / "store" / "daily-journal" / "process-backlog.md"
     ).exists()
-    from work_buddy.pipelines.capability import PIPELINES
+    from work_buddy.pipelines.source_registry import PIPELINES
 
     assert "journal_backlog" not in PIPELINES
 
@@ -90,7 +90,7 @@ def test_retired_slash_commands_and_inline_workflow_are_not_declared():
         / "journal-content-migration-operator.md"
     )
     assert migration["kind"] == "concept"
-    assert "capability_name" not in migration
+    assert "skill_name" not in migration
     for name in (
         "inline_cancel_watcher.md",
         "inline_invoke.md",
@@ -122,7 +122,7 @@ def test_retired_slash_commands_and_inline_workflow_are_not_declared():
     assert "does not\nprobe the bridge" in obsidian
 
 
-def test_contract_capabilities_require_no_obsidian_and_name_sqlite_authority():
+def test_contract_skills_require_no_obsidian_and_name_sqlite_authority():
     declarations = (
         "active_contracts.md",
         "contract_constraints.md",
@@ -172,7 +172,7 @@ def test_retirement_manifest_is_complete_enough_to_audit():
         "journal-content-migration-operator",
         "journal-backlog-actions",
         "inline-todos-workflow",
-        "inline-capability-family",
+        "inline-skill-family",
         "health-calendar-native",
         "health-native-authorities",
         "notification-obsidian",
@@ -229,7 +229,7 @@ def test_retired_journal_migration_operator_fences_before_legacy_discovery(
     load.assert_not_called()
 
 
-def test_app_only_capabilities_are_explicitly_obsidian_gated():
+def test_app_only_skills_are_explicitly_obsidian_gated():
     declarations = (
         REPO / "knowledge" / "store" / "context" / "context_obsidian.md",
         REPO / "knowledge" / "store" / "context" / "context_wellness.md",
@@ -578,10 +578,10 @@ def test_cached_workbuddy_palette_entry_is_rechecked_before_listing_and_call(
     monkeypatch, authenticate_dashboard_client,
 ):
     from work_buddy.dashboard import api, service
-    from work_buddy.mcp_server.registry import Capability
+    from work_buddy.mcp_server.registry import Skill
 
     call = MagicMock(side_effect=AssertionError("cached callable invoked"))
-    capability = Capability(
+    skill = Skill(
         name="legacy_bridge_call",
         description="legacy",
         category="test",
@@ -591,7 +591,7 @@ def test_cached_workbuddy_palette_entry_is_rechecked_before_listing_and_call(
     )
     monkeypatch.setattr(
         "work_buddy.mcp_server.registry.get_registry",
-        lambda: {capability.name: capability},
+        lambda: {skill.name: skill},
     )
     monkeypatch.setattr(
         "work_buddy.health.preferences.is_wanted",
@@ -601,7 +601,7 @@ def test_cached_workbuddy_palette_entry_is_rechecked_before_listing_and_call(
     assert api._workbuddy_commands({}) == []
     response = authenticate_dashboard_client(service.app.test_client()).post(
         "/api/palette/execute",
-        json={"command_id": f"work-buddy::{capability.name}", "params": {}},
+        json={"command_id": f"work-buddy::{skill.name}", "params": {}},
     )
 
     assert response.status_code == 403
@@ -611,14 +611,14 @@ def test_cached_workbuddy_palette_entry_is_rechecked_before_listing_and_call(
 
 def test_cached_sidecar_entries_are_rechecked_before_every_callable(monkeypatch):
     from work_buddy.mcp_server.registry import (
-        Capability,
+        Skill,
         WorkflowDefinition,
         WorkflowStep,
     )
     from work_buddy.sidecar.dispatch import executor
 
     call = MagicMock(side_effect=AssertionError("cached callable invoked"))
-    capability = Capability(
+    skill = Skill(
         name="legacy_bridge_call",
         description="legacy",
         category="test",
@@ -633,7 +633,7 @@ def test_cached_sidecar_entries_are_rechecked_before_every_callable(monkeypatch)
         execution="main",
         steps=[
             WorkflowStep(
-                id=capability.name,
+                id=skill.name,
                 name="legacy step",
                 instruction="",
                 step_type="code",
@@ -641,7 +641,7 @@ def test_cached_sidecar_entries_are_rechecked_before_every_callable(monkeypatch)
         ],
         requires=["obsidian"],
     )
-    registry = {capability.name: capability, workflow.name: workflow}
+    registry = {skill.name: skill, workflow.name: workflow}
     monkeypatch.setattr(
         "work_buddy.mcp_server.registry.get_registry", lambda: registry
     )
@@ -650,11 +650,11 @@ def test_cached_sidecar_entries_are_rechecked_before_every_callable(monkeypatch)
         lambda component_id: False if component_id == "obsidian" else None,
     )
 
-    capability_result = executor._execute_capability(capability.name, {})
+    skill_result = executor._execute_skill(skill.name, {})
     workflow_result = executor._execute_workflow(workflow.name, {})
-    step_result = executor._execute_code_step(capability.name, "legacy step")
+    step_result = executor._execute_code_step(skill.name, "legacy step")
 
-    for result in (capability_result, workflow_result, step_result):
+    for result in (skill_result, workflow_result, step_result):
         assert result["error_code"] == "feature_opted_out"
         assert result["opted_out"] == ["obsidian"]
     call.assert_not_called()
@@ -730,12 +730,12 @@ def test_telegram_status_skips_bridge_probe_after_obsidian_opt_out(monkeypatch):
     bridge.assert_not_called()
 
 
-def test_retry_replay_suppresses_opted_out_capability_without_invocation(monkeypatch):
-    from work_buddy.mcp_server.registry import Capability
+def test_retry_replay_suppresses_opted_out_skill_without_invocation(monkeypatch):
+    from work_buddy.mcp_server.registry import Skill
     from work_buddy.sidecar.retry_sweep import RetrySweep
 
     call = MagicMock(return_value={"success": True})
-    capability = Capability(
+    skill = Skill(
         name="legacy_bridge_call",
         description="legacy",
         category="test",
@@ -751,10 +751,10 @@ def test_retry_replay_suppresses_opted_out_capability_without_invocation(monkeyp
     )
     monkeypatch.setattr(
         "work_buddy.mcp_server.registry.get_registry",
-        lambda: {"legacy_bridge_call": capability},
+        lambda: {"legacy_bridge_call": skill},
     )
     monkeypatch.setattr(
-        "work_buddy.mcp_server.registry.get_disabled_registry",
+        "work_buddy.mcp_server.registry.get_disabled_skill_registry",
         lambda: {},
     )
 
@@ -771,11 +771,11 @@ def test_retry_replay_suppresses_opted_out_capability_without_invocation(monkeyp
 
 
 def test_gateway_manual_retry_rechecks_inner_cached_entry(monkeypatch):
-    from work_buddy.mcp_server.registry import Capability
+    from work_buddy.mcp_server.registry import Skill
     from work_buddy.mcp_server.tools import gateway
 
     call = MagicMock(side_effect=AssertionError("cached retry callable invoked"))
-    capability = Capability(
+    skill = Skill(
         name="legacy_bridge_call",
         description="legacy",
         category="test",
@@ -785,9 +785,9 @@ def test_gateway_manual_retry_rechecks_inner_cached_entry(monkeypatch):
     )
     record = {
         "operation_id": "op-legacy-retry",
-        "name": capability.name,
+        "name": skill.name,
         "params": {},
-        "type": "capability",
+        "type": "skill",
         "retry_policy": "replay",
         "status": "failed",
         "result": None,
@@ -802,7 +802,7 @@ def test_gateway_manual_retry_rechecks_inner_cached_entry(monkeypatch):
     monkeypatch.setattr(
         gateway.registry,
         "get_entry",
-        lambda name: capability if name == capability.name else None,
+        lambda name: skill if name == skill.name else None,
     )
     monkeypatch.setattr(
         "work_buddy.health.preferences.is_wanted",
@@ -818,12 +818,12 @@ def test_gateway_manual_retry_rechecks_inner_cached_entry(monkeypatch):
     call.assert_not_called()
 
 
-def test_gateway_suppresses_admitted_obsidian_capability_after_opt_out(monkeypatch):
-    from work_buddy.mcp_server.registry import Capability
+def test_gateway_suppresses_admitted_obsidian_skill_after_opt_out(monkeypatch):
+    from work_buddy.mcp_server.registry import Skill
     from work_buddy.mcp_server.tools import gateway
 
     call = MagicMock(return_value={"success": True})
-    capability = Capability(
+    skill = Skill(
         name="legacy_bridge_call",
         description="legacy",
         category="test",
@@ -836,7 +836,7 @@ def test_gateway_suppresses_admitted_obsidian_capability_after_opt_out(monkeypat
     monkeypatch.setattr(
         gateway.registry,
         "get_entry",
-        lambda name: capability if name == capability.name else None,
+        lambda name: skill if name == skill.name else None,
     )
     monkeypatch.setattr(
         "work_buddy.health.preferences.is_wanted",
@@ -849,7 +849,7 @@ def test_gateway_suppresses_admitted_obsidian_capability_after_opt_out(monkeypat
 
     result = asyncio.run(
         mcp.tools["wb_run"](
-            capability.name,
+            skill.name,
             params={},
             ctx=_FakeContext(session),
         )

@@ -4,7 +4,7 @@ The coordinator closes the cross-database crash/race boundaries around a
 retained Source, its usage reservation, and the Journal item transaction.
 Callers supply explicit stores and an already trusted service principal; this
 module performs no configured-store lookup and exposes no public migration
-capability.
+skill.
 """
 
 from __future__ import annotations

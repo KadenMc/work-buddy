@@ -435,11 +435,11 @@ def _cutover_fixture(tmp_path: Path):
     jobs = tmp_path / "jobs"
     jobs.mkdir()
     (jobs / "task-sync.md").write_text(
-        "---\nenabled: false\ntype: capability\ncapability: task_sync\nparams: {}\n---\n",
+        "---\nenabled: false\ntype: skill\nskill: task_sync\nparams: {}\n---\n",
         encoding="utf-8",
     )
     (jobs / "task-note-index.md").write_text(
-        "---\nenabled: true\ntype: capability\ncapability: ir_index\nparams:\n  source: task_note\n---\n",
+        "---\nenabled: true\ntype: skill\nskill: ir_index\nparams:\n  source: task_note\n---\n",
         encoding="utf-8",
     )
     operations = tmp_path / "operations"
@@ -680,8 +680,8 @@ def test_capture_stop_after_bindings_returns_bound_receipt_without_overwrite(tmp
 
         sync_job = cutover.paths.job_roots[0] / "task-sync.md"
         sync_job.write_text(
-            "---\nenabled: true\ntype: capability\n"
-            "capability: task_sync\nparams: {}\n---\n",
+            "---\nenabled: true\ntype: skill\n"
+            "skill: task_sync\nparams: {}\n---\n",
             encoding="utf-8",
         )
         with pytest.raises(CutoverPreconditionError, match="Legacy task producers"):
@@ -831,7 +831,7 @@ def test_native_task_note_indexer_is_allowed_but_legacy_sync_is_not(tmp_path):
 
         sync_job = cutover.paths.job_roots[0] / "task-sync.md"
         sync_job.write_text(
-            "---\nenabled: true\ntype: capability\ncapability: task_sync\nparams: {}\n---\n",
+            "---\nenabled: true\ntype: skill\nskill: task_sync\nparams: {}\n---\n",
             encoding="utf-8",
         )
         blocked = cutover.status()

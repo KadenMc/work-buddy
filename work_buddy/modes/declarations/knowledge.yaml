@@ -2,6 +2,6 @@ id: knowledge
 label: Knowledge mode
 description: >-
   Co-Think editor, canon, and suggestion surfaces. This declaration reserves
-  the mode id so capabilities may gate on it; activation, consent, and scope
+  the mode id so skills may gate on it; activation, consent, and scope
   binding are owned by the Co-Think launch.
 activatable_when: null

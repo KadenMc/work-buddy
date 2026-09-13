@@ -18,7 +18,7 @@ Plugin gotchas honored here:
 Write methods are thin wraps of ``env.py``'s existing consent-gated writers.
 They satisfy the protocol's ``isinstance`` contract but are **not** exposed
 through the gateway; ``env.py``'s ``@requires_consent`` stays dormant until a
-capability-layer write surface reaches them.
+skill-layer write surface reaches them.
 """
 
 from __future__ import annotations

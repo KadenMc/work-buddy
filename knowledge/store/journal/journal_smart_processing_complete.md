@@ -1,11 +1,10 @@
 ---
 name: Journal Smart Processing Complete
-kind: capability
+kind: skill
 description: Commit one lease-bound Journal Smart worker classification as the capture's routing, annotation, and optional task proposal.
-capability_name: journal_smart_processing_complete
 category: journal
 op: op.wb.journal_smart_processing_complete
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   request_id:
     type: str
@@ -33,13 +32,13 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: verify_first
+skill_name: journal_smart_processing_complete
 tags:
 - journal
 - internal
 - smart
 parents:
 - journal
-requires: []
 ---
 
 The output call validates the structured result against the only shape a Smart

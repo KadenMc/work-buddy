@@ -4,7 +4,7 @@ kind: directions
 description: How to update an entity's name/description, manage tags and aliases, and delete — plus the consent posture on destructive edits.
 trigger: The user wants to rename, re-describe, retag, re-alias, or delete an entity; or the user runs /wb-entity-edit.
 command: wb-entity-edit
-capabilities:
+skills:
 - entities/entity_update
 - entities/entity_set_tags
 - entities/entity_add_alias
@@ -25,7 +25,7 @@ parents:
 - entities
 ---
 
-Editing an entity is split across five capabilities so a focused change cannot accidentally clobber an unrelated field.
+Editing an entity is split across five skills so a focused change cannot accidentally clobber an unrelated field.
 
 ## Identity — entity_update
 

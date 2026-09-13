@@ -278,12 +278,12 @@ def test_delete_event_calls_delete():
     assert captured["method"] == "DELETE" and captured["sendUpdates"] == "none"
 
 
-def test_write_capability_composes_over_google_native(monkeypatch, tmp_path):
-    """The provider-agnostic heavy-consent capability layer drives native writes
+def test_write_skill_composes_over_google_native(monkeypatch, tmp_path):
+    """The provider-agnostic heavy-consent skill layer drives native writes
     end-to-end: consent gate → google_native → POST with the wb_origin marker."""
     from work_buddy import config
     from work_buddy import consent as c
-    from work_buddy.calendar import capabilities as caps
+    from work_buddy.calendar import skills
 
     cache = c.ConsentCache()
     cache._db_path = tmp_path / "consent.db"
@@ -299,9 +299,9 @@ def test_write_capability_composes_over_google_native(monkeypatch, tmp_path):
         captured["body"] = _json.loads(req.content)
         return httpx.Response(200, json={"id": "newid", "summary": "Lunch"})
 
-    monkeypatch.setattr(caps, "get_calendar_provider", lambda: _provider(handler))
+    monkeypatch.setattr(skills, "get_calendar_provider", lambda: _provider(handler))
     c._cache.grant("calendar.create_event", "always")
-    res = caps.create_calendar_event(
+    res = skills.create_calendar_event(
         summary="Lunch", start="2026-06-01T12:00:00", end="2026-06-01T13:00:00",
         calendar_id="primary@x",
     )

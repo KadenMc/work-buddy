@@ -136,12 +136,12 @@ def _assemble() -> dict[str, ControlNode]:
         fix_params_with_current_values,
     )
     from work_buddy.mcp_server.registry import (
-        Capability,
+        Skill,
         WorkflowDefinition,
         get_registry,
     )
     from work_buddy.control.graph_static import iter_static_nodes
-    from work_buddy.control.capability_resolver import (
+    from work_buddy.control.skill_resolver import (
         resolve_dependencies,
     )
 
@@ -168,7 +168,7 @@ def _assemble() -> dict[str, ControlNode]:
     try:
         registry = get_registry()
     except Exception as exc:
-        log.warning("Control graph: registry unavailable, capability nodes will be empty (%s)", exc)
+        log.warning("Control graph: registry unavailable, skill nodes will be empty (%s)", exc)
         registry = {}
 
     nodes: dict[str, ControlNode] = {}
@@ -251,7 +251,7 @@ def _assemble() -> dict[str, ControlNode]:
             f"req:{rid}" for rid in comp.requirements if rid in applicable_req_ids
         ]
 
-        # Affects-capabilities inverse edge — computed lazily below
+        # Affects-skills inverse edge — computed lazily below
 
         nodes[node_id] = ControlNode(
             id=node_id,
@@ -321,17 +321,17 @@ def _assemble() -> dict[str, ControlNode]:
         )
 
     # -----------------------------------------------------------------
-    # Step 4 — capability nodes
+    # Step 4 — skill nodes
     # -----------------------------------------------------------------
-    # Capabilities exist as graph nodes (so the resolver can walk them
-    # and the UI can list a component's `affects_capabilities`), but
-    # they do NOT get a grouping_parent. A flat list of ~170 capabilities
+    # Skills exist as graph nodes (so the resolver can walk them and the UI
+    # can list a component's `affects_skills`), but
+    # they do NOT get a grouping_parent. A flat list of registered skills
     # is not useful in the user-facing domain tree — they surface via
     # the inverse edge on each component node instead.
 
     for name, entry in registry.items():
-        node_id = f"cap:{name}"
-        if isinstance(entry, Capability):
+        node_id = f"skill:{name}"
+        if isinstance(entry, Skill):
             description = entry.description
             requires = list(entry.requires)
         elif isinstance(entry, WorkflowDefinition):
@@ -348,7 +348,7 @@ def _assemble() -> dict[str, ControlNode]:
 
         nodes[node_id] = ControlNode(
             id=node_id,
-            kind="capability",
+            kind="skill",
             label=name,
             description=description,
             grouping_parents=[],  # intentionally unparented — see note above
@@ -360,7 +360,7 @@ def _assemble() -> dict[str, ControlNode]:
     # -----------------------------------------------------------------
     # Step 5 — derive effective_state (leaves first, then roll up)
     # -----------------------------------------------------------------
-    # Order: components → requirements → capabilities → subsystems → domains
+    # Order: components → requirements → skills → subsystems → domains
     # (so every parent sees resolved children).
 
     def _resolve(node_id: str) -> EffectiveState:
@@ -399,9 +399,9 @@ def _assemble() -> dict[str, ControlNode]:
         nodes,
         _resolve,
     )
-    # Capabilities
+    # Skills
     for nid, n in nodes.items():
-        if n.kind == "capability":
+        if n.kind == "skill":
             _resolve(nid)
     # Subsystems
     for nid, n in nodes.items():
@@ -413,28 +413,29 @@ def _assemble() -> dict[str, ControlNode]:
             _resolve(nid)
 
     # -----------------------------------------------------------------
-    # Step 6 — populate affects_capabilities on component nodes
+    # Step 6 — populate affects_skills on component nodes
     # -----------------------------------------------------------------
     # Only run if registry loaded successfully (otherwise empty).
     if registry:
         for comp_id in COMPONENT_CATALOG:
             affected: list[str] = []
-            for cap_name, entry in registry.items():
-                cap_node = nodes.get(f"cap:{cap_name}")
-                if not cap_node:
+            for skill_name, entry in registry.items():
+                skill_node = nodes.get(f"skill:{skill_name}")
+                if not skill_node:
                     continue
-                # One-hop check against the capability's direct requires.
+                # One-hop check against the skill's direct requires.
                 # Full transitive closure via resolve_dependencies is
-                # O(V*E) per component; deferred to Phase B.
+                # Full transitive closure is intentionally not used here because
+                # it would be O(V*E) per component.
                 requires = (
                     list(entry.requires)
-                    if isinstance(entry, (Capability, WorkflowDefinition))
+                    if isinstance(entry, (Skill, WorkflowDefinition))
                     else []
                 )
                 if comp_id in requires:
-                    affected.append(cap_name)
+                    affected.append(skill_name)
             if affected:
-                nodes[f"component:{comp_id}"].affects_capabilities = sorted(affected)
+                nodes[f"component:{comp_id}"].affects_skills = sorted(affected)
 
     return nodes
 
@@ -457,7 +458,7 @@ def _derive_state(
         2. any hard dependency disabled → disabled  (cascade propagates)
         3. any hard dependency not-ok → blocked
         4. kind-specific: component (from health), requirement (from result),
-           capability (derived from deps alone), subsystem/domain (roll up)
+           skill (derived from deps alone), subsystem/domain (roll up)
     """
     # Rule 1: preference cascade. Components carry preference directly;
     # other kinds inherit from their component_id if present.
@@ -584,8 +585,8 @@ def _derive_state(
     if node.kind == "requirement":
         return _derive_requirement_state(node, req_by_id)
 
-    if node.kind == "capability":
-        # Deps-ok and preference-ok by this point → capability is ok
+    if node.kind == "skill":
+        # Deps-ok and preference-ok by this point → skill is ok
         return _soften("ok", "", [])
 
     if node.kind in ("subsystem", "domain"):

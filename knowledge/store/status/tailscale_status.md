@@ -1,12 +1,12 @@
 ---
 name: Tailscale Status
-kind: capability
+kind: skill
 description: 'Check Tailscale VPN status: daemon state, tailnet identity, online peers, and Serve configuration (published ports).'
-capability_name: tailscale_status
 category: status
 op: op.wb.tailscale_status
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 slash_command: wb-tailscale-status
+skill_name: tailscale_status
 tags:
 - status
 - tailscale

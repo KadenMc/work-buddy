@@ -24,7 +24,7 @@ from .store import default_task_db_path
 
 NATIVE_AUTHORITY_EPOCHS = frozenset({"native", "active"})
 AUTHORITY_LATCH_SCHEMA = "wb.task-authority-latch/v1"
-TASK_MUTATION_CAPABILITIES = frozenset(
+TASK_MUTATION_SKILLS = frozenset(
     {
         "task_archive",
         "task_assign",
@@ -403,10 +403,10 @@ def native_task_mutation_authority(path: str | Path | None = None) -> bool:
     return is_native_authority_epoch(epoch)
 
 
-def is_task_mutation_capability(name: object) -> bool:
-    """Return whether an MCP capability can mutate task authority."""
+def is_task_mutation_skill(name: object) -> bool:
+    """Return whether an MCP skill can mutate task authority."""
 
-    return str(name or "") in TASK_MUTATION_CAPABILITIES
+    return str(name or "") in TASK_MUTATION_SKILLS
 
 
 def _authority_family(epoch: str | None) -> str:
@@ -465,7 +465,7 @@ __all__ = [
     "AUTHORITY_LATCH_SCHEMA",
     "AuthorityLatch",
     "NATIVE_AUTHORITY_EPOCHS",
-    "TASK_MUTATION_CAPABILITIES",
+    "TASK_MUTATION_SKILLS",
     "activation_authority_latch_path",
     "arm_native_authority_latch",
     "assert_task_mutations_allowed",
@@ -473,7 +473,7 @@ __all__ = [
     "authority_epoch",
     "authority_latch_path",
     "clear_pending_authority_latch",
-    "is_task_mutation_capability",
+    "is_task_mutation_skill",
     "is_native_authority_epoch",
     "mutation_actor",
     "mutation_fence_active",

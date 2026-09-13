@@ -23,7 +23,7 @@ _DEFAULT_FIXTURES: tuple[SearchHit, ...] = (
         provider="fake",
         published="2026-01-01T00:00:00Z",
         score=0.99,
-        raw_text="work-buddy is a personal agent framework. It exposes capabilities "
+        raw_text="work-buddy is a personal agent framework. It exposes skills "
         "and workflows through an MCP gateway. This is fixture full text.",
     ),
     SearchHit(

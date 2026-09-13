@@ -33,7 +33,7 @@ dev_notes: |-
 
   ## Sidecar executor
 
-  `work_buddy/sidecar/dispatch/executor.py::_execute_workflow(name, params)` forwards to `start_workflow(name, params=params or None)`. Job files (.md frontmatter) carry `params: {...}` under either capability or workflow types; `create_user_job_file` writes it for both. The whole pipeline is exercised by `tests/unit/test_workflow_params.py`.
+  `work_buddy/sidecar/dispatch/executor.py::_execute_workflow(name, params)` forwards to `start_workflow(name, params=params or None)`. Job files (.md frontmatter) carry `params: {...}` under either skill or workflow types; `create_user_job_file` writes it for both. The whole pipeline is exercised by `tests/unit/test_workflow_params.py`.
 ---
 
 A workflow is a `kind: workflow` knowledge unit — one Markdown file per workflow under `knowledge/store/`, with the `steps` DAG in YAML frontmatter and each step's prose under a `## <step-id>` body section. Each unit carries:
@@ -115,7 +115,7 @@ If a downstream step legitimately needs to *modify* an upstream value (annotate 
 
 ## Caller-provided initial params
 
-Workflows can declare a `params_schema` (mirrors `Capability.parameters`) and accept caller-provided params at start:
+Workflows can declare a `params_schema` (mirrors `Skill.parameters`) and accept caller-provided params at start:
 
 ```json
 "params_schema": {

@@ -79,7 +79,7 @@ def test_detect_error_none_for_opaque_output():
 # trim_tool_calls — default path
 # ---------------------------------------------------------------------------
 
-def _make_success_call(tool="wb_run", capability="sidecar_status", payload=None) -> dict:
+def _make_success_call(tool="wb_run", skill="sidecar_status", payload=None) -> dict:
     """Build a realistic tool_call entry as LM Studio emits it."""
     payload = payload if payload is not None else {"result": "ok", "big": "x" * 5000}
     wrapped = json.dumps([
@@ -88,13 +88,13 @@ def _make_success_call(tool="wb_run", capability="sidecar_status", payload=None)
     return {
         "type": "tool_call",
         "tool": tool,
-        "arguments": {"capability": capability, "params": {}},
+        "arguments": {"skill": skill, "params": {}},
         "output": wrapped,
         "provider_info": {"server_label": "work-buddy", "type": "ephemeral_mcp"},
     }
 
 
-def _make_error_call(tool="wb_run", capability="task_toggle", error_msg="denied") -> dict:
+def _make_error_call(tool="wb_run", skill="task_toggle", error_msg="denied") -> dict:
     payload = {"error": error_msg}
     wrapped = json.dumps([
         {"type": "text", "text": json.dumps(payload)},
@@ -102,7 +102,7 @@ def _make_error_call(tool="wb_run", capability="task_toggle", error_msg="denied"
     return {
         "type": "tool_call",
         "tool": tool,
-        "arguments": {"capability": capability, "params": {}},
+        "arguments": {"skill": skill, "params": {}},
         "output": wrapped,
         "provider_info": {"server_label": "work-buddy", "type": "ephemeral_mcp"},
     }
@@ -115,7 +115,7 @@ def test_default_strips_outputs(monkeypatch):
         "work_buddy.artifacts.save",
         _must_not_be_called, raising=False,
     )
-    calls = [_make_success_call(), _make_success_call(capability="feature_status")]
+    calls = [_make_success_call(), _make_success_call(skill="feature_status")]
     out = trim_tool_calls(
         calls,
         persist_tool_results=False,
@@ -165,7 +165,7 @@ def test_persist_true_saves_each_call(monkeypatch):
 
     monkeypatch.setattr("work_buddy.artifacts.save", spy_save)
 
-    calls = [_make_success_call(), _make_success_call(capability="feature_status")]
+    calls = [_make_success_call(), _make_success_call(skill="feature_status")]
     out = trim_tool_calls(
         calls, persist_tool_results=True,
         session_id="lms-persist", tool_preset="readonly_safe",
@@ -219,9 +219,9 @@ def test_error_in_batch_auto_persists_all(monkeypatch):
     monkeypatch.setattr("work_buddy.artifacts.save", spy_save)
 
     calls = [
-        _make_success_call(capability="sidecar_status"),
-        _make_error_call(capability="task_toggle", error_msg="ACL denied"),
-        _make_success_call(capability="feature_status"),
+        _make_success_call(skill="sidecar_status"),
+        _make_error_call(skill="task_toggle", error_msg="ACL denied"),
+        _make_success_call(skill="feature_status"),
     ]
     out = trim_tool_calls(
         calls,

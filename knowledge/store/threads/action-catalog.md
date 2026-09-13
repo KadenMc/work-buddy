@@ -1,8 +1,8 @@
 ---
-name: Action Catalog (typed lens over capability + workflow registries)
+name: Action Catalog (typed lens over skill + workflow registries)
 kind: concept
-description: 'Filtered view over the existing capability + workflow registries: entries where is_action=True. Four action kinds: Standard, Improvised, Suggestion, Clarification.'
-summary: 'Capability/workflow definitions carry is_action / available_in / intrinsic_amplifiers / parameter_schema_for_action / requires_post_review, and action inference is wired through these fields. 2026-05-03: added ActionKind.CLARIFICATION (route to AWAITING_ACTION_CLARIFICATION); the catalog is injected into the action-inference prompt.'
+description: 'Filtered view over the existing skill + workflow registries: entries where is_action=True. Four action kinds: Standard, Improvised, Suggestion, Clarification.'
+summary: 'Skill/workflow definitions carry is_action / available_in / intrinsic_amplifiers / parameter_schema_for_action / requires_post_review, and action inference is wired through these fields. ActionKind.CLARIFICATION routes to AWAITING_ACTION_CLARIFICATION; the catalog is injected into the action-inference prompt.'
 tags:
 - threads
 - actions
@@ -14,7 +14,7 @@ parents:
 
 ## Four action kinds
 
-- **Standard**: registered capability or workflow. The FSM dispatches into the existing capability call infrastructure or the workflow conductor.
+- **Standard**: registered skill or workflow. The FSM dispatches into the existing skill call infrastructure or the workflow conductor.
 - **Improvised**: agent runs an action without a registered template — multi-turn agent loop with tools, deciding each step as it goes. NO workflow definition synthesised. Always requires user approval. Trace can be promoted to a Standard Action via explicit user gesture.
 - **Suggestion**: agent has a concrete advisory recommendation for the user (e.g. "consider archiving this"). Surfaced as a card; agent has no execution role. NOT a low-confidence fallback and NOT for asking the user questions.
 - **Clarification**: agent genuinely cannot propose any concrete action — too little information in the inciting context to map to anything. The proposal carries a `blocked_on` field stating exactly what's needed. Routes the FSM to AWAITING_ACTION_CLARIFICATION (short-circuits the policy gate; clarification is not executable). Reserved for cases where the inciting context is too sparse to call any registered standard action — `wb/TODO X` is enough to call task_create with task_text=X, so it should NOT route to clarification.
@@ -23,7 +23,7 @@ parents:
 
 The Action Catalog is injected into the action-inference prompt as a markdown list of `name: description` + `params:` lines (see `work_buddy.threads.bootstrap._maybe_format_action_catalog`). Without this block the agent can't pick a Standard Action by name and falls back to improvised/suggestion plans. Schema detection is by the presence of `kind: standard` in the schema's enum, so both staged ACTION and COMBINED targets get the catalog.
 
-## Capability/Workflow extensions
+## Skill/Workflow extensions
 
 - ``is_action: bool`` — opt-in for Action Catalog inclusion.
 - ``available_in: set[InvocationContext]`` — defaults to {AGENT_CONVERSATION, AGENT_AUTONOMOUS, ACTION_PROPOSAL, USER_INVOCATION} (every context EXCEPT FSM_INTERNAL). Sensitive ops + FSM internals override.
@@ -33,10 +33,10 @@ The Action Catalog is injected into the action-inference prompt as a markdown li
 
 ## InvocationContext
 
-5 contexts: AGENT_CONVERSATION, AGENT_AUTONOMOUS, FSM_INTERNAL, ACTION_PROPOSAL, USER_INVOCATION. The gateway derives the caller's context server-side from session metadata; callers do NOT pass it (DESIGN.md §10.3 + correction #14). ``wb_search`` filters by available_in before returning candidates.
+5 contexts: AGENT_CONVERSATION, AGENT_AUTONOMOUS, FSM_INTERNAL, ACTION_PROPOSAL, USER_INVOCATION. The gateway derives the caller's context server-side from session metadata; callers do NOT pass it (DESIGN.md §10.3). ``wb_search`` filters by available_in before returning candidates.
 
 ## Currently flagged is_action=True
 
-- `task_create` (added 2026-05-03) — canonical Standard Action for "create a new task". Anything that recognizes itself as a TODO request (journal `wb/TODO X` lines, chrome capture parents, etc.) should route here rather than improvise.
+- `task_create` — canonical Standard Action for "create a new task". Anything that recognizes itself as a TODO request (journal `wb/TODO X` lines, chrome capture parents, etc.) should route here rather than improvise.
 
-When you add an `is_action=True` capability, double-check `available_in` includes `InvocationContext.ACTION_PROPOSAL` — without it the entry is filtered out of the agent-facing catalog and the inference layer can't pick it.
+When you add an `is_action=True` skill, double-check `available_in` includes `InvocationContext.ACTION_PROPOSAL` — without it the entry is filtered out of the agent-facing catalog and the inference layer can't pick it.

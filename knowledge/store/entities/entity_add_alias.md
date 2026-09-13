@@ -1,8 +1,7 @@
 ---
 name: Entity Add Alias
-kind: capability
+kind: skill
 description: Attach an alias to an entity. Globally unique (one alias, one entity); raises on collision.
-capability_name: entity_add_alias
 category: entities
 parameters:
   entity_id:
@@ -20,7 +19,8 @@ parameters:
 mutates_state: true
 retry_policy: manual
 op: op.wb.entity_add_alias
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_add_alias
 tags:
 - entities
 - entity

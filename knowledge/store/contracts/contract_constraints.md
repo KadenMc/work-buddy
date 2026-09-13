@@ -1,11 +1,11 @@
 ---
 name: Contract Constraints
-kind: capability
+kind: skill
 description: Read structured bottleneck constraints for active contracts from the Contracts SQLite authority, without requiring Obsidian.
-capability_name: contract_constraints
 category: contracts
 op: op.wb.contract_constraints
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: contract_constraints
 tags:
 - contracts
 - contract

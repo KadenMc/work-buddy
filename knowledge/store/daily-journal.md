@@ -15,6 +15,6 @@ aliases:
 - journal processing
 ---
 
-Workflows that process the daily journal file: segmenting Running Notes into thread groups, building a per-thread manifest, clustering by topic, routing items to destinations, rewriting the section, and synthesizing daily updates. Distinct from `journal/` (which holds the journal-update directions and capability units) — the `daily-journal/` namespace groups the multi-step workflows.
+Workflows that process the daily journal file: segmenting Running Notes into thread groups, building a per-thread manifest, clustering by topic, routing items to destinations, rewriting the section, and synthesizing daily updates. Distinct from `journal/` (which holds the journal-update directions and skill units) — the `daily-journal/` namespace groups the multi-step workflows.
 
 The segmentation substrate is **line-range** (the LLM partitions numbered input lines into groups; ids and metadata are computed on our side). The earlier tagged-text segmentation path was retired — see `architecture/llm-runner` for the segmenter's tier escalation and `work_buddy.triage.adapters.journal._segment_with_escalation` for the implementation.

@@ -6,7 +6,7 @@ Each consumer of the agent↔form bridge declares a ``FormSchema`` here
   * The brief renderer (``interact_brief.render_form_section``) to
     generate the structural prose appended to chat-walkthrough agents'
     starter prompts. Agents never see field IDs hand-written into prose.
-  * The ``dashboard_interact`` MCP capability to validate the form_id,
+  * The ``dashboard_interact`` MCP skill to validate the form_id,
     field name, and value type/regex before publishing the bus event.
   * The frontend ``window.wbFormBridge`` to wire field handlers, the
     submit handler, and the open handler — one registration per form.
@@ -26,7 +26,7 @@ from typing import Any
 
 
 # Field type identifiers the bridge understands. Free-form ``str`` is
-# the default; the others enable extra validation in the capability
+# the default; the others enable extra validation in the skill
 # (cron field-count check, enum membership check, etc.).
 FIELD_TYPES = frozenset({
     "str",
@@ -46,7 +46,7 @@ class Field:
         name: Canonical key the agent uses to address this field
             (e.g. ``"schedule"``). Stable; never renamed.
         type: One of :data:`FIELD_TYPES`. Drives validation in the
-            ``dashboard_interact`` capability.
+            ``dashboard_interact`` skill.
         ui_id: DOM element id this field maps to in the rendered page.
             The contract test asserts this id exists; the frontend
             bridge uses it to dispatch ``form_field_set`` events.

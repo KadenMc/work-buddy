@@ -1,11 +1,10 @@
 ---
 name: Memory Write
-kind: capability
+kind: skill
 description: Store a personal fact, preference, or constraint in memory
-capability_name: memory_write
 category: memory
 op: op.wb.memory_write
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   content:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: str
     description: 'Domain: work, life, health (default life)'
     required: false
+skill_name: memory_write
 tags:
 - memory
 - write

@@ -1,11 +1,10 @@
 ---
 name: Email Get
-kind: capability
+kind: skill
 description: Fetch one email message by its operational handle (provider_message_id + folder_path) — returns the body up to max_body_chars chars plus all summary fields.
-capability_name: email_get
 category: email
 op: op.wb.email_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   provider_message_id:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Body truncation cap (default 8000)
     required: false
+skill_name: email_get
 tags:
 - email
 - get

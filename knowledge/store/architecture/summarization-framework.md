@@ -89,7 +89,7 @@ At each `refresh` / `refresh_one` the composer re-bridges the strategy's `prompt
 
 | Composition | Source | Strategy | Store | Used by |
 |---|---|---|---|---|
-| `conversation_session` | `SessionSource` | `LayeredDisclosureStrategy` (v1; legacy callers) OR `IncrementalLayeredStrategy` (v2; queue worker) | `DurableSummaryStore(namespace="conversation_session")` — selection_version=1 for v1, 2 for v2 | dashboard `/api/chats/<id>/topics`, `/wb-session-identify`, `agent_session_summary` collector, `session_summary_get` MCP capability, the `summarization-worker` sidecar job |
+| `conversation_session` | `SessionSource` | `LayeredDisclosureStrategy` (v1; legacy callers) OR `IncrementalLayeredStrategy` (v2; queue worker) | `DurableSummaryStore(namespace="conversation_session")` — selection_version=1 for v1, 2 for v2 | dashboard `/api/chats/<id>/topics`, `/wb-session-identify`, `agent_session_summary` collector, `session_summary_get` MCP skill, the `summarization-worker` sidecar job |
 | `chrome_page` | `ChromeSource` (per-call) | `FlatExtractionStrategy` (BATCHED) | `TtlCacheStore(key_prefix="summarize_tab", ttl=30m)` | `chrome_infer._summarize_tabs`, `pipelines/chrome.py` |
 
 The lazy singleton `get_session_summarizer()` always builds v1; the worker explicitly constructs v2 via `build_session_summarizer(use_incremental=True)`. The split keeps legacy v1-shape callers (tests, query helpers) on v1 strategy without flipping under them when the production flag changes.
@@ -99,8 +99,8 @@ The lazy singleton `get_session_summarizer()` always builds v1; the worker expli
 Summaries are made searchable and drillable by two separate but coordinated layers:
 
 - **IR `summary` source** (`work_buddy/ir/sources/summary.py`) — emits one Document per `SummaryNode` row. BM25 fields (`title` 1.75x, `summary` 1.0x, `keywords` 2.0x) plus a combined dense_text. Rebuilt by the `summary-index-rebuild` sidecar job every 5 minutes; built ad-hoc via `ir_index(source="summary")`.
-- **`summary_search`** capability (`work_buddy/summarization/funnel.py`) — the coarse-to-fine retrieval funnel. Stage 1 ranks summary nodes; stage 2 drills via `session_search` (or any registered per-namespace drill handler). See `summarization/summary_search`.
-- **`drill_tree`** capability (`work_buddy/disclosure/`) — the unified navigation contract. `domain="summary"` walks the per-node tree at three depths (index / summary / full). See `disclosure/`.
+- **`summary_search`** skill (`work_buddy/summarization/funnel.py`) — the coarse-to-fine retrieval funnel. Stage 1 ranks summary nodes; stage 2 drills via `session_search` (or any registered per-namespace drill handler). See `summarization/summary_search`.
+- **`drill_tree`** skill (`work_buddy/disclosure/`) — the unified navigation contract. `domain="summary"` walks the per-node tree at three depths (index / summary / full). See `disclosure/`.
 
 A new summarizable domain becomes searchable + drillable as soon as it ships a composition: no per-domain IR source or navigator to write.
 
@@ -128,6 +128,6 @@ Unit-test the composition by injecting a stub LLM via `as_caller(stub_fn)` — t
 - `work_buddy/conversation_observability/summarizer_binding.py` — `SessionSource`, `build_session_summarizer`.
 - `work_buddy/collectors/chrome_summarizer_binding.py` — `ChromeSource`, `build_chrome_summarizer`, `summarize_tabs` (the public Chrome entry).
 - `work_buddy/ir/sources/summary.py` — IR adapter for the per-node summary store.
-- `work_buddy/disclosure/summary_tree.py` — `SummaryTreeDrillable` for the unified `drill_tree` capability.
+- `work_buddy/disclosure/summary_tree.py` — `SummaryTreeDrillable` for the unified `drill_tree` skill.
 
 Tests: `tests/unit/test_summarization_framework.py`, `tests/unit/test_summarization_store.py`, `tests/unit/test_incremental_strategy.py`, `tests/unit/test_summarization_queue.py`, `tests/unit/test_chrome_summarization.py`, `tests/unit/test_conversation_observability_summaries.py`, `tests/unit/test_ir_summary_source.py`, `tests/unit/test_summarization_funnel.py`, `tests/unit/test_disclosure.py`.

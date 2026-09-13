@@ -17,7 +17,7 @@ params_schema:
     required: false
   kind:
     type: str
-    description: "(create only) Unit kind: directions, system, concept, reference, integration, service, capability, or workflow."
+    description: "(create only) Unit kind: directions, system, concept, reference, integration, service, skill, or workflow."
     required: false
 steps:
 - id: resolve
@@ -69,7 +69,7 @@ parents:
 
 `docs_edit` is how an agent edits or creates a knowledge unit. The system store is one Markdown file per unit, so **editing a unit is editing its file** — this workflow brackets that native `Edit` with a resolve step (validate the request, hand back the file path) and a commit step (validate the result, reconcile the store cache + search index) so the change is correct and immediately visible to `agent_docs` / `knowledge` queries.
 
-It handles **every unit kind** — prose (directions, system, concept, reference, integration, service), capability declarations, and workflow units alike; the commit step's validation is kind-aware. Operations that are not content edits — deleting or moving a unit — stay on the `docs_delete` / `docs_move` capabilities.
+It handles **every unit kind** — prose (directions, system, concept, reference, integration, service), skill declarations, and workflow units alike; the commit step's validation is kind-aware. Operations that are not content edits — deleting or moving a unit — stay on the `docs_delete` / `docs_move` skills.
 
 ## resolve
 
@@ -81,4 +81,4 @@ Edit the unit file at the `file` path the `resolve` step returned, using your na
 
 ## commit
 
-Auto-run. Re-reads the file and runs the kind-aware validation suite — DAG integrity, duplicate placeholders, required and kind-specific fields, capability op-resolution, directions→workflow binding resolution, and (for workflow units) step-DAG cycles / dangling dependencies and `## heading` ↔ step-id consistency — then reconciles the store cache and search index. If it returns `status: "error"`, fix the reported issues in the file and run `docs_edit` again; the reported `unit_errors` are scoped to the unit you edited.
+Auto-run. Re-reads the file and runs the kind-aware validation suite — DAG integrity, duplicate placeholders, required and kind-specific fields, skill op-resolution, directions→workflow binding resolution, and (for workflow units) step-DAG cycles / dangling dependencies and `## heading` ↔ step-id consistency — then reconciles the store cache and search index. If it returns `status: "error"`, fix the reported issues in the file and run `docs_edit` again; the reported `unit_errors` are scoped to the unit you edited.

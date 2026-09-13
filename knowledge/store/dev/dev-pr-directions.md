@@ -5,7 +5,7 @@ description: How to run /wb-dev-pr — chained doc-update via /wb-dev-document, 
 trigger: When the user invokes /wb-dev-pr or asks to commit work-buddy code changes with test verification and structured metadata recording
 command: wb-dev-pr
 workflow: dev/dev-pr
-capabilities:
+skills:
 - commit_record
 tags:
 - dev

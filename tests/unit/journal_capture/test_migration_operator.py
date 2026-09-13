@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from work_buddy.consent import ConsentRequired, get_consent_metadata
-from work_buddy.knowledge.capability_loader import load_declared_capabilities
+from work_buddy.knowledge.skill_loader import load_declared_skills
 from work_buddy.knowledge.store import load_store
 from work_buddy.mcp_server import op_registry
 from work_buddy.mcp_server.ops import journal_migration_ops
@@ -26,7 +26,7 @@ def test_operator_is_retired_from_discovery_but_warm_op_remains_fenced() -> None
     op_registry.clear_ops()
     op_registry.load_builtin_ops()
     store = load_store()
-    capabilities, issues = load_declared_capabilities(store)
+    skills, issues = load_declared_skills(store)
     assert not [
         issue
         for issue in issues
@@ -34,7 +34,7 @@ def test_operator_is_retired_from_discovery_but_warm_op_remains_fenced() -> None
     ]
     assert not [
         item
-        for item in capabilities
+        for item in skills
         if item.name == "journal_content_migration_operator"
     ]
     # A process that loaded the old declaration may still hold the raw Op.

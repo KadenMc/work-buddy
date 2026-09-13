@@ -1,7 +1,7 @@
 """Telegram bot command and message handlers.
 
 All handlers check the allow-list before processing. Handlers call
-into Work Buddy's existing capabilities rather than implementing
+into Work Buddy's existing skills rather than implementing
 business logic directly.
 
 Slash commands (must be first character, one per message):

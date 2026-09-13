@@ -1,11 +1,10 @@
 ---
 name: Task Assign
-kind: capability
+kind: skill
 description: Claim a native task for the current session and return structured task plus current Co-work knowledge context.
-capability_name: task_assign
 category: tasks
 op: op.wb.task_assign
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_id:
     type: str
@@ -21,6 +20,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: verify_first
+skill_name: task_assign
 tags:
 - tasks
 - task
@@ -32,7 +32,6 @@ aliases:
 - start task
 parents:
 - tasks
-requires: []
 ---
 
 Returns native task/document context and a mutation receipt. It never returns a

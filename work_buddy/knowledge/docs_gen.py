@@ -3,9 +3,9 @@
 Loads the unified JSON store and renders type-specific Markdown pages
 for MkDocs. Each unit kind gets a tailored template:
 
-- DirectionsUnit → behavioral guide with trigger, linked workflow/capabilities
+- DirectionsUnit → behavioral guide with trigger, linked workflow/skills
 - SystemUnit → reference page with ports, entry points
-- CapabilityUnit → capability card with parameter table
+- SkillUnit → direct-skill card with parameter table
 - WorkflowUnit → workflow page with step table, execution policy
 
 The nav structure mirrors the DAG hierarchy.
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.knowledge.model import (
-    CapabilityUnit,
+    SkillUnit,
     DirectionsUnit,
     PromptUnit,
     WorkflowUnit,
@@ -58,10 +58,10 @@ def _render_directions(unit: DirectionsUnit) -> str:
     if unit.workflow:
         lines += [f"**Linked workflow:** `{unit.workflow}`", ""]
 
-    if unit.capabilities:
-        lines += ["## Related capabilities", ""]
-        for cap in unit.capabilities:
-            lines.append(f"- `{cap}`")
+    if unit.skills:
+        lines += ["## Related skills", ""]
+        for skill in unit.skills:
+            lines.append(f"- `{skill}`")
         lines.append("")
 
     content = unit.content.get("full") or unit.content.get("summary", "")
@@ -111,14 +111,14 @@ def _render_generic(unit: PromptUnit) -> str:
     return "\n".join(lines)
 
 
-def _render_capability(unit: CapabilityUnit) -> str:
-    """Render a CapabilityUnit as a Markdown page."""
+def _render_skill(unit: SkillUnit) -> str:
+    """Render a SkillUnit as a Markdown page."""
     lines = [f"# {unit.name}", ""]
 
     if unit.description:
         lines += [f"> {unit.description}", ""]
 
-    lines += [f"**MCP name:** `{unit.capability_name}`", ""]
+    lines += [f"**Skill name:** `{unit.skill_name}`", ""]
     if unit.category:
         lines += [f"**Category:** {unit.category}", ""]
 
@@ -190,7 +190,7 @@ def _render_workflow(unit: WorkflowUnit) -> str:
 
 _RENDERERS: dict[str, Any] = {
     "directions": _render_directions,
-    "capability": _render_capability,
+    "skill": _render_skill,
     "workflow": _render_workflow,
     # All other kinds (system, service, integration, reference, concept,
     # plus any future ad-hoc kind) default to _render_generic. Specialized
@@ -202,7 +202,7 @@ _RENDERERS: dict[str, Any] = {
 def _format_code_references(text: str) -> str:
     """Post-process rendered markdown to wrap code patterns in backticks.
 
-    Catches MCP calls, capability names, and function-like references
+    Catches MCP calls, skill names, and function-like references
     that appear as plain text in knowledge store content.
     """
     # Wrap mcp__work-buddy__wb_* calls in backticks (if not already wrapped)

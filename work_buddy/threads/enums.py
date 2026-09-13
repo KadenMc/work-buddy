@@ -149,7 +149,7 @@ class ReasoningTier(str, Enum):
 
 
 class InvocationContext(str, Enum):
-    """Where a capability/workflow may be discovered or invoked.
+    """Where a skill/workflow may be discovered or invoked.
 
     See DESIGN.md §10.3. The gateway derives the caller's context
     server-side from session metadata; callers do NOT pass it.
@@ -177,7 +177,7 @@ class ActionKind(str, Enum):
     advisory action.
     """
 
-    STANDARD = "standard"            # registered capability or workflow
+    STANDARD = "standard"            # registered skill or workflow
     IMPROVISED = "improvised"        # agent runs wild; no template
     SUGGESTION = "suggestion"        # agent has an advisory recommendation
     CLARIFICATION = "clarification"  # agent can't act; needs user info

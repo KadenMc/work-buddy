@@ -1,6 +1,6 @@
 """Email-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). The closure code below
 is moved verbatim from the former ``registry.py`` builder.
 """
@@ -12,14 +12,14 @@ from work_buddy.mcp_server.op_registry import register_op
 
 
 def _register() -> None:
-    """Capabilities exposed by the email/Thunderbird integration.
+    """Skills exposed by the email/Thunderbird integration.
 
     All callables flow through ``work_buddy.email.provider.get_email_provider``,
     which currently returns the Thunderbird HTTP client. The ``thunderbird``
     tool probe gates these so they're filtered out of the registry when the
     bridge isn't reachable.
     """
-    from work_buddy.email.capabilities import (
+    from work_buddy.email.skills import (
         email_accounts,
         email_display,
         email_get,

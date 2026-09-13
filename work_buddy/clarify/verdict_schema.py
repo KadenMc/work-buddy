@@ -98,7 +98,7 @@ _TASK_PROPOSAL_SCHEMA: dict[str, Any] = {
     "properties": {
         # ---- Slice 2 metadata fields (REQUIRED on new task records) ----
         # These fields land on Obsidian's task store via the
-        # ``tasks_create`` capability — see Slice 2 (commit be29eed).
+        # ``tasks_create`` skill.
         "kind": {
             "type": "string",
             "enum": ["task", "project", "stub", "habit", "reminder"],

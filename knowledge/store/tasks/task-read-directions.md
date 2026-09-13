@@ -5,7 +5,7 @@ description: How to read a task without claiming it — inspection-only path tha
 summary: Pure-read path. Use task_read when the user wants to inspect a task without claiming it for the current session. No session-tracker write, no state change. Use task_assign instead when the user is starting work.
 trigger: user runs /wb-task-read or asks to view a task without claiming it for the current session
 command: wb-task-read
-capabilities:
+skills:
 - tasks/task_read
 tags:
 - tasks

@@ -1,11 +1,10 @@
 ---
 name: Task Search
-kind: capability
+kind: skill
 description: Search native task descriptions in TaskStore. For full-text knowledge search, use the task-note IR source, which indexes current Co-work document heads rather than Markdown files.
-capability_name: task_search
 category: tasks
 op: op.wb.task_search
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -23,6 +22,7 @@ parameters:
     type: bool
     description: Include completed tasks (default True)
     required: false
+skill_name: task_search
 tags:
 - tasks
 - task

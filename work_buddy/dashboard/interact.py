@@ -1,6 +1,6 @@
 """Agent ↔ dashboard form bridge — server side.
 
-The single typed MCP capability ``dashboard_interact`` is the only
+The single typed MCP skill ``dashboard_interact`` is the only
 thing chat-walkthrough agents call to drive dashboard surfaces. It
 dispatches to per-action handlers; right now (step 2 of the build):
 
@@ -15,7 +15,7 @@ Step 4 will add rendezvous-based actions (``form_submit``,
 ``form_get_state``). Their entry points are sketched here as
 ``NotImplementedError`` so the dispatcher's shape is fixed up front.
 
-Validation policy: the capability is strict. Unknown ``form_id``,
+Validation policy: the skill is strict. Unknown ``form_id``,
 unknown field name, wrong type, regex mismatch, enum non-membership
 are all errors returned to the agent — not silently published. The
 frontend bridge receives only validated events.
@@ -39,7 +39,7 @@ logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Event names (kept in one place so the frontend bridge subscribes to
-# the same strings the capability publishes)
+# the same strings the skill publishes)
 # ---------------------------------------------------------------------------
 
 EVT_FIELD_SET = "dashboard.form.field_set"
@@ -160,16 +160,16 @@ def _action_form_cancel(schema: FormSchema) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Rendezvous — synchronous request/response between the capability and the
+# Rendezvous — synchronous request/response between the skill and the
 # frontend. Used by ``form_submit`` and ``form_get_state``.
 #
 # Flow per call:
-#   1. Capability creates a queue keyed by a fresh request_id.
-#   2. Capability publishes the event with that request_id on the bus.
+#   1. Skill creates a queue keyed by a fresh request_id.
+#   2. Skill publishes the event with that request_id on the bus.
 #   3. Frontend receives the event, runs its handler, POSTs the result to
 #      ``/api/dashboard/interact/result/<request_id>`` (handled in
 #      ``service.py``, which calls :func:`deliver_result`).
-#   4. Capability blocks on the queue, returns the posted result, or
+#   4. Skill blocks on the queue, returns the posted result, or
 #      times out and returns ``{ok: false, error: "timeout"}``.
 #
 # Stale entries are evicted by the periodic sweeper below.
@@ -215,7 +215,7 @@ def deliver_result(request_id: str, payload: dict[str, Any]) -> bool:
 def _sweeper_loop() -> None:
     """Drop rendezvous entries older than _SWEEP_MAX_AGE_S.
 
-    The capability times out by itself, but if its calling thread
+    The skill times out by itself, but if its calling thread
     dies (e.g. the MCP gateway restarts mid-call), the queue is
     orphaned. This keeps _pending bounded.
     """
@@ -306,7 +306,7 @@ def _action_form_get_state(
 
 
 # ---------------------------------------------------------------------------
-# Capability entry point
+# Skill entry point
 # ---------------------------------------------------------------------------
 
 def dashboard_interact(

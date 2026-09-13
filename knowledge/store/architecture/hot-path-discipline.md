@@ -38,7 +38,7 @@ dev_notes: |-
   - **load->mutate->save:** `chat_collector._load_cache` returns a dict the caller mutates then saves; the memo returns a shallow copy so added keys don't poison it, and the save bumps the file mtime to invalidate the next read.
   - **Concurrency:** single-flight the background refresh (a `_refreshing` flag) so a stale key doesn't spawn many refreshers; last-writer-wins on a deterministic global is harmless.
 ---
-Work that lands on a hot path -- every store connection open, or every request to a serving surface (dashboard handler, MCP capability, sidecar job) -- must be cheap. Two root causes account for the multi-second stalls this discipline prevents.
+Work that lands on a hot path -- every store connection open, or every request to a serving surface (dashboard handler, MCP skill, sidecar job) -- must be cheap. Two root causes account for the multi-second stalls this discipline prevents.
 
 ## The two root patterns
 

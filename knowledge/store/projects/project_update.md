@@ -1,11 +1,10 @@
 ---
 name: Project Update
-kind: capability
+kind: skill
 description: 'Update a project''s identity: name, status, or description. Writes a revision row capturing the change (author + summary).'
-capability_name: project_update
 category: projects
 op: op.wb.project_update
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   slug:
     type: str
@@ -33,6 +32,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: project_update
 tags:
 - projects
 - project

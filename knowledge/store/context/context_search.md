@@ -1,11 +1,10 @@
 ---
 name: Context Search
-kind: capability
+kind: skill
 description: 'Search indexed content (conversations, documents, tabs). Requires IR index — build with ir_index first. Methods: ''substring'' (exact match, no embedding service), ''keyword'' (BM25), ''semantic'' (dense), or comma-delimited combo like ''keyword,semantic'' (default, RRF fused).'
-capability_name: context_search
 category: context
 op: op.wb.context_search
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -31,6 +30,7 @@ parameters:
     type: bool
     description: Apply recency bias to favor recent results (default true). Set false to rank purely by text relevance.
     required: false
+skill_name: context_search
 tags:
 - context
 - search
@@ -50,7 +50,7 @@ Universal IR search across every indexed source. Builds the BM25 + dense vectors
 
 For *structured* (dict-shaped) results — e.g. when chaining into [`walk`](../disclosure/walk) / [`drill_tree`](../disclosure/drill_tree) or building UI lists — reach for [`find`](../search/find) instead. Same underlying engine; different return shape.
 
-## When to use `context_search` vs related capabilities
+## When to use `context_search` vs related skills
 
 - Use **`context_search`** when you want to rank by query across one or more raw indexed sources and don't need post-hit drilling. Common path: `context_search(query, source="conversation")` for raw turn text across sessions; `context_search(query, source="chrome")` for tab text; `context_search(query, source="task_note")` for task notes; `context_search(query, source="docs")` for documents. Omitting `source` searches everywhere (results dilute fast — prefer a `source` filter when you know which domain).
 - Use **`summary_search`** when the topic lives in the summarization-framework `summary` source AND you want the per-namespace drill stage. `summary_search` is `context_search(source="summary")` plus a registered drill handler that calls `session_search` per top item, returned as `drilled` in the structured response. See `summarization/summary_search`.

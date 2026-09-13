@@ -17,7 +17,7 @@ from work_buddy.threads import execution_runner, models
 
 
 def _entry(*, is_action: bool, params: dict):
-    """Minimal stand-in for a registry ``Capability`` entry — only the
+    """Minimal stand-in for a registry ``Skill`` entry — only the
     attributes ``_bind_runtime_parameters`` reads."""
     return SimpleNamespace(is_action=is_action, parameters=params)
 
@@ -30,7 +30,7 @@ class TestBindRuntimeThreadId:
             params={"thread_id": {"type": "str", "required": True}},
         )
         out = execution_runner._bind_runtime_parameters(
-            capability_name="journal_route_to_tasks",
+            skill_name="journal_route_to_tasks",
             thread=t, provided={}, entry=entry,
         )
         assert out["thread_id"] == t.thread_id
@@ -41,7 +41,7 @@ class TestBindRuntimeThreadId:
         t = models.Thread()
         entry = _entry(is_action=True, params={"thread_id": {}})
         out = execution_runner._bind_runtime_parameters(
-            capability_name="journal_route_to_tasks",
+            skill_name="journal_route_to_tasks",
             thread=t, provided={"thread_id": "journal_backlog"}, entry=entry,
         )
         assert out["thread_id"] == t.thread_id
@@ -52,18 +52,18 @@ class TestBindRuntimeThreadId:
         t = models.Thread()
         entry = _entry(is_action=True, params={"tab_ids": {}})
         out = execution_runner._bind_runtime_parameters(
-            capability_name="chrome_tab_close",
+            skill_name="chrome_tab_close",
             thread=t, provided={}, entry=entry,
         )
         assert "thread_id" not in out
 
-    def test_skips_for_non_action_capability(self):
+    def test_skips_for_non_action_skill(self):
         # Messaging tools declare a non-FSM thread_id but are never
         # dispatched as actions — the is_action gate must exclude them.
         t = models.Thread()
         entry = _entry(is_action=False, params={"thread_id": {}})
         out = execution_runner._bind_runtime_parameters(
-            capability_name="send_message",
+            skill_name="send_message",
             thread=t, provided={}, entry=entry,
         )
         assert "thread_id" not in out
@@ -71,7 +71,7 @@ class TestBindRuntimeThreadId:
     def test_skips_when_entry_unresolved(self):
         t = models.Thread()
         out = execution_runner._bind_runtime_parameters(
-            capability_name="journal_route_to_tasks",
+            skill_name="journal_route_to_tasks",
             thread=t, provided={}, entry=None,
         )
         assert "thread_id" not in out
@@ -84,15 +84,15 @@ class TestRealDeclarationsCarryThreadId:
     """
 
     def test_thread_scoped_actions_declare_thread_id(self):
-        from work_buddy.knowledge.capability_loader import (
-            load_declared_capabilities,
+        from work_buddy.knowledge.skill_loader import (
+            load_declared_skills,
         )
         from work_buddy.knowledge.store import load_store
         from work_buddy.mcp_server import op_registry
 
         op_registry.clear_ops()
         op_registry.load_builtin_ops()
-        caps, _issues = load_declared_capabilities(load_store())
+        caps, _issues = load_declared_skills(load_store())
         by_name = {c.name: c for c in caps}
 
         # Journal route actions load without optional deps — assert hard.

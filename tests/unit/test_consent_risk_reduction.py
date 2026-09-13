@@ -1,6 +1,6 @@
 """Call-stack-aware consent risk reduction (t-3629e1b1).
 
-A capability decorated with ``@reduces_risk_for("some.op", "low")`` declares
+A skill decorated with ``@reduces_risk_for("some.op", "low")`` declares
 itself a safe invoker of ``some.op``. While it is on the call stack, inner
 ``@requires_consent("some.op", ...)`` calls auto-pass without prompting.
 Direct calls to the primitive from code NOT wrapped by that decorator must

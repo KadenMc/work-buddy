@@ -1,11 +1,10 @@
 ---
 name: Event Source Toggle
-kind: capability
+kind: skill
 description: Enable or disable an authored event source by rewriting its .md. A disabled source is skipped by the poll tick (no fetch, no fire) but its definition and cursor are preserved.
-capability_name: event_source_toggle
 category: events
 op: op.wb.event_source_toggle
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   name:
     type: str
@@ -21,6 +20,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: event_source_toggle
 tags:
 - events
 - source

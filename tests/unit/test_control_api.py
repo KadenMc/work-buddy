@@ -69,10 +69,11 @@ def test_control_graph_node_structure(client):
         "id", "kind", "label", "description",
         "grouping_parents", "dependencies",
         "preference", "effective_state",
-        "requirement_ids", "affects_capabilities",
+        "requirement_ids", "affects_skills",
         "status_reason", "blocking_issues",
     ):
         assert field in sample_node, f"missing field: {field}"
+    assert "affects_capabilities" not in sample_node
 
 
 @pytest.mark.unit

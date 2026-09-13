@@ -96,7 +96,7 @@ describe("WidgetLab", () => {
       expect(item.input).toMatchObject({
         access: { mode: item.status === "read-only" ? "read_only" : "read_write" },
         timeZone: "America/New_York",
-        capabilities: [{ name: "journal_state" }],
+        skills: [{ name: "journal_state" }],
         workflows: [{ name: "morning-routine" }],
         openAssistance: false,
       });

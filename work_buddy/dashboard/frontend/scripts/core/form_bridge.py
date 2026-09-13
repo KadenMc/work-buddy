@@ -128,7 +128,7 @@ def script() -> str:
                 result = { ok: false, error: 'submit handler threw: ' + err };
             }
             // Normalize to { ok, error?, errors_by_field? } so the
-            // capability's caller always receives the same shape.
+            // skill's caller always receives the same shape.
             if (result && typeof result === 'object' && 'ok' in result) {
                 _postResult(payload.request_id, result);
             } else if (result && result.success != null) {

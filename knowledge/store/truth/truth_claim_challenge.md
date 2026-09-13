@@ -1,11 +1,10 @@
 ---
 name: Truth Claim Challenge
-kind: capability
+kind: skill
 description: Challenge a confirmed claim with a supported, nonterminal conflicting claim while preserving both histories.
-capability_name: truth_claim_challenge
 category: truth
 op: op.wb.truth_claim_challenge
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -34,6 +33,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_claim_challenge
 tags:
 - truth
 - claim

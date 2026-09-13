@@ -2,9 +2,9 @@
 ``resolve_consent_request``.
 
 When the gateway's auto-consent flow asks the user for consent on a
-capability that touches multiple ops (e.g. ``task_create`` needs both
+skill that touches multiple ops (e.g. ``task_create`` needs both
 ``tasks.create_task`` and ``obsidian.write_file``), the bundled
-notification's operation key is ``bundle:<capability_name>`` — a
+notification's operation key is ``bundle:<skill_name>`` — a
 notification label, not a real operation any decorator checks. The
 list of underlying ops travels in
 ``consent_meta["context"]["operations"]``.
@@ -60,13 +60,13 @@ def test_resolve_consent_request_unbundles_operations() -> None:
     )
 
     record = create_consent_request(
-        operation="bundle:probe_capability",
+        operation="bundle:probe_skill",
         reason="probe — two underlying ops",
         risk="moderate",
         default_ttl=15,
         requester="test:bug1b",
         context={
-            "capability": "probe_capability",
+            "skill": "probe_skill",
             "operations": ["probe.op_a", "probe.op_b"],
             "operation_id": "op_probe_xx",
         },

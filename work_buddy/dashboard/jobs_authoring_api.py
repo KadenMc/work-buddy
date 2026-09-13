@@ -1,4 +1,4 @@
-"""Human-authorized React Jobs form; submission reuses the existing capability.
+"""Human-authorized React Jobs form; submission reuses the existing skill.
 
 The form/assistant does not write job files or invent a scheduling authority.
 Legacy management remains available during the authoring migration window.
@@ -16,15 +16,26 @@ from work_buddy.security.local_identity import LocalIdentityError
 from work_buddy.truth.identity import canonical_json, sha256_text
 
 
+def _canonicalize_job_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize cached dashboard request fields to the canonical job schema."""
+    normalized = dict(payload)
+    if normalized.get("job_type") == "capability":
+        normalized["job_type"] = "skill"
+    if "skill" not in normalized and "capability" in normalized:
+        normalized["skill"] = normalized["capability"]
+    normalized.pop("capability", None)
+    return normalized
+
+
 def create_user_job(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Shared manual-form submit path, including the existing validation/events."""
     from work_buddy.mcp_server.registry import get_registry
 
-    cap = get_registry().get("user_job_create")
-    if cap is None:
+    skill = get_registry().get("user_job_create")
+    if skill is None:
         return {"success": False, "error": "Job creation is temporarily unavailable."}
     try:
-        result = cap.callable(**dict(payload))
+        result = skill.callable(**_canonicalize_job_payload(payload))
     except TypeError as exc:
         return {"success": False, "error": f"Invalid arguments: {exc}"}
     if result.get("success"):
@@ -72,7 +83,7 @@ def create_jobs_authoring_blueprint(
         if request.content_length is not None and request.content_length > 128 * 1024:
             return jsonify({"success": False, "error": "The job form is too large."}), 413
         body = request.get_json(silent=True)
-        allowed = {"client_mutation_id", "name", "schedule", "job_type", "capability", "workflow", "prompt", "params", "jitter_seconds"}
+        allowed = {"client_mutation_id", "name", "schedule", "job_type", "skill", "capability", "workflow", "prompt", "params", "jitter_seconds"}
         if not isinstance(body, dict) or set(body) - allowed:
             return jsonify({"success": False, "error": "Invalid job form fields. This form cannot overwrite existing jobs."}), 400
         mutation_id = body.get("client_mutation_id")
@@ -88,8 +99,10 @@ def create_jobs_authoring_blueprint(
                 )
         except LocalIdentityError as exc:
             return jsonify({"success": False, "code": exc.code, "error": str(exc)}), exc.status
-        payload = {key: value for key, value in body.items() if key != "client_mutation_id"}
-        if any(not isinstance(payload.get(key, ""), str) for key in ("name", "schedule", "job_type", "capability", "workflow", "prompt")):
+        payload = _canonicalize_job_payload(
+            {key: value for key, value in body.items() if key != "client_mutation_id"}
+        )
+        if any(not isinstance(payload.get(key, ""), str) for key in ("name", "schedule", "job_type", "skill", "workflow", "prompt")):
             return jsonify({"success": False, "error": "Job text fields must be text."}), 400
         if "params" in payload and not isinstance(payload["params"], dict):
             return jsonify({"success": False, "error": "Parameters must be a JSON object.", "errors_by_field": {"params": "Use a JSON object."}}), 400

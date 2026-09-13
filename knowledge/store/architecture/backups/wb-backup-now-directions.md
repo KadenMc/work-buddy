@@ -35,7 +35,7 @@ encrypted and includes private domain data and portable scoped Truth exports.
 
 ## How
 
-Call the capability directly:
+Call the skill directly:
 
     mcp__work-buddy__wb_run("data_backup", {"manual": true})
 
@@ -43,7 +43,7 @@ The response shows the snapshot ID, tarball path, size, and whether the remote p
 
 ## When to use
 
-- About to run a `reload_capability_data` (or restart) after editing a sensitive capability.
+- About to run a `reload_skill_data` (or restart) after editing a sensitive skill.
 - About to run `task_archive` or another high-fan-out task-mutating operation.
 - About to swap branches, run a long-running script that writes to the store, or restore an older state.
 - Just want a fresh off-machine copy because it has been a while.

@@ -6,7 +6,7 @@ through Wave G, 2026-05-03):
 - ``GET /api/threads`` with the new filters: ``urgency``,
   ``has_cleanup``, ``show_all``, ``include_mid_process``.
 - ``GET /api/threads/<id>/events`` event-log inspector backing.
-- ``POST /api/run/<capability>`` allowlist gateway shim.
+- ``POST /api/run/<skill>`` allowlist gateway shim.
 
 These tests exercise the route handlers directly via the Flask
 test client + a tmp-path-isolated threads DB. They don't go
@@ -250,13 +250,13 @@ class TestThreadEventsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# /api/run/<capability> allowlist
+# /api/run/<skill> allowlist
 # ---------------------------------------------------------------------------
 
 
-class TestRunCapabilityEndpoint:
-    def test_unknown_capability_rejected_403(self, client):
-        resp = client.post("/api/run/some_random_capability",
+class TestRunSkillEndpoint:
+    def test_unknown_skill_rejected_403(self, client):
+        resp = client.post("/api/run/some_random_skill",
                            json={})
         assert resp.status_code == 403
         body = resp.get_json()
@@ -268,11 +268,11 @@ class TestRunCapabilityEndpoint:
         in the allowlist; the empty-state CTA depends on it. (Replaces
         the old ``journal_v5_scan`` allowlist entry which was removed
         when the unified pipeline rebuild collapsed per-source scan
-        capabilities into one.)"""
+        skills into one.)"""
         from work_buddy.dashboard.service import (
-            _DASHBOARD_RUNNABLE_CAPABILITIES,
+            _DASHBOARD_RUNNABLE_SKILLS,
         )
-        assert "run_source_pipeline" in _DASHBOARD_RUNNABLE_CAPABILITIES
+        assert "run_source_pipeline" in _DASHBOARD_RUNNABLE_SKILLS
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +355,7 @@ class TestActionOptionsEndpoint:
         assert resp.status_code == 200
         data = resp.get_json()
         opts = data["action_options"]
-        by_name = {o["capability_name"]: o for o in opts}
+        by_name = {o["skill_name"]: o for o in opts}
         assert data["source"] == "journal_backlog"
         assert set(by_name) == {"thread_dismiss", "thread_defer", "thread_rename"}
 
@@ -363,7 +363,7 @@ class TestActionOptionsEndpoint:
         t = _make_thread(source="unknown_source")
         resp = client.get(f"/api/threads/{t.thread_id}/action_options")
         assert resp.status_code == 200
-        names = {o["capability_name"] for o in resp.get_json()["action_options"]}
+        names = {o["skill_name"] for o in resp.get_json()["action_options"]}
         # Universal thread actions are always present, even with no
         # registered source pipeline.
         assert "thread_dismiss" in names
@@ -380,7 +380,7 @@ class TestActionOptionsEndpoint:
         store.insert_thread(child)
         resp = client.get(f"/api/threads/{child.thread_id}/action_options")
         assert resp.status_code == 200
-        names = {o["capability_name"] for o in resp.get_json()["action_options"]}
+        names = {o["skill_name"] for o in resp.get_json()["action_options"]}
         assert names == {"thread_dismiss", "thread_defer", "thread_rename"}
 
     def test_missing_thread_404(self, client):
@@ -392,7 +392,7 @@ class TestActionOptionsEndpoint:
         blank required fields and gate Approve."""
         t = _make_thread(source="journal_backlog")
         resp = client.get(f"/api/threads/{t.thread_id}/action_options")
-        by_name = {o["capability_name"]: o
+        by_name = {o["skill_name"]: o
                    for o in resp.get_json()["action_options"]}
         rename = by_name["thread_rename"]
         params = {p["name"]: p for p in rename["parameters"]}
@@ -439,7 +439,7 @@ class TestApproveFoldsActionEdits:
         from work_buddy.dashboard import service
         t = self._seed_proposal("journal_append_to_note", {})
         with service.app.test_request_context(json={"action": {
-            "capability_name": "journal_append_to_note",
+            "skill_name": "journal_append_to_note",
             "parameters": {"note_path": "Areas/Mindfulness/Meditation.md"},
         }}):
             service._apply_action_edits_for_execute(t.thread_id, t)
@@ -447,11 +447,30 @@ class TestApproveFoldsActionEdits:
         assert payload["name"] == "journal_append_to_note"
         assert payload["parameters"]["note_path"] == "Areas/Mindfulness/Meditation.md"
 
+    def test_canonical_action_name_wins_by_presence_over_cached_field(
+        self, fresh_threads_db
+    ):
+        from work_buddy.dashboard import service
+
+        t = self._seed_proposal("journal_append_to_note", {"note_path": "Z.md"})
+        before = store.latest_event_id(t.thread_id)
+        with service.app.test_request_context(json={"action": {
+            "skill_name": "",
+            "capability_name": "task_create",
+            "parameters": {"title": "Must not dispatch"},
+        }}):
+            service._apply_action_edits_for_execute(t.thread_id, t)
+
+        assert store.latest_event_id(t.thread_id) == before
+        assert service._current_action_payload(t.thread_id)["name"] == (
+            "journal_append_to_note"
+        )
+
     def test_same_action_preserves_risk(self, fresh_threads_db):
         from work_buddy.dashboard import service
         t = self._seed_proposal("send_email", {}, irreversibility="high")
         with service.app.test_request_context(json={"action": {
-            "capability_name": "send_email",
+            "skill_name": "send_email",
             "parameters": {"to": "a@b.com"},
         }}):
             service._apply_action_edits_for_execute(t.thread_id, t)

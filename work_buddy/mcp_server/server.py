@@ -56,10 +56,10 @@ def _create_server(*, transport: str = "stdio") -> FastMCP:
         "name": "work-buddy",
         "instructions": (
             "work-buddy MCP gateway with dynamic tool discovery. "
-            "Use wb_search to discover capabilities (returns parameter schemas), "
+            "Use wb_search to discover skills (returns parameter schemas), "
             "wb_run to execute them, wb_advance to step through workflows, "
             "and wb_status to check progress. "
-            "Always call wb_search first if unsure what parameters a capability accepts."
+            "Always call wb_search first if unsure what parameters a skill accepts."
         ),
     }
 
@@ -204,7 +204,7 @@ def main_http() -> None:
     # Each subprocess that may fire FSM transitions on Threads needs
     # its own bootstrap call (the sidecar daemon, the dashboard, and
     # this MCP gateway each have their own module-level state).
-    # Without this, spawn capabilities would advance a thread to
+    # Without this, spawn skills would advance a thread to
     # AWAITING_INFERENCE in this process but the enqueue handler
     # wouldn't be registered, so the thread would dead-end. The
     # shared helper centralizes the boilerplate.

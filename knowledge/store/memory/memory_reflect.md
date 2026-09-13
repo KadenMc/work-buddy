@@ -1,11 +1,10 @@
 ---
 name: Memory Reflect
-kind: capability
+kind: skill
 description: 'LLM-powered reasoning over memories. CONSENT-GATED: triggers a server-side LLM call against your Anthropic API key (~1-3K tokens per call). Use memory_read for free retrieval first.'
-capability_name: memory_reflect
 category: memory
 op: op.wb.memory_reflect
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -17,6 +16,7 @@ parameters:
     required: false
 consent_operations:
 - memory_reflect
+skill_name: memory_reflect
 tags:
 - memory
 - reflect

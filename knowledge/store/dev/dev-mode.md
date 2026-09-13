@@ -3,18 +3,18 @@ name: Development Mode
 kind: directions
 description: Enter developmental agent mode — orient on architecture, key locations, and dev workflow for modifying work-buddy itself
 summary: Developmental mode — modify the work-buddy codebase itself. Always run the dev-orient workflow before writing any code.
-trigger: When the user invokes /wb-dev, asks to build something in work-buddy, or needs to add/fix a capability, workflow, service, or dashboard feature
+trigger: When the user invokes /wb-dev, asks to build something in work-buddy, or needs to add/fix a skill, workflow, service, or dashboard feature
 command: wb-dev
 workflow: dev/dev-orient
-capabilities:
-- reload_capability_data
+skills:
+- reload_skill_data
 - mode_toggle
 tags:
 - dev
 - developmental
 - architecture
 - mcp
-- capabilities
+- skills
 - workflows
 - services
 - dashboard
@@ -24,7 +24,7 @@ aliases:
 - build work-buddy
 - modify codebase
 - developer orientation
-- add capability
+- add skill
 - add workflow
 - add service
 - orient for dev
@@ -39,7 +39,7 @@ parents:
 dev_notes: Added 'Health system' subsection under 'Key locations' that points at the new architecture/health namespace. Future devs touching components / requirements / fixers should land on the four-layer model first.
 ---
 
-You are a **developmental agent**, not an operational one. Your job is to modify the work-buddy codebase itself — add capabilities, fix bugs, improve workflows, extend services. You are not running morning routines or triaging tasks.
+You are a **developmental agent**, not an operational one. Your job is to modify the work-buddy codebase itself — add skills, fix bugs, improve workflows, extend services. You are not running morning routines or triaging tasks.
 
 ## Step 1 — Orient before anything else
 
@@ -57,11 +57,11 @@ If any list you advance with is empty or trivial, you have not oriented yet — 
 
 Three core constructs, with design heuristics for deciding between them:
 
-- **Capabilities** — atomic Python functions registered in `registry.py`. Single operation, reusable from anywhere. Invoked via `wb_run("name", params)`, executes immediately.
+- **Skills** — atomic Python functions registered in `registry.py`. Single operation, reusable from anywhere. Invoked via `wb_run("name", params)`, executes immediately.
 - **Workflows** — `kind: workflow` units, one Markdown file per workflow under `knowledge/store/`. Multi-step procedures requiring ordering, user decisions, or state threading. Started via `wb_run("name")`, advanced via `wb_advance(run_id, result)`.
 - **Auto-run steps** — workflow steps marked `auto_run` in the unit's frontmatter. The conductor executes these transparently in a subprocess; the agent never sees them. Use for deterministic code (config loading, data formatting) that needs no agent reasoning. A subprocess that times out is retried once automatically (transient host contention is the dominant cause); set `auto_run.retry_on_timeout: false` for steps that mutate external state where a second attempt would not be idempotent (git commits, outbound message sends, source-pipeline drives).
 
-**Decision heuristic.** Can you write a unit test with a fixed expected output? → Capability. Does the "correct" output depend on interpretation, user input, or synthesis? → Workflow step. Is the step itself deterministic with no side effects? → Auto-run step.
+**Decision heuristic.** Can you write a unit test with a fixed expected output? → Skill. Does the "correct" output depend on interpretation, user input, or synthesis? → Workflow step. Is the step itself deterministic with no side effects? → Auto-run step.
 
 For gateway design tenets (Progressive Disclosure, Just-in-Time Retrieval, etc.), see the `dev/design-tenets` knowledge unit.
 
@@ -69,14 +69,14 @@ For the MCP import discipline (asyncio deadlock hazard), see `architecture/mcp-i
 
 ## Key locations
 
-### MCP capabilities (Op + declaration)
-A capability is an **Op** (a Python callable) plus a **declaration unit** (a `kind: capability` Markdown unit that names the Op). At build time the registry resolves declarations against the Op registry via `load_declared_capabilities` — there is no `registry.py` `Capability(...)` builder anymore. See `architecture/data-first-capabilities`.
+### MCP skills (Op + declaration)
+A skill is an **Op** (a Python callable) plus a **declaration unit** (a `kind: skill` Markdown unit that names the Op). At build time the registry resolves declarations against the Op registry via `load_declared_skills` — there is no `registry.py` `Skill(...)` builder anymore. See `architecture/data-first-skills`.
 
-**To add a capability:**
+**To add a skill:**
 1. Write the callable and register it in the relevant `work_buddy/mcp_server/ops/<domain>_ops.py` with `register_op("op.wb.<name>", fn)`.
-2. Author a declaration unit at `knowledge/store/<domain>/<name>.md` (`kind: capability`, with `capability_name`, `op`, `category`, and a `parameters` schema) — via the `docs_edit` workflow.
-3. **Restart the MCP server (Ctrl+R)** so the new Op's code is imported and the capability enters the dispatcher. A new Op is new Python — `reload_capability_data` only refreshes *data* (declarations, workflows, and param schemas whose Op already exists), so it cannot pick up a brand-new Op.
-4. Verify: `mcp__work-buddy__wb_search("your_capability")`.
+2. Author a declaration unit at `knowledge/store/<domain>/<name>.md` (`kind: skill`, with `skill_name`, `op`, `category`, and a `parameters` schema) — via the `docs_edit` workflow.
+3. **Restart the MCP server (Ctrl+R)** so the new Op's code is imported and the skill enters the dispatcher. A new Op is new Python — `reload_skill_data` only refreshes *data* (declarations, workflows, and param schemas whose Op already exists), so it cannot pick up a brand-new Op.
+4. Verify: `mcp__work-buddy__wb_search("your_skill")`.
 
 ### Workflows
 A workflow is a `kind: workflow` unit — one Markdown file per workflow under `knowledge/store/`. The conductor (`work_buddy/mcp_server/conductor.py`) discovers them at runtime via `_discover_workflows_from_store()`, which scans every store file for `kind == "workflow"`. The `steps` DAG lives in the unit's YAML frontmatter; each step's prose lives under a `## <step-id>` body section.
@@ -86,14 +86,14 @@ A workflow is a `kind: workflow` unit — one Markdown file per workflow under `
 2. Create a matching slash command in `.claude/commands/wb-<name>.md` (thin launcher) if it's user-facing.
 3. Create a behavioral directions unit (`kind: directions`) via `docs_edit`, loaded by the slash command.
 4. Update CLAUDE.md if the workflow belongs in a user-facing table.
-5. **Reload with `reload_capability_data`** — a new workflow is data, so the data-only reload makes it callable via `wb_run` with no restart (a restart also works but isn't needed).
+5. **Reload with `reload_skill_data`** — a new workflow is data, so the data-only reload makes it callable via `wb_run` with no restart (a restart also works but isn't needed).
 
 **To edit an existing workflow:** use `docs_edit` and edit the unit's `.md` directly — frontmatter `steps` (the DAG) and the `## <step-id>` body sections. The commit step re-validates the DAG.
 
 ### Knowledge units (any kind)
 The system store is one Markdown file per unit (`knowledge/store/<path>.md`) — editing a unit is editing its file. Use the **`docs_edit` workflow** (`wb_run("docs-edit", {"path": ...})`): it returns the file path, you edit it with your native `Edit` tool, and the commit step validates (kind-aware) and reconciles the store cache + search index. `create: true` + `kind` scaffolds a new unit. `dev_notes` is just a frontmatter field — edit it inline.
 
-A direct `Edit` of a unit's `.md` is equally valid; if you bypass the workflow, run `agent_docs_rebuild` afterward so the store and index reflect the change. Structural operations that aren't content edits — deleting or moving a unit — use the `docs_delete` / `docs_move` capabilities. **Capability units** (`kind: capability`) are authored the same way (see "MCP capabilities" above for the Op + declaration pair).
+A direct `Edit` of a unit's `.md` is equally valid; if you bypass the workflow, run `agent_docs_rebuild` afterward so the store and index reflect the change. Structural operations that aren't content edits — deleting or moving a unit — use the `docs_delete` / `docs_move` skills. **Skill units** (`kind: skill`) are authored the same way (see "MCP skills" above for the Op + declaration pair).
 
 ### Health system (preferences / requirements / components / fixers)
 
@@ -106,10 +106,10 @@ Quick map:
 - **Fixer** — `work_buddy/health/fixers.py`. Wire it via the requirement's `fix_kind` (`programmatic` / `input_required` / `agent_handoff`) and matching `fix_fn` / `fix_params` / `fix_agent_brief`. See [architecture/health/fixers](architecture/health/fixers).
 - **Preferences** — `work_buddy/health/preferences.py` plus `config.local.yaml` `features.<id>.{wanted, reason}`. Mostly automatic when a component is non-core. Behavioral guidance for agents: [features/preferences](features/preferences).
 
-The Settings tab UI picks up new components automatically via the control graph; you don't need to touch the dashboard frontend. A component registration is Python (in `components.py`), so **restart the MCP server (Ctrl+R)** to import it — `reload_capability_data` only refreshes data, not code. For the unified view-model + cascade rules + endpoint surface, see [architecture/control-graph](architecture/control-graph).
+The Settings tab UI picks up new components automatically via the control graph; you don't need to touch the dashboard frontend. A component registration is Python (in `components.py`), so **restart the MCP server (Ctrl+R)** to import it — `reload_skill_data` only refreshes data, not code. For the unified view-model + cascade rules + endpoint surface, see [architecture/control-graph](architecture/control-graph).
 
 ### Doc hygiene after changes
-`/wb-dev-pr` runs `/wb-dev-document` as a **mandatory chained step** (doc-update sits between the test and PII-scan steps in the `dev-pr` workflow). So committing through `/wb-dev-pr` already keeps the knowledge store in sync — do NOT run `/wb-dev-document` as a separate step first. Run `/wb-dev-document` standalone only when you want to *preview* the proposed doc edits outside the commit flow. It scans current changes against the knowledge store, proposes edits for stale units (and creates new ones where needed), and applies them via the sanctioned capabilities. Doc drift is a recurring failure mode; chaining it into `/wb-dev-pr` makes the check a DAG step that cannot be silently skipped.
+`/wb-dev-pr` runs `/wb-dev-document` as a **mandatory chained step** (doc-update sits between the test and PII-scan steps in the `dev-pr` workflow). So committing through `/wb-dev-pr` already keeps the knowledge store in sync — do NOT run `/wb-dev-document` as a separate step first. Run `/wb-dev-document` standalone only when you want to *preview* the proposed doc edits outside the commit flow. It scans current changes against the knowledge store, proposes edits for stale units (and creates new ones where needed), and applies them via the sanctioned skills. Doc drift is a recurring failure mode; chaining it into `/wb-dev-pr` makes the check a DAG step that cannot be silently skipped.
 
 ### Slash commands
 `.claude/commands/wb-*.md` — thin launchers that load behavioral directions from the knowledge store via `agent_docs`. Behavioral guidance goes in the knowledge store directions unit, not in workflow step instructions (see the priming hazard note under `dev/design-tenets`).
@@ -136,14 +136,14 @@ uv run python <args>   # e.g. uv run python -m pytest tests/unit/<file>.py
 ```
 (uv is cross-platform and manages the project `.venv` itself, so no shell activation step is needed.)
 
-### Testing capabilities
+### Testing skills
 ```
-mcp__work-buddy__wb_run("reload_capability_data")     # pick up declaration / workflow / param-schema edits (data only)
+mcp__work-buddy__wb_run("reload_skill_data")     # pick up declaration / workflow / param-schema edits (data only)
 mcp__work-buddy__wb_search("your_query")              # verify discovery
-mcp__work-buddy__wb_run("capability_name", {...})     # test execution
+mcp__work-buddy__wb_run("skill_name", {...})     # test execution
 ```
 
-**Caveat — data vs code:** `reload_capability_data` makes *data* changes live with no restart: new/edited **declarations** (including param schemas) and new **workflows** whose Op already exists. It does NOT pick up edited Op **code** or a brand-new Op **module** — those are Python and need a `Ctrl+R` restart. (The retired `mcp_registry_reload` claimed to hot-patch code but silently did nothing in the long-lived FastMCP gateway — see `dev/mcp-reload`.)
+**Caveat — data vs code:** `reload_skill_data` makes *data* changes live with no restart: new/edited **declarations** (including param schemas) and new **workflows** whose Op already exists. It does NOT pick up edited Op **code** or a brand-new Op **module** — those are Python and need a `Ctrl+R` restart. (The retired `mcp_registry_reload` claimed to hot-patch code but silently did nothing in the long-lived FastMCP gateway — see `dev/mcp-reload`.)
 
 ### Restarting services
 ```
@@ -167,7 +167,7 @@ work-buddy enforces a Developer Certificate of Origin: **every commit must be si
 - **Don't skip the orientation workflow.** Every documented failure to orient has produced wrong code. You are the next data point if you skip.
 - **Don't run operational workflows** — you're here to build, not to operate.
 - **Don't guess at imports** — `mcp__work-buddy__wb_search()` first, then check the code.
-- **Don't add features without slash commands** — every user-facing capability needs one.
+- **Don't add features without slash commands** — every user-facing skill needs one.
 - **Don't double-run doc hygiene** — `/wb-dev-pr` already runs `/wb-dev-document` as a chained step, so never tell the user (or yourself) to "run /wb-dev-document then /wb-dev-pr." Run `/wb-dev-document` standalone only to *preview* doc edits before the PR flow.
 - **Reconcile after a direct file edit** — a raw `Edit` of a unit's `.md` is fine, but run `agent_docs_rebuild` (or use the `docs_edit` workflow, which does it for you) so the store cache and search index pick up the change.
 - **Don't commit unrelated files** — stage only what you changed.

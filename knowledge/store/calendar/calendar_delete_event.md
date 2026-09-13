@@ -1,11 +1,10 @@
 ---
 name: Calendar Delete Event
-kind: capability
+kind: skill
 description: Permanently delete an event from one of the user's real calendars. Heavy per-change consent; always re-prompts because deletion is irreversible.
-capability_name: delete_calendar_event
 category: calendar
 op: op.wb.calendar_delete_event
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 mutates_state: true
 consent_required: true
 parameters:
@@ -21,6 +20,7 @@ parameters:
     type: bool
     description: If true, notify attendees of the cancellation
     required: false
+skill_name: delete_calendar_event
 tags:
 - calendar
 - write
@@ -36,7 +36,7 @@ requires:
 - calendar
 ---
 
-Deletes an event through the provider seam. Consent is gated in the capability
+Deletes an event through the provider seam. Consent is gated in the skill
 layer with `consent_weight="high"` and `default_ttl=0`, so it re-prompts on every
 call — deletion is irreversible. The prompt names the event being deleted (title
 + time in `USER_TZ`) and escalates when the target calendar is shared.

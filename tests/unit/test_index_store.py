@@ -137,9 +137,9 @@ class TestMetadataFilter:
         store.upsert_documents([
             _doc("knowledge:a", name="alpha", meta={"kind": "system"}),
             _doc("knowledge:b", name="alpha", meta={"kind": "directions"}),
-            _doc("knowledge:c", name="alpha", meta={"kind": "capability"}),
+            _doc("knowledge:c", name="alpha", meta={"kind": "skill"}),
         ], item_id="i")
-        hits = store.search_lexical("alpha", filters={"kind": ["system", "capability"]})
+        hits = store.search_lexical("alpha", filters={"kind": ["system", "skill"]})
         assert set(hits) == {"knowledge:a", "knowledge:c"}
 
     def test_load_documents_with_filter(self, store):

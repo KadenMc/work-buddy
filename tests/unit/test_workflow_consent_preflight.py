@@ -120,10 +120,10 @@ def test_collect_workflow_consent_ops_empty_when_no_invokes(cache):
 
 
 def test_collect_workflow_consent_ops_deduplicates(cache):
-    """Same capability invoked from multiple steps contributes once."""
+    """Same skill invoked from multiple steps contributes once."""
     from work_buddy.mcp_server.tools.gateway import _collect_workflow_consent_ops
     entry = _make_workflow_def([["cap_a"], ["cap_a", "cap_b"]])
-    # No real capabilities registered for cap_a / cap_b → empty result.
+    # No real skills registered for cap_a / cap_b → empty result.
     # The test verifies the function handles unknown caps without raising.
     ops, max_risk = _collect_workflow_consent_ops(entry)
     assert ops == []

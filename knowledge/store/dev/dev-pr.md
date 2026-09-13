@@ -210,7 +210,7 @@ git checkout -b <branch-name>
 
 Naming:
 - `fix/<short>` — bug fixes
-- `feat/<short>` — new features or capabilities
+- `feat/<short>` — new features or skills
 - `docs/<short>` — documentation-only
 - `chore/<short>` — config / CI / deps
 

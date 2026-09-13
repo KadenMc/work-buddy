@@ -1,11 +1,10 @@
 ---
 name: Cowork Doc Get
-kind: capability
+kind: skill
 description: Read one cowork doc's metadata, source-writeback policy, hashes, open proposals, expressions, feedback, and drift.
-capability_name: cowork_doc_get
 category: cowork
 op: op.wb.cowork_doc_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -18,6 +17,7 @@ parameters:
 mutates_state: false
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_doc_get
 tags:
 - cowork
 - doc

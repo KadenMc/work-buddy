@@ -1,11 +1,11 @@
 ---
 name: Project Discover
-kind: capability
+kind: skill
 description: Discover project candidates from task tags and git repos not yet in the registry. Returns candidates for agent review — evaluate each and use project_create to promote real projects.
-capability_name: project_discover
 category: projects
 op: op.wb.project_discover
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: project_discover
 tags:
 - projects
 - project

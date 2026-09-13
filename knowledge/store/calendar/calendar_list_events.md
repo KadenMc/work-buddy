@@ -1,8 +1,7 @@
 ---
 name: Calendar List Events
-kind: capability
+kind: skill
 description: List calendar events overlapping a date window (ISO YYYY-MM-DD start/end), optionally restricted to specific calendar ids. Returns canonical CalendarEvent dicts with offset-aware times preserved.
-capability_name: calendar_list_events
 category: calendar
 parameters:
   start:
@@ -18,7 +17,8 @@ parameters:
     description: Optional list of calendar ids to restrict to; omit for all subscribed calendars
     required: false
 op: op.wb.calendar_list_events
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: calendar_list_events
 tags:
 - calendar
 - events

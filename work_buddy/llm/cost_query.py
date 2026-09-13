@@ -1,6 +1,6 @@
 """Unified cost-query interface — single read API for both data sources.
 
-Backs the ``llm_costs_query`` MCP capability and the dashboard's
+Backs the ``llm_costs_query`` MCP skill and the dashboard's
 ``/api/costs`` route. The two underlying sources stay independent —
 ``work_buddy.dashboard.costs`` for the per-call internal log, and
 ``work_buddy.llm.claude_code_usage.aggregator`` for the transcript

@@ -1,8 +1,8 @@
 """Non-agent-callable work on the existing disk-backed operation queue.
 
 Internal operations use the same ``agents/operations`` records and
-``RetrySweep`` lease as capability retries, but resolve through this closed
-allowlist instead of the MCP capability registry. This keeps recovery work
+``RetrySweep`` lease as skill retries, but resolve through this closed
+allowlist instead of the MCP skill registry. This keeps recovery work
 durable without making an execution primitive discoverable through
 ``wb_search`` or callable through ``wb_run``.
 """

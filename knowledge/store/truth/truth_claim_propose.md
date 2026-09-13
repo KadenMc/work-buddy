@@ -1,11 +1,10 @@
 ---
 name: Truth Claim Propose
-kind: capability
+kind: skill
 description: Propose a profile-valid claim and atomically attach supporting spans and one optional derivation.
-capability_name: truth_claim_propose
 category: truth
 op: op.wb.truth_claim_propose
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -62,6 +61,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_claim_propose
 tags:
 - truth
 - claim

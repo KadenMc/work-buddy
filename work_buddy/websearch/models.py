@@ -1,6 +1,6 @@
 """Canonical data shapes for the websearch subsystem.
 
-All models are frozen dataclasses with ``to_dict()`` helpers so capability
+All models are frozen dataclasses with ``to_dict()`` helpers so skill
 wrappers can emit JSON-serialisable payloads without re-deriving the shape.
 
 ``SearchHit`` is the backend-neutral search result. ``EvidenceCard`` is the

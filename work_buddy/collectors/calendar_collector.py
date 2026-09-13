@@ -220,7 +220,7 @@ def _format_range(events: list, start_date: str, end_date: str) -> str:
 
 def _coverage_footer(provider, start_date: str, end_date: str) -> str:
     """Compact coverage footer (opt-in via ``cfg["include_coverage"]``)."""
-    from work_buddy.calendar.capabilities import build_coverage_report
+    from work_buddy.calendar.skills import build_coverage_report
 
     rep = build_coverage_report(provider, start_date, end_date)
     lines = ["## Calendar coverage"]

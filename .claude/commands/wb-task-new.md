@@ -1,4 +1,4 @@
 ---
-short: Create task
+description: Create task
 ---
 Load directions via `mcp__work-buddy__wb_run("agent_docs", {"path": "tasks/task-new-directions", "depth": "full"})`, then run the workflow.

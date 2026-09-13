@@ -1,11 +1,10 @@
 ---
 name: Project Set Folder Archived
-kind: capability
+kind: skill
 description: Flip the archived flag on a project folder (mark dormant or active). Writes a revision.
-capability_name: project_set_folder_archived
 category: projects
 op: op.wb.project_set_folder_archived
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   slug:
     type: str
@@ -29,6 +28,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: project_set_folder_archived
 tags:
 - projects
 - project

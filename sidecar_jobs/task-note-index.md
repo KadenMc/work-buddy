@@ -2,8 +2,8 @@
 schedule: "*/5 * * * *"  # every 5 minutes
 recurring: true
 jitter_seconds: 90  # spread 5-minute pile-ups; lands off ir-index-rebuild's offset
-type: capability
-capability: ir_index
+type: skill
+skill: ir_index
 params:
   action: build
   source: task_note

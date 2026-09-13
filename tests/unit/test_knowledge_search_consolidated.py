@@ -107,10 +107,10 @@ class TestSearchViaConsolidated:
         monkeypatch.setattr("work_buddy.embedding.client.index_search", _cap)
         ks._search_via_consolidated(
             "q", "personal", 7,
-            scope="tasks/", kind="capability", category="work_pattern", severity="HIGH",
+            scope="tasks/", kind="skill", category="work_pattern", severity="HIGH",
         )
         assert seen["filters"] == {
-            "scope": "personal", "kind": "capability",
+            "scope": "personal", "kind": "skill",
             "category": "work_pattern", "severity": "HIGH",
         }
         assert seen["scope"] == "knowledge:tasks/"  # subtree → doc_id prefix

@@ -1,11 +1,10 @@
 ---
 name: Journal Sign In
-kind: capability
-description: 'Read the active Journal profile’s typed fields and optionally write user-supplied values through Sources with optimistic concurrency.'
-capability_name: journal_sign_in
+kind: skill
+description: Read the active Journal profile’s typed fields and optionally write user-supplied values through Sources with optimistic concurrency.
 category: journal
 op: op.wb.journal_sign_in
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   target:
     type: str
@@ -13,7 +12,7 @@ parameters:
     required: false
   write_fields:
     type: str
-    description: 'JSON object keyed by a unique fieldId or compositionSlotId. Values may be direct, or envelopes with value/disposition, expected_revision, and stated_at. Omit for read-only.'
+    description: JSON object keyed by a unique fieldId or compositionSlotId. Values may be direct, or envelopes with value/disposition, expected_revision, and stated_at. Omit for read-only.
     required: false
   client_mutation_id:
     type: str
@@ -23,6 +22,7 @@ mutates_state: true
 retry_policy: manual
 consent_operations:
 - morning.write_sign_in
+skill_name: journal_sign_in
 tags:
 - journal
 - sign
@@ -35,10 +35,9 @@ aliases:
 - write sign in
 parents:
 - journal
-requires: []
 ---
 
-This capability resolves the immutable field composition for the target
+This skill resolves the immutable field composition for the target
 logical day. It never assumes that any named field exists. The result exposes
 each field’s label, value kind,
 constraints, prompt, function contract, interaction behavior, current value,

@@ -5,7 +5,7 @@ Validates that:
 2. get_consent_metadata returns registered metadata
 3. grant_consent_batch grants multiple operations atomically
 4. _check_missing_consent identifies ungrated operations
-5. Capability.consent_operations field works on the dataclass
+5. Skill.consent_operations field works on the dataclass
 """
 
 import os
@@ -142,11 +142,11 @@ def test_check_missing_consent():
     assert missing == []
 
 
-def test_capability_consent_operations_field():
-    """Capability dataclass accepts consent_operations field."""
-    from work_buddy.mcp_server.registry import Capability
+def test_skill_consent_operations_field():
+    """Skill dataclass accepts consent_operations field."""
+    from work_buddy.mcp_server.registry import Skill
 
-    cap = Capability(
+    cap = Skill(
         name="test_cap",
         description="test",
         category="test",
@@ -157,7 +157,7 @@ def test_capability_consent_operations_field():
     assert cap.consent_operations == ["op.a", "op.b"]
 
     # Default is empty list
-    cap2 = Capability(
+    cap2 = Skill(
         name="test_cap2",
         description="test",
         category="test",
@@ -167,20 +167,20 @@ def test_capability_consent_operations_field():
     assert cap2.consent_operations == []
 
 
-def test_real_capabilities_have_consent_operations():
-    """Verify key capabilities have consent_operations annotated.
+def test_real_skills_have_consent_operations():
+    """Verify key skills have consent_operations annotated.
 
-    Skips capabilities that are filtered out due to unavailable tools
+    Skips skills that are filtered out due to unavailable tools
     (e.g., obsidian not running in CI).
     """
-    from work_buddy.mcp_server.registry import get_registry, Capability
+    from work_buddy.mcp_server.registry import get_registry, Skill
 
     reg = get_registry()
 
     # These may be filtered by requires=["obsidian"] if Obsidian is down
     task_create = reg.get("task_create")
     if task_create is not None:
-        assert isinstance(task_create, Capability)
+        assert isinstance(task_create, Skill)
         assert "tasks.create_task" in task_create.consent_operations
         # obsidian.write_file is listed for UX (rich bundled notification).
         # Correctness no longer depends on it — the consent context handles
@@ -190,24 +190,24 @@ def test_real_capabilities_have_consent_operations():
 
     task_toggle = reg.get("task_toggle")
     if task_toggle is not None:
-        assert isinstance(task_toggle, Capability)
+        assert isinstance(task_toggle, Skill)
         assert "tasks.toggle_task" in task_toggle.consent_operations
 
     task_delete = reg.get("task_delete")
     if task_delete is not None:
-        assert isinstance(task_delete, Capability)
+        assert isinstance(task_delete, Skill)
         assert "tasks.delete_task" in task_delete.consent_operations
 
     journal_write = reg.get("journal_write")
     if journal_write is not None:
-        assert isinstance(journal_write, Capability)
+        assert isinstance(journal_write, Skill)
         assert len(journal_write.consent_operations) > 0
 
     # memory_reflect doesn't require obsidian — should always be present
     # (may still be filtered by requires=["hindsight"])
     memory_reflect = reg.get("memory_reflect")
     if memory_reflect is not None:
-        assert isinstance(memory_reflect, Capability)
+        assert isinstance(memory_reflect, Skill)
         assert "memory_reflect" in memory_reflect.consent_operations
 
 

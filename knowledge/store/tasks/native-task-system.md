@@ -126,4 +126,4 @@ preserved as stored; export does not manufacture project tags as a substitute.
 
 ## Secondary consumers
 
-Task context, project task counts, Obsidian context summaries, Chrome/email/Journal routing, completeness, search/IR, MCP capabilities, and both dashboard entry points query the native domain after activation. Project counts use independent associations and count a task once per linked project. The disabled `sidecar_jobs/task-sync.md` file remains only as historical configuration.
+Task context, project task counts, Obsidian context summaries, Chrome/email/Journal routing, completeness, search/IR, MCP skills, and both dashboard entry points query the native domain after activation. Project counts use independent associations and count a task once per linked project. The disabled `sidecar_jobs/task-sync.md` file remains only as historical configuration.

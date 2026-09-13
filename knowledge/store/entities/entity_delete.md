@@ -1,8 +1,7 @@
 ---
 name: Entity Delete
-kind: capability
+kind: skill
 description: Hard-delete an entity, cascading through tags, aliases, and references. Consent-gated (both user and agent authors must approve).
-capability_name: entity_delete
 category: entities
 parameters:
   entity_id:
@@ -17,7 +16,8 @@ mutates_state: true
 retry_policy: manual
 consent_required: true
 op: op.wb.entity_delete
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_delete
 tags:
 - entities
 - entity

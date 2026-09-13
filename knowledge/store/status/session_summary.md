@@ -1,11 +1,11 @@
 ---
 name: Session Summary
-kind: capability
-description: Compact summary of what this agent session has done — counts by category/capability, errors, mutations, key artifacts created, workflow progress.
-capability_name: session_summary
+kind: skill
+description: Compact summary of what this agent session has done — counts by category/skill, errors, mutations, key artifacts created, workflow progress.
 category: status
 op: op.wb.session_summary
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: session_summary
 tags:
 - status
 - session

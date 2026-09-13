@@ -1,4 +1,4 @@
-"""Guarded Journal content migration operator capability."""
+"""Guarded Journal content migration operator skill."""
 
 from __future__ import annotations
 

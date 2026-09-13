@@ -408,7 +408,7 @@ def build_developed_by(
 
     ``include_awareness`` gates the per-session JSONL scan that grades
     note-read awareness. It is ON by default (the dedicated
-    ``task_provenance`` capability and the dashboard want it) but callers
+    ``task_provenance`` skill and the dashboard want it) but callers
     on a hot path (e.g. ``read_task``) pass ``False`` to skip the file
     reads — those entries get ``awareness="not_computed"``. Assigned
     sessions are always ``"assigned"`` (free, no scan).

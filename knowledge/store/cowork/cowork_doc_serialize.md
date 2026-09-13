@@ -1,11 +1,10 @@
 ---
 name: Cowork Doc Serialize
-kind: capability
+kind: skill
 description: Return one cowork doc's canonical Markdown at its current head, with the head and projection digests that identify it.
-capability_name: cowork_doc_serialize
 category: cowork
 op: op.wb.cowork_doc_serialize
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -18,6 +17,7 @@ parameters:
 mutates_state: false
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_doc_serialize
 tags:
 - cowork
 - doc
@@ -86,7 +86,7 @@ it is doing.
 
 ## Scope
 
-Ordinary agent sessions reach this capability by default. It is deliberately
+Ordinary agent sessions reach this skill by default. It is deliberately
 absent from the hosted document agent's execution set: that agent is
 generation-fenced and grounds its work in frozen action snapshots with
 consumption receipts, which a live-head read would quietly bypass.

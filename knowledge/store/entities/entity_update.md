@@ -1,8 +1,7 @@
 ---
 name: Entity Update
-kind: capability
-description: Update an entity's canonical name and/or description. Tags + aliases are managed through their own capabilities so a rename PATCH can't accidentally wipe them.
-capability_name: entity_update
+kind: skill
+description: Update an entity's canonical name and/or description. Tags + aliases are managed through their own skills so a rename PATCH can't accidentally wipe them.
 category: entities
 parameters:
   entity_id:
@@ -32,7 +31,8 @@ parameters:
 mutates_state: true
 retry_policy: manual
 op: op.wb.entity_update
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_update
 tags:
 - entities
 - entity

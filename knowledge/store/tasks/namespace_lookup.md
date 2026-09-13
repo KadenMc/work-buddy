@@ -1,11 +1,10 @@
 ---
 name: Namespace Lookup
-kind: capability
+kind: skill
 description: Return the closest existing namespace tags to a single query. Designed for the 'did you mean?' check before minting a brand-new namespace — the agent calls this to confirm a proposed namespace isn't a near-duplicate of something that already exists.
-capability_name: namespace_lookup
 category: tasks
 op: op.wb.namespace_lookup
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: int
     description: Max results (default 5)
     required: false
+skill_name: namespace_lookup
 tags:
 - tasks
 - namespace

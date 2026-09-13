@@ -5,7 +5,7 @@ description: How to present component health diagnostics — structured output f
 summary: 'Pass component name as argument (or ''all''). Present: 1) Summary counts, 2) Per-component issues with root cause and fix, 3) Dependency chain if upstream-caused. Lead with the fix, not the architecture.'
 trigger: user asks to diagnose a component or troubleshoot something not working
 command: wb-setup-help
-capabilities:
+skills:
 - status/setup_help
 tags:
 - status

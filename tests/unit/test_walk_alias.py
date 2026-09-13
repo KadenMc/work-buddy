@@ -1,7 +1,7 @@
 """Tests for the `walk` op — canonical short name for `drill_tree`.
 
 Both ops share the same callable (`drill_tree_op`); these tests verify
-the binding via the op registry and that the capability declaration
+the binding via the op registry and that the skill declaration
 loads cleanly.
 """
 

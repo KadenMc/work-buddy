@@ -1,11 +1,10 @@
 ---
 name: Truth Claim Redact
-kind: capability
+kind: skill
 description: Ask the human to destroy readable content from one exact claim while retaining identity, hashes, links, status, and audit history.
-capability_name: truth_claim_redact
 category: truth
 op: op.wb.truth_claim_redact
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -24,6 +23,7 @@ retry_policy: manual
 auto_retry: false
 consent_operations:
 - truth.claim_redact
+skill_name: truth_claim_redact
 tags:
 - truth
 - claim

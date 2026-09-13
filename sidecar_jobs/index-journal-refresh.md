@@ -2,8 +2,8 @@
 schedule: "*/5 * * * *"
 recurring: true
 jitter_seconds: 30
-type: capability
-capability: index_rebuild
+type: skill
+skill: index_rebuild
 params:
   partition: journal
   force: false
@@ -14,5 +14,5 @@ acknowledges that snapshot. A failed or interrupted delivery remains pending and
 replayed by the next run. The first post-restore run is an implicit incremental
 backfill; operators may use `force:true` for a deliberate full partition backfill.
 
-The capability is a no-op while `index.enabled` is false and self-skips while another
+The skill is a no-op while `index.enabled` is false and self-skips while another
 partition holds the consolidated index writer gate.

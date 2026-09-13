@@ -4,7 +4,7 @@ Fast-failing assertions that run on every `pytest tests/unit/` pass.
 Catches common drift modes as the `invokes` backfill (Phase C) rolls
 out:
 
-    1. Every `invokes` entry (on Capability or WorkflowStep) must name
+    1. Every `invokes` entry (on Skill or WorkflowStep) must name
        an existing registry entry. Typos, renames, and dangling
        references all surface here.
     2. Every workflow step with auto_run must have a callable that
@@ -13,7 +13,7 @@ out:
        union — guards against someone hand-editing this field.
 
 The test exercises the REAL registry (no mocks). If you add a new
-capability that genuinely should have no invocations, either:
+skill that genuinely should have no invocations, either:
 
     - Leave `invokes` unset (defaults to []). The invariants treat
       missing as empty — no audit marker required.
@@ -48,44 +48,44 @@ def registry():
 
 
 # ---------------------------------------------------------------------------
-# Invariant 1 — every `invokes` points at a real capability/workflow
+# Invariant 1 — every `invokes` points at a real skill/workflow
 # ---------------------------------------------------------------------------
 
 def test_every_invokes_entry_resolves(registry):
-    """Every name in Capability.invokes or WorkflowStep.invokes exists
+    """Every name in Skill.invokes or WorkflowStep.invokes exists
     in the registry OR is currently filtered out because a tool it
     requires is unavailable.
 
-    The registry filters capabilities whose `requires` tools failed
-    their probes at build time — those capabilities are tracked in
-    ``DISABLED_CAPABILITIES`` rather than being true typos. We accept
+    The registry filters skills whose `requires` tools failed
+    their probes at build time — those skills are tracked in
+    ``DISABLED_SKILLS`` rather than being true typos. We accept
     either state: registered, OR disabled-but-known. Anything else is
     a real dangling reference.
 
     Rationale: test environments probe against the user's live system;
     an Obsidian bridge that's briefly down at test time shouldn't make
-    every workflow step that invokes an obsidian-requiring capability
+    every workflow step that invokes an obsidian-requiring skill
     look like a typo.
     """
-    from work_buddy.mcp_server.registry import Capability, WorkflowDefinition
-    from work_buddy.tools import DISABLED_CAPABILITIES
+    from work_buddy.mcp_server.registry import Skill, WorkflowDefinition
+    from work_buddy.tools import DISABLED_SKILLS
 
     # Names that appear in agent prose today but haven't been promoted
     # to real registry entries yet. Add sparingly.
     allowlist: set[str] = set()
 
-    # Capabilities that are KNOWN to exist but were filtered out of
+    # Skills that are KNOWN to exist but were filtered out of
     # this particular build because their required tool wasn't
     # available. Not dangling — just dormant.
-    known_names = set(registry.keys()) | set(DISABLED_CAPABILITIES.keys()) | allowlist
+    known_names = set(registry.keys()) | set(DISABLED_SKILLS.keys()) | allowlist
 
     errors: list[str] = []
     for name, entry in registry.items():
-        if isinstance(entry, Capability):
+        if isinstance(entry, Skill):
             for invoked in entry.invokes:
                 if invoked not in known_names:
                     errors.append(
-                        f"Capability '{name}' invokes '{invoked}' which is not registered"
+                        f"Skill '{name}' invokes '{invoked}' which is not registered"
                     )
         elif isinstance(entry, WorkflowDefinition):
             for step in entry.steps:
@@ -142,7 +142,7 @@ def test_workflow_requires_matches_one_hop_union(registry):
     at the next registry rebuild.
     """
     from work_buddy.mcp_server.registry import (
-        Capability,
+        Skill,
         WorkflowDefinition,
         _compute_workflow_requires,
     )
@@ -210,14 +210,14 @@ def test_morning_routine_requires_includes_core_components(registry):
 
 
 # ---------------------------------------------------------------------------
-# Invariant 5 (CP-A1) — _DISABLED_REGISTRY stays in sync with DISABLED_CAPABILITIES
+# Invariant 5 (CP-A1) — _DISABLED_SKILL_REGISTRY stays in sync with DISABLED_SKILLS
 # ---------------------------------------------------------------------------
 
 
 class TestDisabledRegistryInvariants:
-    """The full Capability stash and the (name -> missing tools) dict must
-    stay in lockstep so :func:`work_buddy.recovery.recheck_disabled_capability`
-    can restore a disabled capability without re-running ``_build_registry``.
+    """The full Skill stash and the (name -> missing tools) dict must
+    stay in lockstep so :func:`work_buddy.recovery.recheck_disabled_skill`
+    can restore a disabled skill without re-running ``_build_registry``.
     """
 
     def _build_with_unavailable(self, unavailable_tools: list[str]):
@@ -235,70 +235,70 @@ class TestDisabledRegistryInvariants:
 
     def test_disabled_keys_match_when_dep_unavailable(self):
         """Forcing a genuinely-missing dep unavailable: every disabled cap
-        appears in BOTH DISABLED_CAPABILITIES and _DISABLED_REGISTRY with
+        appears in BOTH DISABLED_SKILLS and _DISABLED_SKILL_REGISTRY with
         matching keys.
 
         Co-migrated from an obsidian example to ``hindsight``: a missing
-        Obsidian bridge no longer build-time disables its capabilities (the
+        Obsidian bridge no longer build-time disables its skills (the
         gateway's circuit breaker governs them at runtime), so the build-time-
         disable invariant is now exercised against a genuinely-absent
         dependency. Same invariant, different (still-valid) example dep.
         """
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_SKILLS
 
         try:
             _, reg_mod = self._build_with_unavailable(["hindsight"])
-            assert set(reg_mod._DISABLED_REGISTRY.keys()) == set(DISABLED_CAPABILITIES.keys()), (
-                "_DISABLED_REGISTRY keys diverged from DISABLED_CAPABILITIES"
+            assert set(reg_mod._DISABLED_SKILL_REGISTRY.keys()) == set(DISABLED_SKILLS.keys()), (
+                "_DISABLED_SKILL_REGISTRY keys diverged from DISABLED_SKILLS"
             )
             # And the set should be non-empty for the test to be meaningful.
-            assert DISABLED_CAPABILITIES, (
-                "Test setup expected at least one hindsight-requiring capability "
-                "to land in DISABLED_CAPABILITIES — none did. Did the registry "
-                "change such that no capability requires hindsight?"
+            assert DISABLED_SKILLS, (
+                "Test setup expected at least one hindsight-requiring skill "
+                "to land in DISABLED_SKILLS — none did. Did the registry "
+                "change such that no skill requires hindsight?"
             )
         finally:
             reg_mod._REGISTRY = None
 
     def test_disabled_and_live_registries_disjoint(self):
-        """A capability cannot simultaneously be in _REGISTRY and _DISABLED_REGISTRY."""
+        """A skill cannot simultaneously be in _REGISTRY and _DISABLED_SKILL_REGISTRY."""
         try:
             reg, reg_mod = self._build_with_unavailable(["hindsight"])
-            overlap = set(reg.keys()) & set(reg_mod._DISABLED_REGISTRY.keys())
+            overlap = set(reg.keys()) & set(reg_mod._DISABLED_SKILL_REGISTRY.keys())
             assert not overlap, (
-                f"Capability(ies) appear in both _REGISTRY and _DISABLED_REGISTRY: {overlap}"
+                f"Skill(ies) appear in both _REGISTRY and _DISABLED_SKILL_REGISTRY: {overlap}"
             )
         finally:
             reg_mod._REGISTRY = None
 
-    def test_stash_holds_full_capability_objects(self):
-        """The stash must contain the actual Capability instance (not just metadata)
+    def test_stash_holds_full_skill_objects(self):
+        """The stash must contain the actual Skill instance (not just metadata)
         so recovery can restore it with its callable intact."""
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
 
         try:
             _, reg_mod = self._build_with_unavailable(["hindsight"])
-            for name, entry in reg_mod._DISABLED_REGISTRY.items():
-                assert isinstance(entry, Capability), (
-                    f"_DISABLED_REGISTRY[{name!r}] is {type(entry).__name__}, "
-                    f"expected Capability"
+            for name, entry in reg_mod._DISABLED_SKILL_REGISTRY.items():
+                assert isinstance(entry, Skill), (
+                    f"_DISABLED_SKILL_REGISTRY[{name!r}] is {type(entry).__name__}, "
+                    f"expected Skill"
                 )
                 assert callable(entry.callable), (
-                    f"_DISABLED_REGISTRY[{name!r}].callable is not callable"
+                    f"_DISABLED_SKILL_REGISTRY[{name!r}].callable is not callable"
                 )
         finally:
             reg_mod._REGISTRY = None
 
     def test_stash_cleared_on_rebuild_no_leak(self):
-        """_DISABLED_REGISTRY must be cleared at the top of every _build_registry()
-        invocation so a stale Capability whose closure references a purged
+        """_DISABLED_SKILL_REGISTRY must be cleared at the top of every _build_registry()
+        invocation so a stale Skill whose closure references a purged
         module never survives a reload."""
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_SKILLS
 
         try:
             # Build 1: obsidian unavailable -> populate stash.
             _, reg_mod = self._build_with_unavailable(["hindsight"])
-            stash_after_build_1 = dict(reg_mod._DISABLED_REGISTRY)
+            stash_after_build_1 = dict(reg_mod._DISABLED_SKILL_REGISTRY)
             assert stash_after_build_1, "Test setup needs at least one stash entry"
 
             # Build 2: everything available -> stash should be EMPTY.
@@ -307,28 +307,28 @@ class TestDisabledRegistryInvariants:
             with patch("work_buddy.tools.is_tool_available", return_value=True):
                 reg_mod.get_registry()
 
-            assert not reg_mod._DISABLED_REGISTRY, (
-                "_DISABLED_REGISTRY leaked stale entries across rebuild: "
-                f"{list(reg_mod._DISABLED_REGISTRY.keys())}"
+            assert not reg_mod._DISABLED_SKILL_REGISTRY, (
+                "_DISABLED_SKILL_REGISTRY leaked stale entries across rebuild: "
+                f"{list(reg_mod._DISABLED_SKILL_REGISTRY.keys())}"
             )
-            assert not DISABLED_CAPABILITIES, (
-                "DISABLED_CAPABILITIES leaked across rebuild: "
-                f"{list(DISABLED_CAPABILITIES.keys())}"
+            assert not DISABLED_SKILLS, (
+                "DISABLED_SKILLS leaked across rebuild: "
+                f"{list(DISABLED_SKILLS.keys())}"
             )
         finally:
             reg_mod._REGISTRY = None
 
-    def test_get_disabled_registry_returns_sync_view(self):
-        """The public accessor ``get_disabled_registry()`` must return the
+    def test_get_disabled_skill_registry_returns_sync_view(self):
+        """The public accessor ``get_disabled_skill_registry()`` must return the
         same dict that the filter pass populates — not a copy or empty dict."""
-        from work_buddy.mcp_server.registry import get_disabled_registry
+        from work_buddy.mcp_server.registry import get_disabled_skill_registry
 
         try:
             _, reg_mod = self._build_with_unavailable(["hindsight"])
-            view = get_disabled_registry()
-            assert view is reg_mod._DISABLED_REGISTRY, (
-                "get_disabled_registry() returned a different dict than the "
-                "module-level _DISABLED_REGISTRY — the recovery module needs "
+            view = get_disabled_skill_registry()
+            assert view is reg_mod._DISABLED_SKILL_REGISTRY, (
+                "get_disabled_skill_registry() returned a different dict than the "
+                "module-level _DISABLED_SKILL_REGISTRY — the recovery module needs "
                 "the live one to mutate."
             )
         finally:
@@ -338,24 +338,24 @@ class TestDisabledRegistryInvariants:
 # ---------------------------------------------------------------------------
 # _entry_to_dict — duck-typed shape discrimination
 # ---------------------------------------------------------------------------
-# Across mcp_registry_reload, the Capability / WorkflowDefinition class
+# Across mcp_registry_reload, the Skill / WorkflowDefinition class
 # objects change identity (sys.modules is purged, classes are re-imported).
 # Pre-reload entries cached anywhere outside the registry no longer match
 # isinstance against the post-reload classes; the symptom is an
 # AttributeError on ``.execution`` leaking through error-handling paths
-# (gateway.py:1439, 1524) as ``'Capability' object has no attribute
+# (gateway.py:1439, 1524) as ``'Skill' object has no attribute
 # 'execution'``. _entry_to_dict discriminates on shape, not isinstance,
 # to survive that stale-class case.
 
 
 class TestEntryToDictDuckTyping:
-    def test_capability_shape_serialized_correctly(self):
+    def test_skill_shape_serialized_correctly(self):
         """An object with .callable but no .steps must be serialized
-        through the capability branch — even if isinstance fails (e.g.
+        through the skill branch — even if isinstance fails (e.g.
         post-reload stale class identity)."""
         from work_buddy.mcp_server.registry import _entry_to_dict
 
-        class FakeCapability:
+        class FakeSkill:
             name = "fake.op"
             description = "test"
             category = "test"
@@ -365,7 +365,7 @@ class TestEntryToDictDuckTyping:
             retry_policy = "manual"
             slash_command = None
 
-        d = _entry_to_dict(FakeCapability())
+        d = _entry_to_dict(FakeSkill())
         assert d["type"] == "function"
         assert d["name"] == "fake.op"
         # Did NOT fall into the workflow branch:

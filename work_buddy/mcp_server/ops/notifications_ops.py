@@ -1,6 +1,6 @@
 """Notifications-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). The closure code below
 is moved verbatim from the former ``registry.py`` builder.
 """
@@ -12,7 +12,7 @@ from work_buddy.mcp_server.op_registry import register_op
 
 
 def _register() -> None:
-    """Notification and request capabilities.
+    """Notification and request skills.
 
     Consolidated API:
       - notification_send: fire-and-forget notification
@@ -20,11 +20,11 @@ def _register() -> None:
       - request_poll: check/wait on an existing request
       - notification_list_pending: list all pending items
 
-    The single agent-callable consent capability is consent_list, declared in
+    The single agent-callable consent skill is consent_list, declared in
     knowledge/store/notifications/consent/. The grant/revoke/resolve and
     create-request Python functions in work_buddy.consent are internal —
     invoked by the sidecar router, Telegram/dashboard handlers, and gateway
-    auto-consent path; not exposed as agent-callable capabilities.
+    auto-consent path; not exposed as agent-callable skills.
     """
     import os
     import time
@@ -127,7 +127,7 @@ def _register() -> None:
             pass
 
     # -----------------------------------------------------------------------
-    # Capability functions
+    # Skill functions
     # -----------------------------------------------------------------------
 
     def send_notification(

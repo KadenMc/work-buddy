@@ -1,6 +1,6 @@
 """Data-backup ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). These callables wrap
 :mod:`work_buddy.backups` for invocation via the sidecar cron AND via the
 user-facing slash commands (``/wb-backup-now``, ``/wb-backup-restore``).

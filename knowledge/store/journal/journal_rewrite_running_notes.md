@@ -1,11 +1,10 @@
 ---
 name: Journal Rewrite Running Notes
-kind: capability
-description: 'Explicit legacy compatibility cleanup for an archived Markdown Running Notes thread. Disabled when Obsidian is opted out and fenced by native Journal authority.'
-capability_name: journal_rewrite_running_notes
+kind: skill
+description: Explicit legacy compatibility cleanup for an archived Markdown Running Notes thread. Disabled when Obsidian is opted out and fenced by native Journal authority.
 category: journal
 op: op.wb.journal_rewrite_running_notes
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   preview:
     type: dict
@@ -21,6 +20,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: moderate
   regret_potential: moderate
+skill_name: journal_rewrite_running_notes
 tags:
 - journal
 - rewrite

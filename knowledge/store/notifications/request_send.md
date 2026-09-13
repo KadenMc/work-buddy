@@ -1,11 +1,10 @@
 ---
 name: Request Send
-kind: capability
+kind: skill
 description: 'Create a request, deliver to all available surfaces, and optionally poll for the user''s response. Supports choice, boolean, freeform, and range response types. Without timeout_seconds: non-blocking (returns immediately, use request_poll later). With timeout_seconds: blocks until response or timeout (max recommended: 110s to stay within MCP call limits).'
-capability_name: request_send
 category: notifications
 op: op.wb.request_send
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   title:
     type: str
@@ -45,7 +44,7 @@ parameters:
     required: false
   callback:
     type: dict
-    description: 'Dispatch on response: {capability, params}'
+    description: 'Dispatch on response: {skill, params}'
     required: false
   callback_session_id:
     type: str
@@ -73,6 +72,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: request_send
 tags:
 - notifications
 - request

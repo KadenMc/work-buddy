@@ -1,8 +1,8 @@
-"""Unit tests for ``enqueue_capability_for_retry`` — the public seam that lets
+"""Unit tests for ``enqueue_skill_for_retry`` — the public seam that lets
 out-of-band callers (e.g. the Telegram capture handler, which runs in a
 separate sidecar process and does NOT dispatch through ``wb_run``) enqueue a
 transiently-failed operation for the sidecar retry sweep instead of dropping
-it. The sweep replays the capability from the registry on backoff, so a
+it. The sweep replays the skill from the registry on backoff, so a
 capture blocked by a busy editor (409 editor_dirty) lands once the bridge frees
 up rather than being lost.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from work_buddy.mcp_server.tools.gateway import enqueue_capability_for_retry
+from work_buddy.mcp_server.tools.gateway import enqueue_skill_for_retry
 
 
 class _FakeEntry:
@@ -42,7 +42,7 @@ def test_enqueue_creates_queued_op_record(tmp_path):
         "work_buddy.mcp_server.registry.get_registry",
         return_value=_FakeRegistry(),
     ):
-        op_id = enqueue_capability_for_retry(
+        op_id = enqueue_skill_for_retry(
             "vault_write_at_location",
             params,
             error="editor_dirty: journal/2026-06-01.md",
@@ -51,7 +51,8 @@ def test_enqueue_creates_queued_op_record(tmp_path):
         assert op_id is not None
         record = _read_record(tmp_path, op_id)
 
-    # Replays the exact capability + params the caller failed on.
+    # Replays the exact skill + params the caller failed on.
+    assert record["type"] == "skill"
     assert record["name"] == "vault_write_at_location"
     assert record["params"] == params
     # Marked failed + queued so the sweep's _is_ready picks it up.
@@ -60,7 +61,7 @@ def test_enqueue_creates_queued_op_record(tmp_path):
     assert record["queue_reason"] == "retry"
     assert record["error_class"] == "transient"
     assert record["error_kind"] == "obsidian_editor_conflict"
-    # Carries the capability's declared replay policy.
+    # Carries the skill's declared replay policy.
     assert record["retry_policy"] == "verify_first"
     # A scheduled retry time is set in the future.
     assert record["retry_at"]
@@ -73,7 +74,7 @@ def test_enqueue_returns_none_when_persistence_fails(tmp_path):
         "work_buddy.mcp_server.tools.gateway._save_operation",
         side_effect=OSError("disk full"),
     ):
-        op_id = enqueue_capability_for_retry(
+        op_id = enqueue_skill_for_retry(
             "vault_write_at_location",
             {"content": "x"},
             error="boom",

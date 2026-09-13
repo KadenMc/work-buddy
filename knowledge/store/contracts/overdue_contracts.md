@@ -1,11 +1,11 @@
 ---
 name: Overdue Contracts
-kind: capability
+kind: skill
 description: List structured Contracts SQLite records past their deadline, without requiring Obsidian.
-capability_name: overdue_contracts
 category: contracts
 op: op.wb.overdue_contracts
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: overdue_contracts
 tags:
 - contracts
 - overdue

@@ -1,11 +1,10 @@
 ---
 name: Task Archive
-kind: capability
+kind: skill
 description: Archive eligible completed native tasks by lifecycle flag without moving or rendering Markdown. Default policy leaves the last 7 days visible.
-capability_name: task_archive
 category: tasks
 op: op.wb.task_archive
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 mutates_state: true
 retry_policy: manual
 parameters:
@@ -15,6 +14,7 @@ parameters:
     required: false
 consent_operations:
 - tasks.archive
+skill_name: task_archive
 tags:
 - tasks
 - task
@@ -28,5 +28,4 @@ aliases:
 - tidy task list
 parents:
 - tasks
-requires: []
 ---

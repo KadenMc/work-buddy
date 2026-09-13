@@ -1,16 +1,16 @@
 ---
 name: Session Summary Get
-kind: capability
+kind: skill
 description: Look up the cached tldr + topic summaries for one session_id. Returns None when the session hasn't been summarized. Canonical replacement for the verbose `conversation_observability_summary_get`.
-capability_name: session_summary_get
 category: conversation_observability
 op: op.wb.session_summary_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
     description: Full or 8-char prefix session UUID.
     required: true
+skill_name: session_summary_get
 tags:
 - conversation_observability
 - conversation
@@ -26,7 +26,7 @@ parents:
 - conversation_observability
 ---
 
-Look up the cached legacy session-summary row for one session. The canonical short-name capability for what was previously `conversation_observability_summary_get` (still works as a deprecated alias).
+Look up the cached legacy session-summary row for one session. The canonical short-name skill for what was previously `conversation_observability_summary_get` (still works as a deprecated alias).
 
 Returns:
 

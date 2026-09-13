@@ -5,7 +5,7 @@ description: How to list and present projects — grouping by status, detail dri
 summary: Call project_list, then present results grouped by status (active, inferred, paused, future, past). Show slug, name, and description per project. For detail on a specific project, use project_get which includes Hindsight memory recall.
 trigger: user asks to see their projects or wants a project overview
 command: wb-project-list
-capabilities:
+skills:
 - projects/project_list
 - projects/project_get
 tags:

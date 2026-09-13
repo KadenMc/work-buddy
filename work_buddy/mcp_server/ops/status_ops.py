@@ -1,6 +1,6 @@
 """Status-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). The closure code below
 is moved verbatim from the former ``registry.py`` builder.
 """
@@ -12,7 +12,7 @@ from work_buddy.mcp_server.op_registry import register_op
 
 
 def _register() -> None:
-    from work_buddy.mcp_server.registry import reload_capability_data
+    from work_buddy.mcp_server.registry import reload_skill_data
 
     from work_buddy.messaging import client
     from work_buddy import agent_session
@@ -29,7 +29,7 @@ def _register() -> None:
         return get_tailscale_status()
 
     def _feature_status(verbose: bool = False, force: bool = False) -> dict:
-        """Show which tools, features, and capabilities are available or disabled.
+        """Show which tools, features, and skills are available or disabled.
 
         When ``force=True``, re-runs every tool probe fresh rather than
         reading the cached result from the last probe sweep. Use this
@@ -46,7 +46,7 @@ def _register() -> None:
 
         result = get_tool_status()
         if not verbose:
-            # Compact: just tool names and disabled capability names
+            # Compact: just tool names and disabled skill names
             result["tools"] = {
                 tid: {"available": s["available"], "reason": s.get("reason", "")}
                 for tid, s in result.get("tools", {}).items()
@@ -150,7 +150,11 @@ def _register() -> None:
     register_op("op.wb.setup_wizard", _setup_wizard)
     register_op("op.wb.service_health", client.is_service_running)
     register_op("op.wb.list_sessions", agent_session.list_sessions)
-    register_op("op.wb.reload_capability_data", reload_capability_data)
+    register_op("op.wb.reload_skill_data", reload_skill_data)
+    # Persisted store.local declarations may still reference the former Op ID.
+    # Normalize new declarations on write; keep this boundary alias until the
+    # store.local compatibility window is retired.
+    register_op("op.wb.reload_capability_data", reload_skill_data)
     register_op("op.wb.retry", _retry_operation)
     register_op("op.wb.tailscale_status", _tailscale_status)
 

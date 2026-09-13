@@ -4,11 +4,11 @@ Records every wb_run, wb_advance, and wb_search call as append-only JSONL
 in the *calling agent's* session directory. The gateway resolves the caller
 via ``wb_init`` session registration (MCP session → agent session mapping).
 
-Queryable via ``session_activity`` and ``session_summary`` MCP capabilities.
+Queryable via the ``session_activity`` and ``session_summary`` work-buddy skills.
 
 Inspired by OpenHarness's tool carryover pattern (query.py:_record_tool_carryover)
 but adapted for work-buddy's MCP-native architecture where Claude Code owns
-the runtime and work-buddy exposes capabilities through the gateway.
+the runtime and work-buddy exposes skills through the gateway.
 """
 
 from __future__ import annotations
@@ -103,8 +103,8 @@ def _pick(result: dict, keys: list[str], truncate: dict[str, int] | None = None)
     return out
 
 
-def summarize_result(capability_name: str, category: str, result: Any) -> dict:
-    """Extract salient fields from a capability result by category."""
+def summarize_result(skill_name: str, category: str, result: Any) -> dict:
+    """Extract salient fields from a skill result by category."""
     if not isinstance(result, dict):
         return _fallback_summary(result)
 
@@ -155,8 +155,8 @@ def record_init(agent_session_id: str) -> None:
     }, agent_session_id=agent_session_id)
 
 
-def record_capability(
-    capability: str,
+def record_skill(
+    skill: str,
     category: str,
     operation_id: str,
     params: dict[str, Any],
@@ -169,7 +169,7 @@ def record_capability(
     *,
     agent_session_id: str | None = None,
 ) -> None:
-    """Record a capability invocation."""
+    """Record a skill invocation using the canonical activity schema."""
     if error:
         status = "consent_required" if consent_required else "error"
     else:
@@ -179,8 +179,8 @@ def record_capability(
     _append_event({
         "ts": _now_iso(),
         "session_id": sid,
-        "type": "capability_invoked",
-        "capability": capability,
+        "type": "skill_invoked",
+        "skill": skill,
         "category": category,
         "operation_id": operation_id,
         "params_keys": sorted(params.keys()) if params else [],
@@ -188,7 +188,7 @@ def record_capability(
         "duration_ms": _duration_ms(start_time),
         "status": status,
         "error_summary": str(error)[:200] if error else None,
-        "result_summary": summarize_result(capability, category, result) if result else None,
+        "result_summary": summarize_result(skill, category, result) if result else None,
         "consent_required": consent_required,
         "consent_operation": consent_operation,
     }, agent_session_id=agent_session_id)
@@ -276,8 +276,31 @@ def record_search(
 
 
 # ---------------------------------------------------------------------------
-# Query functions — registered as MCP capabilities
+# Query functions — registered as work-buddy skills
 # ---------------------------------------------------------------------------
+
+_SKILL_INVOCATION_EVENT_TYPES = frozenset({
+    "skill_invoked",
+    "capability_invoked",
+})
+
+
+def is_skill_invocation_event(event: dict[str, Any]) -> bool:
+    """Return whether *event* records a current or historical skill call."""
+    return event.get("type") in _SKILL_INVOCATION_EVENT_TYPES
+
+
+def skill_name_from_event(
+    event: dict[str, Any],
+    default: str | None = None,
+) -> str | None:
+    """Read a skill identity without rewriting append-only history.
+
+    ``skill`` is the canonical field. ``capability`` is accepted only for
+    ledgers written before the terminology change.
+    """
+    value = event.get("skill") or event.get("capability")
+    return str(value) if value else default
 
 def _read_ledger(agent_session_id: str | None = None) -> list[dict[str, Any]]:
     """Read all events from an agent session's ledger."""
@@ -298,12 +321,14 @@ def _read_ledger(agent_session_id: str | None = None) -> list[dict[str, Any]]:
 
 def query_activity(
     event_type: str | None = None,
-    capability_name: str | None = None,
+    skill_name: str | None = None,
     category: str | None = None,
     status: str | None = None,
     last_n: int = 20,
     include_searches: bool = False,
     agent_session_id: str | None = None,
+    *,
+    capability_name: str | None = None,
 ) -> dict[str, Any]:
     """Query the session activity ledger with optional filters.
 
@@ -311,14 +336,23 @@ def query_activity(
     """
     all_events = _read_ledger(agent_session_id)
     total = len(all_events)
+    # Deprecated direct-Python compatibility. Gateway callers are normalized
+    # through the declaration's ``param_aliases`` before reaching this point.
+    requested_skill = (
+        skill_name if skill_name is not None else capability_name
+    )
 
     filtered = []
     for ev in all_events:
         if not include_searches and ev.get("type") == "search_performed":
             continue
-        if event_type and ev.get("type") != event_type:
-            continue
-        if capability_name and ev.get("capability") != capability_name:
+        if event_type:
+            if event_type in _SKILL_INVOCATION_EVENT_TYPES:
+                if not is_skill_invocation_event(ev):
+                    continue
+            elif ev.get("type") != event_type:
+                continue
+        if requested_skill and skill_name_from_event(ev) != requested_skill:
             continue
         if category and ev.get("category") != category:
             continue
@@ -346,7 +380,7 @@ def query_session_summary(agent_session_id: str | None = None) -> dict[str, Any]
         return {"session_id": sid, "total_events": 0, "message": "No activity recorded yet."}
 
     by_category: dict[str, int] = {}
-    by_capability: dict[str, int] = {}
+    by_skill: dict[str, int] = {}
     errors = 0
     consent_requests = 0
     mutations = 0
@@ -358,11 +392,11 @@ def query_session_summary(agent_session_id: str | None = None) -> dict[str, Any]
     for ev in all_events:
         ev_type = ev.get("type")
 
-        if ev_type == "capability_invoked":
+        if is_skill_invocation_event(ev):
             cat = ev.get("category", "unknown")
-            cap = ev.get("capability", "unknown")
+            skill = skill_name_from_event(ev, "unknown") or "unknown"
             by_category[cat] = by_category.get(cat, 0) + 1
-            by_capability[cap] = by_capability.get(cap, 0) + 1
+            by_skill[skill] = by_skill.get(skill, 0) + 1
 
             if ev.get("status") == "error":
                 errors += 1
@@ -398,18 +432,18 @@ def query_session_summary(agent_session_id: str | None = None) -> dict[str, Any]
     except (ValueError, TypeError):
         pass
 
-    # Top capabilities by frequency
-    top_capabilities = dict(
-        sorted(by_capability.items(), key=lambda x: x[1], reverse=True)[:10]
+    # Top skills by frequency
+    top_skills = dict(
+        sorted(by_skill.items(), key=lambda x: x[1], reverse=True)[:10]
     )
 
     return {
         "session_id": sid,
         "total_events": len(all_events),
         "duration_minutes": duration_minutes,
-        "capabilities_invoked": sum(by_category.values()),
+        "skills_invoked": sum(by_category.values()),
         "by_category": by_category,
-        "by_capability": top_capabilities,
+        "by_skill": top_skills,
         "workflows_started": workflows_started,
         "workflows_completed": workflows_completed,
         "searches": searches,

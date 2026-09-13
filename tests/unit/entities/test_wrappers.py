@@ -292,7 +292,7 @@ def test_entity_set_tags(wrappers_env):
 
 
 def test_entity_set_tags_collapses_ancestor(wrappers_env):
-    """Ancestor collapse applies through the capability wrapper —
+    """Ancestor collapse applies through the skill wrapper —
     person is dropped when person/family is in the same set."""
     e = wrappers_env.entities.create_entity("Max")
     out = json.loads(wrappers_env.cw.entity_set_tags(

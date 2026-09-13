@@ -4,7 +4,7 @@ This module provides:
 - **Tool probes** — lightweight checks for external tool/service availability
 - **@requires_tool** decorator — gates functions on tool availability (modeled
   after @requires_consent in consent.py)
-- **Registry filtering** — unavailable tools cause dependent capabilities to be
+- **Registry filtering** — unavailable tools cause dependent skills to be
   excluded from wb_search results
 - **Config-driven toggles** — ``tools.<id>.enabled: false`` in config disables
   a tool without probing
@@ -12,16 +12,16 @@ This module provides:
 Three-layer dependency model:
     Layer 1: Tools (Obsidian bridge, Chrome extension, Hindsight, Telegram, etc.)
       → missing tool disables...
-    Layer 2: Capabilities (journal_write, chrome_activity, memory_read, etc.)
-      → missing capability disables...
+    Layer 2: Skills (journal_write, chrome_activity, memory_read, etc.)
+      → missing skill disables...
     Layer 3: Workflows (morning-routine, chrome-triage, collect-and-orient, etc.)
 
 Flow:
     1. ``_register_default_probes()`` registers all built-in tool probes
     2. ``probe_all()`` runs probes at registry build time (respects config toggles)
-    3. Capabilities with ``requires=[...]`` are filtered from the registry
+    3. Skills with ``requires=[...]`` are filtered from the registry
     4. ``@requires_tool`` decorator provides runtime safety as belt-and-suspenders
-    5. ``feature_status`` MCP capability shows what's available/disabled and why
+    5. ``feature_status`` MCP skill shows what's available/disabled and why
 """
 
 import functools
@@ -75,7 +75,7 @@ class ToolProbe:
 
 
 class ToolUnavailable(Exception):
-    """Raised when a capability requires a tool that is not available.
+    """Raised when a skill requires a tool that is not available.
 
     Mirrors ``ConsentRequired`` from consent.py — the gateway catches this
     and returns a structured JSON error instead of crashing.
@@ -94,7 +94,7 @@ class ToolUnavailable(Exception):
             f"ToolUnavailable: '{display_name}' ({tool_id})\n"
             f"Reason: {reason}\n"
             f"\n"
-            f"This capability requires the '{display_name}' integration.\n"
+            f"This skill requires the '{display_name}' integration.\n"
             f"Run wb_run('feature_status') for details."
         )
 
@@ -106,9 +106,9 @@ class ToolUnavailable(Exception):
 _TOOL_PROBES: dict[str, ToolProbe] = {}
 _TOOL_STATUS: dict[str, dict[str, Any]] | None = None  # {id: {available, probe_ms, reason, config_enabled}}
 
-# Populated during registry filtering — maps capability name → list of missing tool IDs.
-# Read by the feature_status diagnostic capability.
-DISABLED_CAPABILITIES: dict[str, list[str]] = {}
+# Populated during registry filtering — maps skill name → list of missing tool IDs.
+# Read by the feature_status diagnostic skill.
+DISABLED_SKILLS: dict[str, list[str]] = {}
 
 # ---------------------------------------------------------------------------
 # Probe registration and execution
@@ -485,19 +485,19 @@ def invalidate_tool_status() -> None:
     global _TOOL_STATUS, _OBSIDIAN_PLUGINS
     _TOOL_STATUS = None
     _OBSIDIAN_PLUGINS = None
-    DISABLED_CAPABILITIES.clear()
+    DISABLED_SKILLS.clear()
 
 
 def get_tool_status() -> dict[str, Any]:
-    """Return full diagnostic info for the feature_status capability."""
+    """Return full diagnostic info for the feature_status skill."""
     status = _TOOL_STATUS or {}
     return {
         "tools": status,
-        "disabled_capabilities": dict(DISABLED_CAPABILITIES),
+        "disabled_skills": dict(DISABLED_SKILLS),
         "summary": {
             "tools_available": sum(1 for r in status.values() if r["available"]),
             "tools_unavailable": sum(1 for r in status.values() if not r["available"]),
-            "capabilities_disabled": len(DISABLED_CAPABILITIES),
+            "skills_disabled": len(DISABLED_SKILLS),
         },
     }
 
@@ -844,7 +844,7 @@ def _probe_calendar() -> tuple[bool, str]:
     """Provider-aware availability gate for the calendar subsystem.
 
     Unlike the other probes, this one reads ``calendar.provider`` from config and
-    checks *whichever* backend is configured — so the ``calendar_*`` capabilities
+    checks *whichever* backend is configured — so the ``calendar_*`` skills
     are gated on the provider actually in use, not on a single hard-coded tool.
     There is deliberately **no** static ``depends_on``: the Obsidian dependency
     applies only to the bridge provider, so it's resolved inside the dispatch

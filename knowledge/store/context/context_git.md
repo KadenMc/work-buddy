@@ -1,11 +1,10 @@
 ---
 name: Context Git
-kind: capability
+kind: skill
 description: 'Recent git activity across all repos: commits, diffs, dirty trees. Pass annotate=true to tag commits made by agent sessions with their session ID.'
-capability_name: context_git
 category: context
 op: op.wb.context_git
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -21,6 +20,7 @@ parameters:
     required: false
 param_aliases:
   since: days
+skill_name: context_git
 tags:
 - context
 - git

@@ -907,12 +907,12 @@ def _collect_ledger_events(
             continue
 
         ev_type = ev.get("type", "")
-        if ev_type == "capability_invoked":
-            cap = ev.get("capability", "?")
+        if ev_type in ("skill_invoked", "capability_invoked"):
+            skill = ev.get("skill") or ev.get("capability") or "?"
             cat = ev.get("category", "?")
             status = ev.get("status", "ok")
             dur = ev.get("duration_ms", 0)
-            summary = f"wb_run({cap}) [{cat}] {status} ({dur}ms)"
+            summary = f"wb_run({skill}) [{cat}] {status} ({dur}ms)"
             rs = ev.get("result_summary") or {}
             # Append key artifact if present
             for key in ("task_id", "entry_count", "slug"):

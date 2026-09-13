@@ -1,6 +1,6 @@
 """Sidecar status and job-management ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field).
 """
 
@@ -44,7 +44,7 @@ def user_job_create(
     name: str,
     schedule: str,
     job_type: str = "prompt",
-    capability: str = "",
+    skill: str = "",
     params: dict | None = None,
     workflow: str = "",
     prompt: str = "",
@@ -57,10 +57,17 @@ def user_job_create(
     from work_buddy.paths import data_dir
     from work_buddy.sidecar.scheduler.jobs import create_user_job_file
 
+    # LEGACY_READ: cached pre-migration wb_search results used the
+    # ``capability`` job discriminator. The gateway maps the retired parameter
+    # name to ``skill``; normalize its paired value here before the canonical
+    # job writer sees it.
+    if job_type == "capability":
+        job_type = "skill"
+
     return create_user_job_file(
         data_dir("user_jobs"),
         name=name, schedule=schedule, job_type=job_type,
-        capability=capability, params=params, workflow=workflow,
+        skill=skill, params=params, workflow=workflow,
         prompt=prompt, enabled=enabled, recurring=recurring,
         overwrite=overwrite, jitter_seconds=jitter_seconds,
     )
@@ -93,7 +100,7 @@ def dashboard_interact(
         "timeout_seconds": timeout_seconds,
     }).encode("utf-8")
     # Submit/get_state can block for the full timeout in the dashboard. Add a
-    # small buffer so HTTP doesn't time out before the capability does.
+    # small buffer so HTTP doesn't time out before the skill does.
     http_timeout = max(15.0, float(timeout_seconds) + 5.0)
     req = _urlreq.Request(
         "http://localhost:5127/api/dashboard/interact",

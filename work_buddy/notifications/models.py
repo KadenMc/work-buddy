@@ -109,6 +109,18 @@ class StandardResponse:
 # Notification — the base model
 # ---------------------------------------------------------------------------
 
+
+def _canonical_callback(callback: Any) -> Any:
+    """Normalize the retired callback key without dropping other metadata."""
+    if not isinstance(callback, dict):
+        return callback
+    normalized = dict(callback)
+    if "skill" not in normalized and "capability" in normalized:
+        normalized["skill"] = normalized["capability"]
+    normalized.pop("capability", None)
+    return normalized
+
+
 @dataclass
 class Notification:
     """A message sent to the user via one or more surfaces.
@@ -134,7 +146,7 @@ class Notification:
             For Telegram: could be a message template.
 
         # Callback fields (what to do when the user responds)
-        callback: Capability to dispatch on response: {"capability": str, "params": dict}.
+        callback: Skill to dispatch on response: {"skill": str, "params": dict}.
         callback_session_id: Resume this Claude Code session on response.
 
         # Routing
@@ -206,9 +218,11 @@ class Notification:
         return self.is_request()
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-compatible dict."""
+        """Serialize to canonical JSON-compatible notification data."""
         from dataclasses import asdict
-        return asdict(self)
+        data = asdict(self)
+        data["callback"] = _canonical_callback(data.get("callback"))
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Notification:
@@ -225,6 +239,10 @@ class Notification:
             data["delivered_surfaces"] = data.pop("delivered_transports")
         if "transport" in data and "surface" not in data:
             data["surface"] = data.pop("transport")
+        # LEGACY_READ: notification records are durable. Normalize the nested
+        # callback once here so list/read responses and any lifecycle rewrite
+        # expose and persist only the canonical ``skill`` field.
+        data["callback"] = _canonical_callback(data.get("callback"))
 
         known = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known}

@@ -1,11 +1,10 @@
 ---
 name: Llm Call
-kind: capability
+kind: skill
 description: Make a single LLM API call (Tier 2 execution). Cheaper than spawning a full agent session. Supports freeform text or structured JSON output via output_schema (inline dict or named schema from work_buddy/llm/schemas/). Routes to Claude via 'tier' or to a local/remote OpenAI-compatible server (LM Studio, vLLM, Ollama) via 'profile'. Handles caching and cost tracking automatically.
-capability_name: llm_call
 category: llm
 op: op.wb.llm_call
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   system:
     type: str
@@ -41,8 +40,9 @@ parameters:
     required: false
   priority:
     type: str
-    description: "Local-inference admission priority for the broker: 'interactive', 'workflow' (default), or 'background'. Only applies to the local 'profile' path; ignored for cloud 'tier' (Anthropic isn't brokered). Lets background work yield to interactive work on the same LM Studio profile."
+    description: 'Local-inference admission priority for the broker: ''interactive'', ''workflow'' (default), or ''background''. Only applies to the local ''profile'' path; ignored for cloud ''tier'' (Anthropic isn''t brokered). Lets background work yield to interactive work on the same LM Studio profile.'
     required: false
+skill_name: llm_call
 tags:
 - llm
 - call

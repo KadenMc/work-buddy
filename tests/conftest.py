@@ -50,7 +50,7 @@ def declared_thread_action_registry(monkeypatch):
     """
     from pathlib import Path
 
-    from work_buddy.knowledge.capability_loader import load_declared_capabilities
+    from work_buddy.knowledge.skill_loader import load_declared_skills
     from work_buddy.knowledge.file_store import read_unit
     from work_buddy.knowledge.model import unit_from_dict
     from work_buddy.mcp_server import op_registry, registry
@@ -75,9 +75,9 @@ def declared_thread_action_registry(monkeypatch):
         raw = read_unit(store_dir, path)
         assert raw is not None, f"Missing action declaration: {path}"
         units[path] = unit_from_dict(path, raw)
-    capabilities, issues = load_declared_capabilities(units)
+    skills, issues = load_declared_skills(units)
     assert not issues, issues
-    entries = {entry.name: entry for entry in capabilities}
+    entries = {entry.name: entry for entry in skills}
     assert set(entries) == {path.rsplit("/", 1)[1] for path in unit_paths}
 
     def refuse_execution(*_args, **_kwargs):
@@ -296,7 +296,7 @@ def _isolate_notification_delivery(monkeypatch, request):
 
     ``SurfaceDispatcher.deliver`` is the single fan-out point where a
     notification reaches Telegram / Obsidian / dashboard surfaces. Several
-    capabilities emit fire-and-forget notifications as a side effect
+    skills emit fire-and-forget notifications as a side effect
     (e.g. ``tasks.archive_completed`` -> ``_send_archive_summary_notification``).
     Without this, any unmocked call from a test sends a *real* message (the
     "Archived N completed tasks" Telegram leak). Stubbing ``deliver`` at the

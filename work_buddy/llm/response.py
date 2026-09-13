@@ -48,8 +48,8 @@ class ToolCall:
     """A single tool invocation emitted by the model during a call.
 
     Attributes:
-        name: Capability-level name. For LM Studio MCP dispatch this is
-            the concrete capability (e.g. ``"triage_submit"``); for
+        name: Skill-level name. For LM Studio MCP dispatch this is
+            the concrete skill (e.g. ``"triage_submit"``); for
             Anthropic it's the ``name`` from the ``tool_use`` block.
         arguments: Kwargs the model supplied.
         result: Tool return value, or ``None`` if the backend didn't

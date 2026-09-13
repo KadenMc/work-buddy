@@ -43,7 +43,7 @@ def script() -> str:
         window._actionRenderers[actionName] = fn;
     };
 
-    // Capabilities whose ``parameters`` are bound at dispatch time
+    // Skills whose ``parameters`` are bound at dispatch time
     // (not authored ahead of time on the proposal). For these, an
     // empty parameters dict on the proposal is the normal state, not
     // a signal that there's nothing to show. The right-pane editor
@@ -73,7 +73,7 @@ def script() -> str:
 
     function _renderActionMeta(thread, action) {
         let html = '';
-        // Header: capability name + kind badge
+        // Header: skill name + kind badge
         html += '<div class="threads-action-meta-row">'
               + '<span class="threads-action-meta-name">'
               + _esc(action.name || "(unnamed action)")
@@ -205,13 +205,13 @@ def script() -> str:
         html += '<div class="threads-section-label">Switch action</div>';
         html += '<div class="threads-action-switcher-options">';
         for (const d of perGroup) {
-            const isCurrent = d.capability_name === action.name;
+            const isCurrent = d.skill_name === action.name;
             html += '<button class="threads-action-switcher-option'
                 +     (isCurrent ? ' current' : '') + '" '
                 +     'title="' + _esc(d.description || '') + '" '
                 +     wbActAttrs('threadsSetActionDraft', {
                           threadId: thread.thread_id,
-                          capabilityName: d.capability_name,
+                          skillName: d.skill_name,
                       }) + '>'
                 +     '<span class="label">' + _esc(d.label) + '</span>'
                 + '</button>';
@@ -287,13 +287,13 @@ def script() -> str:
     window._draftActionFor = function (threadId) {
         return _draftStore()[threadId] || null;
     };
-    function _descriptorFor(thread, capabilityName) {
+    function _descriptorFor(thread, skillName) {
         const parentId = thread.parent_id;
         const opts = (window._groupState
             && window._groupState.actionOptionsByUmbrella
             && window._groupState.actionOptionsByUmbrella[parentId]) || [];
         for (const d of opts) {
-            if (d.capability_name === capabilityName) return d;
+            if (d.skill_name === skillName) return d;
         }
         return null;
     }
@@ -305,7 +305,7 @@ def script() -> str:
         const d = window._draftActionFor(threadId);
         const thread = _draftThreadRef[threadId];
         if (!d || !thread) return false;
-        const desc = _descriptorFor(thread, d.capability_name);
+        const desc = _descriptorFor(thread, d.skill_name);
         const schema = (desc && desc.parameters) || [];
         for (const p of schema) {
             if (p.required && !String(d.params[p.name] || "").trim()) {
@@ -315,9 +315,9 @@ def script() -> str:
         return true;
     }
 
-    window.threadsSetActionDraft = function (threadId, capabilityName) {
+    window.threadsSetActionDraft = function (threadId, skillName) {
         _draftStore()[threadId] = {
-            capability_name: capabilityName, params: {}, message: "",
+            skill_name: skillName, params: {}, message: "",
         };
         if (typeof window._renderActiveThread === "function") {
             window._renderActiveThread();
@@ -377,7 +377,7 @@ def script() -> str:
         const d = window._draftActionFor(threadId);
         const thread = _draftThreadRef[threadId];
         const desc = (d && thread)
-            ? _descriptorFor(thread, d.capability_name) : null;
+            ? _descriptorFor(thread, d.skill_name) : null;
         const byName = {};
         for (const p of ((desc && desc.parameters) || [])) byName[p.name] = p;
         const raw = (d && d.params) || {};
@@ -424,8 +424,8 @@ def script() -> str:
     window.renderActionDraft = function (thread, action) {
         _draftThreadRef[thread.thread_id] = thread;
         const d = window._draftActionFor(thread.thread_id);
-        const desc = _descriptorFor(thread, d.capability_name);
-        const toLabel = (desc && desc.label) || d.capability_name;
+        const desc = _descriptorFor(thread, d.skill_name);
+        const toLabel = (desc && desc.label) || d.skill_name;
         const schema = (desc && desc.parameters) || [];
         const ready = _draftRequiredFilled(thread.thread_id);
 
@@ -511,7 +511,7 @@ def script() -> str:
         fetch('/api/threads/' + encodeURIComponent(threadId) + '/accept', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: {
-                capability_name: d.capability_name,
+                skill_name: d.skill_name,
                 parameters: _coerceParams(threadId),
             } }),
         }).then(r => r.json().then(b => ({ ok: r.ok, body: b })))
@@ -528,7 +528,7 @@ def script() -> str:
               + '/redirect_action', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                target_action: d.capability_name,
+                target_action: d.skill_name,
                 params: _coerceParams(threadId),
                 feedback: String(d.message || ''),
             }),
@@ -700,7 +700,7 @@ def script() -> str:
     // the existing window.* handlers. No inline on*= attribute is produced,
     // so the onclick-arg quoting hazard cannot recur here.
     window.wbAction('threadsSetActionDraft', function (el) {
-        window.threadsSetActionDraft(el.dataset.threadId, el.dataset.capabilityName);
+        window.threadsSetActionDraft(el.dataset.threadId, el.dataset.skillName);
     });
     window.wbAction('threadsCancelDraft', function (el) {
         window.threadsCancelDraft(el.dataset.threadId);
@@ -810,7 +810,7 @@ def styles() -> str:
 }
 
 /* Generic action-meta block (shown in the right pane when the user
- * clicks Edit action on a sub-thread). Surfaces the capability name,
+ * clicks Edit action on a sub-thread). Surfaces the skill name,
  * plan summary, rationale, attribution, parameters (or runtime-binding
  * hint), and an inline action switcher. */
 

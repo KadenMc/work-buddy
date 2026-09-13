@@ -55,7 +55,7 @@ Per failure type:
 
 ## Typed exceptions (post-CP1–CP9)
 
-Failures from the bridge are typed (see `obsidian/bridge` for the full hierarchy). Capabilities should NOT try/except by default — let exceptions propagate. The `@bridge_retry` decorator catches transient subclasses, retries, and translates to `bridge_failure(...)` dict at exhaustion. The gateway's outer try/except classifies via `isinstance` and enqueues for retry.
+Failures from the bridge are typed (see `obsidian/bridge` for the full hierarchy). Skills should NOT try/except by default — let exceptions propagate. The `@bridge_retry` decorator catches transient subclasses, retries, and translates to `bridge_failure(...)` dict at exhaustion. The gateway's outer try/except classifies via `isinstance` and enqueues for retry.
 
 The legacy bool/None-checking pattern (`if not bridge.write_file(...): return bridge_failure(...)`) was removed from all known callers in CP6. New code should call bridge functions directly and let exceptions propagate.
 
@@ -72,7 +72,7 @@ Callers that do section-aware inserts (e.g. `vault_write_at_location`) should pa
 
 Both helpers route through `bridge.write_file_raw` when the bridge is up. That function raises `ObsidianEditorConflict` **immediately** on the first `409` from the plugin's pre-flight dirty-editor check. There is no in-bridge retry: retrying the same payload bytes after the user's typing auto-saves to disk would silently clobber those saved keystrokes. Re-reading + re-computing the payload is the *caller's* job — in practice, the gateway's retry queue (`architecture/retry-queue`).
 
-Legacy file capabilities with `retry_policy="verify_first"` or `"replay"` auto-enqueue on transient errors; the sidecar sweep re-invokes the whole capability from scratch so each attempt reads the file fresh. Native `journal_write`, Telegram capture, and Task mutations use their domain stores and do not enter this bridge retry path.
+Legacy file skills with `retry_policy="verify_first"` or `"replay"` auto-enqueue on transient errors; the sidecar sweep re-invokes the whole skill from scratch so each attempt reads the file fresh. Native `journal_write`, Telegram capture, and Task mutations use their domain stores and do not enter this bridge retry path.
 
 `vault_write` deliberately does NOT fall back to a direct disk write on `ObsidianEditorConflict` — such a write would still be clobbered the moment the user saves. The conflict signal exists precisely to prevent that.
 
@@ -92,4 +92,4 @@ The legacy `EditorConflict` alias was removed in CP9. Callers must import `Obsid
 - **Falling back to direct write on `ObsidianPostWriteUncertain`.** Risks overwriting a successful-but-unacknowledged plugin write. Let the gateway's verify path decide.
 - **Using `vault_write` for `master-task-list.md`.** The fallback on bridge-down would silently corrupt the Tasks-plugin cache.
 - **Re-implementing the section-aware logic in callers.** `vault_writer.write_at_location` already handles section parsing; reach for it before duplicating.
-- **Wrapping bridge calls in try/except by default.** The decorator + gateway handle exception flow; per-capability try/except recreates the sprawl that CP1–CP9 removed.
+- **Wrapping bridge calls in try/except by default.** The decorator + gateway handle exception flow; per-skill try/except recreates the sprawl that CP1–CP9 removed.

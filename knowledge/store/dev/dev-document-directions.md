@@ -5,7 +5,7 @@ description: How to run /wb-dev-document — scan current changes, propose knowl
 trigger: When the user invokes /wb-dev-document, or as a mandatory step inside /wb-dev-pr, or after a dev change that might have made existing knowledge units stale
 command: wb-dev-document
 workflow: dev/dev-document
-capabilities:
+skills:
 - agent_docs
 - docs_delete
 - agent_docs_rebuild
@@ -32,7 +32,7 @@ Update the knowledge store after dev changes. Run via `mcp__work-buddy__wb_run("
 
 - **Before `/wb-dev-pr`** — the commit workflow invokes this as a mandatory step; you can still run it standalone first.
 - **After any architectural change** that affects behavior visible in an existing knowledge unit.
-- **When adding a new subsystem, capability, or workflow** — new units usually need creating.
+- **When adding a new subsystem, skill, or workflow** — new units usually need creating.
 
 ## What gets checked
 
@@ -53,7 +53,7 @@ Before creating a new unit, decide its kind. The decision affects how it renders
 Apply this decision flow in order; first match wins:
 
 1. **Behavioral guide loaded by a slash command (`/wb-...`)** → `directions`.
-2. **Callable from MCP via `wb_run`** → `capability`. An Op (a callable in `work_buddy/mcp_server/ops/`) plus a `kind: capability` declaration unit; author the declaration via `docs_edit`.
+2. **Callable from MCP via `wb_run`** → `skill`. An Op (a callable in `work_buddy/mcp_server/ops/`) plus a `kind: skill` declaration unit; author the declaration via `docs_edit`.
 3. **Multi-step DAG the conductor advances** → `workflow`. A `kind: workflow` unit (one Markdown file; `steps` DAG in frontmatter); author via `docs_edit`.
 4. **Personal/user-authored knowledge (Obsidian-vault-backed)** → `personal`. Create via `knowledge_mint`.
 5. **Runs on a network port internal to work-buddy** → `service`. Examples: dashboard (5127), embedding service (5124), messaging (5123). Has `ports`.
@@ -98,7 +98,7 @@ The split is the structural mechanism for the operational/developmental separati
 ### What goes in `content_full`
 
 Anything an agent needs to *use* the subsystem correctly:
-- Public surfaces: HTTP routes, capability names, parameter shapes.
+- Public surfaces: HTTP routes, skill names, parameter shapes.
 - Semantic contracts: what the API returns, idempotency, gating, error modes, the ranges of values that mean different things.
 - User-visible behavior: what the UI shows, what state changes mean, what a button does.
 - Cross-references to sibling units.
@@ -114,7 +114,7 @@ Anything only useful when *modifying* the subsystem:
 
 ### The decision test
 
-For each fact you're considering writing: ask **"If an operational agent was calling this subsystem from a capability — would they want this in their context window?"**
+For each fact you're considering writing: ask **"If an operational agent was calling this subsystem from a skill — would they want this in their context window?"**
 
 - Yes → `content_full`.
 - No, only useful while editing the code → `dev_notes`.
@@ -143,7 +143,7 @@ Both `content_full` and `dev_notes` are durable surfaces re-read by future agent
 ## Apply dispatch
 
 Every unit kind is applied the same way — by editing its Markdown file:
-- `create` / `update` (any kind, including `workflow` and `capability`) → edit `knowledge/store/<path>.md` with your native `Edit` / `Write` tool (or drive the `docs_edit` workflow). Frontmatter holds structured fields; the body is `content_full`; a workflow's `steps` DAG lives in frontmatter with `## <step-id>` body sections.
+- `create` / `update` (any kind, including `workflow` and `skill`) → edit `knowledge/store/<path>.md` with your native `Edit` / `Write` tool (or drive the `docs_edit` workflow). Frontmatter holds structured fields; the body is `content_full`; a workflow's `steps` DAG lives in frontmatter with `## <step-id>` body sections.
 - `delete` → `docs_delete(path)`.
 
 After the file edits, call `agent_docs_rebuild()` once so the store cache + search index reflect them (the `docs_edit` workflow does this per unit automatically).

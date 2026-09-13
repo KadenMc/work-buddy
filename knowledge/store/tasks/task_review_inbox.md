@@ -1,11 +1,11 @@
 ---
 name: Task Review Inbox
-kind: capability
+kind: skill
 description: Get inbox tasks with suggested actions (mit, snooze, kill, needs_date)
-capability_name: task_review_inbox
 category: tasks
 op: op.wb.task_review_inbox
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: task_review_inbox
 tags:
 - tasks
 - task
@@ -21,7 +21,6 @@ aliases:
 - decide on new tasks
 parents:
 - tasks
-requires: []
 ---
 
 Returns native inbox tasks with attention-state recommendations. The React

@@ -207,8 +207,8 @@ def test_job_parsing():
         job_file.write_text("""---
 schedule: "*/5 * * * *"
 recurring: true
-type: capability
-capability: task_briefing
+type: skill
+skill: task_briefing
 description: "Test job"
 ---
 """)
@@ -216,17 +216,132 @@ description: "Test job"
         assert job is not None
         assert job.name == "test-job"
         assert job.schedule == "*/5 * * * *"
-        assert job.job_type == "capability"
-        assert job.capability == "task_briefing"
+        assert job.job_type == "skill"
+        assert job.skill == "task_briefing"
         assert job.recurring is True
+
+
+def test_persisted_capability_job_normalizes_to_skill():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        job_file = Path(tmpdir) / "persisted-job.md"
+        job_file.write_text("""---
+schedule: "*/5 * * * *"
+type: capability
+capability: task_briefing
+---
+""")
+        job = _parse_job_file(job_file)
+        assert job is not None
+        assert job.job_type == "skill"
+        assert job.skill == "task_briefing"
+
+
+def test_persisted_and_canonical_jobs_dispatch_the_same_skill(tmp_path, monkeypatch):
+    from work_buddy.sidecar.dispatch import executor
+
+    persisted = tmp_path / "persisted.md"
+    persisted.write_text(
+        "---\nschedule: \"*/5 * * * *\"\ntype: capability\n"
+        "capability: task_briefing\n---\n",
+        encoding="utf-8",
+    )
+    canonical = tmp_path / "canonical.md"
+    canonical.write_text(
+        "---\nschedule: \"*/5 * * * *\"\ntype: skill\n"
+        "skill: task_briefing\n---\n",
+        encoding="utf-8",
+    )
+    seen = []
+    monkeypatch.setattr(
+        executor,
+        "_execute_skill",
+        lambda name, params: seen.append((name, params)) or {"status": "ok"},
+    )
+
+    for path in (persisted, canonical):
+        job = _parse_job_file(path)
+        assert job is not None
+        assert executor.execute_job(job)["status"] == "ok"
+
+    assert seen == [("task_briefing", {}), ("task_briefing", {})]
+
+
+def test_message_router_classifies_and_dispatches_a_direct_skill(monkeypatch):
+    from work_buddy.mcp_server.registry import Skill
+    from work_buddy.sidecar.dispatch import router
+
+    skill = Skill(
+        name="task_briefing",
+        description="Summarize tasks.",
+        category="tasks",
+        parameters={},
+        callable=lambda: None,
+    )
+    monkeypatch.setattr(
+        "work_buddy.mcp_server.registry.get_registry",
+        lambda: {skill.name: skill},
+    )
+    seen = []
+    monkeypatch.setattr(
+        router,
+        "_execute_skill",
+        lambda name, params: seen.append((name, params)) or {"status": "ok"},
+    )
+
+    result = router.MessagePoller({})._classify_and_execute(
+        "task_briefing", '{"same_day": true}'
+    )
+
+    assert result["status"] == "ok"
+    assert seen == [("task_briefing", {"same_day": True})]
+
+
+def test_executor_invokes_a_direct_skill_registry_entry(monkeypatch):
+    from work_buddy.mcp_server.registry import Skill
+    from work_buddy.sidecar.dispatch import executor
+
+    calls = []
+    skill = Skill(
+        name="task_briefing",
+        description="Summarize tasks.",
+        category="tasks",
+        parameters={},
+        callable=lambda **params: calls.append(params) or {"briefing": True},
+    )
+    monkeypatch.setattr(
+        "work_buddy.mcp_server.registry.get_registry",
+        lambda: {skill.name: skill},
+    )
+    monkeypatch.setattr(executor, "_runtime_admission_error", lambda _entry: None)
+
+    result = executor._execute_skill(skill.name, {"same_day": True})
+
+    assert result == {"status": "ok", "result": {"briefing": True}}
+    assert calls == [{"same_day": True}]
+
+
+def test_tracked_sidecar_jobs_use_only_the_canonical_skill_schema():
+    jobs_dir = Path(__file__).resolve().parents[1] / "sidecar_jobs"
+    files = sorted(jobs_dir.glob("*.md"))
+    assert files
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert "\ntype: skill\n" in text, path.name
+        assert "\nskill: " in text, path.name
+        assert "\ntype: capability\n" not in text, path.name
+        assert "\ncapability: " not in text, path.name
+        job = _parse_job_file(path)
+        assert job is not None
+        assert job.job_type == "skill"
+        assert job.skill
 
 
 def test_job_no_schedule():
     with tempfile.TemporaryDirectory() as tmpdir:
         job_file = Path(tmpdir) / "no-schedule.md"
         job_file.write_text("""---
-type: capability
-capability: something
+type: skill
+skill: something
 ---
 """)
         job = _parse_job_file(job_file)
@@ -238,8 +353,8 @@ def test_load_jobs_directory():
         # Create two job files
         (Path(tmpdir) / "job-a.md").write_text("""---
 schedule: "0 9 * * *"
-type: capability
-capability: task_briefing
+type: skill
+skill: task_briefing
 ---
 """)
         (Path(tmpdir) / "job-b.md").write_text("""---
@@ -262,7 +377,7 @@ What did I accomplish today?
 def test_job_fingerprint():
     job = Job(
         name="test", file_path=Path("."), schedule="0 9 * * *",
-        job_type="capability", capability="task_briefing",
+        job_type="skill", skill="task_briefing",
     )
     fp = job_fingerprint(job)
     assert "test" in fp
@@ -277,8 +392,8 @@ def test_jitter_default_is_zero():
         job_file = Path(tmpdir) / "no-jitter.md"
         job_file.write_text("""---
 schedule: "*/5 * * * *"
-type: capability
-capability: noop
+type: skill
+skill: noop
 ---
 """)
         job = _parse_job_file(job_file)
@@ -291,8 +406,8 @@ def test_jitter_parses_int():
         job_file = Path(tmpdir) / "with-jitter.md"
         job_file.write_text("""---
 schedule: "*/5 * * * *"
-type: capability
-capability: noop
+type: skill
+skill: noop
 jitter_seconds: 90
 ---
 """)
@@ -306,8 +421,8 @@ def test_jitter_parses_string_int():
         job_file = Path(tmpdir) / "with-jitter-str.md"
         job_file.write_text("""---
 schedule: "*/5 * * * *"
-type: capability
-capability: noop
+type: skill
+skill: noop
 jitter_seconds: "120"
 ---
 """)
@@ -323,8 +438,8 @@ def test_jitter_invalid_falls_back_to_zero(caplog):
             job_file = Path(tmpdir) / "bad-jitter.md"
             job_file.write_text(f"""---
 schedule: "*/5 * * * *"
-type: capability
-capability: noop
+type: skill
+skill: noop
 jitter_seconds: {bad}
 ---
 """)
@@ -340,7 +455,7 @@ def test_job_fingerprint_includes_jitter():
     """Hot-reload must detect jitter-only changes."""
     base = Job(
         name="t", file_path=Path("."), schedule="*/5 * * * *",
-        job_type="capability", capability="noop",
+        job_type="skill", skill="noop",
     )
     fp_no = job_fingerprint(base)
     base.jitter_seconds = 60
@@ -353,7 +468,7 @@ def test_job_fingerprint_includes_jitter():
 
 
 def _stub_registry_for_noop(monkeypatch):
-    """Registry-validator stub: pretend ``noop`` capability is registered.
+    """Registry-validator stub: pretend the ``noop`` skill is registered.
 
     The jitter tests below exercise create_user_job_file plumbing and
     don't care about the registry-name check; this keeps them hermetic
@@ -362,7 +477,7 @@ def _stub_registry_for_noop(monkeypatch):
     from work_buddy.sidecar.scheduler import jobs as jobs_mod
     monkeypatch.setattr(
         jobs_mod, "_registry_names",
-        lambda kind: ["noop"] if kind == "capability" else [],
+        lambda kind: ["noop"] if kind == "skill" else [],
     )
 
 
@@ -370,8 +485,8 @@ def test_create_user_job_file_writes_jitter(tmp_path, monkeypatch):
     _stub_registry_for_noop(monkeypatch)
     res = create_user_job_file(
         tmp_path,
-        name="jittered", schedule="*/5 * * * *", job_type="capability",
-        capability="noop", jitter_seconds=90,
+        name="jittered", schedule="*/5 * * * *", job_type="skill",
+        skill="noop", jitter_seconds=90,
     )
     assert res["success"] is True, res.get("error")
     job = load_jobs(tmp_path)[0]
@@ -383,8 +498,8 @@ def test_create_user_job_file_omits_zero_jitter(tmp_path, monkeypatch):
     _stub_registry_for_noop(monkeypatch)
     res = create_user_job_file(
         tmp_path,
-        name="no-jitter", schedule="*/5 * * * *", job_type="capability",
-        capability="noop",
+        name="no-jitter", schedule="*/5 * * * *", job_type="skill",
+        skill="noop",
     )
     assert res["success"] is True, res.get("error")
     text = (tmp_path / "no-jitter.md").read_text(encoding="utf-8")
@@ -395,8 +510,8 @@ def test_create_user_job_file_rejects_negative_jitter(tmp_path, monkeypatch):
     _stub_registry_for_noop(monkeypatch)
     res = create_user_job_file(
         tmp_path,
-        name="bad", schedule="*/5 * * * *", job_type="capability",
-        capability="noop", jitter_seconds=-1,
+        name="bad", schedule="*/5 * * * *", job_type="skill",
+        skill="noop", jitter_seconds=-1,
     )
     assert res["success"] is False
     assert "jitter" in res["error"].lower()
@@ -405,7 +520,7 @@ def test_create_user_job_file_rejects_negative_jitter(tmp_path, monkeypatch):
 def _write_job(dir_path: Path, stem: str, schedule: str = "0 9 * * *") -> Path:
     p = dir_path / f"{stem}.md"
     p.write_text(
-        f"---\nschedule: \"{schedule}\"\ntype: capability\ncapability: noop\n---\n",
+        f"---\nschedule: \"{schedule}\"\ntype: skill\nskill: noop\n---\n",
         encoding="utf-8",
     )
     return p
@@ -500,7 +615,7 @@ def test_create_user_job_file_writes_loadable_prompt_job(tmp_path):
     assert j.enabled is True
 
 
-def test_create_user_job_file_capability_with_params(tmp_path, monkeypatch):
+def test_create_user_job_file_skill_with_params(tmp_path, monkeypatch):
     # Hermetic — don't depend on whether the registry has been built in
     # this process (CI builds lazily and may not have ``task_briefing``
     # registered when this unit test runs). The validator already
@@ -509,18 +624,22 @@ def test_create_user_job_file_capability_with_params(tmp_path, monkeypatch):
     from work_buddy.sidecar.scheduler import jobs as jobs_mod
     monkeypatch.setattr(
         jobs_mod, "_registry_names",
-        lambda kind: ["task_briefing"] if kind == "capability" else [],
+        lambda kind: ["task_briefing"] if kind == "skill" else [],
     )
     res = create_user_job_file(
         tmp_path,
-        name="briefing", schedule="0 9 * * 1-5", job_type="capability",
-        capability="task_briefing", params={"same_day": True},
+        name="briefing", schedule="0 9 * * 1-5", job_type="skill",
+        skill="task_briefing", params={"same_day": True},
     )
     assert res["success"] is True, res.get("error")
     job = load_jobs(tmp_path)[0]
-    assert job.job_type == "capability"
-    assert job.capability == "task_briefing"
+    assert job.job_type == "skill"
+    assert job.skill == "task_briefing"
     assert job.params == {"same_day": True}
+    text = (tmp_path / "briefing.md").read_text(encoding="utf-8")
+    assert "type: skill" in text
+    assert "skill: task_briefing" in text
+    assert "capability" not in text
 
 
 def test_create_user_job_file_rejects_bad_name(tmp_path):
@@ -547,11 +666,11 @@ def test_create_user_job_file_rejects_bad_schedule(tmp_path):
 
 def test_create_user_job_file_requires_type_specific_field(tmp_path):
     res = create_user_job_file(
-        tmp_path, name="missing-cap", schedule="0 9 * * *",
-        job_type="capability",
+        tmp_path, name="missing-skill", schedule="0 9 * * *",
+        job_type="skill",
     )
     assert res["success"] is False
-    assert "capability" in res["error"].lower()
+    assert "skill" in res["error"].lower()
 
     res = create_user_job_file(
         tmp_path, name="missing-wf", schedule="0 9 * * *",

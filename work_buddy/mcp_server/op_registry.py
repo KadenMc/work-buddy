@@ -1,11 +1,11 @@
 """Op registry — a stable-ID lookup table for executable callables.
 
-An **Op** is the executable half of a capability: a Python callable registered
-under a stable ``op.<namespace>.<name>`` identifier. A **capability
-declaration** (an inert knowledge-store unit of ``kind: "capability"``) carries
-an ``op`` field naming an Op; the capability loader resolves that reference at
-registry-build time. This mirrors how a workflow references a capability by
-name — see ``work_buddy/knowledge/capability_loader.py``.
+An **Op** is the executable half of a skill: a Python callable registered
+under a stable ``op.<namespace>.<name>`` identifier. A **skill
+declaration** (an inert knowledge-store unit of ``kind: "skill"``) carries
+an ``op`` field naming an Op; the skill loader resolves that reference at
+registry-build time. This mirrors how a workflow references a skill by
+name — see ``work_buddy/knowledge/skill_loader.py``.
 
 This module is Core mechanism: it holds no domain opinion, only a dict keyed by
 op ID. Built-in ops live in ``work_buddy/mcp_server/ops/``; ``load_builtin_ops``
@@ -33,10 +33,10 @@ OP_ID_RE = re.compile(r"^op\.[a-z0-9]+(?:\.[a-z0-9_]+)+$")
 _OPS: dict[str, Callable] = {}
 # Effect manifests keyed by op ID. An ``effects`` manifest is a list of
 # ``EffectSpec`` objects — code, not data (an ``EffectSpec`` may carry a
-# ``resolver`` callable), so it cannot live in a data declaration. A capability
+# ``resolver`` callable), so it cannot live in a data declaration. A skill
 # declaration that needs effects names its op; the op module registers the
-# manifest here, and the capability loader threads it onto the resolved
-# ``Capability``. Empty for the overwhelming majority of capabilities.
+# manifest here, and the skill loader threads it onto the resolved
+# ``Skill``. Empty for the overwhelming majority of skills.
 _OP_EFFECTS: dict[str, list] = {}
 # Short names (e.g. ``"memory_ops"``) of op modules whose import failed during
 # ``load_builtin_ops`` because a *whitelisted* optional runtime dependency is
@@ -99,7 +99,7 @@ def register_op_effects(op_id: str, effects: list) -> None:
 
     Effects are code (an ``EffectSpec`` may hold a ``resolver`` callable), so
     they cannot ride in a data declaration — the op module registers them here
-    and the capability loader threads them onto the resolved ``Capability``.
+    and the skill loader threads them onto the resolved ``Skill``.
     """
     if not is_valid_op_id(op_id):
         raise ValueError(f"Invalid op ID {op_id!r} for effect registration.")
@@ -134,7 +134,7 @@ def load_builtin_ops() -> None:
 
     A ``ModuleNotFoundError`` whose missing module is whitelisted for the op
     module being loaded (see ``_OPTIONAL_DEP_WHITELIST``) is logged and
-    skipped — the corresponding capabilities are simply unavailable in this
+    skipped — the corresponding skills are simply unavailable in this
     environment. Any other exception (a different missing module, a syntax
     error, a wrong ``register_op`` call) propagates out of this function and
     crashes the gateway boot, so a genuine regression in an op module

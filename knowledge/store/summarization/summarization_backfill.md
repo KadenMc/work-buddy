@@ -1,11 +1,10 @@
 ---
 name: Summarization Backfill
-kind: capability
+kind: skill
 description: Observe historical conversation sessions and enqueue every missing or stale summary without making LLM calls.
-capability_name: summarization_backfill
 category: summarization
 op: op.wb.summarization_backfill
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -21,6 +20,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: safe
+skill_name: summarization_backfill
 tags:
 - summarization
 - backfill

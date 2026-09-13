@@ -1,4 +1,4 @@
-"""Conservative one-note migration operator capability."""
+"""Conservative one-note migration operator skill."""
 
 from __future__ import annotations
 

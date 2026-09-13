@@ -77,14 +77,14 @@ disclosure line. Neither path substitutes for the other when its provider is
 unavailable.
 
 Whichever path is active, Smart displays the provider/model boundary through
-the Journal capability description and records a content-free Agent Execution
+the Journal skill description and records a content-free Agent Execution
 disclosure manifest before the exact retained capture reaches the model. The
 model boundary is capped at 32 KiB and never silently truncates;
 larger captures remain saved while optional processing fails visibly. Neither
 path has web access, rewrites the saved text, or reuses a cached model
 response, and both bind one validated structured result back to the Journal
 capture. The in-process path carries no tools at all. The detached worker holds
-exactly two lease-bound capabilities, `journal_smart_processing_context` and
+exactly two lease-bound skills, `journal_smart_processing_context` and
 `journal_smart_processing_complete`, which its session ACL pins to one request
 and refuses for every other session. Its brief carries only an opaque request
 ID and a lease secret, never capture text, and one spawn is bounded far below

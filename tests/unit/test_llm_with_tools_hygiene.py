@@ -3,7 +3,7 @@
 Pins three behaviors that were fixed after a live test run revealed
 bleeding edges:
 
-1. Local-LLM capabilities (``llm_with_tools``, ``llm_submit``) must
+1. Local-LLM skills (``llm_with_tools``, ``llm_submit``) must
    NOT be auto-enqueued on transient failure. A failing model run
    wastes tokens on each replay and spams consent prompts; the
    caller should see the failure and decide what to do.
@@ -32,17 +32,17 @@ import pytest
 # auto_retry field + gateway policy
 # ---------------------------------------------------------------------------
 
-def test_capability_has_auto_retry_field_default_true():
+def test_skill_has_auto_retry_field_default_true():
     """New field exists and defaults to True so existing caps keep behaving."""
-    from work_buddy.mcp_server.registry import Capability
-    cap = Capability(
+    from work_buddy.mcp_server.registry import Skill
+    cap = Skill(
         name="test", description="", category="test", parameters={}, callable=lambda: None,
     )
     assert cap.auto_retry is True
 
 
 def test_llm_with_tools_and_llm_submit_opt_out_of_auto_retry():
-    """These two capabilities must not be in the auto-retry set — retrying
+    """These two skills must not be in the auto-retry set — retrying
     them wastes tokens and spams consent prompts."""
     from work_buddy.mcp_server.registry import get_registry
     reg = get_registry()
@@ -214,7 +214,7 @@ def test_reasoning_saved_as_artifact_on_auto_escalation(
         "output": [
             {"type": "reasoning", "content": "why did that fail hmm"},
             {"type": "tool_call", "tool": "wb_run",
-             "arguments": {"capability": "task_toggle"},
+             "arguments": {"skill": "task_toggle"},
              "output": error_payload,
              "provider_info": {"server_label": "work-buddy", "type": "ephemeral_mcp"}},
             {"type": "message", "content": "it failed"},
@@ -283,7 +283,7 @@ def test_persisted_artifact_unwraps_mcp_envelope(monkeypatch):
     tool_calls = [{
         "type": "tool_call",
         "tool": "wb_run",
-        "arguments": {"capability": "sidecar_status"},
+        "arguments": {"skill": "sidecar_status"},
         "output": wrapped,
         "provider_info": {"server_label": "work-buddy"},
     }]

@@ -517,7 +517,7 @@ def build_session_map(days: int = 7) -> dict[str, str]:
     Stores the **full** session UUID so consumers can truncate at whatever
     display boundary they choose.  For display annotation,
     ``git_collector._annotate_commits`` truncates to 8 chars — the canonical
-    short form accepted by all ``session_*`` capabilities via
+    short form accepted by all ``session_*`` skills via
     :func:`resolve_session_id`.
 
     Thin wrapper over
@@ -1315,8 +1315,10 @@ def session_wb_activity(
     """
     sid = session_id or agent_session_id
     from work_buddy.mcp_server.activity_ledger import (
+        is_skill_invocation_event,
         query_activity,
         query_session_summary,
+        skill_name_from_event,
     )
 
     summary = query_session_summary(agent_session_id=sid)
@@ -1326,8 +1328,9 @@ def session_wb_activity(
         "session_id": summary.get("session_id"),
         "total_events": summary.get("total_events", 0),
         "duration_minutes": summary.get("duration_minutes"),
+        "skills_invoked": summary.get("skills_invoked", 0),
         "by_category": summary.get("by_category", {}),
-        "by_capability": summary.get("by_capability", {}),
+        "by_skill": summary.get("by_skill", {}),
         "workflows_started": summary.get("workflows_started", 0),
         "workflows_completed": summary.get("workflows_completed", 0),
         "errors": summary.get("errors", 0),
@@ -1337,8 +1340,16 @@ def session_wb_activity(
         "recent_events": [
             {
                 "ts": ev.get("ts"),
-                "type": ev.get("type"),
-                "capability": ev.get("capability"),
+                "type": (
+                    "skill_invoked"
+                    if is_skill_invocation_event(ev)
+                    else ev.get("type")
+                ),
+                "skill": (
+                    skill_name_from_event(ev)
+                    if is_skill_invocation_event(ev)
+                    else None
+                ),
                 "status": ev.get("status"),
             }
             for ev in recent.get("events", [])[:10]

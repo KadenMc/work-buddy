@@ -1,4 +1,4 @@
-"""Agent capability for source-backed claims from durable conversations."""
+"""Agent skill for source-backed claims from durable conversations."""
 
 from __future__ import annotations
 

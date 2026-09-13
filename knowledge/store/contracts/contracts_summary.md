@@ -1,11 +1,11 @@
 ---
 name: Contracts Summary
-kind: capability
+kind: skill
 description: Formatted summary of Contracts SQLite records with title, status, deadline, and progress; no Obsidian dependency.
-capability_name: contracts_summary
 category: contracts
 op: op.wb.contracts_summary
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: contracts_summary
 tags:
 - contracts
 - summary

@@ -6,7 +6,7 @@ summary: 'Follow review-latest-bundle workflow to find and check freshness of th
 trigger: user wants to orient from an existing context bundle without re-collecting
 command: wb-context-review
 workflow: context/review-latest-bundle
-capabilities:
+skills:
 - context/context_bundle
 - contracts/active_contracts
 tags:

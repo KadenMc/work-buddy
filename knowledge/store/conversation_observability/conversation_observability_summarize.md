@@ -1,11 +1,10 @@
 ---
 name: Conversation Observability Summarize
-kind: capability
+kind: skill
 description: DEPRECATED — legacy v1 entry. Generates LLM topic summaries for stale Claude Code sessions in batches. No-ops while the on-by-default Session Summaries policy is active (the queue worker handles refresh on the 5-min cadence; see `summarization_worker_tick`) — i.e. unless the user opted out. Preserved for rollback compatibility and as an MCP-callable v1 path; new callers should use `summarization_worker_tick` or wait for the natural cron drain.
-capability_name: conversation_observability_summarize
 category: conversation_observability
 op: op.wb.conversation_observability_summarize
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -21,6 +20,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: conversation_observability_summarize
 tags:
 - conversation_observability
 - conversation

@@ -16,11 +16,11 @@ dev_notes: |-
   `execution_runner._bind_runtime_parameters` fills parameters that depend on thread runtime state before dispatch:
 
   - `tab_ids` — for the `chrome_tab_*` actions, collected from the thread's context items.
-  - `thread_id` — injected for any action whose **declaration** includes a `thread_id` parameter, gated on `is_action`. The op callable is a `**kwargs` wrapper whose signature can't be introspected, so the declared parameter schema is the authoritative source. A thread-scoped action (`journal_*`, `email_*`, `chrome_route_*`, the universal `thread_*`) therefore needs no execution_runner change — declaring `thread_id` is sufficient for the host thread to be bound at dispatch. The `is_action` gate excludes non-action capabilities (e.g. the messaging tools) that declare an unrelated `thread_id`. The host thread is authoritative, so this ALWAYS overrides a proposal-supplied `thread_id` (an LLM re-inference could hallucinate one). Runtime-bound params (`execution_runner.RUNTIME_BOUND_PARAMS` = `thread_id`, `tab_ids`) are excluded from the inference catalog (`_maybe_format_action_catalog`) and the resolution-UI schema (`service._attach_param_schemas`), so neither the model nor the user is asked to fill them.
+  - `thread_id` — injected for any action whose **declaration** includes a `thread_id` parameter, gated on `is_action`. The op callable is a `**kwargs` wrapper whose signature can't be introspected, so the declared parameter schema is the authoritative source. A thread-scoped action (`journal_*`, `email_*`, `chrome_route_*`, the universal `thread_*`) therefore needs no execution_runner change — declaring `thread_id` is sufficient for the host thread to be bound at dispatch. The `is_action` gate excludes non-action skills (e.g. the messaging tools) that declare an unrelated `thread_id`. The host thread is authoritative, so this ALWAYS overrides a proposal-supplied `thread_id` (an LLM re-inference could hallucinate one). Runtime-bound params (`execution_runner.RUNTIME_BOUND_PARAMS` = `thread_id`, `tab_ids`) are excluded from the inference catalog (`_maybe_format_action_catalog`) and the resolution-UI schema (`service._attach_param_schemas`), so neither the model nor the user is asked to fill them.
 
   ### Committing user-resolved actions
 
-  Approve is deterministic execution; Redirect is LLM re-inference. On Approve, `service._apply_action_edits_for_execute` folds the user's resolution into a fresh `action_inferred` BEFORE the `execute` transition, so the executor reads what the user approved. It honors `{action: {capability_name, parameters}}` (a switch or filled action) and legacy `{action_overrides: {action_id: {param: value}}}`, preserving the prior proposal's risk metadata when the action is unchanged. `set_action_proposal` and this path share `_write_action_proposal_event`.
+  Approve is deterministic execution; Redirect is LLM re-inference. On Approve, `service._apply_action_edits_for_execute` folds the user's resolution into a fresh `action_inferred` BEFORE the `execute` transition, so the executor reads what the user approved. It honors `{action: {skill_name, parameters}}` (a switch or filled action) and legacy `{action_overrides: {action_id: {param: value}}}`, preserving the prior proposal's risk metadata when the action is unchanged. `set_action_proposal` and this path share `_write_action_proposal_event`.
 
   Redirect (`service.redirect_action`, any thread, feedback optional) records `seed_params` + `target_action` on the `KIND_ACTION_REDIRECTED` event. `bootstrap._build_redirect_feedback_block` surfaces the seeds + the still-missing required params (via `_required_params_for`) and the target action, and the action-inference catalog marks required params with `*` so re-inference keeps the user's filled values and completes only the gaps.
 ---
@@ -32,7 +32,7 @@ dev_notes: |-
 1. **Queued for inference** — `awaiting_inference`. Thread enqueues into the LLM-call priority queue (work_buddy/llm/queue.py); does NOT own the queue.
 2. **Inference running** — `inferring_intent` | `inferring_context` | `inferring_action`. Worker has dequeued; lifecycle managed by inference worker.
 3. **Resolution wait** — `awaiting_*_confirmation` (3 affordances), `awaiting_*_clarification` (2 affordances), `awaiting_confirmation` (consent gate, 3 affordances), `awaiting_review` (opt-in post-execution, 3 affordances), `awaiting_redirect` (after failure, 2 affordances).
-4. **Execution** — `executing`. The ``execution_runner`` state-entry handler reads the latest non-cleared ``action_inferred`` event, binds runtime parameters, invokes the named capability via the MCP registry, and fires ``EXECUTION_DONE`` (success) or ``EXECUTION_FAILED`` (which routes to AWAITING_REDIRECT). Two events land in the Thread log: ``execution_started``, ``execution_finished``. Per-step detail lives on the run record (workflow run, capability call log, agent session).
+4. **Execution** — `executing`. The ``execution_runner`` state-entry handler reads the latest non-cleared ``action_inferred`` event, binds runtime parameters, invokes the named skill via the MCP registry, and fires ``EXECUTION_DONE`` (success) or ``EXECUTION_FAILED`` (which routes to AWAITING_REDIRECT). Two events land in the Thread log: ``execution_started``, ``execution_finished``. Per-step detail lives on the run record (workflow run, skill call log, agent session).
 5. **Terminal** — `done` (succeeded), `dismissed` (user closed without acting / timeout), `handed_off` (work migrated to a human or external system; agent has no further role), `monitoring` (parent-of-decomposed; transitions to done when all children terminal).
 
 ## Transition table
@@ -48,7 +48,7 @@ bootstrap (``work_buddy.threads.bootstrap.bootstrap_threads``):
 - Wait states → publish a ResolutionRequest card (``resolution_surface``).
 - Terminal states → ``cascade_terminal_to_parent`` advances the parent.
 - CLEANING_UP → run the registered cleanup adapter (``cleanup_runner``).
-- EXECUTING → dispatch the chosen action capability (``execution_runner``).
+- EXECUTING → dispatch the chosen action skill (``execution_runner``).
 
 Every active (non-wait, non-terminal) state must have a registered
 handler. A state the FSM transitions INTO with no handler attached

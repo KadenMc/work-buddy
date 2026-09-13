@@ -14,7 +14,7 @@ import re
 from typing import Any
 
 from work_buddy.knowledge.model import (
-    CapabilityUnit,
+    SkillUnit,
     DirectionsUnit,
     PromptUnit,
     SystemUnit,
@@ -165,12 +165,12 @@ def _check_kind_specific_fields(store: dict[str, PromptUnit]) -> list[dict[str, 
     errors: list[dict[str, str]] = []
 
     for path, unit in sorted(store.items()):
-        if isinstance(unit, CapabilityUnit):
-            if not unit.capability_name:
+        if isinstance(unit, SkillUnit):
+            if not unit.skill_name:
                 errors.append({
                     "check": "kind_fields",
                     "path": path,
-                    "message": "CapabilityUnit missing 'capability_name'",
+                    "message": "SkillUnit missing 'skill_name'",
                 })
         elif isinstance(unit, WorkflowUnit):
             if not unit.workflow_name:
@@ -248,26 +248,24 @@ def _check_harness_placeholders(store: dict[str, PromptUnit]) -> list[dict[str, 
     return errors
 
 
-def _check_capability_op_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
-    """Check 9: declaration-based capabilities resolve to a registered op.
+def _check_skill_op_resolution(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 9: direct-skill declarations resolve to a registered Op.
 
-    Only capability units carrying an ``op`` field are declaration-based;
-    generated capability units have no ``op`` and are ignored. Emits
-    *warnings* (not errors): the direct and declaration-based capability
-    registration paths coexist, so an unresolved declaration is surfaced
-    without failing the whole store. The loader is the single source of this
-    logic; this check surfaces its findings corpus-wide.
+    Emits *warnings* rather than blocking unrelated knowledge edits. The live
+    declaration invariants promote unresolved declarations to CI failures. The
+    loader is the single source of the resolution logic; this check surfaces
+    its findings corpus-wide.
     """
     has_declarations = any(
-        isinstance(u, CapabilityUnit) and getattr(u, "op", "")
+        isinstance(u, SkillUnit) and getattr(u, "op", "")
         for u in store.values()
     )
     if not has_declarations:
         return []
 
-    from work_buddy.knowledge.capability_loader import load_declared_capabilities
+    from work_buddy.knowledge.skill_loader import load_declared_skills
 
-    _caps, issues = load_declared_capabilities(store)
+    _skills, issues = load_declared_skills(store)
     return issues
 
 
@@ -319,7 +317,7 @@ def _check_durable_surfaces(store: dict[str, PromptUnit]) -> list[dict[str, str]
     """Check 15: advisory scan for transient identifiers in durable surfaces.
 
     Scans every unit's prose fields (name, description, tags, summary,
-    full content, dev_notes, plus capability parameter schemas and
+    full content, dev_notes, plus skill parameter schemas and
     workflow step instructions) for stage labels, dates, VCS references,
     and migration-narrative phrasing. Emits *warnings* only. This is the
     repo-wide backstop the diff-scoped commit checks structurally cannot
@@ -339,7 +337,7 @@ def _check_durable_surfaces(store: dict[str, PromptUnit]) -> list[dict[str, str]
             ("full", unit.content.get("full", "") or ""),
             ("dev_notes", unit.dev_notes or ""),
         ]
-        # Kind-specific prose containers: capability parameter schemas
+        # Kind-specific prose containers: skill parameter schemas
         # and workflow step instructions both carry user-facing text.
         for attr in ("parameters", "steps", "trigger"):
             value = getattr(unit, attr, None)
@@ -597,7 +595,7 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
 
     - **Dangling delegation** — the referenced name is workflow-shaped (kebab,
       contains ``-``) but resolves to no registered workflow and no declared
-      capability. ``wb_run`` would return "Unknown workflow" at runtime. Error.
+      skill. ``wb_run`` would return "Unknown workflow" at runtime. Error.
     - **Blind delegation** — the target is a real workflow whose reasoning
       steps are bare *and* it has no bound directions unit. A nested caller
       reaches those steps with no instructions and nothing to deliver. Error.
@@ -610,19 +608,18 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
 
     A delegation into a workflow whose bare reasoning steps *are* covered by a
     bound directions unit is intentional and silent — runtime delivery handles
-    it. Snake_case unknown names are assumed to be capabilities (possibly
-    op-registered without a store declaration) and are left to
-    ``capability_op_resolution``; they are not flagged here. Param-contract
+    it. Snake_case unknown names are assumed to be direct skills and are left
+    to ``skill_op_resolution``; they are not flagged here. Param-contract
     parsing is best-effort (single-level, non-nested ``{...}`` literals in
     prose); multi-line or nested params are skipped rather than mis-flagged.
     """
     workflow_slugs: dict[str, str] = {}      # slug -> store path
-    capability_names: set[str] = set()
+    skill_names: set[str] = set()
     for p, u in store.items():
         if isinstance(u, WorkflowUnit) and u.workflow_name:
             workflow_slugs[u.workflow_name] = p
-        elif isinstance(u, CapabilityUnit) and getattr(u, "capability_name", ""):
-            capability_names.add(u.capability_name)
+        elif isinstance(u, SkillUnit) and getattr(u, "skill_name", ""):
+            skill_names.add(u.skill_name)
     bound_workflows = {
         u.workflow
         for u in store.values()
@@ -667,8 +664,8 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
         for name in sorted(referenced):
             if name == unit.workflow_name:
                 continue                       # self-reference ("Start via …")
-            if name in capability_names:
-                continue                       # a capability call, not a delegation
+            if name in skill_names:
+                continue                       # a direct-skill call, not a delegation
             if name in workflow_slugs:
                 target = store[workflow_slugs[name]]
                 bare = _bare_reasoning_ids(target)  # type: ignore[arg-type]
@@ -712,11 +709,11 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
                     "path": path,
                     "message": (
                         f"delegates via wb_run({name!r}) which resolves to no "
-                        "registered workflow and no declared capability — "
+                        "registered workflow and no declared skill — "
                         "dangling delegation (would return 'Unknown workflow')"
                     ),
                 })
-            # snake_case unknown → assume a capability; left to capability_op_resolution
+            # snake_case unknown → assume a direct skill; left to skill_op_resolution
     return errors
 
 
@@ -736,7 +733,7 @@ _CHECKS = [
     ("harness_placeholder_default", _check_harness_placeholders),
     ("durable_surfaces", _check_durable_surfaces),
     ("parent_child_symmetry", _check_parent_child_symmetry),
-    ("capability_op_resolution", _check_capability_op_resolution),
+    ("skill_op_resolution", _check_skill_op_resolution),
     ("workflow_step_dag", _check_workflow_step_dag),
     ("workflow_step_consistency", _check_workflow_step_consistency),
     ("directions_workflow_resolution", _check_directions_workflow_resolution),
@@ -828,7 +825,7 @@ def docs_validate(
                  store_path_validity, required_fields, directions_fields,
                  kind_specific_fields, placeholder_duplicate, harness_placeholder_default,
                  durable_surfaces, parent_child_symmetry,
-                 capability_op_resolution,
+                 skill_op_resolution,
                  workflow_step_dag, workflow_step_consistency,
                  directions_workflow_resolution,
                  workflow_delegation_resolution

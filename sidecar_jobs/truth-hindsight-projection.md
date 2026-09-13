@@ -2,8 +2,8 @@
 schedule: "4-59/5 * * * *"
 recurring: true
 jitter_seconds: 45
-type: capability
-capability: truth_hindsight_projection_tick
+type: skill
+skill: truth_hindsight_projection_tick
 params:
   limit_per_store: 20
   reconcile: true

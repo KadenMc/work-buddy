@@ -1,7 +1,7 @@
 """Workflow run lifecycle ops — cancel a run, sweep idle runs.
 
-Each op here is referenced by a capability declaration (a ``kind:
-"capability"`` knowledge-store unit carrying a matching ``op`` field).
+Each op here is referenced by a skill declaration (a ``kind:
+"skill"`` knowledge-store unit carrying a matching ``op`` field).
 The callables live in :mod:`work_buddy.mcp_server.conductor`, which owns
 the in-memory active-runs map these operate on — registering them as ops
 exposes that lifecycle control over the MCP gateway (``wb_run``) and to

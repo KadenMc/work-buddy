@@ -1,8 +1,8 @@
 """Canonical, non-dispatching registry projection for Jobs authoring.
 
 The Jobs picker and hosted form assistance must agree about the names and
-parameter shapes a human may put into a scheduled-job draft.  This module is
-deliberately metadata-only: it never dispatches a capability or starts a
+parameter shapes a human may put into a scheduled-job draft. This module is
+deliberately metadata-only: it never dispatches a skill or starts a
 workflow.
 """
 
@@ -34,28 +34,28 @@ def project_param_schema(raw: Any) -> list[dict[str, Any]]:
 
 
 def job_registry_projection() -> dict[str, list[dict[str, Any]]]:
-    """Return the exact capability/workflow catalog shown by Jobs.
+    """Return the exact skill/workflow catalog shown by Jobs.
 
     This is a read-only authoring projection, not an execution allowlist.  The
     existing create-job validator remains authoritative at human submission.
     """
 
     from work_buddy.mcp_server.registry import (
-        Capability,
+        Skill,
         WorkflowDefinition,
         get_registry,
     )
 
     result: dict[str, list[dict[str, Any]]] = {
-        "capabilities": [],
+        "skills": [],
         "workflows": [],
     }
     for name, entry in sorted(get_registry().items()):
         if isinstance(entry, WorkflowDefinition):
             bucket = "workflows"
             raw_parameters = entry.params_schema
-        elif isinstance(entry, Capability):
-            bucket = "capabilities"
+        elif isinstance(entry, Skill):
+            bucket = "skills"
             raw_parameters = entry.parameters
         else:
             continue
@@ -100,7 +100,7 @@ def search_job_registry(
     """Search the host-visible Jobs catalog without invoking any entry."""
 
     key = {
-        "job_capability": "capabilities",
+        "job_skill": "skills",
         "job_workflow": "workflows",
     }.get(reference_kind)
     if key is None:

@@ -5,7 +5,7 @@ description: How to send fire-and-forget notifications — parameters, surface r
 summary: 'Use notification_send for informational messages. No response expected. Appears as: Dashboard = toast popup (click to dismiss or expand), Obsidian = Notice toast, Telegram = plain message (no buttons). Use surfaces param to target a specific surface.'
 trigger: agent wants to inform the user of an event with no response expected
 command: wb-notify
-capabilities:
+skills:
 - notifications/notification_send
 tags:
 - notifications

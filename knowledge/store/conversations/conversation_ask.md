@@ -1,11 +1,10 @@
 ---
 name: Conversation Ask
-kind: capability
+kind: skill
 description: Ask a question in a conversation and optionally wait for the user's response.
-capability_name: conversation_ask
 category: conversations
 op: op.wb.conversation_ask
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   conversation_id:
     type: string
@@ -36,6 +35,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: conversation_ask
 tags:
 - conversations
 - conversation

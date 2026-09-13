@@ -1,16 +1,16 @@
 ---
 name: Conversation Close
-kind: capability
+kind: skill
 description: Close a conversation.
-capability_name: conversation_close
 category: conversations
 op: op.wb.conversation_close
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   conversation_id:
     type: string
     description: Conversation ID
     required: true
+skill_name: conversation_close
 tags:
 - conversations
 - conversation

@@ -4,7 +4,7 @@ kind: directions
 description: How to author a new entity — canonical name, tags, aliases, description, and the post-creation ritual.
 trigger: The user wants to register a person/place/org/concept, or an agent learns a durable fact worth recording so future agents don't re-ask; or the user runs /wb-entity-new.
 command: wb-entity-new
-capabilities:
+skills:
 - entities/entity_create
 - entities/entity_resolve
 tags:

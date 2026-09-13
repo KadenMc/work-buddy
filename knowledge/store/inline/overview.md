@@ -24,4 +24,4 @@ legacy dispatcher, scan vault tags, or recommend enabling Obsidian.
 
 `work_buddy/inline/` remains as compatibility code until its dashboard/plugin
 call sites and retained watcher data have a separate deletion audit. Its
-presence does not make it an active capability or authority.
+presence does not make it an active skill or authority.

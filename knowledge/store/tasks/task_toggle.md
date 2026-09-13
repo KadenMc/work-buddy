@@ -1,11 +1,10 @@
 ---
 name: Task Toggle
-kind: capability
+kind: skill
 description: Complete, reopen, or toggle a native task atomically. Preserves an optional historical done date and the prior attention state for an idempotent reopen.
-capability_name: task_toggle
 category: tasks
 op: op.wb.task_toggle
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_id:
     type: str
@@ -31,6 +30,7 @@ mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.toggle_task
+skill_name: task_toggle
 tags:
 - tasks
 - task
@@ -44,5 +44,4 @@ aliases:
 - reopen task
 parents:
 - tasks
-requires: []
 ---

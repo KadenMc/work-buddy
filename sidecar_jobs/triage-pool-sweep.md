@@ -1,8 +1,8 @@
 ---
 schedule: "5 4 * * *"  # daily at 04:05 — off-hours, no clash with 7 * * * * journal scan
 recurring: true
-type: capability
-capability: triage_pool_sweep
+type: skill
+skill: triage_pool_sweep
 params: {}
 ---
 Daily liveness sweep over the triage pool (Slice 1).
@@ -25,7 +25,7 @@ audit. The Review tab pulls only `state == "pending"` so stale and
 quarantined entries silently leave the active surface.
 
 Cadence (`schedule:` above) is a job-level concern — change it here
-without touching the capability. The capability itself has no
+without touching the skill. The skill itself has no
 opinion on how often it runs.
 
 Manual rehearsal:

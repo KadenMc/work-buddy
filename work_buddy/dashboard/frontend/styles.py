@@ -3267,12 +3267,12 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
 }
 
 .settings-req-details,
-.settings-cap-details {
+.settings-skill-details {
     margin-top: 6px;
     font-size: 12px;
 }
 .settings-req-details summary,
-.settings-cap-details summary {
+.settings-skill-details summary {
     cursor: pointer;
     color: var(--text-secondary);
     padding: 2px 0;
@@ -3295,13 +3295,13 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
 .settings-req-label { flex: 1; min-width: 0; }
 .settings-req-reason { color: var(--text-tertiary); font-size: 11px; }
 
-.settings-cap-chips {
+.settings-skill-chips {
     margin-top: 4px;
     display: flex;
     gap: 4px;
     flex-wrap: wrap;
 }
-.settings-cap-chip {
+.settings-skill-chip {
     padding: 1px 6px;
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -3309,7 +3309,7 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     background: var(--bg);
     font-family: monospace;
 }
-.settings-cap-chip-match {
+.settings-skill-chip-match {
     border-color: var(--accent);
     background: var(--accent-subtle);
     color: var(--accent);
@@ -4159,7 +4159,7 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
 .cron-preview-invalid { color: var(--red); }
 .cron-preview-warning { color: var(--yellow); font-weight: 500; }
 
-/* Capability params schema rendered under the params textarea — gives the
+/* Skill params schema rendered under the params textarea — gives the
    user the registered parameters' names/types/descriptions so they can
    compose the JSON without leaving the form. */
 .job-form-params-schema {

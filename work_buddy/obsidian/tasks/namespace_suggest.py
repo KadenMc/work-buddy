@@ -1,6 +1,6 @@
 """Namespace-tag lookup helpers for task inference.
 
-Two capabilities live here:
+Two skills live here:
 
 - ``task_namespace_suggest(task_text, contract=None, project=None, limit=3)``
   Ranks existing namespace tags by semantic + lexical similarity to the
@@ -13,7 +13,7 @@ Two capabilities live here:
   Used by the agent before introducing a brand-new namespace — "did you
   mean X?" — so near-duplicates don't proliferate.
 
-The intelligence lives in the *calling agent*, not here. These capabilities
+The intelligence lives in the *calling agent*, not here. These skills
 are lookups: they answer "what exists in the universe, and which are close
 to this query?" using the shared embedding service
 (``work_buddy.embedding.client.hybrid_search``), with a pure-Python token
@@ -132,7 +132,7 @@ def _fallback_rank(
     return scored[:limit]
 
 
-# ── Public capabilities ────────────────────────────────────────
+# ── Public skills ────────────────────────────────────────
 
 
 def task_namespace_suggest(
@@ -146,7 +146,7 @@ def task_namespace_suggest(
     Returns up to ``limit`` candidates drawn from the current namespace
     universe (the registered namespacey tags in the task-tag cache).
     The calling agent decides whether to apply them, add others, or
-    coin a new namespace — this capability is a *lookup*, not the
+    coin a new namespace — this skill is a *lookup*, not the
     decision-maker.
 
     Args:

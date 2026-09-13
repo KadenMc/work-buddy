@@ -1,11 +1,10 @@
 ---
 name: Conversation Observability Uncommitted
-kind: capability
+kind: skill
 description: Return the legacy session_uncommitted report from the DB-backed attribution layer. Refreshes first; see also context/session_uncommitted (the thin compat wrapper).
-capability_name: conversation_observability_uncommitted
 category: conversation_observability
 op: op.wb.conversation_observability_uncommitted
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -13,6 +12,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: conversation_observability_uncommitted
 tags:
 - conversation_observability
 - conversation

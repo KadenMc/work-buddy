@@ -1,11 +1,11 @@
 ---
 name: Task Briefing
-kind: capability
+kind: skill
 description: Daily task status summary with contract constraints, MITs, focused, overdue, stale, suggestions
-capability_name: task_briefing
 category: tasks
 op: op.wb.task_briefing
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: task_briefing
 tags:
 - tasks
 - task
@@ -21,7 +21,6 @@ aliases:
 - my current work status
 parents:
 - tasks
-requires: []
 ---
 
 Uses native task state, lifecycle, and history and remains available without

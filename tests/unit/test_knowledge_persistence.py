@@ -137,7 +137,7 @@ class TestAliasCache:
         assert persist.load_alias_cache("wrong-model") == {}
 
     def test_duplicate_alias_text_across_paths_keeps_distinct_entries(self):
-        # Two different capabilities both have the alias "log entry". They
+        # Two different skills both have the alias "log entry". They
         # should be stored as distinct (path, alias) pairs.
         v1 = _vec(1024, 1)
         v2 = _vec(1024, 2)

@@ -2,7 +2,7 @@
 name: Status CLI (shell-pollable consent/operation status)
 kind: directions
 description: Read-only shell command for polling consent-request and operation status from tooling that cannot speak MCP (the Monitor tool, bash loops, cron)
-summary: '`bash /tmp/wb/status consent wait <request_id>` observes an ordinary timed-out consent request until approval/denial, then exits with a branchable code (0 granted, 1 denied, 2 timeout, 3 not found). Per-invocation exact-review timeouts require a fresh capability invocation instead of retry. Backed by python -m work_buddy.statusctl; read-only; generated per session by a SessionStart hook.'
+summary: '`bash /tmp/wb/status consent wait <request_id>` observes an ordinary timed-out consent request until approval/denial, then exits with a branchable code (0 granted, 1 denied, 2 timeout, 3 not found). Per-invocation exact-review timeouts require a fresh skill invocation instead of retry. Backed by python -m work_buddy.statusctl; read-only; generated per session by a SessionStart hook.'
 trigger: an agent or shell watcher needs to wait for ordinary cacheable consent or poll operation completion without calling MCP
 tags:
 - consent
@@ -43,7 +43,7 @@ Per-invocation exact-review consent is deliberately different. Once its
 gateway call times out, a later approval cannot authorize the old operation,
 an operation replay, or any future execution. This command may still observe
 the durable request decision for audit, but the caller must invoke the
-capability again to receive a fresh exact-review prompt.
+skill again to receive a fresh exact-review prompt.
 
 ## Commands
 
@@ -95,7 +95,7 @@ The loop the gateway timeout hands off to:
 
 Do not use this retry pattern for `grant_policy="per_invocation"`. A timeout
 has already destroyed that invocation's opportunity to receive ephemeral
-authority; start a fresh capability call instead.
+authority; start a fresh skill call instead.
 
 ```bash
 bash /tmp/wb/status consent wait "$REQUEST_ID" --timeout -1
@@ -128,7 +128,7 @@ Waiting is **free** and **self-bounding**, so prefer a generous (or indefinite) 
   through the retry queue.
 - **Exact-review decisions are observational only after timeout.** A reported
   approval for a timed-out per-invocation request writes no reusable grant and
-  cannot authorize replay. Only a fresh prompt on a fresh capability
+  cannot authorize replay. Only a fresh prompt on a fresh skill
   invocation can create the matching ephemeral authority.
 - **Session-scoped grant reads.** Consent grants live in a per-session
   `consent.db`; the command resolves against the baked-in session id, so it

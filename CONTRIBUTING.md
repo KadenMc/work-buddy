@@ -1,6 +1,6 @@
 # Contributing to work-buddy
 
-Thank you for your interest in contributing! We welcome all types of contributions — bug fixes, new capabilities, workflow definitions, integration improvements, and documentation.
+Thank you for your interest in contributing! We welcome all types of contributions — bug fixes, new skills, workflow definitions, integration improvements, and documentation.
 
 ## Before You Start
 
@@ -71,16 +71,16 @@ We use the **Fork and Pull Model** for all contributions.
 
 work-buddy is designed to be extended through three main patterns. You don't need to understand the entire codebase to contribute — pick the pattern that fits your contribution.
 
-### Adding a Capability
+### Adding a Skill
 
-A capability is an **Op** (a Python callable) plus a **declaration unit** (a `kind: capability` knowledge unit naming the Op). To add one:
+A skill is an **Op** (a Python callable) plus a **declaration unit** (a `kind: skill` knowledge unit naming the Op). To add one:
 
 1. Write the callable in the appropriate `work_buddy/` submodule.
 2. Register it as an Op in `work_buddy/mcp_server/ops/<domain>_ops.py` with `register_op("op.wb.<name>", fn)`.
-3. Author the declaration unit (`kind: capability` with `op`, `capability_name`, `category`, `parameters`) via the `docs_edit` workflow.
-4. Add tests, then restart the MCP server so the new capability registers.
+3. Author the declaration unit (`kind: skill` with `op`, `skill_name`, `category`, `parameters`) via the `docs_edit` workflow.
+4. Add tests, then restart the MCP server so the new skill registers.
 
-Your capability becomes discoverable via `wb_search` and executable via `wb_run`.
+Your skill becomes discoverable via `wb_search` and executable via `wb_run`.
 
 ### Adding a Workflow
 
@@ -132,7 +132,7 @@ work-buddy is designed to be developed by the same agents that use it. Most comm
 
 - **Commit messages are descriptive** — they're often written by agents and read by future agents. Clear summaries help everyone.
 - **The knowledge system is load-bearing** — agents query `agent_docs` at runtime to understand subsystems. If you change how something works, update the corresponding knowledge unit.
-- **Capabilities over hidden code** — if something can be a registered capability (discoverable via `wb_search`, executable via `wb_run`), it should be. Hidden functions are invisible to agents.
+- **Skills over hidden code** — if something can be a registered skill (discoverable via `wb_search`, executable via `wb_run`), it should be. Hidden functions are invisible to agents.
 
 You're welcome to develop however you prefer — by hand, with Claude Code, or with any other tool. But the framework is optimized for agent-assisted development, and the tooling is there to support it.
 
@@ -154,9 +154,9 @@ Run `/wb-dev-push` to check most of these automatically. When submitting your PR
 
 A few principles that guide decisions:
 
-- **Core stays lean.** The gateway, conductor, and config system should remain small and stable. Complexity lives in capabilities and workflows, not the framework.
-- **Capabilities over code.** If something can be a registered capability (discoverable, executable via `wb_run`), it should be — rather than a hidden function buried in a module.
-- **Documentation is infrastructure.** The knowledge store isn't an afterthought. Agents use it at runtime. Undocumented capabilities are invisible capabilities.
+- **Core stays lean.** The gateway, conductor, and config system should remain small and stable. Complexity lives in skills and workflows, not the framework.
+- **Skills over code.** If something can be a registered skill (discoverable, executable via `wb_run`), it should be — rather than a hidden function buried in a module.
+- **Documentation is infrastructure.** The knowledge store isn't an afterthought. Agents use it at runtime. Undocumented skills are invisible skills.
 - **Feature toggles over hard dependencies.** Not everyone needs Telegram, Chrome triaging, or persistent memory. New integrations should be optional.
 - **Honest about maturity.** This is a pre-release project. APIs may change. Document what's stable and what isn't.
 

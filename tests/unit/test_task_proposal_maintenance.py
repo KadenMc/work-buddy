@@ -159,7 +159,7 @@ def test_journal_stage_delegates_only_to_bounded_domain_maintenance(monkeypatch)
     reconcile.assert_called_once_with(limit=11)
 
 
-def test_capability_registers_without_opening_domain_stores():
+def test_skill_registers_without_opening_domain_stores():
     from work_buddy.mcp_server.op_registry import get_op
 
     reloaded = reload(subject)

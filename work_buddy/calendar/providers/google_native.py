@@ -18,7 +18,7 @@ logic here is hand-rolled.
 
 Writes (``events.insert`` / ``patch`` / ``delete``) mark WB-created events with
 an ``extendedProperties.private.wb_origin`` flag; the heavy per-change consent
-that gates them lives in :mod:`work_buddy.calendar.capabilities`, one layer up,
+that gates them lives in :mod:`work_buddy.calendar.skills`, one layer up,
 so this adapter is a dumb mechanism like the bridge.
 """
 

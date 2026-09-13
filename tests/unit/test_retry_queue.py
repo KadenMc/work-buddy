@@ -399,7 +399,7 @@ class TestEnqueueForRetry:
         now = datetime.now(timezone.utc)
         record = {
             "operation_id": op_id,
-            "type": "capability",
+            "type": "skill",
             "name": name,
             "params": {"key": "value"},
             "retry_policy": "replay",
@@ -490,7 +490,7 @@ class TestEnqueueForRetry:
             assert "error_kind" not in updated["retry_history"][0]
 
     # CP-A7: persist the PostWriteUncertain carrier so the retry sweep
-    # can pre-verify before replaying the read-modify-write capability.
+    # can pre-verify before replaying the read-modify-write skill.
 
     def test_enqueue_persists_pwu_carrier(self, tmp_ops_dir):
         from work_buddy.mcp_server.tools.gateway import _enqueue_for_retry
@@ -573,7 +573,7 @@ class TestCompleteOperationErrorKind:
         op_id = "op_test_kind"
         record = {
             "operation_id": op_id,
-            "type": "capability",
+            "type": "skill",
             "name": "test_cap",
             "status": "running",
         }
@@ -601,7 +601,7 @@ class TestCompleteOperationErrorKind:
         op_id = "op_test_no_kind"
         record = {
             "operation_id": op_id,
-            "type": "capability",
+            "type": "skill",
             "name": "test_cap",
             "status": "running",
         }
@@ -625,7 +625,7 @@ class TestCompleteOperationErrorKind:
         op_id = "op_test_success"
         record = {
             "operation_id": op_id,
-            "type": "capability",
+            "type": "skill",
             "name": "test_cap",
             "status": "running",
         }
@@ -703,7 +703,7 @@ def _make_queued_op(
     now = datetime.now(timezone.utc)
     record = {
         "operation_id": op_id,
-        "type": "capability",
+        "type": "skill",
         "name": name,
         "params": {},
         "retry_policy": "replay",
@@ -831,18 +831,18 @@ class TestRetrySweepReplay:
         sweep = RetrySweep()
         record, path = _make_queued_op(sweep_ops_dir, name="sidecar_status")
 
-        # Mock the registry to return a capability that succeeds
+        # Mock the registry to return a skill that succeeds
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"status": "ok"})
 
         with patch("work_buddy.sidecar.retry_sweep.RetrySweep._on_success") as mock_success:
-            from work_buddy.mcp_server.registry import Capability
+            from work_buddy.mcp_server.registry import Skill
             with patch("work_buddy.mcp_server.registry.get_registry", return_value={
                 "sidecar_status": mock_entry
             }):
-                with patch("work_buddy.mcp_server.registry.Capability", Capability):
+                with patch("work_buddy.mcp_server.registry.Skill", Skill):
                     # Make isinstance check work
-                    mock_entry.__class__ = Capability
+                    mock_entry.__class__ = Skill
                     result = sweep._replay(record)
 
         assert result["success"] is True
@@ -856,60 +856,60 @@ class TestRetrySweepReplay:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(side_effect=TimeoutError("still timing out"))
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
         assert result["success"] is False
         assert "TimeoutError" in result["error"]
         assert result["transient"] is True
 
-    def test_replay_capability_not_found(self, sweep_ops_dir):
+    def test_replay_skill_not_found(self, sweep_ops_dir):
         from work_buddy.sidecar.retry_sweep import RetrySweep
         sweep = RetrySweep()
         record, _ = _make_queued_op(sweep_ops_dir, name="nonexistent_cap")
 
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={}), \
-             patch("work_buddy.mcp_server.registry.get_disabled_registry", return_value={}):
+             patch("work_buddy.mcp_server.registry.get_disabled_skill_registry", return_value={}):
             result = sweep._replay(record)
 
         assert result["success"] is False
         assert "not found" in result["error"]
 
-    def test_replay_disabled_capability_recovers_via_recheck(self, sweep_ops_dir):
-        """Slice C.5 regression test: when a capability is in the disabled
+    def test_replay_disabled_skill_recovers_via_recheck(self, sweep_ops_dir):
+        """Slice C.5 regression test: when a skill is in the disabled
         registry (transient probe failure), the sidecar must re-probe
-        via the existing CP-A3 ``recheck_disabled_capability`` mechanism
-        (per-capability re-probe, NOT a full registry invalidation).
+        via the existing CP-A3 ``recheck_disabled_skill`` mechanism
+        (per-skill re-probe, NOT a full registry invalidation).
 
         Live failure 2026-04-28: a `task_create` retry exhausted with
-        "Capability 'task_create' not found in registry" because the
+        "Skill 'task_create' not found in registry" because the
         sidecar's cached registry had task_create disabled (obsidian
         probe transient-failed at build time). The original write had
         landed; the sidecar's failure mode just looked dramatic.
 
         Post-fix: detect the disabled-state, call
-        ``recheck_disabled_capability(name)`` (which re-probes only
-        that capability's missing tools), and on success the active
-        registry has the capability and replay proceeds normally."""
+        ``recheck_disabled_skill(name)`` (which re-probes only
+        that skill's missing tools), and on success the active
+        registry has the skill and replay proceeds normally."""
         from work_buddy.sidecar.retry_sweep import RetrySweep
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         sweep = RetrySweep()
         record, _ = _make_queued_op(sweep_ops_dir, name="summary_search")
 
-        good_entry = Capability(
+        good_entry = Skill(
             name="summary_search",
             description="real",
             category="tasks",
             parameters={},
             callable=MagicMock(return_value={"success": True, "task_id": "t-abc"}),
         )
-        # Initial registry state: empty. After recheck_disabled_capability
+        # Initial registry state: empty. After recheck_disabled_skill
         # runs and returns True (recovery succeeded), the registry has
-        # the capability.
+        # the skill.
         active_registry_states = [{}, {"summary_search": good_entry}]
         recheck_calls: list[str] = []
 
@@ -924,32 +924,32 @@ class TestRetrySweepReplay:
 
         with patch("work_buddy.mcp_server.registry.get_registry",
                    side_effect=_get_registry_side), \
-             patch("work_buddy.mcp_server.registry.get_disabled_registry",
+             patch("work_buddy.mcp_server.registry.get_disabled_skill_registry",
                    return_value={"summary_search": good_entry}), \
-             patch("work_buddy.recovery.recheck_disabled_capability",
+             patch("work_buddy.recovery.recheck_disabled_skill",
                    side_effect=_recheck_side):
             result = sweep._replay(record)
 
         assert result["success"] is True
         assert recheck_calls == ["summary_search"], (
-            "recheck_disabled_capability should have been called once "
-            "for the disabled capability"
+            "recheck_disabled_skill should have been called once "
+            "for the disabled skill"
         )
 
-    def test_replay_disabled_capability_falls_back_when_recheck_fails(
+    def test_replay_disabled_skill_falls_back_when_recheck_fails(
         self, sweep_ops_dir,
     ):
-        """When recheck_disabled_capability returns False (probe still
+        """When recheck_disabled_skill returns False (probe still
         failing), fall back to the disabled entry's callable. The
         bridge call inside should raise a typed transient exception,
         which @bridge_retry treats correctly. This avoids the
         misleading not-found-in-registry path."""
         from work_buddy.sidecar.retry_sweep import RetrySweep
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         sweep = RetrySweep()
         record, _ = _make_queued_op(sweep_ops_dir, name="summary_search")
 
-        disabled_entry = Capability(
+        disabled_entry = Skill(
             name="summary_search",
             description="disabled placeholder",
             category="tasks",
@@ -958,9 +958,9 @@ class TestRetrySweepReplay:
         )
 
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={}), \
-             patch("work_buddy.mcp_server.registry.get_disabled_registry",
+             patch("work_buddy.mcp_server.registry.get_disabled_skill_registry",
                    return_value={"summary_search": disabled_entry}), \
-             patch("work_buddy.recovery.recheck_disabled_capability",
+             patch("work_buddy.recovery.recheck_disabled_skill",
                    return_value=False):
             result = sweep._replay(record)
 
@@ -976,11 +976,11 @@ class TestRetrySweepReplay:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"error": "bridge timed out"})
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
         assert result["success"] is False
@@ -989,11 +989,11 @@ class TestRetrySweepReplay:
 
 class TestRetrySweepCPA7PreVerify:
     """CP-A7: when an op record carries pwu_carrier, _replay must
-    pre-verify BEFORE invoking the capability. Skips replay on verified
+    pre-verify BEFORE invoking the skill. Skips replay on verified
     (avoids double-write); falls through on absent/indeterminate."""
 
     def test_pre_verify_skips_replay_when_verified(self, sweep_ops_dir):
-        """Verified-by-filesystem → mark complete, capability NEVER called."""
+        """Verified-by-filesystem → mark complete, skill NEVER called."""
         from work_buddy.sidecar.retry_sweep import RetrySweep
         sweep = RetrySweep()
         record, _ = _make_queued_op(sweep_ops_dir, name="vault_write_at_location")
@@ -1006,7 +1006,7 @@ class TestRetrySweepCPA7PreVerify:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"status": "ok"})
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch(
             "work_buddy.mcp_server.registry.get_registry",
             return_value={"vault_write_at_location": mock_entry},
@@ -1014,10 +1014,10 @@ class TestRetrySweepCPA7PreVerify:
             "work_buddy.obsidian.post_write_verify.verify_post_write",
             return_value="verified",
         ):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
-        # The capability MUST NOT have been called.
+        # The skill MUST NOT have been called.
         mock_entry.callable.assert_not_called()
         assert result["success"] is True
         assert result["result"]["status"] == "ok"
@@ -1025,7 +1025,7 @@ class TestRetrySweepCPA7PreVerify:
         assert "CP-A7 pre-verify" in result["result"]["warning"]
 
     def test_pre_verify_falls_through_when_absent(self, sweep_ops_dir):
-        """Absent → capability runs as normal (no skip)."""
+        """Absent → skill runs as normal (no skip)."""
         from work_buddy.sidecar.retry_sweep import RetrySweep
         sweep = RetrySweep()
         record, _ = _make_queued_op(sweep_ops_dir, name="vault_write_at_location")
@@ -1038,7 +1038,7 @@ class TestRetrySweepCPA7PreVerify:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"status": "ok"})
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch(
             "work_buddy.mcp_server.registry.get_registry",
             return_value={"vault_write_at_location": mock_entry},
@@ -1046,10 +1046,10 @@ class TestRetrySweepCPA7PreVerify:
             "work_buddy.obsidian.post_write_verify.verify_post_write",
             return_value="absent",
         ):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
-        # Capability WAS called (verify said absent → normal replay).
+        # Skill WAS called (verify said absent → normal replay).
         mock_entry.callable.assert_called_once()
         assert result["success"] is True
 
@@ -1066,7 +1066,7 @@ class TestRetrySweepCPA7PreVerify:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"status": "ok"})
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch(
             "work_buddy.mcp_server.registry.get_registry",
             return_value={"vault_write_at_location": mock_entry},
@@ -1074,7 +1074,7 @@ class TestRetrySweepCPA7PreVerify:
             "work_buddy.obsidian.post_write_verify.verify_post_write",
             return_value="indeterminate",
         ):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
         mock_entry.callable.assert_called_once()
@@ -1090,14 +1090,14 @@ class TestRetrySweepCPA7PreVerify:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"status": "ok"})
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch(
             "work_buddy.mcp_server.registry.get_registry",
             return_value={"vault_write_at_location": mock_entry},
         ), patch(
             "work_buddy.obsidian.post_write_verify.verify_post_write",
         ) as mock_verify:
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             sweep._replay(record)
 
         # verify_post_write must not have been called for non-PWU ops.
@@ -1119,7 +1119,7 @@ class TestRetrySweepCPA7PreVerify:
             "notes/y.md", content_hint="fresh hint", write_mode="insert",
         ))
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch(
             "work_buddy.mcp_server.registry.get_registry",
             return_value={"vault_write_at_location": mock_entry},
@@ -1127,7 +1127,7 @@ class TestRetrySweepCPA7PreVerify:
             "work_buddy.obsidian.post_write_verify.verify_post_write",
             return_value="absent",  # Force fall-through to failure path
         ):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
         assert result["success"] is False
@@ -1190,11 +1190,11 @@ class TestRetrySweepFullCycle:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"status": "ok"})
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }), patch.object(sweep, "_on_success"):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             results = sweep.sweep()
 
         assert len(results) == 1
@@ -1213,11 +1213,11 @@ class TestRetrySweepFullCycle:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(side_effect=TimeoutError("nope"))
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             results = sweep.sweep()
 
         assert len(results) == 1
@@ -1241,11 +1241,11 @@ class TestRetrySweepFullCycle:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(side_effect=TimeoutError("still down"))
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }), patch.object(sweep, "_on_exhausted") as mock_exhausted:
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             results = sweep.sweep()
 
         assert len(results) == 1
@@ -1272,11 +1272,11 @@ class TestRetrySweepFullCycle:
         mock_entry = MagicMock()
         mock_entry.callable = MagicMock(return_value={"status": "ok"})
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }), patch.object(sweep, "_on_success"):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             results = sweep.sweep()
 
         assert len(results) == 2
@@ -1544,11 +1544,11 @@ class TestRetrySweepReplaySuccessFalse:
             return_value={"success": False, "message": "Failed to write note: bridge timed out"}
         )
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
         assert result["success"] is False
@@ -1566,11 +1566,11 @@ class TestRetrySweepReplaySuccessFalse:
             return_value={"success": False, "message": "Invalid parameter: bad_key"}
         )
 
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         with patch("work_buddy.mcp_server.registry.get_registry", return_value={
             "sidecar_status": mock_entry
         }):
-            mock_entry.__class__ = Capability
+            mock_entry.__class__ = Skill
             result = sweep._replay(record)
 
         assert result["success"] is False

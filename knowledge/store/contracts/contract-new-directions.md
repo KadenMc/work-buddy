@@ -6,7 +6,7 @@ summary: Walk the user through contract fields interactively. Require a minimum 
 trigger: user wants to create a new contract for a bounded deliverable
 command: wb-contract-new
 workflow: contracts/create-contract
-capabilities:
+skills:
 - contracts/active_contracts
 - contracts/contract_wip_check
 - contracts/create_contract

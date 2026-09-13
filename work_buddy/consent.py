@@ -166,11 +166,11 @@ _consent_ctx = _ConsentContext()
 # ---------------------------------------------------------------------------
 # Safe-caller context — call-stack-aware consent risk reduction
 # ---------------------------------------------------------------------------
-# A capability decorated with ``@reduces_risk_for("some.op", "low")`` declares
+# A skill decorated with ``@reduces_risk_for("some.op", "low")`` declares
 # that, while IT is executing, calls to ``some.op`` should be treated as
 # low-risk (and auto-pass the consent gate) even if ``some.op`` itself is
 # registered as high-risk. This is the mechanism that lets read-only
-# capabilities like ``task_briefing`` call ``obsidian.eval_js`` internally
+# skills like ``task_briefing`` call ``obsidian.eval_js`` internally
 # without triggering a high-risk prompt for every invocation, while DIRECT
 # agent calls to ``eval_js`` still prompt as high-risk.
 #
@@ -1783,7 +1783,7 @@ def create_consent_request(
         default_ttl: Suggested TTL in minutes.
         requester: Who is requesting (e.g., "sidecar:cron_cleanup", "agent:<id>").
         context: Optional metadata for the UI (shown in the Obsidian modal).
-        callback: What to run on approval: {"capability": "...", "params": {...}}.
+        callback: What to run on approval: {"skill": "...", "params": {...}}.
         callback_session_id: If set, resume this Claude Code session on approval.
 
     Returns:
@@ -1861,7 +1861,7 @@ def create_consent_request(
 
     created = create_notification(notification)
 
-    # Return a dict for backward compatibility with MCP capabilities
+    # Return a dict for backward compatibility with MCP callers.
     result = created.to_dict()
     result["request_id"] = result["notification_id"]  # alias
     _audit_log("REQUEST_CREATED", operation,

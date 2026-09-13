@@ -1,4 +1,4 @@
-"""Bridge-free capability implementations for native task authority."""
+"""Bridge-free skill implementations for native task authority."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Structured summaries for bounded sidecar capability results."""
+"""Structured summaries for bounded sidecar skill results."""
 
 from __future__ import annotations
 

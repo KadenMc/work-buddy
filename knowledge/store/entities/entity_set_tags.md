@@ -1,8 +1,7 @@
 ---
 name: Entity Set Tags
-kind: capability
+kind: skill
 description: Replace the full tag set on an entity. Pass an empty list to clear. Tags are normalized; exact duplicates and redundant ancestor tags (person when person/family is present) are collapsed before writing.
-capability_name: entity_set_tags
 category: entities
 parameters:
   entity_id:
@@ -20,7 +19,8 @@ parameters:
 mutates_state: true
 retry_policy: manual
 op: op.wb.entity_set_tags
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_set_tags
 tags:
 - entities
 - entity

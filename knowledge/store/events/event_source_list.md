@@ -1,18 +1,17 @@
 ---
 name: Event Source List
-kind: capability
+kind: skill
 description: List authored event sources — name, type, interval, enabled state, action, condition, semantic (Tier-3 gate present?), and autonomy — plus any sources that failed validation and why. Read-only.
-capability_name: event_source_list
 category: events
 op: op.wb.event_source_list
-schema_version: wb-capability/v1
-parameters: {}
+schema_version: wb-skill/v1
 mutates_state: false
 retry_policy: none
 is_action: false
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: event_source_list
 tags:
 - events
 - source

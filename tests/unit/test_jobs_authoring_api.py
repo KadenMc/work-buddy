@@ -32,6 +32,53 @@ def test_click_uses_existing_scheduler_validation_and_never_overwrites(tmp_path)
     assert len(list(tmp_path.glob("*.md"))) == 1
 
 
+def test_direct_skill_submission_writes_only_canonical_fields(tmp_path, monkeypatch):
+    from work_buddy.sidecar.scheduler import jobs as jobs_module
+
+    monkeypatch.setattr(
+        jobs_module,
+        "_registry_names",
+        lambda kind: ["noop"] if kind == "skill" else [],
+    )
+    response = client(tmp_path).post(
+        "/api/jobs/authoring",
+        json=payload(name="direct-skill", job_type="skill", skill="noop"),
+    )
+    assert response.status_code == 200, response.json
+    text = (tmp_path / "direct-skill.md").read_text(encoding="utf-8")
+    assert "type: skill" in text
+    assert "skill: noop" in text
+    assert "capability" not in text
+
+
+def test_authoring_api_accepts_cached_direct_skill_fields_after_raw_authorization(
+    tmp_path, monkeypatch
+):
+    from work_buddy.sidecar.scheduler import jobs as jobs_module
+
+    monkeypatch.setattr(
+        jobs_module,
+        "_registry_names",
+        lambda kind: ["noop"] if kind == "skill" else [],
+    )
+    authorize = Mock(return_value="user:test")
+    legacy_payload = payload(
+        name="cached-direct-skill",
+        job_type="capability",
+        capability="noop",
+    )
+    response = client(tmp_path, authorizer=authorize).post(
+        "/api/jobs/authoring",
+        json=legacy_payload,
+    )
+    assert response.status_code == 200, response.json
+    authorize.assert_called_once_with(legacy_payload)
+    text = (tmp_path / "cached-direct-skill.md").read_text(encoding="utf-8")
+    assert "type: skill" in text
+    assert "skill: noop" in text
+    assert "capability" not in text
+
+
 @pytest.mark.parametrize("changes", [
     {"overwrite": True}, {"params": []}, {"jitter_seconds": True},
     {"jitter_seconds": 1.5}, {"jitter_seconds": -1}, {"jitter_seconds": 301},

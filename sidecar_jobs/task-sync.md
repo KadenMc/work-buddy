@@ -4,8 +4,8 @@ jitter_seconds: 90         # spread fire time up to 90s so it doesn't
                            # collide with project-sync on shared ticks
 recurring: true
 enabled: false
-type: capability
-capability: task_sync
+type: skill
+skill: task_sync
 params: {}
 ---
 Retired legacy reconciliation job. It remains disabled indefinitely after the

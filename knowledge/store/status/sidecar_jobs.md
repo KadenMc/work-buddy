@@ -1,11 +1,11 @@
 ---
 name: Sidecar Jobs
-kind: capability
+kind: skill
 description: List all sidecar jobs with their enabled state, next eligible fire time, heartbeat status, and whether exclusion windows are active. Disabled jobs report no next fire.
-capability_name: sidecar_jobs
 category: status
 op: op.wb.sidecar_jobs
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: sidecar_jobs
 tags:
 - status
 - sidecar

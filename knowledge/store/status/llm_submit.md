@@ -1,11 +1,10 @@
 ---
 name: Llm Submit
-kind: capability
+kind: skill
 description: Asynchronously submit an llm_call for background execution. Returns immediately with an operation_id; the sidecar's retry sweep invokes llm_call with your params and messages the originating session on completion. Use when local inference latency (tens of seconds) would block the caller unnecessarily. For synchronous bounded calls use llm_call. Cloud tier calls are already fast — no point submitting them; profile is therefore required.
-capability_name: llm_submit
 category: llm
 op: op.wb.llm_submit
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   system:
     type: str
@@ -37,9 +36,10 @@ parameters:
     required: false
   priority:
     type: str
-    description: "Local-inference admission priority for the broker: 'interactive', 'workflow' (default), or 'background'. Background submits should pass 'background' so they yield to interactive work on the same LM Studio profile."
+    description: 'Local-inference admission priority for the broker: ''interactive'', ''workflow'' (default), or ''background''. Background submits should pass ''background'' so they yield to interactive work on the same LM Studio profile.'
     required: false
 auto_retry: false
+skill_name: llm_submit
 tags:
 - llm
 - submit

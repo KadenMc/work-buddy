@@ -1,11 +1,10 @@
 ---
 name: Email Create Umbrella Task
-kind: capability
+kind: skill
 description: Create one native task for an email cluster and place its message context in a Co-work knowledge document.
-capability_name: email_create_umbrella_task
 category: email
 op: op.wb.email_create_umbrella_task
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -29,6 +28,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: email_create_umbrella_task
 tags:
 - email
 - create
@@ -39,5 +39,4 @@ aliases:
 - single task for email group
 parents:
 - email
-requires: []
 ---

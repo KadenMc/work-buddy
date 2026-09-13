@@ -150,11 +150,11 @@ def _reject_constrained_top_level(
     ctx: Context,
     tool_name: str,
 ) -> dict[str, Any] | None:
-    """Deny top-level gateway tools that bypass the capability ACL.
+    """Deny top-level gateway tools that bypass the skill ACL.
 
-    Constrained callers may initialize, discover their filtered capability
-    surface, and dispatch those capabilities through ``wb_run``. Workflow and
-    operation-result tools are not capability-dispatched, so allowing them
+    Constrained callers may initialize, discover their filtered skill
+    surface, and dispatch those skills through ``wb_run``. Workflow and
+    operation-result tools are not skill-dispatched, so allowing them
     would bypass that whitelist and could expose or mutate another session's
     state.
     """
@@ -180,7 +180,7 @@ def _reject_constrained_top_level(
 _OPERATIONS_DIR: Path | None = None
 
 # Parameters owned by the native task mutation contract.  Some are transport
-# concerns (``client_mutation_id``), while the public capability declarations
+# concerns (``client_mutation_id``), while the public skill declarations
 # expose the optimistic-lock and lifecycle fields.  Keeping the allowance here
 # lets an older, already-loaded registry generation accept the hardened
 # contract immediately; a data-only registry reload then supplies the richer
@@ -198,27 +198,27 @@ _TASK_MUTATION_CONTRACT_PARAMS: dict[str, frozenset[str]] = {
         {"client_mutation_id", "expected_revision"}
     ),
 }
-_TASK_MUTATION_CAPABILITY_NAMES = frozenset(
+_TASK_MUTATION_SKILL_NAMES = frozenset(
     {*_TASK_MUTATION_CONTRACT_PARAMS, "task_archive", "task_sync"}
 )
 
-_RETRY_WRAPPER_CAPABILITIES = frozenset({"retry", "obsidian_retry"})
+_RETRY_WRAPPER_SKILLS = frozenset({"retry", "obsidian_retry"})
 
 
 def _effective_task_operation(
-    capability: str,
+    skill: str,
     params: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """Resolve a retry wrapper to the operation whose effects it can replay."""
 
-    if capability not in _RETRY_WRAPPER_CAPABILITIES:
-        return capability, None
+    if skill not in _RETRY_WRAPPER_SKILLS:
+        return skill, None
     inner_id = (params or {}).get("operation_id")
     if not inner_id:
-        return capability, None
+        return skill, None
     inner = _load_operation(str(inner_id))
     if inner is None:
-        return capability, None
+        return skill, None
     return str(inner.get("name") or ""), inner
 
 
@@ -230,7 +230,7 @@ def _assert_task_retry_record_authority(record: dict[str, Any]) -> None:
         record.get("params") or {},
     )
     effective = inner or record
-    if name not in _TASK_MUTATION_CAPABILITY_NAMES:
+    if name not in _TASK_MUTATION_SKILL_NAMES:
         return
     from work_buddy.tasks.runtime import (
         assert_task_replay_authority,
@@ -245,13 +245,13 @@ def _assert_task_retry_record_authority(record: dict[str, Any]) -> None:
 
 
 def _native_task_effect_verification_retired(
-    capability: str,
+    skill: str,
     params: dict[str, Any] | None,
 ) -> bool:
     """Return True when a PWU path would inspect retired task Markdown."""
 
-    name, _inner = _effective_task_operation(capability, params)
-    if name not in _TASK_MUTATION_CAPABILITY_NAMES:
+    name, _inner = _effective_task_operation(skill, params)
+    if name not in _TASK_MUTATION_SKILL_NAMES:
         return False
     from work_buddy.tasks.runtime import native_authority_active
 
@@ -259,7 +259,7 @@ def _native_task_effect_verification_retired(
 
 
 def _prepare_task_mutation_params(
-    capability: str,
+    skill: str,
     params: dict[str, Any],
 ) -> dict[str, Any]:
     """Pin native task retry authority before the operation is persisted.
@@ -276,14 +276,14 @@ def _prepare_task_mutation_params(
     be resolved, or the authority probe is unavailable; the subsequently
     recorded dispatch will then return the normal typed error.
     """
-    if capability not in _TASK_MUTATION_CONTRACT_PARAMS:
+    if skill not in _TASK_MUTATION_CONTRACT_PARAMS:
         return params
 
     prepared = dict(params)
     if prepared.get("client_mutation_id") is None:
         prepared["client_mutation_id"] = f"mcp:{uuid.uuid4().hex}"
 
-    if capability == "task_create" or prepared.get("expected_revision") is not None:
+    if skill == "task_create" or prepared.get("expected_revision") is not None:
         return prepared
 
     try:
@@ -304,7 +304,7 @@ def _prepare_task_mutation_params(
         )
         if (
             task is None
-            and capability == "task_change_state"
+            and skill == "task_change_state"
             and prepared.get("description_match")
         ):
             matches = TaskApplicationService(store).search(
@@ -342,7 +342,6 @@ def _task_domain_error_payload(
         "operation_id": operation_id,
     }
 
-
 def _get_operations_dir() -> Path:
     """Return (and lazily create) the global operations directory."""
     global _OPERATIONS_DIR
@@ -359,7 +358,7 @@ def _save_operation(
     params: dict[str, Any],
     retry_policy: str,
     *,
-    op_type: str = "capability",
+    op_type: str = "skill",
     lease_seconds: int = 90,
 ) -> str:
     """Persist an operation record before dispatch. Returns the operation ID."""
@@ -380,7 +379,7 @@ def _save_operation(
         "created_at": now.isoformat(),
         "completed_at": None,
     }
-    if name in _TASK_MUTATION_CAPABILITY_NAMES:
+    if name in _TASK_MUTATION_SKILL_NAMES:
         from work_buddy.tasks.runtime import authority_epoch
 
         try:
@@ -402,7 +401,7 @@ def _save_operation(
 def _result_error(result: Any) -> str | None:
     """Extract an error string from a result dict, if present.
 
-    Capabilities that catch their own errors and return {"error": "..."}
+    Skills that catch their own errors and return {"error": "..."}
     or {"success": False, "message": "..."} instead of raising need to be
     recorded as failures so retry_operation() can replay them.
     Returns None when the result is not a failure.
@@ -416,6 +415,16 @@ def _result_error(result: Any) -> str | None:
             msg = result.get("message", "")
             return str(msg) if msg else "Operation returned success=false"
     return None
+
+
+def _normalize_operation_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize durable operation data at its read/write boundary."""
+    # LEGACY_READ: operation records can outlive a checkout. Older direct
+    # calls used ``type: capability``; keep that spelling off every current
+    # response and every subsequent write without rewriting on a read alone.
+    if record.get("type") == "capability":
+        record["type"] = "skill"
+    return record
 
 
 def _complete_operation(
@@ -436,7 +445,9 @@ def _complete_operation(
     path = _get_operations_dir() / f"{op_id}.json"
     if not path.exists():
         return
-    record = json.loads(path.read_text(encoding="utf-8"))
+    record = _normalize_operation_record(
+        json.loads(path.read_text(encoding="utf-8"))
+    )
     record["status"] = "completed" if error is None else "failed"
     record["result"] = result
     record["error"] = error
@@ -451,6 +462,7 @@ def _complete_operation(
 
 def _update_operation(record: dict[str, Any]) -> None:
     """Write an updated operation record back to disk."""
+    record = _normalize_operation_record(record)
     path = _get_operations_dir() / f"{record['operation_id']}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record, default=_json_default, indent=2), encoding="utf-8")
@@ -458,30 +470,32 @@ def _update_operation(record: dict[str, Any]) -> None:
 
 
 def _load_operation(op_id: str) -> dict[str, Any] | None:
-    """Load an operation record by ID. Returns None if not found."""
+    """Load an operation record, normalizing the legacy persisted type."""
     path = _get_operations_dir() / f"{op_id}.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _normalize_operation_record(
+        json.loads(path.read_text(encoding="utf-8"))
+    )
 
 
 # ---------------------------------------------------------------------------
-# Capability-result size cap
+# Skill-result size cap
 # ---------------------------------------------------------------------------
 # The workflow conductor caps *step* results (``_cap_step_results`` /
 # ``_STEP_RESULT_CAP``) so a large intermediate doesn't blow the MCP
-# response. Direct ``wb_run`` capability results had no equivalent budget,
+# response. Direct ``wb_run`` skill results had no equivalent budget,
 # so an oversized return (e.g. ``summary_search`` drilling verbose sessions)
 # could exceed the client's token ceiling. The full result is already
 # persisted to the operation record by ``_complete_operation``; the cap only
-# governs what is returned inline, and ``wb_capability_result`` retrieves the
+# governs what is returned inline, and ``wb_skill_result`` retrieves the
 # rest on demand. Mirrors the conductor's ``_truncated/_size/_keys/_message``
 # shape so agents see one familiar truncation contract everywhere.
 
-_DEFAULT_CAPABILITY_RESULT_CAP = 100_000
+_DEFAULT_SKILL_RESULT_CAP = 100_000
 
 
-def _capability_result_cap() -> int:
+def _skill_result_cap() -> int:
     """Resolve the inline result-size cap (chars) from config, default 100k."""
     try:
         from work_buddy.config import load_config
@@ -490,17 +504,17 @@ def _capability_result_cap() -> int:
             return val
     except Exception:  # pragma: no cover — config read is best-effort
         pass
-    return _DEFAULT_CAPABILITY_RESULT_CAP
+    return _DEFAULT_SKILL_RESULT_CAP
 
 
-def _cap_capability_result(result: Any, op_id: str) -> Any:
-    """Truncate an oversized capability result for inline MCP return.
+def _cap_skill_result(result: Any, op_id: str) -> Any:
+    """Truncate an oversized skill result for inline MCP return.
 
     The full result is in the op record; an agent recovers it via
-    ``wb_capability_result(operation_id, key)``. Returns the result
+    ``wb_skill_result(operation_id, key)``. Returns the result
     unchanged when it fits, otherwise a truncation marker.
     """
-    cap = _capability_result_cap()
+    cap = _skill_result_cap()
     try:
         serialized = json.dumps(result, default=_json_default)
     except (TypeError, ValueError):
@@ -515,13 +529,13 @@ def _cap_capability_result(result: Any, op_id: str) -> Any:
         "_message": (
             f"Result too large ({len(serialized):,} chars, cap {cap:,}). "
             f"Full result is in the operation record. Retrieve it with "
-            f"wb_capability_result(operation_id='{op_id}'[, key=...])."
+            f"wb_skill_result(operation_id='{op_id}'[, key=...])."
         ),
     }
 
 
-def _capability_result_payload(op_id: str, key: str | None) -> dict[str, Any]:
-    """Backing logic for the ``wb_capability_result`` tool.
+def _skill_result_payload(op_id: str, key: str | None) -> dict[str, Any]:
+    """Backing logic for the ``wb_skill_result`` tool.
 
     Reads the op record's stored result and returns it whole or by key,
     applying the same per-value cap so a single huge key can't blow the
@@ -537,7 +551,7 @@ def _capability_result_payload(op_id: str, key: str | None) -> dict[str, Any]:
             "status": record.get("status"),
             "op_error": record.get("error"),
         }
-    cap = _capability_result_cap()
+    cap = _skill_result_cap()
     if key is not None:
         if isinstance(result, dict) and key in result:
             value = result[key]
@@ -642,7 +656,7 @@ def _invoke_with_session(
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.KEYWORD_ONLY,
         ):
-            # Session identity is transport-owned. Never let capability params
+            # Session identity is transport-owned. Never let skill params
             # override the server-resolved MCP connection identity.
             call_kwargs["agent_session_id"] = session_id
 
@@ -789,7 +803,7 @@ def _warn_consent_session_fallback(
 
 def _auto_consent_request(
     operations: list[str],
-    capability_name: str,
+    skill_name: str,
     op_id: str,
     timeout: int = _AUTO_CONSENT_TIMEOUT,
     session_id: str | None = None,
@@ -868,14 +882,14 @@ def _auto_consent_request(
         else (
             operations[0]
             if len(operations) == 1
-            else f"bundle:{capability_name}"
+            else f"bundle:{skill_name}"
         )
     )
     request_context = (
         prompt_context
         if per_invocation
         else {
-            "capability": capability_name,
+            "skill": skill_name,
             "operations": operations,
             "operation_id": op_id,
         }
@@ -899,7 +913,7 @@ def _auto_consent_request(
     callback_session_id = session_id or os.environ.get("WORK_BUDDY_SESSION_ID")
     if session_id is None:
         _warn_consent_session_fallback(
-            "_auto_consent_request", capability_name, callback_session_id,
+            "_auto_consent_request", skill_name, callback_session_id,
         )
 
     # Create the consent request (uses notification substrate)
@@ -908,7 +922,7 @@ def _auto_consent_request(
         reason=body,
         risk=max_risk,
         default_ttl=max_ttl,
-        requester=f"gateway:{capability_name}",
+        requester=f"gateway:{skill_name}",
         context=request_context,
         callback_session_id=callback_session_id,
         grant_policy=grant_policy,
@@ -975,28 +989,28 @@ def _auto_consent_request(
                 "message": (
                     "Per-invocation consent timed out. A later approval "
                     "cannot authorize this or any future execution. Retry "
-                    "the capability to create a fresh request."
+                    "the skill to create a fresh request."
                 ),
             }
 
-        # Pick the right retry capability based on whether the underlying
+        # Pick the right retry skill based on whether the underlying
         # operation depends on the Obsidian bridge.  obsidian_retry is
         # bridge-aware (probes health, waits, retries), so it recovers
         # cleanly when the bridge was the reason the original call timed
         # out — which is the common case for any *obsidian.* operation.
         from work_buddy.mcp_server import registry as _registry
-        cap_entry = _registry.get_entry(capability_name)
+        skill_entry = _registry.get_entry(skill_name)
         is_obsidian_op = bool(
             any(op.startswith("obsidian.") for op in operations)
-            or (cap_entry and "obsidian" in (getattr(cap_entry, "requires", []) or []))
+            or (skill_entry and "obsidian" in (getattr(skill_entry, "requires", []) or []))
         )
         if is_obsidian_op:
             retry_hint = (
                 f"mcp__work-buddy__wb_run(\"obsidian_retry\", "
                 f"{{\"operation_id\": \"{op_id}\"}}) "
-                f"— this capability depends on the Obsidian bridge, so use "
+                f"— this skill depends on the Obsidian bridge, so use "
                 f"obsidian_retry (bridge-aware) instead of plain retry. "
-                f"It loads the original capability + params from the record."
+                f"It loads the original skill + params from the record."
             )
         else:
             retry_hint = (
@@ -1047,7 +1061,7 @@ def _auto_consent_request(
         return {
             "status": "denied",
             "operation_id": op_id,
-            "message": f"User denied consent for {capability_name}.",
+            "message": f"User denied consent for {skill_name}.",
         }
 
     if per_invocation:
@@ -1145,12 +1159,12 @@ def _collect_workflow_consent_ops(
     entry: "registry.WorkflowDefinition",
 ) -> tuple[list[str], str]:
     """Walk the workflow's steps and collect the union of
-    ``consent_operations`` declared by invoked capabilities. Returns
+    ``consent_operations`` declared by invoked skills. Returns
     ``(ops, max_risk)`` where ``ops`` is the deduplicated list and
     ``max_risk`` is the highest risk level among them
     (``"low"``/``"moderate"``/``"high"``).
 
-    Best-effort: capabilities not yet in the registry (e.g. inert
+    Best-effort: skills not yet in the registry (e.g. inert
     declarations) contribute no operations. Used for the consent-modal
     body and for the low-weight auto-bypass decision (workflows whose
     declared ops are all low-risk skip the prompt).
@@ -1166,16 +1180,16 @@ def _collect_workflow_consent_ops(
             invokes_all.add(invokes)
         if step.auto_run is not None:
             # The auto_run.callable is a dotted Python path; the
-            # control-graph resolver maps it to a capability when
+            # control-graph resolver maps it to a skill when
             # available. For modal-body purposes we don't need to
             # resolve — step.invokes is the documented surface.
             pass
 
-    for cap_name in sorted(invokes_all):
-        cap_entry = registry.get_entry(cap_name)
-        if not isinstance(cap_entry, registry.Capability):
+    for skill_name in sorted(invokes_all):
+        skill_entry = registry.get_entry(skill_name)
+        if not isinstance(skill_entry, registry.Skill):
             continue
-        for op in cap_entry.consent_operations:
+        for op in skill_entry.consent_operations:
             if op in seen:
                 continue
             seen.add(op)
@@ -1225,7 +1239,7 @@ def _render_workflow_consent_body(
         lines.append(
             f"This workflow has {step_count} "
             f"step{'s' if step_count != 1 else ''}. No consent-gated "
-            f"operations were declared by its capabilities."
+            f"operations were declared by its skills."
         )
     lines.append("")
     lines.append(
@@ -1440,7 +1454,9 @@ def _list_recent_operations(limit: int = 10) -> list[dict[str, Any]]:
         if len(records) >= limit:
             break
         try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
+            raw = _normalize_operation_record(
+                json.loads(p.read_text(encoding="utf-8"))
+            )
             # Check for stale running ops
             status = raw.get("status", "unknown")
             if status == "running":
@@ -1510,7 +1526,7 @@ def _enqueue_for_retry(
     ``pwu_carrier`` is the ObsidianPostWriteUncertain carrier that
     triggered this enqueue: ``{path, content_hint, write_mode}``.
     Persisted on the op record so the retry sweep can pre-verify
-    BEFORE replaying the capability — catching late commits that
+    BEFORE replaying the skill — catching late commits that
     landed between the original verify-said-absent and the sweep's
     replay attempt. Without this pre-verify, the sweep's read-modify-
     write replay can produce double-writes (CP-A7).
@@ -1578,20 +1594,20 @@ def _enqueue_for_retry(
     _update_operation(record)
 
 
-def enqueue_capability_for_retry(
-    capability: str,
+def enqueue_skill_for_retry(
+    skill: str,
     params: dict[str, Any],
     *,
     error: str,
     error_kind: str | None = None,
     originating_session_id: str | None = None,
 ) -> str | None:
-    """Persist a failed-op record for ``capability`` + ``params`` and enqueue
+    """Persist a failed-op record for ``skill`` + ``params`` and enqueue
     it for the sidecar retry sweep.
 
     Public seam for callers that do NOT dispatch through ``wb_run`` (e.g. the
     Telegram sidecar's capture handler) but still want transient-failure
-    recovery. The sweep replays the capability from the registry on backoff,
+    recovery. The sweep replays the skill from the registry on backoff,
     re-reading vault state fresh each attempt, so a transient bridge failure
     (a busy editor, a startup race) lands the operation once the bridge frees
     up instead of dropping it.
@@ -1603,20 +1619,20 @@ def enqueue_capability_for_retry(
     """
     import logging
 
-    # Carry the capability's declared retry policy onto the record so the
+    # Carry the skill's declared retry policy onto the record so the
     # sweep's replay semantics match a normal gateway dispatch. Default to
     # verify_first (re-read + verify) when the registry can't be consulted.
     retry_policy = "verify_first"
     try:
         from work_buddy.mcp_server.registry import get_registry
-        entry = get_registry().get(capability)
+        entry = get_registry().get(skill)
         if entry is not None and getattr(entry, "retry_policy", None):
             retry_policy = entry.retry_policy
     except Exception:
         pass
 
     try:
-        op_id = _save_operation(capability, params, retry_policy)
+        op_id = _save_operation(skill, params, retry_policy)
         _enqueue_for_retry(
             op_id,
             error,
@@ -1627,8 +1643,8 @@ def enqueue_capability_for_retry(
         return op_id
     except Exception as exc:  # persistence is best-effort
         logging.getLogger(__name__).warning(
-            "enqueue_capability_for_retry(%s) failed to persist: %s",
-            capability, exc,
+            "enqueue_skill_for_retry(%s) failed to persist: %s",
+            skill, exc,
         )
         return None
 
@@ -1771,7 +1787,7 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     async def wb_search(query: str, category: str | None = None, filter_n: int = 3, ctx: Context = None) -> list | dict:
-        """Dynamic tool discovery for work-buddy capabilities and workflows.
+        """Dynamic tool discovery for work-buddy skills and workflows.
 
         Returns full details for each match including name, description,
         type, category, and parameter schemas (with types, descriptions,
@@ -1779,7 +1795,7 @@ def register_tools(mcp: FastMCP) -> None:
         learn the correct parameters before calling wb_run.
 
         Uses hybrid BM25 + semantic search — natural language queries work
-        (e.g., "what are my tasks" finds task capabilities).
+        (e.g., "what are my tasks" finds task skills).
 
         Args:
             query: Keyword to search by (matches name and description)
@@ -1799,7 +1815,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         session_id = _resolve_session(ctx)
 
-        # Mode gating: hide any capability/workflow whose ``available_when``
+        # Mode gating: hide any skill/workflow whose ``available_when``
         # gate is not satisfied by this session's active modes. Runs before
         # the ACL filter — the visible set is the intersection either way —
         # and fails open, since search is a discovery aid, not a boundary.
@@ -1811,7 +1827,7 @@ def register_tools(mcp: FastMCP) -> None:
         except Exception:
             pass  # never let mode-gating break discovery
 
-        # If this session has a capability ACL (set by ``llm_with_tools``
+        # If this session has a skill ACL (set by ``llm_with_tools``
         # before a local-model tool call), filter results. The helper
         # returns a bare list when no filtering occurred, or a dict
         # with ``_acl_notice`` when results were trimmed — so the
@@ -1831,21 +1847,45 @@ def register_tools(mcp: FastMCP) -> None:
         return _prepare(filtered)
 
     @mcp.tool()
-    async def wb_run(capability: str, params: str | dict | None = None, ctx: Context = None) -> dict:
+    async def wb_run(
+        skill: str | None = None,
+        params: str | dict | None = None,
+        capability: str | None = None,
+        ctx: Context = None,
+    ) -> dict:
         """Execute a function or start a workflow.
 
         For functions: executes immediately and returns the result.
         For workflows: creates a DAG, starts the first step, and returns
         step instructions with a workflow_run_id for use with wb_advance.
 
-        IMPORTANT: If you're unsure what parameters a capability accepts,
+        IMPORTANT: If you're unsure what parameters a skill accepts,
         call wb_search first — it returns full parameter schemas with types,
         descriptions, and required flags.
 
         Args:
-            capability: Name of the capability or workflow (from wb_search)
+            skill: Name of the skill or workflow (from wb_search)
             params: Parameters as a JSON string or dict (e.g. '{"same_day": true}' or {"same_day": true})
+            capability: Deprecated compatibility alias for ``skill``.
         """
+        # LEGACY_READ: MCP clients can cache a tool schema across upgrades.
+        # Accept the former argument at this public boundary, normalize once,
+        # and expose/write only the canonical name everywhere downstream.
+        if (
+            skill is not None
+            and capability is not None
+            and skill != capability
+        ):
+            return _prepare({
+                "error": (
+                    "Pass either 'skill' or deprecated 'capability', not "
+                    "conflicting values for both."
+                ),
+            })
+        skill = capability if skill is None else skill
+        if not skill or not str(skill).strip():
+            return _prepare({"error": "skill is required. Use wb_search to find available skills."})
+        skill = str(skill).strip()
         parsed_params = _parse_params(params)
 
         # Handle wb_init through wb_run (exempt from gate) — this allows
@@ -1853,7 +1893,7 @@ def register_tools(mcp: FastMCP) -> None:
         #
         # Security: this path would otherwise be an ACL-escape vector.
         # A small local model with access to wb_run could call
-        # wb_run(capability="wb_init", session_id="...") to swap its MCP
+        # wb_run(skill="wb_init", session_id="...") to swap its MCP
         # connection to a different agent session id, after which the
         # ACL registered for its original (synthesized) id no longer
         # applies. Reject wb_init re-registration when the current
@@ -1863,7 +1903,7 @@ def register_tools(mcp: FastMCP) -> None:
         # the session is resolvable before we inspect its ACL — without
         # this, the first wb_run call from an LM Studio-driven local
         # model would see current_sid=None and bypass the check.
-        if capability == "wb_init":
+        if skill == "wb_init":
             from work_buddy.mcp_server.session_acl import get_session_acl
             # Auto-init from the X-Work-Buddy-Session header FIRST so
             # the session is resolvable before we inspect its ACL.
@@ -1908,30 +1948,30 @@ def register_tools(mcp: FastMCP) -> None:
             return gate
         _agent_sid = _resolve_session(ctx)
 
-        # Per-session capability ACL — applied when ``llm_with_tools``
+        # Per-session skill ACL — applied when ``llm_with_tools``
         # has registered a whitelist for this session. Sessions without
         # an ACL (every normal agent) pass through unchanged, EXCEPT
         # when the session id couldn't be resolved at all AND at least
         # one ACL is active in the process: that's the session-None
         # bypass vector and we fail closed on it.
         from work_buddy.mcp_server.session_acl import (
-            any_acl_registered, get_session_acl, is_capability_allowed,
+            any_acl_registered, get_session_acl, is_skill_allowed,
         )
-        if not is_capability_allowed(_agent_sid, capability):
+        if not is_skill_allowed(_agent_sid, skill):
             acl = get_session_acl(_agent_sid)
             if acl is not None:
                 # Resolved session, explicit ACL — normal preset denial.
                 allowed_preview = sorted(acl)[:12]
                 return _prepare({
                     "error": (
-                        f"Capability {capability!r} is not permitted for this "
+                        f"Skill {skill!r} is not permitted for this "
                         f"session. The caller restricted this session to a "
                         f"named preset."
                     ),
                     "denied_by": "session_acl",
                     "allowed_sample": allowed_preview,
                     "hint": (
-                        "Use wb_search to discover the capabilities this "
+                        "Use wb_search to discover the skills this "
                         "session is allowed to invoke — search results are "
                         "filtered to the ACL automatically."
                     ),
@@ -1943,7 +1983,7 @@ def register_tools(mcp: FastMCP) -> None:
             # a local model invoke anything in the registry.
             return _prepare({
                 "error": (
-                    f"Capability {capability!r} refused: session could not "
+                    f"Skill {skill!r} refused: session could not "
                     f"be resolved while an ACL-scoped run is active in "
                     f"this process. This is a fail-closed guard against "
                     f"session-resolution races."
@@ -1961,17 +2001,17 @@ def register_tools(mcp: FastMCP) -> None:
 
         # CP-A3: track whether this dispatch hit the lazy auto-recovery
         # path so the success response can advertise it. Initialised to
-        # False; set True inside the disabled-capability branch when
-        # recheck_disabled_capability restored the cap to the registry.
+        # False; set True inside the disabled-skill branch when
+        # recheck_disabled_skill restored the skill to the registry.
         _registry_auto_recovered = False
 
         # Offload: first call materializes the registry (~19s of tool
         # probes + workflow loading). See wb_search for the full rationale.
-        entry = await asyncio.to_thread(registry.get_entry, capability)
+        entry = await asyncio.to_thread(registry.get_entry, skill)
 
         if entry is None:
-            from work_buddy.tools import DISABLED_CAPABILITIES, get_tool_status
-            missing_deps = DISABLED_CAPABILITIES.get(capability)
+            from work_buddy.tools import DISABLED_SKILLS, get_tool_status
+            missing_deps = DISABLED_SKILLS.get(skill)
             if missing_deps:
                 # Check if any missing dep is opted-out vs genuinely unavailable
                 tool_status = get_tool_status().get("tools", {})
@@ -1982,7 +2022,7 @@ def register_tools(mcp: FastMCP) -> None:
                 if opted_out:
                     return _prepare({
                         "error": (
-                            f"Capability {capability!r} is unavailable because "
+                            f"Skill {skill!r} is unavailable because "
                             f"you opted out of: {', '.join(opted_out)}. "
                             f"To re-enable, run: /wb-setup preferences"
                         ),
@@ -1992,22 +2032,22 @@ def register_tools(mcp: FastMCP) -> None:
                     })
 
                 # CP-A3: lazy auto-recovery. Re-probe the missing tools
-                # and, if all are now available, restore the capability
+                # and, if all are now available, restore the skill
                 # to the live registry transparently. This closes the
-                # bootstrap-race papercut (capabilities marked disabled
+                # bootstrap-race papercut (skills marked disabled
                 # at sidecar startup stay disabled even after the probe
-                # recovers, until somebody runs reload_capability_data).
-                # Cool-down inside recheck_disabled_capability prevents
+                # recovers, until somebody runs reload_skill_data).
+                # Cool-down inside recheck_disabled_skill prevents
                 # tight-loop hammering on a genuinely-down tool.
-                from work_buddy.recovery import recheck_disabled_capability
+                from work_buddy.recovery import recheck_disabled_skill
                 recovered = await asyncio.to_thread(
-                    recheck_disabled_capability, capability,
+                    recheck_disabled_skill, skill,
                 )
                 if recovered:
-                    # Capability is now in the live registry. Re-fetch
+                    # Skill is now in the live registry. Re-fetch
                     # the entry and fall through to normal dispatch.
                     entry = await asyncio.to_thread(
-                        registry.get_entry, capability,
+                        registry.get_entry, skill,
                     )
                     if entry is not None:
                         # Mark this dispatch as auto-recovered so the
@@ -2019,10 +2059,10 @@ def register_tools(mcp: FastMCP) -> None:
                 # with fresh probe state (probe age, reason).
                 if entry is None:
                     # Re-read missing_deps in case recheck shrank it.
-                    missing_deps = DISABLED_CAPABILITIES.get(capability, missing_deps)
+                    missing_deps = DISABLED_SKILLS.get(skill, missing_deps)
                     return _prepare({
                         "error": (
-                            f"Capability {capability!r} is unavailable: "
+                            f"Skill {skill!r} is unavailable: "
                             f"requires {', '.join(missing_deps)}. "
                             f"Auto-recovery attempted on this call but did "
                             f"not succeed (probe still reports unavailable). "
@@ -2034,7 +2074,7 @@ def register_tools(mcp: FastMCP) -> None:
                         "auto_recovery_attempted": True,
                     })
             else:
-                return _prepare({"error": f"Unknown capability: {capability!r}. Use wb_search to find available capabilities."})
+                return _prepare({"error": f"Unknown skill: {skill!r}. Use wb_search to find available skills."})
 
         from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
 
@@ -2042,7 +2082,7 @@ def register_tools(mcp: FastMCP) -> None:
         if not admission.preference_available:
             return _prepare({
                 "error": (
-                    f"Capability {capability!r} is unavailable because its "
+                    f"Skill {skill!r} is unavailable because its "
                     "feature preferences could not be verified."
                 ),
                 "disabled": True,
@@ -2052,7 +2092,7 @@ def register_tools(mcp: FastMCP) -> None:
         if admission.opted_out:
             return _prepare({
                 "error": (
-                    f"Capability {capability!r} is unavailable because you "
+                    f"Skill {skill!r} is unavailable because you "
                     f"opted out of: {', '.join(admission.opted_out)}. "
                     "To re-enable, run: /wb-setup preferences"
                 ),
@@ -2062,7 +2102,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "requires": list(getattr(entry, "requires", ()) or ()),
             })
 
-        # Mode gate: reject when the capability/workflow declares an
+        # Mode gate: reject when the skill/workflow declares an
         # ``available_when`` the session's active modes don't satisfy. The
         # session's modes are resolved only when a gate is actually present
         # (the common, ungated case stays a no-op), and a manifest/session
@@ -2078,18 +2118,31 @@ def register_tools(mcp: FastMCP) -> None:
             _denial = registry.mode_gate_denial(entry, _active_modes)
             if _denial is not None:
                 _denial["error"] = (
-                    f"Capability {capability!r} requires mode(s) "
+                    f"Skill {skill!r} requires mode(s) "
                     f"{_denial['required_modes']} that are not active. "
                     f"Enable with mode_toggle."
                 )
                 return _prepare(_denial)
+
+        # Param aliases are a public-boundary compatibility shim. Normalize
+        # them before any downstream processing or durable operation write;
+        # an explicitly present canonical key wins, and the legacy key is
+        # always consumed so it cannot leak into validation, dispatch, or a
+        # later replay.
+        if isinstance(entry, registry.Skill) and parsed_params and entry.param_aliases:
+            for alias, canonical in entry.param_aliases.items():
+                if alias == canonical or alias not in parsed_params:
+                    continue
+                if canonical not in parsed_params:
+                    parsed_params[canonical] = parsed_params[alias]
+                parsed_params.pop(alias)
 
         # Determine operation type and retry policy
         if isinstance(entry, registry.WorkflowDefinition):
             op_type = "workflow"
             retry_policy = "manual"
         else:
-            op_type = "capability"
+            op_type = "skill"
             if not entry.auto_retry:
                 # Explicit opt-out — e.g. llm_with_tools, llm_submit.
                 # Retrying these on transient failure wastes tokens and
@@ -2103,10 +2156,10 @@ def register_tools(mcp: FastMCP) -> None:
         # Persist task idempotency and optimistic-lock authority with the
         # operation itself.  Replay must use the exact same request hash after
         # a response-loss failure.
-        parsed_params = _prepare_task_mutation_params(capability, parsed_params)
+        parsed_params = _prepare_task_mutation_params(skill, parsed_params)
 
         # Save operation record before dispatch
-        op_id = _save_operation(capability, parsed_params, retry_policy, op_type=op_type)
+        op_id = _save_operation(skill, parsed_params, retry_policy, op_type=op_type)
 
         if isinstance(entry, registry.WorkflowDefinition):
             _t0 = _time.monotonic()
@@ -2132,17 +2185,17 @@ def register_tools(mcp: FastMCP) -> None:
                 _is_user_initiated = False
 
             if not _is_user_initiated and not _is_workflow_class_authorized(
-                capability, session_id=_wf_session_id,
+                skill, session_id=_wf_session_id,
             ):
                 wf_consent_result = await asyncio.to_thread(
                     _auto_workflow_consent_request,
-                    capability, entry, op_id, _wf_session_id,
+                    skill, entry, op_id, _wf_session_id,
                 )
                 status = wf_consent_result.get("status")
                 if status in ("denied", "timeout"):
                     _complete_operation(
                         op_id,
-                        error=f"Workflow consent {status}: {capability}",
+                        error=f"Workflow consent {status}: {skill}",
                     )
                     wf_consent_result["operation_id"] = op_id
                     return _prepare(wf_consent_result)
@@ -2157,7 +2210,7 @@ def register_tools(mcp: FastMCP) -> None:
             try:
                 result = await asyncio.to_thread(
                     _conductor().start_workflow,
-                    capability,
+                    skill,
                     parsed_params,
                     _wf_session_id,
                 )
@@ -2171,7 +2224,7 @@ def register_tools(mcp: FastMCP) -> None:
             # Activity ledger: record workflow start
             from work_buddy.mcp_server.activity_ledger import record_workflow_started
             record_workflow_started(
-                capability,
+                skill,
                 result.get("workflow_run_id"),
                 op_id,
                 len(entry.steps),
@@ -2181,14 +2234,10 @@ def register_tools(mcp: FastMCP) -> None:
             result["operation_id"] = op_id
             return _prepare(result)
 
-        # It's a Capability — remap aliases and validate params, then call
-        if parsed_params and entry.param_aliases:
-            for alias, canonical in entry.param_aliases.items():
-                if alias in parsed_params and canonical not in parsed_params:
-                    parsed_params[canonical] = parsed_params.pop(alias)
+        # It's a Skill — validate canonical params, then call
         if parsed_params and entry.parameters:
             known = set(entry.parameters)
-            known.update(_TASK_MUTATION_CONTRACT_PARAMS.get(capability, ()))
+            known.update(_TASK_MUTATION_CONTRACT_PARAMS.get(skill, ()))
             unknown = set(parsed_params) - known
             if unknown:
                 param_help = registry._entry_to_dict(entry).get("parameters", {})
@@ -2199,17 +2248,17 @@ def register_tools(mcp: FastMCP) -> None:
                 _complete_operation(op_id, error=f"Parameter error: {msg}")
                 return _prepare({
                     "error": f"Parameter error: {msg}",
-                    "help": f"Use wb_search('{capability}') to see accepted parameters.",
+                    "help": f"Use wb_search('{skill}') to see accepted parameters.",
                     "parameters": param_help,
                     "operation_id": op_id,
                 })
 
-        # Auto-inject dev=True for knowledge capabilities when the agent's
+        # Auto-inject dev=True for knowledge skills when the agent's
         # session has dev mode active (toggled via mode_toggle).
-        _KNOWLEDGE_CAPS = {
+        _KNOWLEDGE_SKILLS = {
             "agent_docs", "knowledge", "knowledge_personal",
         }
-        if capability in _KNOWLEDGE_CAPS and "dev" not in parsed_params:
+        if skill in _KNOWLEDGE_SKILLS and "dev" not in parsed_params:
             try:
                 from work_buddy.agent_session import get_active_modes
                 if "dev" in get_active_modes(_agent_sid):
@@ -2217,12 +2266,12 @@ def register_tools(mcp: FastMCP) -> None:
             except Exception:
                 pass  # Don't break queries if manifest read fails
 
-        from work_buddy.mcp_server.activity_ledger import record_capability
+        from work_buddy.mcp_server.activity_ledger import record_skill
         _t0 = _time.monotonic()
         _ledger_kw = {"agent_session_id": _agent_sid}
 
         # --- Pre-flight consent check ---
-        # If the capability declares consent_operations, check upfront
+        # If the skill declares consent_operations, check upfront
         # and request all missing consents in a single bundled notification.
         # Pass _agent_sid so the check looks in the agent's session DB
         # (where grants from prior auto-consent flows landed), not the
@@ -2233,15 +2282,15 @@ def register_tools(mcp: FastMCP) -> None:
             )
             if missing:
                 consent_result = await asyncio.to_thread(
-                    _auto_consent_request, missing, capability, op_id,
+                    _auto_consent_request, missing, skill, op_id,
                     _AUTO_CONSENT_TIMEOUT, _agent_sid,
                 )
                 if consent_result["status"] != "granted":
                     _complete_operation(
-                        op_id, error=f"Consent {consent_result['status']}: {capability}",
+                        op_id, error=f"Consent {consent_result['status']}: {skill}",
                     )
-                    record_capability(
-                        capability, entry.category, op_id, parsed_params,
+                    record_skill(
+                        skill, entry.category, op_id, parsed_params,
                         entry.mutates_state, _t0, None,
                         f"Consent {consent_result['status']}", True,
                         ",".join(missing), **_ledger_kw,
@@ -2263,12 +2312,12 @@ def register_tools(mcp: FastMCP) -> None:
                     _pending_per_invocation_authorization
                 )
                 _pending_per_invocation_authorization = None
-                # The capability dispatch runs through the resilience seam so
+                # The skill dispatch runs through the resilience seam so
                 # the gateway emits dispatch-timing telemetry under the
-                # ``wb_run:<capability>`` operation key and enforces an
+                # ``wb_run:<skill>`` operation key and enforces an
                 # operation-appropriate wall-time budget. The budget is owned
-                # by the operation (resolved from the capability, never the
-                # caller); self-managing capabilities (Obsidian-bridge work,
+                # by the operation (resolved from the skill, never the
+                # caller); self-managing skills (Obsidian-bridge work,
                 # which retries internally) run unbounded. A classified
                 # failure comes back as an Outcome carrying the original
                 # exception; re-raise it so the consent-retry / recovery
@@ -2276,7 +2325,7 @@ def register_tools(mcp: FastMCP) -> None:
                 _budget = resolve_timeout_budget(entry, parsed_params)
                 _classify, _result_classify = dispatch_classifiers(entry)
                 outcome = await guarded_call(
-                    f"wb_run:{capability}",
+                    f"wb_run:{skill}",
                     lambda: asyncio.to_thread(
                         _invoke_with_session, entry.callable, _agent_sid,
                         _wb_per_invocation_authorization=(
@@ -2296,7 +2345,7 @@ def register_tools(mcp: FastMCP) -> None:
                     # it further is pointless. Surface a clear, retryable error;
                     # the breaker admits a probe again after its cooldown.
                     shed_err = (
-                        f"Obsidian bridge unavailable: {capability} was shed "
+                        f"Obsidian bridge unavailable: {skill} was shed "
                         f"because the bridge circuit is open (too many recent "
                         f"failures)"
                     )
@@ -2304,8 +2353,8 @@ def register_tools(mcp: FastMCP) -> None:
                         op_id, error=shed_err,
                         error_kind="obsidian_bridge_circuit_open",
                     )
-                    record_capability(
-                        capability, entry.category, op_id, parsed_params,
+                    record_skill(
+                        skill, entry.category, op_id, parsed_params,
                         entry.mutates_state, _t0, None, shed_err, False,
                         **_ledger_kw,
                     )
@@ -2336,15 +2385,15 @@ def register_tools(mcp: FastMCP) -> None:
                     # background). The caller / LLM-side interpreter handles
                     # mcp_gateway_timeout.
                     timeout_err = (
-                        f"Gateway timeout: {capability} exceeded its "
+                        f"Gateway timeout: {skill} exceeded its "
                         f"{_budget:.0f}s dispatch budget"
                     )
                     _complete_operation(
                         op_id, error=timeout_err,
                         error_kind="mcp_gateway_timeout",
                     )
-                    record_capability(
-                        capability, entry.category, op_id, parsed_params,
+                    record_skill(
+                        skill, entry.category, op_id, parsed_params,
                         entry.mutates_state, _t0, None, timeout_err, False,
                         **_ledger_kw,
                     )
@@ -2353,7 +2402,7 @@ def register_tools(mcp: FastMCP) -> None:
                         "operation_id": op_id,
                         "error_kind": "mcp_gateway_timeout",
                         "hint": (
-                            "The capability did not return within its dispatch "
+                            "The skill did not return within its dispatch "
                             "budget. The work may still be running in the "
                             "background; do not assume it failed or succeeded. "
                             "Retry only if the operation is idempotent."
@@ -2372,12 +2421,12 @@ def register_tools(mcp: FastMCP) -> None:
             except TypeError as exc:
                 param_help = registry._entry_to_dict(entry).get("parameters", {})
                 _complete_operation(op_id, error=f"Parameter error: {exc}")
-                record_capability(capability, entry.category, op_id, parsed_params,
+                record_skill(skill, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, None,
                                   f"Parameter error: {exc}", False, **_ledger_kw)
                 return _prepare({
                     "error": f"Parameter error: {exc}",
-                    "help": f"Use wb_search('{capability}') to see accepted parameters.",
+                    "help": f"Use wb_search('{skill}') to see accepted parameters.",
                     "parameters": param_help,
                     "operation_id": op_id,
                 })
@@ -2386,25 +2435,25 @@ def register_tools(mcp: FastMCP) -> None:
                 if _consent_retries > _MAX_CONSENT_RETRIES:
                     # Too many sequential consent gates — give up
                     _complete_operation(op_id, error=f"ConsentRequired: {exc.operation} (max retries)")
-                    record_capability(capability, entry.category, op_id, parsed_params,
+                    record_skill(skill, entry.category, op_id, parsed_params,
                                       entry.mutates_state, _t0, None,
                                       f"ConsentRequired: {exc.operation}", True, exc.operation,
                                       **_ledger_kw)
                     return _prepare({
-                        "error": f"Too many consent gates for {capability}. Last: {exc.operation}",
+                        "error": f"Too many consent gates for {skill}. Last: {exc.operation}",
                         "operation_id": op_id,
                     })
                 # Auto-request consent for this unanticipated gate
                 consent_result = await asyncio.to_thread(
-                    _auto_consent_request, [exc.operation], capability, op_id,
+                    _auto_consent_request, [exc.operation], skill, op_id,
                     _AUTO_CONSENT_TIMEOUT, _agent_sid, exc,
                 )
                 if consent_result["status"] != "granted":
                     _complete_operation(
                         op_id, error=f"Consent {consent_result['status']}: {exc.operation}",
                     )
-                    record_capability(
-                        capability, entry.category, op_id, parsed_params,
+                    record_skill(
+                        skill, entry.category, op_id, parsed_params,
                         entry.mutates_state, _t0, None,
                         f"Consent {consent_result['status']}: {exc.operation}", True,
                         exc.operation, **_ledger_kw,
@@ -2418,7 +2467,7 @@ def register_tools(mcp: FastMCP) -> None:
                 continue
             except ToolUnavailable as exc:
                 _complete_operation(op_id, error=f"ToolUnavailable: {exc.tool_id}")
-                record_capability(capability, entry.category, op_id, parsed_params,
+                record_skill(skill, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, None,
                                   f"ToolUnavailable: {exc.tool_id}", False, **_ledger_kw)
                 return _prepare({
@@ -2434,7 +2483,7 @@ def register_tools(mcp: FastMCP) -> None:
                 })
             except Exception as exc:
                 # Defensive ConsentRequired catch — same root-cause family
-                # as the stale-Capability bug fixed in _entry_to_dict.  The
+                # as the stale-Skill bug fixed in _entry_to_dict.  The
                 # typed ``except ConsentRequired:`` handler above captures
                 # the class object at module-import time; after
                 # ``mcp_registry_reload`` purges ``sys.modules``, code paths
@@ -2454,18 +2503,18 @@ def register_tools(mcp: FastMCP) -> None:
                             op_id,
                             error=f"ConsentRequired: {operation} (max retries)",
                         )
-                        record_capability(
-                            capability, entry.category, op_id, parsed_params,
+                        record_skill(
+                            skill, entry.category, op_id, parsed_params,
                             entry.mutates_state, _t0, None,
                             f"ConsentRequired: {operation}", True,
                             operation, **_ledger_kw,
                         )
                         return _prepare({
-                            "error": f"Too many consent gates for {capability}. Last: {operation}",
+                            "error": f"Too many consent gates for {skill}. Last: {operation}",
                             "operation_id": op_id,
                         })
                     consent_result = await asyncio.to_thread(
-                        _auto_consent_request, [operation], capability, op_id,
+                        _auto_consent_request, [operation], skill, op_id,
                         _AUTO_CONSENT_TIMEOUT, _agent_sid, exc,
                     )
                     if consent_result["status"] != "granted":
@@ -2473,8 +2522,8 @@ def register_tools(mcp: FastMCP) -> None:
                             op_id,
                             error=f"Consent {consent_result['status']}: {operation}",
                         )
-                        record_capability(
-                            capability, entry.category, op_id, parsed_params,
+                        record_skill(
+                            skill, entry.category, op_id, parsed_params,
                             entry.mutates_state, _t0, None,
                             f"Consent {consent_result['status']}: {operation}",
                             True, operation, **_ledger_kw,
@@ -2490,8 +2539,8 @@ def register_tools(mcp: FastMCP) -> None:
                 if task_error is not None:
                     error_str = f"{type(exc).__name__}: {exc}"
                     _complete_operation(op_id, error=error_str)
-                    record_capability(
-                        capability, entry.category, op_id, parsed_params,
+                    record_skill(
+                        skill, entry.category, op_id, parsed_params,
                         entry.mutates_state, _t0, None, error_str, False,
                         **_ledger_kw,
                     )
@@ -2515,15 +2564,15 @@ def register_tools(mcp: FastMCP) -> None:
 
                 if isinstance(exc, ObsidianPostWriteUncertain):
                     if _native_task_effect_verification_retired(
-                        capability, parsed_params,
+                        skill, parsed_params,
                     ):
                         from work_buddy.tasks.errors import TaskLegacyEffectRetired
 
                         retired = TaskLegacyEffectRetired()
                         error_str = f"{type(retired).__name__}: {retired}"
                         _complete_operation(op_id, error=error_str)
-                        record_capability(
-                            capability, entry.category, op_id, parsed_params,
+                        record_skill(
+                            skill, entry.category, op_id, parsed_params,
                             entry.mutates_state, _t0, None, error_str, False,
                             **_ledger_kw,
                         )
@@ -2531,25 +2580,25 @@ def register_tools(mcp: FastMCP) -> None:
                             _task_domain_error_payload(retired, op_id)
                             or {"error": str(retired), "operation_id": op_id}
                         )
-                    # Fix-(b) effect-graph-aware verify: capabilities with
+                    # Fix-(b) effect-graph-aware verify: skills with
                     # a declared effects manifest get the multi-effect
                     # verifier, which can detect "some effects landed,
                     # some didn't" partial states. Without this, a PWU
                     # on the FIRST of multiple effects would single-effect-
                     # verify as "landed" → success-with-warning → no
-                    # retry → silent half-finished state. Capabilities
+                    # retry → silent half-finished state. Skills
                     # without a manifest fall back to the single-effect
                     # verifier (existing behavior preserved).
                     #
                     # Wrapper-aware path: ``retry`` / ``obsidian_retry``
                     # replay an inner op by id and have no manifest of
-                    # their own. Resolve the inner capability's manifest
+                    # their own. Resolve the inner skill's manifest
                     # and walk THAT — same rationale as the sweep-side
                     # resolution in
                     # ``retry_sweep._resolve_inner_op_for_wrapper``.
                     declared_effects = getattr(entry, "effects", None) or []
                     verify_params: dict[str, Any] = parsed_params
-                    if not declared_effects and capability in (
+                    if not declared_effects and skill in (
                         "retry", "obsidian_retry",
                     ):
                         inner_id = parsed_params.get("operation_id")
@@ -2561,13 +2610,13 @@ def register_tools(mcp: FastMCP) -> None:
                                 if inner_entry is None:
                                     # Same fall-back the sweep uses:
                                     # consult the disabled registry — a
-                                    # capability shelved by a transient
+                                    # skill shelved by a transient
                                     # tool probe still has its effects
                                     # manifest, and that's authoritative
                                     # for the verifier.
                                     try:
                                         inner_entry = (
-                                            registry.get_disabled_registry()
+                                            registry.get_disabled_skill_registry()
                                             .get(inner_name)
                                         )
                                     except Exception:
@@ -2589,9 +2638,9 @@ def register_tools(mcp: FastMCP) -> None:
                         # mean the recovery isn't a success — fall
                         # through to the normal failure path so the
                         # retry queue picks it up. The retry replays
-                        # the full capability; the capability is
+                        # the full skill; the skill is
                         # required to be idempotent on retry (declared
-                        # in architecture/capability-registry).
+                        # in architecture/skill-registry).
                         verified = verdict == "verified"
                         verify_warning_path = (
                             f"all {len(declared_effects)} declared effects"
@@ -2623,21 +2672,21 @@ def register_tools(mcp: FastMCP) -> None:
                             # not a failure. Caller sees success with a
                             # warning flag they can act on if desired.
                         )
-                        record_capability(
-                            capability, entry.category, op_id, parsed_params,
+                        record_skill(
+                            skill, entry.category, op_id, parsed_params,
                             entry.mutates_state, _t0, recovery_result,
                             None, False, **_ledger_kw,
                         )
                         post_write_response: dict[str, Any] = {
                             "type": "result",
-                            "capability": capability,
+                            "skill": skill,
                             "result": recovery_result,
                             "operation_id": op_id,
                             "post_write_recovery": True,
                         }
                         if _registry_auto_recovered:
                             # Both recoveries can happen on the same call —
-                            # auto-restored capability that then hit a
+                            # auto-restored skill that then hit a
                             # post-write timeout that the verifier
                             # successfully rescued.
                             post_write_response["registry_auto_recovered"] = True
@@ -2646,8 +2695,8 @@ def register_tools(mcp: FastMCP) -> None:
                     # to the normal failure path. The exception still has
                     # its ObsidianTimeout ancestry so classify_error
                     # returns "transient" and the gateway enqueues a retry.
-                    # For "partial", the retry runs the full capability
-                    # (idempotent by contract for capabilities with
+                    # For "partial", the retry runs the full skill
+                    # (idempotent by contract for skills with
                     # declared effects).
 
                 error_str = f"{type(exc).__name__}: {exc}"
@@ -2675,7 +2724,7 @@ def register_tools(mcp: FastMCP) -> None:
                     }
 
                 _complete_operation(op_id, error=error_str, error_kind=error_kind)
-                record_capability(capability, entry.category, op_id, parsed_params,
+                record_skill(skill, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, None,
                                   error_str, False, **_ledger_kw)
 
@@ -2712,7 +2761,7 @@ def register_tools(mcp: FastMCP) -> None:
                     if error_kind is not None:
                         response["error_kind"] = error_kind
                     if _registry_auto_recovered:
-                        # Minor fix paired with CP-A7: the capability got
+                        # Minor fix paired with CP-A7: the skill got
                         # auto-recovered, dispatched, then hit a PWU.
                         # Surface that auto-recovery still happened so
                         # telemetry can attribute the call correctly.
@@ -2733,7 +2782,7 @@ def register_tools(mcp: FastMCP) -> None:
         result_err = _result_error(result)
         if result_err:
             from work_buddy.errors import is_transient_result as _is_transient
-            # Propagate result["error_kind"] (set by capabilities that
+            # Propagate result["error_kind"] (set by skills that
             # catch typed exceptions and translate to result dicts) into
             # the persisted op record + downstream response.
             result_error_kind = (
@@ -2745,7 +2794,7 @@ def register_tools(mcp: FastMCP) -> None:
             if (
                 result_error_kind == "obsidian_post_write_uncertain"
                 and _native_task_effect_verification_retired(
-                    capability, parsed_params,
+                    skill, parsed_params,
                 )
             ):
                 from work_buddy.tasks.errors import TaskLegacyEffectRetired
@@ -2753,8 +2802,8 @@ def register_tools(mcp: FastMCP) -> None:
                 retired = TaskLegacyEffectRetired()
                 error_str = f"{type(retired).__name__}: {retired}"
                 _complete_operation(op_id, result=result, error=error_str)
-                record_capability(
-                    capability, entry.category, op_id, parsed_params,
+                record_skill(
+                    skill, entry.category, op_id, parsed_params,
                     entry.mutates_state, _t0, result, error_str, False,
                     **_ledger_kw,
                 )
@@ -2805,14 +2854,14 @@ def register_tools(mcp: FastMCP) -> None:
                         "path": result["path"],
                     }
                     _complete_operation(op_id, result=recovery_result)
-                    record_capability(
-                        capability, entry.category, op_id, parsed_params,
+                    record_skill(
+                        skill, entry.category, op_id, parsed_params,
                         entry.mutates_state, _t0, recovery_result,
                         None, False, **_ledger_kw,
                     )
                     post_write_response: dict[str, Any] = {
                         "type": "result",
-                        "capability": capability,
+                        "skill": skill,
                         "result": recovery_result,
                         "operation_id": op_id,
                         "post_write_recovery": True,
@@ -2848,7 +2897,7 @@ def register_tools(mcp: FastMCP) -> None:
                     op_id, result=result, error=result_err,
                     error_kind=result_error_kind,
                 )
-                record_capability(capability, entry.category, op_id, parsed_params,
+                record_skill(skill, entry.category, op_id, parsed_params,
                                   entry.mutates_state, _t0, result,
                                   result_err, False, **_ledger_kw)
                 _enqueue_for_retry(
@@ -2879,21 +2928,21 @@ def register_tools(mcp: FastMCP) -> None:
                 return _prepare(response)
 
         _complete_operation(op_id, result=result, error=result_err)
-        record_capability(capability, entry.category, op_id, parsed_params,
+        record_skill(skill, entry.category, op_id, parsed_params,
                           entry.mutates_state, _t0, result,
                           result_err, False, **_ledger_kw)
         success_response: dict[str, Any] = {
             "type": "result",
-            "capability": capability,
+            "skill": skill,
             # Full result is persisted in the op record above; cap the inline
             # copy so an oversized return can't blow the MCP token ceiling.
-            "result": _cap_capability_result(result, op_id),
+            "result": _cap_skill_result(result, op_id),
             "operation_id": op_id,
         }
         if _registry_auto_recovered:
             # CP-A3: tell the agent (and downstream telemetry) that this
             # call succeeded only because the gateway transparently
-            # restored the capability from DISABLED_CAPABILITIES via
+            # restored the skill from DISABLED_SKILLS via
             # lazy re-probe. Useful for diagnosing how often the
             # bootstrap-race papercut fires in production.
             success_response["registry_auto_recovered"] = True
@@ -3002,18 +3051,18 @@ def register_tools(mcp: FastMCP) -> None:
         return _prepare(result)
 
     @mcp.tool()
-    async def wb_capability_result(
+    async def wb_skill_result(
         operation_id: str,
         key: str | None = None,
         ctx: Context = None,
     ) -> dict:
-        """Retrieve the full result of a capability call that was truncated.
+        """Retrieve the full result of a skill call that was truncated.
 
-        When a ``wb_run`` capability result exceeds the inline size cap, the
+        When a ``wb_run`` skill result exceeds the inline size cap, the
         response is replaced with a ``_truncated`` marker carrying the
         ``operation_id``. Call this to fetch the full result from the
         operation record — whole, or a single top-level ``key`` (the
-        capability-side twin of ``wb_step_result``).
+        skill-side twin of ``wb_step_result``).
 
         Args:
             operation_id: The ``operation_id`` from the truncated response.
@@ -3022,16 +3071,39 @@ def register_tools(mcp: FastMCP) -> None:
         gate = _require_init(ctx)
         if gate:
             return gate
+        denied = _reject_constrained_top_level(ctx, "wb_skill_result")
+        if denied:
+            return denied
+        result = await asyncio.to_thread(
+            _skill_result_payload, operation_id, key,
+        )
+        return _prepare(result)
+
+    @mcp.tool()
+    async def wb_capability_result(
+        operation_id: str,
+        key: str | None = None,
+        ctx: Context = None,
+    ) -> dict:
+        """Deprecated alias for :func:`wb_skill_result`.
+
+        Kept as a narrow compatibility boundary for clients that cached the
+        former top-level tool name. New callers should use
+        ``wb_skill_result``.
+        """
+        gate = _require_init(ctx)
+        if gate:
+            return gate
         denied = _reject_constrained_top_level(ctx, "wb_capability_result")
         if denied:
             return denied
         result = await asyncio.to_thread(
-            _capability_result_payload, operation_id, key,
+            _skill_result_payload, operation_id, key,
         )
         return _prepare(result)
 
     # NOTE: wb_retry was removed as a tool. Retry is now a registered
-    # capability invoked via: wb_run("retry", {"operation_id": "op_xxx"})
+    # skill invoked via: wb_run("retry", {"operation_id": "op_xxx"})
     # See retry_operation() below for the implementation.
 
 
@@ -3178,20 +3250,20 @@ def _retry_queue_summary() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# retry capability — registered via registry.py
+# retry skill — registered via registry.py
 # ---------------------------------------------------------------------------
 
 def retry_operation(operation_id: str) -> dict[str, Any]:
     """Retry a previously recorded operation by its ID.
 
-    This is a synchronous callable registered as the ``retry`` capability.
+    This is a synchronous callable registered as the ``retry`` skill.
     Agents invoke it via ``wb_run("retry", {"operation_id": "op_xxx"})``.
 
     Handles:
     - Operation record lookup and validation
     - Retry policy checks (manual → rejected)
     - Execution lease (double-dispatch prevention)
-    - Consent pre-flight for capabilities with declared operations
+    - Consent pre-flight for skills with declared operations
     - Runtime ConsentRequired retry loop
     - Transient error → enqueue for sidecar background retry
     - Soft transient result detection
@@ -3250,8 +3322,8 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
 
     entry = registry.get_entry(record["name"])
     if entry is None:
-        _complete_operation(operation_id, error=f"Capability {record['name']!r} no longer exists")
-        return {"error": f"Capability {record['name']!r} no longer exists"}
+        _complete_operation(operation_id, error=f"Skill {record['name']!r} no longer exists")
+        return {"error": f"Skill {record['name']!r} no longer exists"}
 
     # ``retry`` itself has no integration requirements, so the outer wb_run
     # admission cannot speak for the cached inner entry being replayed.
@@ -3268,7 +3340,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
         }
     if admission.opted_out:
         error = (
-            "Capability replay is disabled by current feature preferences: "
+            "Skill replay is disabled by current feature preferences: "
             + ", ".join(admission.opted_out)
         )
         _complete_operation(operation_id, error=error)
@@ -3279,26 +3351,26 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             "opted_out": list(admission.opted_out),
         }
 
-    # Pre-flight consent for capabilities with declared operations
-    cap_name = record["name"]
+    # Pre-flight consent for skills with declared operations
+    skill_name = record["name"]
     # Retry path: the original op record carries the agent session id
     # that requested the work. Route the (re-)prompt to that session so
     # an out-of-band approval lands grants where the retried operation
     # will look for them.
     _retry_session_id = record.get("originating_session_id")
-    if record["type"] != "workflow" and isinstance(entry, registry.Capability) and entry.consent_operations:
+    if record["type"] != "workflow" and isinstance(entry, registry.Skill) and entry.consent_operations:
         missing = _check_missing_consent(
             entry.consent_operations, _retry_session_id, replay=True,
         )
         if missing:
             consent_result = _auto_consent_request(
-                missing, cap_name, operation_id,
+                missing, skill_name, operation_id,
                 session_id=_retry_session_id,
             )
             if consent_result["status"] != "granted":
                 _complete_operation(
                     operation_id,
-                    error=f"Consent {consent_result['status']}: {cap_name}",
+                    error=f"Consent {consent_result['status']}: {skill_name}",
                 )
                 consent_result["operation_id"] = operation_id
                 return consent_result
@@ -3320,18 +3392,18 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 # its original note identity even if the consent wait outran
                 # the cache TTL — otherwise a successful replay mints a fresh
                 # UUID and orphans the first note.
-                if cap_name in _TASK_MUTATION_CAPABILITY_NAMES:
+                if skill_name in _TASK_MUTATION_SKILL_NAMES:
                     from work_buddy.tasks.runtime import native_authority_active
 
                 if (
-                    cap_name in _TASK_MUTATION_CAPABILITY_NAMES
+                    skill_name in _TASK_MUTATION_SKILL_NAMES
                     and not native_authority_active()
                 ):
                     try:
                         from work_buddy.obsidian.tasks.mutations import (
                             refresh_idempotency_on_replay,
                         )
-                        refresh_idempotency_on_replay(cap_name, record["params"])
+                        refresh_idempotency_on_replay(skill_name, record["params"])
                     except Exception:  # pragma: no cover — legacy best effort
                         pass
                 # Bind a REPLAY principal so the decorator's is_granted
@@ -3351,11 +3423,11 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             if consent_retries > _MAX_CONSENT_RETRIES:
                 _complete_operation(operation_id, error=f"ConsentRequired: {exc.operation} (max retries)")
                 return {
-                    "error": f"Too many consent gates for {cap_name}. Last: {exc.operation}",
+                    "error": f"Too many consent gates for {skill_name}. Last: {exc.operation}",
                     "operation_id": operation_id,
                 }
             consent_result = _auto_consent_request(
-                [exc.operation], cap_name, operation_id,
+                [exc.operation], skill_name, operation_id,
                 session_id=_retry_session_id,
                 consent_error=exc,
             )
@@ -3390,14 +3462,14 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     )
                     return {
                         "error": (
-                            f"Too many consent gates for {cap_name}. "
+                            f"Too many consent gates for {skill_name}. "
                             f"Last: {operation}"
                         ),
                         "operation_id": operation_id,
                     }
                 consent_result = _auto_consent_request(
                     [operation],
-                    cap_name,
+                    skill_name,
                     operation_id,
                     session_id=_retry_session_id,
                     consent_error=exc,
@@ -3426,7 +3498,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 return task_error
 
             # CP5: post-write-verify on retried writes too. If a retried
-            # write capability raises ObsidianPostWriteUncertain, the
+            # write skill raises ObsidianPostWriteUncertain, the
             # filesystem may show the second-attempt write actually
             # landed (the plugin processed it but lagged on the
             # response). Don't re-enqueue; surface success-with-warning.
@@ -3437,7 +3509,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
 
             if isinstance(exc, ObsidianPostWriteUncertain):
                 if _native_task_effect_verification_retired(
-                    cap_name, record.get("params") or {},
+                    skill_name, record.get("params") or {},
                 ):
                     from work_buddy.tasks.errors import TaskLegacyEffectRetired
 
@@ -3466,7 +3538,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                     _complete_operation(operation_id, result=recovery_result)
                     return {
                         "type": "result",
-                        "capability": record["name"],
+                        "skill": record["name"],
                         "result": recovery_result,
                         "operation_id": operation_id,
                         "attempt": record["attempt"],
@@ -3544,7 +3616,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
         if (
             result_error_kind == "obsidian_post_write_uncertain"
             and _native_task_effect_verification_retired(
-                cap_name, record.get("params") or {},
+                skill_name, record.get("params") or {},
             )
         ):
             from work_buddy.tasks.errors import TaskLegacyEffectRetired
@@ -3590,8 +3662,10 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
     _complete_operation(operation_id, result=result, error=result_err)
     return {
         "type": "result",
-        "capability": record["name"],
+        "skill": record["name"],
         "result": result,
         "operation_id": operation_id,
         "attempt": record["attempt"],
     }
+
+# End of gateway implementation.

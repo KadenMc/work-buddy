@@ -1,11 +1,10 @@
 ---
 name: Data Restore
-kind: capability
+kind: skill
 description: Restore work-buddy's vital SQLite DBs from a snapshot. Validates the manifest (refuses if the snapshot's commit or schema is newer than the running code), unpacks to staging, runs migrations forward, verifies integrity, then atomically swaps into place (the old DBs are moved to .data/db.pre_restore_<ts>/ for safety).
-capability_name: data_restore
 category: backups
 op: op.wb.data_restore
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   snapshot_id:
     type: str
@@ -21,6 +20,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: data_restore
 tags:
 - backups
 - data

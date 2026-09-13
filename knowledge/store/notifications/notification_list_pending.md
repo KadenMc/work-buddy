@@ -1,11 +1,11 @@
 ---
 name: Notification List Pending
-kind: capability
+kind: skill
 description: List all pending notifications and requests awaiting user response.
-capability_name: notification_list_pending
 category: notifications
 op: op.wb.notification_list_pending
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: notification_list_pending
 tags:
 - notifications
 - notification

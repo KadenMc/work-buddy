@@ -600,7 +600,7 @@ class SourcesDisclosureService:
     ) -> None:
         """Fail closed when a previously admitted disclosure was redacted.
 
-        Agent Execution may idempotently replay a capability result that was
+        Agent Execution may idempotently replay a skill result that was
         already recorded as sent.  That replay still releases bytes across the
         trusted worker boundary, so it must not rely only on the historical
         manifest row.  Re-check the live Sources lifecycle and the exact epoch

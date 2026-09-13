@@ -63,7 +63,7 @@ from .migration import (
     ParsedLegacyTaskLine,
     canonical_sha256,
 )
-from .runtime import TASK_MUTATION_CAPABILITIES, is_native_authority_epoch
+from .runtime import TASK_MUTATION_SKILLS, is_native_authority_epoch
 from .store import TaskStore
 
 
@@ -1548,13 +1548,16 @@ class ProductionTaskCutover:
                 continue
             for path in sorted(root.glob("*.md")):
                 metadata = self._frontmatter(path)
-                capability = str(metadata.get("capability") or "")
+                # LEGACY_READ: user-authored job files survive upgrades.
+                skill = str(
+                    metadata.get("skill") or metadata.get("capability") or ""
+                )
                 # task-note-index is authority-aware: after activation it
                 # indexes Co-work heads, and before activation the stopped
                 # process set prevents it from running during the flip. It is
                 # therefore a valid native reader, not a legacy producer.
                 known_legacy_file = path.stem.casefold() == "task-sync"
-                if capability not in TASK_MUTATION_CAPABILITIES and not known_legacy_file:
+                if skill not in TASK_MUTATION_SKILLS and not known_legacy_file:
                     continue
                 try:
                     relative = path.relative_to(root).as_posix()
@@ -1564,7 +1567,7 @@ class ProductionTaskCutover:
                     {
                         "root": root.name,
                         "path": relative,
-                        "capability": capability,
+                        "skill": skill,
                         "enabled": bool(metadata.get("enabled", True)),
                         "sha256": _sha256_file(path),
                     }
@@ -1643,7 +1646,7 @@ class ProductionTaskCutover:
             effective = self._effective_retry(record)
             name = str(effective.get("name") or "")
             epoch = str(effective.get("task_authority_epoch") or "legacy")
-            if name not in TASK_MUTATION_CAPABILITIES or is_native_authority_epoch(epoch):
+            if name not in TASK_MUTATION_SKILLS or is_native_authority_epoch(epoch):
                 continue
             rows.append(
                 {

@@ -4,7 +4,7 @@ kind: directions
 description: Procedure for offloading work-buddy's document-side passage encoder to LM Studio — download GGUF, verify metadata, run drift test, update config.
 summary: 'Terminal-only procedure per machine: (0) install LM Studio + expose `lms` CLI; (1) `lms get -y "https://huggingface.co/yixuan-chia/snowflake-arctic-embed-m-v1.5-Q8_0-GGUF"` (full HF URL, NOT slug — slug fails CLI name-regex); (2) `scripts/audit_lmstudio_gguf.py` to verify pooling=CLS and architecture=bert; (3) `lms server start` to bring up the server; (4) `scripts/verify_lmstudio_embedding.py --mode all` for the drift test; (5) set embedding.models.<key>.provider=lmstudio in config; (6) restart sidecar; (7) ir-index-rebuild cron converges automatically.'
 trigger: user wants to offload the embedding passage encoder to LM Studio, or asks how to set up LM Studio for embeddings
-capabilities:
+skills:
 - setup_wizard
 tags:
 - lmstudio

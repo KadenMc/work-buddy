@@ -2,7 +2,7 @@
 name: Session Retrospective
 kind: directions
 description: Switch to developmental mode and critique/debug this session's execution — then fix what you find
-summary: Switches the agent from operational to developmental mode to critique and debug the current session's execution. Covers capability bugs, prompt and context issues, agent reasoning failures, and output quality — then triages fixes with the user and executes them.
+summary: Switches the agent from operational to developmental mode to critique and debug the current session's execution. Covers skill bugs, prompt and context issues, agent reasoning failures, and output quality — then triages fixes with the user and executes them.
 trigger: When the user invokes /wb-dev-retro or asks for a session retrospective, post-session critique, or to debug what went wrong during an operational session
 command: wb-dev-retro
 tags:
@@ -29,7 +29,7 @@ parents:
 
 Switch from operational to developmental mode. Critique and debug this session's execution, then fix what you find.
 
-The design rationale behind operational vs developmental agents: operational agents get things done (workflows, tasks, journals). Developmental agents improve the system itself (code, prompts, capabilities). The session retrospective bridges the two — the agent that *experienced* the friction diagnoses and fixes it, preserving first-person context that would be lost in a handoff to a separate evaluator.
+The design rationale behind operational vs developmental agents: operational agents get things done (workflows, tasks, journals). Developmental agents improve the system itself (code, prompts, skills). The session retrospective bridges the two — the agent that *experienced* the friction diagnoses and fixes it, preserving first-person context that would be lost in a handoff to a separate evaluator.
 
 **Prerequisite:** You must have done operational work in this session (morning routine, task triage, journal update, context collection, etc.). If you haven't, tell the user there's nothing to retrospect on.
 
@@ -54,9 +54,9 @@ Review everything that happened in this session. Be specific, be harsh, and cite
 
 Look for:
 
-**Capability bugs**
+**Skill bugs**
 - Calls that returned wrong, irrelevant, or excessively broad results
-- Missing capabilities (you had to write raw Python because nothing existed in the gateway)
+- Missing skills (you had to write raw Python because nothing existed in the gateway)
 - Silent failures or unhelpful error messages
 - Redundant calls (same data fetched multiple ways)
 
@@ -109,7 +109,7 @@ For each issue the user selected:
 
 **Fix now:** Read the relevant files, make the change, test if possible (re-run the call that failed), briefly note what you changed.
 
-**Debug first:** Reproduce the problem — re-run the call or workflow step. Narrow the root cause: is it the capability code, the prompt, the workflow, the data? Then fix and test. If you learn something non-obvious, document it in the relevant knowledge store unit.
+**Debug first:** Reproduce the problem — re-run the call or workflow step. Narrow the root cause: is it the skill code, the prompt, the workflow, the data? Then fix and test. If you learn something non-obvious, document it in the relevant knowledge store unit.
 
 **Create a task:** Use `/wb-task-handoff`. The handoff should include the specific failure (with evidence from this session), your root cause hypothesis, the files involved, and what you already tried.
 
@@ -124,7 +124,7 @@ If you made code changes:
 
 - **Boil the ocean** — don't try to fix everything
 - **Stay abstract** — "search should be better" is not actionable; "context_search returned 47 results including binary files, needs a file-type filter" is
-- **Bikeshed** — don't spend 30 min on naming when a capability is broken
+- **Bikeshed** — don't spend 30 min on naming when a skill is broken
 - **Scope-creep into features** — this is about fixing friction, not adding new features
 - **Self-congratulate** — don't list things that went well; the point is improvement
 - **Critique runs without inspecting their artifacts first** — this is the Step 1 mandate. Violations produce confident-but-wrong analyses that cost real local-compute minutes to re-run.

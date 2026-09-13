@@ -1,11 +1,10 @@
 ---
 name: Agent Docs
-kind: capability
-description: 'Search and navigate all agent documentation: directions, system docs, capabilities, and workflows. Supports exact path lookup, subtree browsing, and natural language search with hierarchical progressive disclosure.'
-capability_name: agent_docs
+kind: skill
+description: 'Search and navigate all agent documentation: directions, system docs, skills, and workflows. Supports exact path lookup, subtree browsing, and natural language search with hierarchical progressive disclosure.'
 category: context
 op: op.wb.agent_docs
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -21,7 +20,7 @@ parameters:
     required: false
   kind:
     type: str
-    description: 'Filter by kind: directions, capability, workflow, system, service, integration, reference, concept'
+    description: 'Filter by kind: directions, skill, workflow, system, service, integration, reference, concept'
     required: false
   depth:
     type: str
@@ -47,6 +46,7 @@ parameters:
     type: str
     description: Explicit harness id for full-depth placeholder previews. Overrides the originating session and environment. Missing harness variants use the default child.
     required: false
+skill_name: agent_docs
 tags:
 - context
 - agent
@@ -64,7 +64,7 @@ aliases:
 - agent docs
 - self documentation
 - how to
-- find capability
+- find skill
 - what can I do
 parents:
 - context

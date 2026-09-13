@@ -9,9 +9,9 @@ from work_buddy.consent import ConsentRequired
 
 
 def test_message_does_not_suggest_grant_consent() -> None:
-    """The deleted ``grant_consent`` / ``consent_grant`` capability names
+    """The deleted ``grant_consent`` / ``consent_grant`` skill names
     must not appear in the exception text. Agents reading this message
-    previously followed those suggestions into ``Unknown capability``
+    previously followed those suggestions into ``Unknown skill``
     errors and forbidden self-grant attempts."""
     exc = ConsentRequired("test.op", "test reason", "low", 30)
     msg = str(exc)

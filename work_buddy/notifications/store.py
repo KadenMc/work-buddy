@@ -276,7 +276,7 @@ def dispatch_callback(notification: Notification) -> dict | None:
         # No explicit callback but we have a session — create a minimal
         # messaging dispatch so hooks can still surface the event.
         results.append(_dispatch_via_messaging(
-            {"capability": "notification_response", "params": {}},
+            {"skill": "notification_response", "params": {}},
             notification.title,
             notification.notification_id,
             recipient_session=session_id,
@@ -414,7 +414,9 @@ def _dispatch_via_messaging(
     from work_buddy.logging_config import get_logger
 
     logger = get_logger(__name__)
-    capability = callback.get("capability", "")
+    # LEGACY_READ: callback records are durable notification data. Older
+    # records used ``capability``; new records and outputs use ``skill``.
+    skill = callback.get("skill") or callback.get("capability", "")
     params = callback.get("params", {})
 
     try:
@@ -433,7 +435,7 @@ def _dispatch_via_messaging(
             sender="notification-system",
             recipient="work-buddy",
             type="result",
-            subject=capability,
+            subject=skill,
             body=json.dumps({
                 "source": "notification_response",
                 "notification_id": notification_id,
@@ -448,19 +450,19 @@ def _dispatch_via_messaging(
         )
         logger.info(
             "Dispatched notification callback via messaging: %s (notification=%s)",
-            capability, notification_id,
+            skill, notification_id,
         )
         return {
             "type": "messaging_dispatch",
-            "capability": capability,
+            "skill": skill,
             "message_id": result.get("id") if result else None,
             "success": result is not None,
         }
     except Exception as exc:
-        logger.error("Messaging dispatch failed: %s — %s", capability, exc)
+        logger.error("Messaging dispatch failed: %s — %s", skill, exc)
         return {
             "type": "messaging_dispatch",
-            "capability": capability,
+            "skill": skill,
             "error": str(exc),
             "success": False,
         }

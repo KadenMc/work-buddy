@@ -1597,7 +1597,7 @@ def _launch_job(
     )
     if spawn_detached is None:
         # Production launches ride the sidecar's disk-backed operation queue.
-        # The internal handler is intentionally absent from the MCP capability
+        # The internal handler is intentionally absent from the MCP skill
         # registry, and the runtime job ID is its replay fence.  A crash after
         # job creation but before this enqueue is healed by the sidecar's
         # prepared-job reconciliation pass.

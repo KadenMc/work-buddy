@@ -242,7 +242,7 @@ class ReconcileReport:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-friendly summary for capability output / logging."""
+        """JSON-friendly summary for skill output / logging."""
         return {
             "created": list(self.created),
             "deleted": list(self.deleted),

@@ -1,11 +1,10 @@
 ---
 name: Session Locate
-kind: capability
+kind: skill
 description: Jump from a context_search hit to the relevant conversation page. Takes a span_index from search result metadata and returns messages centered on that chunk.
-capability_name: session_locate
 category: context
 op: op.wb.session_locate
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: int
     description: IR span index from context_search result metadata
     required: true
+skill_name: session_locate
 tags:
 - context
 - session

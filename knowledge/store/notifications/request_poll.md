@@ -1,11 +1,10 @@
 ---
 name: Request Poll
-kind: capability
+kind: skill
 description: 'Check/wait for a response to a previously delivered request. Without timeout_seconds: single immediate check. With timeout_seconds: blocks until response or timeout (max recommended: 110s). Response is cleared from Obsidian after reading (one-shot).'
-capability_name: request_poll
 category: notifications
 op: op.wb.request_poll
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   notification_id:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: 'Seconds between polls (default: 3)'
     required: false
+skill_name: request_poll
 tags:
 - notifications
 - request

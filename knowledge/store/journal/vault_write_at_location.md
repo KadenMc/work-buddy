@@ -1,11 +1,10 @@
 ---
 name: Vault Write At Location
-kind: capability
+kind: skill
 description: Legacy compatibility insert into a section of a vault note. Disabled with the Obsidian feature; never used by native Journal or Telegram capture.
-capability_name: vault_write_at_location
 category: journal
 op: op.wb.vault_write_at_location
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   content:
     type: str
@@ -29,6 +28,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: verify_first
+skill_name: vault_write_at_location
 tags:
 - journal
 - vault
@@ -48,7 +48,7 @@ requires:
 - obsidian
 ---
 
-This capability is retained only for explicit legacy-file work during the
+This skill is retained only for explicit legacy-file work during the
 archive grace period. `latest_journal` and `today` are compatibility resolvers,
 not native Journal targets. Normal capture commits an exact Source and a
 Journal database record.

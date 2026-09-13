@@ -1,4 +1,4 @@
-"""The ``run_source_pipeline`` capability — single MCP/wb_run entry
+"""The ``run_source_pipeline`` skill — single MCP/wb_run entry
 point that dispatches to a registered :class:`SourcePipeline` by name.
 
 The single MCP/wb_run entry for triggering any source-pipeline run.
@@ -7,7 +7,7 @@ function call ``run_source_pipeline(source="chrome_triage", ...)``.
 
 Adding a new data source (Twitter scrape, email triage backlog,
 voice-memo transcripts, …) means: implement the SourcePipeline,
-register it in :data:`PIPELINES`, and the same capability handles
+register it in :data:`PIPELINES`, and the same skill handles
 it.
 """
 
@@ -49,7 +49,7 @@ class UnknownSourceError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# Capability entry point
+# Skill entry point
 # ---------------------------------------------------------------------------
 
 
@@ -76,7 +76,7 @@ def run_source_pipeline(
               "child_thread_ids": [str, ...],
               "item_count": int,
               "cluster_count": int,
-              "action_proposals": {child_id: {capability_name, ...}},
+              "action_proposals": {child_id: {skill_name, ...}},
               "error": str | None
             }
 

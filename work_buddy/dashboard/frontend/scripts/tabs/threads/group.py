@@ -385,15 +385,15 @@ def script() -> str:
         const name = a.name || (a.payload && a.payload.name) || "";
         if (!name) return null;
         return {
-            capability_name: name,
+            skill_name: name,
             rationale: a.rationale || (a.data && a.data.rationale) || null,
         };
     }
 
-    function _findActionDescriptor(capabilityName, actionOptions) {
-        if (!capabilityName) return null;
+    function _findActionDescriptor(skillName, actionOptions) {
+        if (!skillName) return null;
         for (const d of actionOptions) {
-            if (d.capability_name === capabilityName) return d;
+            if (d.skill_name === skillName) return d;
         }
         return null;
     }
@@ -406,7 +406,7 @@ def script() -> str:
         if (perGroup.length === 0) return "";
         const current = _currentActionForChild(child);
         const currentDescriptor = current
-            ? _findActionDescriptor(current.capability_name, perGroup)
+            ? _findActionDescriptor(current.skill_name, perGroup)
             : null;
         const chipLabel = currentDescriptor
             ? currentDescriptor.label
@@ -432,13 +432,13 @@ def script() -> str:
                 +   'data-on-click="wbNoop">';
             for (const d of perGroup) {
                 const isCurrent = currentDescriptor
-                    && currentDescriptor.capability_name === d.capability_name;
+                    && currentDescriptor.skill_name === d.skill_name;
                 html += '<button class="threads-group-action-chip-option'
                     +     (isCurrent ? ' current' : '') + '" '
                     +     'title="' + _esc(d.description || '') + '" '
                     +     wbActAttrs('threadsGroupSetActionProposal', {
                                 threadId: sId,
-                                capabilityName: d.capability_name,
+                                skillName: d.skill_name,
                             })
                     +     '>'
                     +     '<span class="label">' + _esc(d.label) + '</span>'
@@ -485,11 +485,11 @@ def script() -> str:
         window.threadsGroupToggleActionChip(el.dataset.threadId);
     });
 
-    window.threadsGroupSetActionProposal = function (threadId, capabilityName) {
-        // capabilityName === null → clear
-        const body = capabilityName === null
-            ? { capability_name: null }
-            : { capability_name: capabilityName, confidence: 1.0 };
+    window.threadsGroupSetActionProposal = function (threadId, skillName) {
+        // skillName === null → clear
+        const body = skillName === null
+            ? { skill_name: null }
+            : { skill_name: skillName, confidence: 1.0 };
         // Close the dropdown immediately so the next render reflects.
         window._groupState.openActionChipFor = null;
         fetch('/api/threads/' + encodeURIComponent(threadId)
@@ -553,7 +553,7 @@ def script() -> str:
     window.wbAction('threadsGroupSetActionProposal', function (el, e) {
         e.stopPropagation();
         window.threadsGroupSetActionProposal(
-            el.dataset.threadId, el.dataset.capabilityName,
+            el.dataset.threadId, el.dataset.skillName,
         );
     });
 

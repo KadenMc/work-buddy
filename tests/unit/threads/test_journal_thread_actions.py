@@ -1,6 +1,6 @@
 """Tests for ``work_buddy.journal_backlog.thread_actions`` — the
 per-thread route-to-tasks / route-to-considerations / append-to-note
-capability backers.
+skill backers.
 """
 
 from __future__ import annotations

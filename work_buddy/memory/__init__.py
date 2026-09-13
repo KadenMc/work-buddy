@@ -5,7 +5,7 @@ server.  Two integration surfaces share one backend:
 
 * **Claude Code plugin** (hooks) — ambient auto-recall/retain during chat.
 * **Python adapter** (this package) — programmatic retain/recall/reflect
-  for context collection, workflows, and MCP gateway capabilities.
+  for context collection, workflows, and MCP gateway skills.
 
 Public API
 ----------

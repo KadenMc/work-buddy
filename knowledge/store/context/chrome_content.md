@@ -1,11 +1,10 @@
 ---
 name: Chrome Content
-kind: capability
+kind: skill
 description: Extract full page text from currently-open Chrome tabs. Filter by domain or title substring, or get top-engagement tabs. Free — no LLM calls. Use for single-tab inspection or reading specific page content.
-capability_name: chrome_content
 category: context
 op: op.wb.chrome_content
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   tab_filter:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Max characters per tab (default 5000)
     required: false
+skill_name: chrome_content
 tags:
 - context
 - chrome

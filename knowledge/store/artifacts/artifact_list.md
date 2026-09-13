@@ -1,11 +1,10 @@
 ---
 name: Artifact List
-kind: capability
+kind: skill
 description: List artifacts in the data store, filtered by type, recency, tags, or session. Sorted by creation time (newest first).
-capability_name: artifact_list
 category: artifacts
 op: op.wb.artifact_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   type:
     type: str
@@ -31,6 +30,7 @@ parameters:
     type: int
     description: 'Max results (default: 50)'
     required: false
+skill_name: artifact_list
 tags:
 - artifacts
 - artifact

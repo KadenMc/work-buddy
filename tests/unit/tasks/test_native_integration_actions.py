@@ -17,7 +17,7 @@ from work_buddy.email.thread_actions import (
 )
 from work_buddy.journal_backlog.thread_actions import journal_route_to_tasks
 from work_buddy.journal_backlog.route import _create_task_impl
-from work_buddy.tasks import capabilities, integration_results, runtime
+from work_buddy.tasks import integration_results, runtime, skills
 from work_buddy.tasks import store as task_store_module
 from work_buddy.tasks.documents import TaskKnowledgeDocument
 from work_buddy.tasks.service import TaskApplicationService
@@ -164,7 +164,7 @@ def test_email_native_document_append_returns_task_revision_and_document(
     )
     with (
         patch(
-            "work_buddy.tasks.capabilities.task_read",
+            "work_buddy.tasks.skills.task_read",
             return_value={
                 "success": True,
                 "task_id": "t-native-1",
@@ -252,7 +252,7 @@ def test_legacy_integration_result_keeps_task_line(thread_db, monkeypatch):
     ]
 
 
-def test_has_deadline_round_trips_through_native_model_facade_and_capability(
+def test_has_deadline_round_trips_through_native_model_facade_and_skill(
     tmp_path,
     monkeypatch,
 ):
@@ -293,6 +293,6 @@ def test_has_deadline_round_trips_through_native_model_facade_and_capability(
     facade = models.Task.load(task.task_id)
     assert facade is not None
     assert facade.has_deadline is True
-    payload = capabilities.task_read(task.task_id)
+    payload = skills.task_read(task.task_id)
     assert payload["has_deadline"] is True
     assert payload["metadata"]["has_deadline"] is True

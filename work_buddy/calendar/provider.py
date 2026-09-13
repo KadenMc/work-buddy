@@ -1,6 +1,6 @@
 """Provider protocol + factory.
 
-Consumers (the calendar collector, the coverage capability) depend on this
+Consumers (the calendar collector, the coverage skill) depend on this
 protocol; the concrete backend is selected via ``calendar.provider`` in config.
 Test code registers
 :class:`work_buddy.calendar.providers.fake.FakeCalendarProvider` and exercises
@@ -25,7 +25,7 @@ class CalendarProvider(Protocol):
     """Stable interface every calendar backend must implement.
 
     Methods raise typed :class:`work_buddy.calendar.errors.CalendarError`
-    subclasses on failure so capability wrappers can ``isinstance``-classify
+    subclasses on failure so skill wrappers can ``isinstance``-classify
     and pick appropriate retry / display behavior.
     """
 
@@ -77,7 +77,7 @@ class CalendarProvider(Protocol):
         timezone: str | None = None,
     ) -> dict:
         """Create an event on a real calendar. Heavy-consent-gated one layer
-        up (capabilities), not in the adapter. Raises
+        up (skills), not in the adapter. Raises
         :class:`CalendarWriteUnsupported` on read-only providers."""
 
     def update_event(
@@ -114,7 +114,7 @@ def get_calendar_provider() -> CalendarProvider:
     ``"google_native"``). ``calendar.enabled: false`` short-circuits with
     :class:`CalendarProviderDisabled` so the morning bundle degrades cleanly.
     The gateway's tool-probe layer (``requires: [google_calendar]`` on each
-    capability) is the correct place to short-circuit before reaching this
+    skill) is the correct place to short-circuit before reaching this
     factory; callers should ``isinstance``-check raised errors rather than
     swallowing them.
 

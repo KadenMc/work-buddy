@@ -46,6 +46,6 @@ Overlapping spans remain independently selectable. Short items prioritize title 
 
 ## Inspectors and actions
 
-Left-click selection opens the shared inspector, positioned according to available space. Actions resolve by item kind and declared capability. Records, plans, external calendar events, and future App-defined kinds may expose different menus. A provider-owned external event remains read-only when the provider does not grant edit authority.
+Left-click selection opens the shared inspector, positioned according to available space. Actions resolve by item kind and declared skill. Records, plans, external calendar events, and future App-defined kinds may expose different menus. A provider-owned external event remains read-only when the provider does not grant edit authority.
 
 See `calendar` for provider integration ownership and `journal/day-lifecycle` for Journal ranges.

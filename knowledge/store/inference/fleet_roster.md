@@ -1,11 +1,10 @@
 ---
 name: Fleet Roster
-kind: capability
-description: 'Add/update or clear a machine''s entry in the inference.fleet roster (config.local.yaml) — its role label and optional hardware specs. Enriches live-discovered fleet machines, joined by device_id.'
-capability_name: fleet_roster
+kind: skill
+description: Add/update or clear a machine's entry in the inference.fleet roster (config.local.yaml) — its role label and optional hardware specs. Enriches live-discovered fleet machines, joined by device_id.
 category: inference
 op: op.wb.fleet_roster
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: str
@@ -21,12 +20,13 @@ parameters:
     required: false
   gpus:
     type: list
-    description: 'List of {name, vram_gb} for a peer — machines can have several GPUs. Omit to leave unchanged; pass [] to clear. (The local machine reports its own live.)'
+    description: List of {name, vram_gb} for a peer — machines can have several GPUs. Omit to leave unchanged; pass [] to clear. (The local machine reports its own live.)
     required: false
   ram_gb:
     type: float
     description: Optional system RAM in GB for a peer.
     required: false
+skill_name: fleet_roster
 tags:
 - inference
 - fleet
@@ -50,7 +50,7 @@ ignored for display).
 `action: "set"` adds or updates the entry; `action: "remove"` clears it (the
 machine still appears via live discovery). Backs the inline editor in the
 dashboard's Settings › Inference fleet section; the dashboard route
-(`POST /api/fleet/roster`) wraps this capability, gating on read-only mode and
+(`POST /api/fleet/roster`) wraps this skill, gating on read-only mode and
 busting the fleet cache + publishing `fleet.changed` on success.
 
 Returns `{success, action, device_id, note}`, or `{success: false, errors_by_field}`

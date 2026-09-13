@@ -1,11 +1,10 @@
 ---
 name: Send Message
-kind: capability
+kind: skill
 description: Send a message to another agent or project
-capability_name: send_message
 category: messaging
 op: op.wb.send_message
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   sender:
     type: str
@@ -35,6 +34,7 @@ parameters:
     type: str
     description: 'Priority: low, normal, high, urgent'
     required: false
+skill_name: send_message
 tags:
 - messaging
 - send

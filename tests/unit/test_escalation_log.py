@@ -177,11 +177,11 @@ def test_error_kind_enum_serialized_to_string(isolated_log):
 
 
 # ---------------------------------------------------------------------------
-# Capability wiring
+# Skill wiring
 # ---------------------------------------------------------------------------
 
 
-def test_capability_returns_summary(isolated_log):
+def test_skill_returns_summary(isolated_log):
     """``escalation_recent(summary=True)`` returns aggregate counts."""
     from work_buddy.mcp_server.registry import _escalation_recent
     elog.log_escalation(source="llm_runner",
@@ -191,7 +191,7 @@ def test_capability_returns_summary(isolated_log):
     assert out["summary"]["total"] == 1
 
 
-def test_capability_returns_records(isolated_log):
+def test_skill_returns_records(isolated_log):
     from work_buddy.mcp_server.registry import _escalation_recent
     elog.log_escalation(source="llm_runner",
                          attempts=[_make_attempt("a")], final_outcome="success",

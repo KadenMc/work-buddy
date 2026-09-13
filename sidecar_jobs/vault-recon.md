@@ -1,8 +1,8 @@
 ---
 schedule: "0 2 * * *"
 recurring: true
-type: capability
-capability: vault_recon_collect
+type: skill
+skill: vault_recon_collect
 params: {}
 enabled: false
 ---

@@ -2,8 +2,8 @@
 schedule: "*/30 * * * *"  # summary cadence — 2h producer upstream, 30-min picker is ample
 recurring: true
 jitter_seconds: 135  # distinct offset; spread 30-minute pile-ups
-type: capability
-capability: index_rebuild
+type: skill
+skill: index_rebuild
 params:
   partition: summary
   force: false

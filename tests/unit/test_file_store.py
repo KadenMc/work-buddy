@@ -19,7 +19,7 @@ def _roundtrip(unit_dict: dict) -> dict:
 
 @pytest.mark.parametrize("kind", [
     "directions", "system", "service", "integration",
-    "reference", "concept", "capability",
+    "reference", "concept", "skill",
 ])
 def test_prose_kind_roundtrip(kind):
     unit_dict = {
@@ -37,12 +37,12 @@ def test_prose_kind_roundtrip(kind):
     assert _roundtrip(unit_dict) == unit_dict
 
 
-def test_capability_declaration_fields_roundtrip():
+def test_skill_declaration_fields_roundtrip():
     unit_dict = {
-        "kind": "capability",
+        "kind": "skill",
         "name": "Task Toggle",
         "description": "Mark a task done.",
-        "capability_name": "task_toggle",
+        "skill_name": "task_toggle",
         "category": "tasks",
         "parameters": {"task_id": {"type": "str", "required": True}},
         "mutates_state": True,
@@ -50,8 +50,19 @@ def test_capability_declaration_fields_roundtrip():
         "consent_required": True,
         "consent_operations": ["task.write"],
         "op": "op.wb.task_toggle",
-        "schema_version": "wb-capability/v1",
+        "schema_version": "wb-skill/v1",
         "parents": ["tasks"],
+    }
+    assert _roundtrip(unit_dict) == unit_dict
+
+
+def test_directions_skills_field_roundtrip():
+    unit_dict = {
+        "kind": "directions",
+        "name": "Task triage",
+        "description": "Triage tasks.",
+        "trigger": "The user asks to triage tasks.",
+        "skills": ["task_list", "task_read"],
     }
     assert _roundtrip(unit_dict) == unit_dict
 
@@ -77,8 +88,8 @@ def test_children_path_scope_never_serialized():
 
 def test_empty_body_unit():
     unit_dict = {
-        "kind": "capability", "name": "N", "description": "D",
-        "capability_name": "n", "category": "c",
+        "kind": "skill", "name": "N", "description": "D",
+        "skill_name": "n", "category": "c",
     }
     md = fs.unit_dict_to_markdown(unit_dict)
     assert _roundtrip(unit_dict) == unit_dict
@@ -190,9 +201,9 @@ def test_path_to_file_and_back(tmp_path):
 def test_domain_parent_and_directory_coexist(tmp_path):
     fs.write_unit(tmp_path, "tasks", {"kind": "system", "name": "Tasks",
                                       "description": "D"})
-    fs.write_unit(tmp_path, "tasks/task_read", {"kind": "capability",
+    fs.write_unit(tmp_path, "tasks/task_read", {"kind": "skill",
                                                 "name": "R", "description": "D",
-                                                "capability_name": "task_read",
+                                                "skill_name": "task_read",
                                                 "category": "tasks"})
     assert (tmp_path / "tasks.md").is_file()
     assert (tmp_path / "tasks" / "task_read.md").is_file()
@@ -249,16 +260,16 @@ def test_load_units_from_dir_derives_children(tmp_path):
     assert "children" not in units["domain/child-a"]
 
 
-def test_load_units_typed_via_unit_from_dict(tmp_path):
-    fs.write_unit(tmp_path, "x/cap", {
-        "kind": "capability", "name": "Cap", "description": "D",
-        "capability_name": "cap", "category": "x",
-        "op": "op.wb.cap", "schema_version": "wb-capability/v1",
+def test_load_skill_units_typed_via_unit_from_dict(tmp_path):
+    fs.write_unit(tmp_path, "x/skill", {
+        "kind": "skill", "name": "Skill", "description": "D",
+        "skill_name": "sample_skill", "category": "x",
+        "op": "op.wb.sample_skill", "schema_version": "wb-skill/v1",
     })
     units = fs.load_units_from_dir(tmp_path)
-    typed = unit_from_dict("x/cap", units["x/cap"])
-    assert typed.kind == "capability"
-    assert typed.op == "op.wb.cap"
+    typed = unit_from_dict("x/skill", units["x/skill"])
+    assert typed.kind == "skill"
+    assert typed.op == "op.wb.sample_skill"
 
 
 def test_malformed_frontmatter_raises():

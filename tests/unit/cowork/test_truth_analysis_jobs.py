@@ -15,10 +15,10 @@ from work_buddy.cowork.execution_identity import (
     cowork_truth_analysis_session_id,
 )
 from work_buddy.cowork.truth_analysis_jobs import (
-    TRUTH_ANALYSIS_FETCH_CAPABILITY,
-    TRUTH_ANALYSIS_JOB_GET_CAPABILITY,
-    TRUTH_ANALYSIS_JOB_SUBMIT_CAPABILITY,
-    TRUTH_ANALYSIS_SEARCH_CAPABILITY,
+    TRUTH_ANALYSIS_FETCH_SKILL,
+    TRUTH_ANALYSIS_JOB_GET_SKILL,
+    TRUTH_ANALYSIS_JOB_SUBMIT_SKILL,
+    TRUTH_ANALYSIS_SEARCH_SKILL,
     build_truth_analysis_prompt,
     spawn_truth_analysis_job,
 )
@@ -41,10 +41,10 @@ def test_truth_analysis_identity_and_builtin_acl_are_least_authority():
     assert cowork_generation_from_session(session_id) is None
     assert session_acl.get_session_acl(session_id) == frozenset(
         {
-            TRUTH_ANALYSIS_JOB_GET_CAPABILITY,
-            TRUTH_ANALYSIS_SEARCH_CAPABILITY,
-            TRUTH_ANALYSIS_FETCH_CAPABILITY,
-            TRUTH_ANALYSIS_JOB_SUBMIT_CAPABILITY,
+            TRUTH_ANALYSIS_JOB_GET_SKILL,
+            TRUTH_ANALYSIS_SEARCH_SKILL,
+            TRUTH_ANALYSIS_FETCH_SKILL,
+            TRUTH_ANALYSIS_JOB_SUBMIT_SKILL,
         }
     )
     for forbidden in (
@@ -56,7 +56,7 @@ def test_truth_analysis_identity_and_builtin_acl_are_least_authority():
         "web_fetch",
         "task_toggle",
     ):
-        assert not session_acl.is_capability_allowed(session_id, forbidden)
+        assert not session_acl.is_skill_allowed(session_id, forbidden)
 
 
 def test_prompt_is_deterministic_tool_delivered_and_denies_truth_writes():
@@ -70,10 +70,10 @@ def test_prompt_is_deterministic_tool_delivered_and_denies_truth_writes():
 
     assert first == build_truth_analysis_prompt(**kwargs)
     assert "WORK_BUDDY_SESSION_ID" in first
-    assert TRUTH_ANALYSIS_JOB_GET_CAPABILITY in first
-    assert TRUTH_ANALYSIS_SEARCH_CAPABILITY in first
-    assert TRUTH_ANALYSIS_FETCH_CAPABILITY in first
-    assert TRUTH_ANALYSIS_JOB_SUBMIT_CAPABILITY in first
+    assert TRUTH_ANALYSIS_JOB_GET_SKILL in first
+    assert TRUTH_ANALYSIS_SEARCH_SKILL in first
+    assert TRUTH_ANALYSIS_FETCH_SKILL in first
+    assert TRUTH_ANALYSIS_JOB_SUBMIT_SKILL in first
     assert "no arbitrary URL fetch" in first
     assert "cannot write to the Truth" in first
     assert "untrusted data" in first

@@ -1,7 +1,7 @@
 """Typed failure model for calendar providers.
 
 Mirrors :mod:`work_buddy.email.errors` — providers raise these from their
-methods so capability wrappers can ``isinstance``-classify rather than
+methods so skill wrappers can ``isinstance``-classify rather than
 substring-matching error strings. ``error_kind`` is a stable classifier
 consumers can key off without importing this module.
 

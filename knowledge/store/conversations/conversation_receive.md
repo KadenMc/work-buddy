@@ -1,11 +1,10 @@
 ---
 name: Conversation Receive
-kind: capability
+kind: skill
 description: Receive the oldest unacknowledged user turn for a generation-leased conversation consumer.
-capability_name: conversation_receive
 category: conversations
 op: op.wb.conversation_receive
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   conversation_id:
     type: string
@@ -24,6 +23,7 @@ parameters:
     description: Block and wait for a user turn (max 110s)
 mutates_state: true
 retry_policy: replay
+skill_name: conversation_receive
 tags:
 - conversations
 - conversation

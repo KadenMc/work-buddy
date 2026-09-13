@@ -64,7 +64,7 @@ class Operation(str, Enum):
 
     Distinct from :class:`ExpiryAction` (which is the lifecycle's
     internal "what happens at expiry"). These are the verbs an agent
-    can invoke through MCP capabilities.
+    can invoke through MCP skills.
 
     Each registered Artifact declares which subset of operations it
     exposes. Today ``exposed_operations`` is a flat ``frozenset``;

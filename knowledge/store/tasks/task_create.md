@@ -1,11 +1,10 @@
 ---
 name: Task Create
-kind: capability
+kind: skill
 description: Create a native task and optionally provision a projection-free Co-work knowledge document. GTD vocabulary is optional; agent-driven creators should set creation_provenance and appropriate user_involvement.
-capability_name: task_create
 category: tasks
 op: op.wb.task_create
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_text:
     type: str
@@ -61,15 +60,15 @@ parameters:
     required: false
   outcome_text:
     type: str
-    description: 'desired end-state for developed tasks (e.g. ''ETF tracking habit running'').'
+    description: desired end-state for developed tasks (e.g. 'ETF tracking habit running').
     required: false
   next_action_text:
     type: str
-    description: 'specific physical action for developed tasks (e.g. ''Set up weekly cron job'').'
+    description: specific physical action for developed tasks (e.g. 'Set up weekly cron job').
     required: false
   definition_of_done:
     type: str
-    description: 'closing signal for the task.'
+    description: closing signal for the task.
     required: false
   creation_effort:
     type: str
@@ -85,19 +84,19 @@ parameters:
     required: false
   has_deadline:
     type: bool
-    description: 'True when deadline_date is set; signal for deadline-aware resurfacing.'
+    description: True when deadline_date is set; signal for deadline-aware resurfacing.
     required: false
   deadline_date:
     type: str
-    description: 'ISO date YYYY-MM-DD when has_deadline=True.'
+    description: ISO date YYYY-MM-DD when has_deadline=True.
     required: false
   has_dependency:
     type: bool
-    description: 'True when this task is blocked on someone or something.'
+    description: True when this task is blocked on someone or something.
     required: false
   dependency_hint:
     type: str
-    description: 'free-text hint about the dependency (e.g. ''needs Ben’s review'').'
+    description: free-text hint about the dependency (e.g. 'needs Ben’s review').
     required: false
   client_mutation_id:
     type: str
@@ -111,6 +110,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: task_create
 tags:
 - tasks
 - task
@@ -122,7 +122,6 @@ aliases:
 - add todo
 parents:
 - tasks
-requires: []
 ---
 
 The creating agent session is recorded automatically as `created_by_session`; it is not a caller parameter. The result includes the native task ID, task and collection revisions, a durable mutation receipt, and Co-work document metadata only when `requested_note_role` explicitly provisions a note. `summary` remains a scalar task field. It never returns a Markdown task line or note path. Replaying the same `client_mutation_id` after response loss returns the original semantic result.

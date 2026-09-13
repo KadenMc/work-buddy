@@ -1,6 +1,6 @@
-"""Capability-level tests for the email integration.
+"""Skill-level tests for the email integration.
 
-Exercises the public callables registered in ``_email_capabilities()`` via the
+Exercises the public callables registered in ``_email_skills()`` via the
 fake provider, asserting:
   - happy-path return shapes
   - typed errors get translated into ``{"ok": False, "error_kind": ...}`` dicts
@@ -44,34 +44,34 @@ def loaded_provider(monkeypatch) -> FakeEmailProvider:
         body="full body of the test message",
     )
 
-    import work_buddy.email.capabilities as cap_mod
+    import work_buddy.email.skills as cap_mod
     monkeypatch.setattr(cap_mod, "get_email_provider", lambda: p)
     return p
 
 
 def test_email_health_happy_path(loaded_provider):
-    from work_buddy.email.capabilities import email_health
+    from work_buddy.email.skills import email_health
     out = email_health()
     assert out["ok"] is True
     assert out["provider"] == "fake"
 
 
 def test_email_accounts_returns_provider_payload(loaded_provider):
-    from work_buddy.email.capabilities import email_accounts
+    from work_buddy.email.skills import email_accounts
     out = email_accounts()
     assert out["ok"] is True
     assert out["allowed_count"] == 1
 
 
 def test_email_get_message_not_found_returns_structured_error(loaded_provider):
-    from work_buddy.email.capabilities import email_get
+    from work_buddy.email.skills import email_get
     out = email_get(provider_message_id="missing", folder_path="imap://acct1/INBOX")
     assert out["ok"] is False
     assert out["error_kind"] == "email_message_not_found"
 
 
 def test_email_get_happy_path(loaded_provider):
-    from work_buddy.email.capabilities import email_get
+    from work_buddy.email.skills import email_get
     out = email_get(
         provider_message_id="msg1@host",
         folder_path="imap://acct1/INBOX",
@@ -83,14 +83,14 @@ def test_email_get_happy_path(loaded_provider):
 
 
 def test_email_get_missing_required_args_returns_bad_request(loaded_provider):
-    from work_buddy.email.capabilities import email_get
+    from work_buddy.email.skills import email_get
     out = email_get(provider_message_id="", folder_path="")
     assert out["ok"] is False
     assert out["error_kind"] == "bad_request"
 
 
 def test_email_display_calls_provider(loaded_provider):
-    from work_buddy.email.capabilities import email_display
+    from work_buddy.email.skills import email_display
     out = email_display(
         provider_message_id="msg1@host",
         folder_path="imap://acct1/INBOX",
@@ -101,7 +101,7 @@ def test_email_display_calls_provider(loaded_provider):
     assert len(loaded_provider.display_log) == 1
 
 
-# NOTE: tests for the legacy email_triage_run capability were removed
+# NOTE: tests for the legacy email_triage_run skill were removed
 # during the clarify -> Threads migration. Email triage now flows
 # through pipelines.email.EmailTriagePipeline (see
 # tests/unit/pipelines/test_email_pipeline.py).

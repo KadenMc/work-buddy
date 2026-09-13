@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from work_buddy.knowledge import editor as editor_mod
+from work_buddy.knowledge import file_store
 from work_buddy.knowledge import store as store_mod
 from work_buddy.knowledge.editor import (
     _scan_placeholder_hints,
@@ -207,6 +208,26 @@ class TestScanPlaceholderHints:
 
 
 class TestCreateUnitHints:
+    def test_create_skill_writes_only_canonical_fields(self, tmp_store: Path):
+        result = create_unit(
+            path="x/sample_skill",
+            kind="skill",
+            name="Sample skill",
+            description="A fixture skill",
+            extra={
+                "skill_name": "sample_skill",
+                "category": "test",
+                "op": "op.wb.sample_skill",
+                "schema_version": "wb-skill/v1",
+            },
+        )
+        assert result["status"] == "created"
+        data = file_store.read_unit(tmp_store, "x/sample_skill")
+        assert data is not None
+        assert data["kind"] == "skill"
+        assert data["skill_name"] == "sample_skill"
+        assert "capability_name" not in data
+
     def test_create_with_no_placeholders_returns_empty_hints(self, tmp_store: Path):
         result = create_unit(
             path="a/leaf",

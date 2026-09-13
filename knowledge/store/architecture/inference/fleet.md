@@ -28,7 +28,7 @@ dev_notes: |-
   ## Roster shape + merge semantics
 
   Canonical roster hardware is ``gpus: [{name, vram_gb}]``; ``merge_fleet`` and the
-  ``fleet_roster`` capability accept a legacy scalar ``gpu``/``vram_gb`` as a
+  ``fleet_roster`` skill accept a legacy scalar ``gpu``/``vram_gb`` as a
   single-GPU fallback, and ``fleet_roster`` migrates an entry off the scalar keys
   on edit. ``fleet_roster`` field semantics: ``None`` → omit (preserve), ``""``/``[]``
   → clear, value → set — so partial updates preserve unspecified fields and the
@@ -76,7 +76,7 @@ Provider-neutral. `merge_fleet(link_status, ps, local_hardware, roster)`
 and knows nothing about any backend. A provider adapter is the only place that
 talks to the backend; today that is LM Studio via the `lms` CLI. Swapping to
 vLLM / Ollama / llama.cpp is a new adapter — not a change to `merge_fleet`, the
-dashboard reader, the routes, or the capabilities.
+dashboard reader, the routes, or the skills.
 
 ## Data layers
 
@@ -101,9 +101,9 @@ dashboard (the inline editor writes it) — users don't hand-edit it.
 - `GET /api/fleet` — the cached per-machine snapshot (read-only).
 - `POST /api/fleet/roster` — add/update or clear a machine's roster entry
   (read-only-gated; the click is the consent; mirrors `/api/embeddings/vault`).
-- `fleet_status` capability — read the snapshot (answers "what's on which box /
+- `fleet_status` skill — read the snapshot (answers "what's on which box /
   can my laptop run model X").
-- `fleet_roster` capability — edit a machine's roster entry.
+- `fleet_roster` skill — edit a machine's roster entry.
 - `fleet.changed` SSE event — published when a machine's reachability or
   loaded-model set changes; the section morphs the cards in.
 

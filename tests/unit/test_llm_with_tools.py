@@ -2,7 +2,7 @@
 
 Covers:
 - Tool presets are structurally valid (readonly has no mutations; wb_init excluded)
-- Every tool name in every preset is a real registered capability
+- Every tool name in every preset is a real registered skill
 - resolve_preset rejects unknown names with a helpful error
 - llm_with_tools rejects missing profile / tool_preset
 - llm_with_tools sends the expected payload to /api/v1/chat
@@ -27,7 +27,7 @@ def test_no_preset_includes_wb_init():
     """Security: wb_init must never be in a preset.
 
     Allowing wb_init inside an ACL-scoped session is an ACL-escape vector
-    — the model can call wb_run(capability='wb_init', session_id='...')
+    — the model can call wb_run(skill='wb_init', session_id='...')
     to swap its MCP connection's bound session id and drop the ACL.
     Header-based auto-init covers session registration for local models
     without exposing the primitive.
@@ -40,33 +40,33 @@ def test_no_preset_includes_wb_init():
         )
 
 
-def test_readonly_presets_have_no_mutating_capabilities():
+def test_readonly_presets_have_no_mutating_skills():
     from work_buddy.llm.tool_presets import validate_presets
     problems = validate_presets()
     assert problems == [], f"Preset validation problems: {problems}"
 
 
-def test_all_preset_names_exist_in_capability_registry():
-    """Guards against typos and drift when capabilities are renamed.
+def test_all_preset_names_exist_in_skill_registry():
+    """Guards against typos and drift when skills are renamed.
 
-    Counts both enabled and *disabled* capabilities as known — a
-    capability temporarily unavailable (e.g., Obsidian plugin not
-    reachable during a test run) is still a real capability; the
+    Counts both enabled and *disabled* skills as known — a
+    skill temporarily unavailable (e.g., Obsidian plugin not
+    reachable during a test run) is still a real skill; the
     preset reference isn't stale drift.
     """
     from work_buddy.llm.tool_presets import validate_presets
     from work_buddy.mcp_server.registry import get_registry
-    from work_buddy.tools import DISABLED_CAPABILITIES
+    from work_buddy.tools import DISABLED_SKILLS
 
     reg = get_registry()
     assert isinstance(reg, dict), (
         f"Registry shape changed unexpectedly — got {type(reg)}"
     )
-    registry_names = set(reg.keys()) | set(DISABLED_CAPABILITIES.keys())
+    registry_names = set(reg.keys()) | set(DISABLED_SKILLS.keys())
 
     problems = validate_presets(registry_names)
     assert problems == [], (
-        "Preset drift from registry — capabilities renamed or removed:\n"
+        "Preset drift from registry — skills renamed or removed:\n"
         + "\n".join(problems)
     )
 
@@ -85,7 +85,7 @@ def test_resolve_preset_known_returns_sorted_list():
     tools = resolve_preset("readonly_safe")
     assert isinstance(tools, list)
     assert tools == sorted(tools)
-    # readonly_safe should contain the core read capabilities but
+    # readonly_safe should contain the core read skills but
     # NOT wb_init (see security note in tool_presets.py).
     assert "task_briefing" in tools
     assert "wb_init" not in tools
@@ -137,7 +137,7 @@ def test_llm_with_tools_rejects_unknown_preset(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# required_capabilities pre-flight guard (goal-preset mismatch catch)
+# required_skills pre-flight guard (goal-preset mismatch catch)
 # ---------------------------------------------------------------------------
 # Regression: during a retro (2026-04-17) an agent called
 # ``llm_with_tools`` to drive /wb-journal-update but passed
@@ -147,24 +147,24 @@ def test_llm_with_tools_rejects_unknown_preset(monkeypatch):
 # separate ACL bug that's now fixed). The pre-flight check catches
 # the mismatch before any compute is burned.
 
-def test_llm_with_tools_rejects_when_required_capability_not_in_preset():
+def test_llm_with_tools_rejects_when_required_skill_not_in_preset():
     from work_buddy.llm.with_tools import llm_with_tools
-    # readonly_safe explicitly has no mutating capabilities
+    # readonly_safe explicitly has no mutating skills
     result = llm_with_tools(
         system="s", user="u",
         profile="local_general", tool_preset="readonly_safe",
-        required_capabilities=["journal_write", "update-journal"],
+        required_skills=["journal_write", "update-journal"],
     )
     assert result["error"]
-    assert "required_capabilities" in result["error"]
-    # The error must name the specific missing capabilities so the
+    assert "required_skills" in result["error"]
+    # The error must name the specific missing skills so the
     # agent can pick a different preset or add a new one
     assert "journal_write" in result["error"]
     assert "update-journal" in result["error"]
     assert "readonly_safe" in result["error"]
 
 
-def test_llm_with_tools_allows_when_required_capability_is_in_preset(
+def test_llm_with_tools_allows_when_required_skill_is_in_preset(
     profile_cfg, monkeypatch, tmp_path,
 ):
     """Guard passes → the call proceeds to the backend as normal."""
@@ -192,15 +192,15 @@ def test_llm_with_tools_allows_when_required_capability_is_in_preset(
     result = llm_with_tools(
         system="s", user="u",
         profile="local_general", tool_preset="readonly_safe",
-        required_capabilities=["task_briefing"],
+        required_skills=["task_briefing"],
     )
     assert result["error"] is None
 
 
-def test_llm_with_tools_no_required_capabilities_is_the_default(
+def test_llm_with_tools_no_required_skills_is_the_default(
     profile_cfg, monkeypatch, tmp_path,
 ):
-    """Omitting ``required_capabilities`` skips the guard entirely —
+    """Omitting ``required_skills`` skips the guard entirely —
     preserves existing behavior for callers that haven't opted in."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
@@ -225,12 +225,12 @@ def test_llm_with_tools_no_required_capabilities_is_the_default(
     result = llm_with_tools(
         system="s", user="u",
         profile="local_general", tool_preset="readonly_safe",
-        # Intentionally no required_capabilities
+        # Intentionally no required_skills
     )
     assert result["error"] is None
 
 
-def test_llm_with_tools_empty_required_capabilities_list_is_noop():
+def test_llm_with_tools_empty_required_skills_list_is_noop():
     from work_buddy.llm.with_tools import llm_with_tools
     # Empty list — nothing to check, pass the guard but still fail
     # on other validation since we don't pass profile_cfg. We just
@@ -238,13 +238,13 @@ def test_llm_with_tools_empty_required_capabilities_list_is_noop():
     result = llm_with_tools(
         system="s", user="u",
         profile="local_general", tool_preset="readonly_safe",
-        required_capabilities=[],
+        required_skills=[],
     )
     # Either succeeds (if profile loads from real config) or fails for
     # a NON-guard reason — crucially, the error should NOT mention
-    # ``required_capabilities``
+    # ``required_skills``
     if result["error"]:
-        assert "required_capabilities" not in result["error"]
+        assert "required_skills" not in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ def test_llm_with_tools_posts_to_native_endpoint_with_integration(
     # Integrations: one ephemeral_mcp pointing at the gateway.
     # allowed_tools on LM Studio's side is JUST the top-level MCP
     # tools it needs to dispatch (wb_run, wb_search). Domain
-    # capabilities are gated server-side via session_acl.
+    # skills are gated server-side via session_acl.
     assert len(body["integrations"]) == 1
     integ = body["integrations"][0]
     assert integ["type"] == "ephemeral_mcp"
@@ -365,11 +365,11 @@ def test_llm_with_tools_posts_to_native_endpoint_with_integration(
     assert integ["headers"]["X-Work-Buddy-Session"] == result["session_id"]
 
 
-def test_llm_with_tools_registers_session_acl_with_preset_capabilities(
+def test_llm_with_tools_registers_session_acl_with_preset_skills(
     profile_cfg, monkeypatch, tmp_path,
 ):
     """The ACL set on the session should contain the preset's allowed
-    capabilities (not the top-level MCP tools LM Studio sees)."""
+    skills (not the top-level MCP tools LM Studio sees)."""
     captured_acl: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -424,7 +424,7 @@ def test_llm_with_tools_registers_session_acl_with_preset_capabilities(
     assert len(captured_acl_calls) == 1
     call = captured_acl_calls[0]
     assert call["session_id"] == result["session_id"]
-    # The ACL should include readonly_safe's task-read capabilities
+    # The ACL should include readonly_safe's task-read skills
     assert "task_briefing" in call["allowed"]
     assert "sidecar_status" in call["allowed"]
     # wb_init is deliberately EXCLUDED (ACL-escape prevention)
@@ -499,10 +499,10 @@ def test_llm_with_tools_readonly_context_exposes_broader_menu(
     )
 
     # The integrations.allowed_tools field advertises only the top-level
-    # MCP tools — context capabilities are NOT there directly.
+    # MCP tools — context skills are NOT there directly.
     advertised = captured["body"]["integrations"][0]["allowed_tools"]
     assert advertised == ["wb_run", "wb_search"]
-    # The actual capability whitelist is returned in the result and
+    # The actual skill whitelist is returned in the result and
     # reflects the broader readonly_context preset.
     assert "context_git" in result["allowed_tools"]
     assert "context_vault" in result["allowed_tools"]

@@ -11,7 +11,7 @@ entry_points:
 - work_buddy.calendar.providers.google_native
 - work_buddy.calendar.providers.fake
 - work_buddy.calendar.google_auth
-- work_buddy.calendar.capabilities
+- work_buddy.calendar.skills
 - work_buddy.collectors.calendar_collector
 tags:
 - calendar
@@ -35,7 +35,7 @@ aliases:
 work-buddy agents
    │  MCP
    ▼
-calendar capabilities (calendar_*)
+calendar skills (calendar_*)
    │
    ▼
 CalendarProvider protocol
@@ -62,7 +62,7 @@ Consumers depend on `work_buddy.calendar.provider` + `work_buddy.calendar.models
 
 `stable_key_for` (`work_buddy.calendar.identity`) returns `ical:<uid>` when an RFC 5545 iCalUID is present, else `loc:<provider>:<calendar_id>:<event_id>`. The bridge payload lacks iCalUID, so bridge events use the `loc:` form; the native adapter supplies real UIDs and dedups the same meeting across calendars.
 
-## Capabilities
+## Skills
 
 Reads:
 - `calendar_health` — provider readiness probe.
@@ -70,12 +70,12 @@ Reads:
 - `calendar_get_event` — one event by id (windowed lookup on the bridge; a real `events.get` on native).
 - `calendar_coverage` — which calendars are visible / blacklisted / errored, with per-calendar event counts.
 
-Writes (heavy, per-change consent — see `obsidian/calendar` and the capability layer):
-- `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` — mutate the user's real calendars. Consent lives one layer up from the adapter (in `capabilities.py`) so every provider inherits identical gating: per-write `consent_weight="high"`, a change-specific prompt body (target calendar, title, start–end in `USER_TZ`, before→after diff), `default_ttl=0` on update/delete (always re-prompt), and a shared-calendar escalation.
+Writes (heavy, per-change consent — see `obsidian/calendar` and the skill layer):
+- `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` — mutate the user's real calendars. Consent lives one layer up from the adapter (in `skills.py`) so every provider inherits identical gating: per-write `consent_weight="high"`, a change-specific prompt body (target calendar, title, start–end in `USER_TZ`, before→after diff), `default_ttl=0` on update/delete (always re-prompt), and a shared-calendar escalation.
 
 ## Degradation
 
-The `calendar_*` capabilities are gated by the provider-aware `calendar` tool probe, which dispatches on `calendar.provider`: bridge → the cached Obsidian plugin check; `google_native` → the OAuth token is present (no Obsidian); `fake` → always. Missing provider configuration selects `google_native` and probes only its OAuth token; the Obsidian bridge and plugin are inspected only when `obsidian_bridge` is explicitly configured. So the capabilities follow whichever provider is configured rather than hard-depending on Obsidian. Deep native API health is a separate `google_calendar_native` health component (diagnose-only). Either way the collector degrades to a clear 'not available' report rather than crashing the morning bundle.
+The `calendar_*` skills are gated by the provider-aware `calendar` tool probe, which dispatches on `calendar.provider`: bridge → the cached Obsidian plugin check; `google_native` → the OAuth token is present (no Obsidian); `fake` → always. Missing provider configuration selects `google_native` and probes only its OAuth token; the Obsidian bridge and plugin are inspected only when `obsidian_bridge` is explicitly configured. So the skills follow whichever provider is configured rather than hard-depending on Obsidian. Deep native API health is a separate `google_calendar_native` health component (diagnose-only). Either way the collector degrades to a clear 'not available' report rather than crashing the morning bundle.
 
 ## Related
 

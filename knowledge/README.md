@@ -5,13 +5,13 @@ category: architecture
 tags: [knowledge, documentation, progressive-disclosure, store, self-documentation, factorized]
 tier1_summary: >
   All agent-facing content is one Markdown file per unit under knowledge/store/**/*.md.
-  Typed units with a DAG hierarchy. Query via the agent_docs MCP capability; edit via the docs_edit workflow.
+  Typed units with a DAG hierarchy. Query via the agent_docs MCP skill; edit via the docs_edit workflow.
 requires: []
 ---
 
 # Knowledge System
 
-All agent-facing content — behavioral directions, system docs, capability declarations,
+All agent-facing content — behavioral directions, system docs, skill declarations,
 workflow structure — lives in the knowledge store as **one Markdown file per unit** (YAML
 frontmatter + Markdown body). Agents query this at runtime via `agent_docs` instead of
 reading scattered files, and edit it via the `docs_edit` workflow.
@@ -41,7 +41,7 @@ mcp__work-buddy__wb_run("agent_docs_rebuild", {})
 |------|-----------|----------|
 | `directions` | Behavioral "how to do X" — migrated from slash commands | triage rules, journal synthesis format, morning sign-in tone |
 | `system` | Reference "what is X" — architecture, integration guides | Obsidian bridge, consent system, repo structure |
-| `capability` | MCP callable declaration — an Op (callable in `work_buddy/mcp_server/ops/`) plus a `kind: capability` unit naming it | task_create, session_search, context_bundle |
+| `skill` | MCP callable declaration — an Op (callable in `work_buddy/mcp_server/ops/`) plus a `kind: skill` unit naming it | task_create, session_search, context_bundle |
 | `workflow` | Multi-step DAG — `steps` in frontmatter, per-step prose under `## <step-id>` body sections | task-triage, morning-routine, update-journal |
 
 (Plus `service`, `integration`, `reference`, `concept`, and vault-backed `personal` units — nine kinds in all; see `architecture/knowledge-system` for the full taxonomy.)
@@ -113,7 +113,7 @@ One Markdown file per unit at `knowledge/store/<path>.md` — the path↔file ma
 ```
 knowledge/store/
   architecture/        # repo structure, workflows, knowledge system, ...
-  tasks/               # task directions, triage, the task-* capability declarations
+  tasks/               # task directions, triage, the task-* skill declarations
   context/             # collectors, docs-edit, docs_delete, agent_docs, ...
   morning/             # morning routine
   ...                  # one directory per domain; one .md per unit, every kind
@@ -121,7 +121,7 @@ knowledge/store/
 knowledge/store.local/ # user patches (gitignored, JSON-shaped, deep-merged on load)
 ```
 
-Every unit kind — directions, system, capability declarations, workflows — is a Markdown file authored the same way. The only JSON is `knowledge/store.local/*.json`: a gitignored personal-overlay layer deep-merged on top of the file-per-unit base at load.
+Every unit kind — directions, system, skill declarations, workflows — is a Markdown file authored the same way. The only JSON is `knowledge/store.local/*.json`: a gitignored personal-overlay layer deep-merged on top of the file-per-unit base at load.
 
 ## Adding or editing content
 
@@ -135,9 +135,9 @@ mcp__work-buddy__wb_run("docs-edit", {"path": "domain/my-directions"})
 mcp__work-buddy__wb_run("docs-edit", {"path": "domain/my-unit", "create": true, "kind": "directions"})
 ```
 
-A unit file is YAML frontmatter (structured fields: `name`, `kind`, `description`, `parents`, `tags`, `aliases`, kind-specific fields, optional `dev_notes`) followed by the Markdown body (`content.full`). A **workflow** unit carries its `steps` DAG in frontmatter with per-step prose under `## <step-id>` sections. A **capability** unit is a declaration (`kind: capability` with `op`, `capability_name`, `category`, `parameters`) whose Op is registered in `work_buddy/mcp_server/ops/`.
+A unit file is YAML frontmatter (structured fields: `name`, `kind`, `description`, `parents`, `tags`, `aliases`, kind-specific fields, optional `dev_notes`) followed by the Markdown body (`content.full`). A **workflow** unit carries its `steps` DAG in frontmatter with per-step prose under `## <step-id>` sections. A **skill** unit is a declaration (`kind: skill` with `op`, `skill_name`, `category`, `parameters`) whose Op is registered in `work_buddy/mcp_server/ops/`.
 
-A direct `Edit` of a unit's `.md` works too; follow it with `agent_docs_rebuild` so the store cache and search index pick up the change. Removing or relocating a unit (not a content edit) uses the `docs_delete` / `docs_move` capabilities.
+A direct `Edit` of a unit's `.md` works too; follow it with `agent_docs_rebuild` so the store cache and search index pick up the change. Removing or relocating a unit (not a content edit) uses the `docs_delete` / `docs_move` skills.
 
 ## Search index
 
@@ -153,7 +153,7 @@ Knowledge search uses an in-memory index that fuses three independent ranking si
 
 **RRF fusion** is rank-based, so fusing across the 768-d and 1024-d spaces is safe (no score normalization needed). If any signal is unavailable (embedding service down, no aliases on a unit), it's dropped from fusion and the remaining signals still rank. BM25 alone is always a working fallback.
 
-**Alias coverage matters.** Three-signal fusion is fair only when every capability has authored aliases. A cap with zero aliases gets two votes (BM25 + content) against aliased competitors' three — and loses. Keep the `aliases` field populated on every capability declaration unit; aim for 5-8 natural phrasings each (noun-phrase + question-shaped).
+**Alias coverage matters.** Three-signal fusion is fair only when every skill has authored aliases. A skill with zero aliases gets two votes (BM25 + content) against aliased competitors' three — and loses. Keep the `aliases` field populated on every skill declaration unit; aim for 5-8 natural phrasings each (noun-phrase + question-shaped).
 
 ### Persistence
 
@@ -172,7 +172,7 @@ On rebuild, only changed or new units re-embed. Typical warm restart is <1s. Col
 - Rebuilt on next search query or explicit `knowledge_index_rebuild(force=false)` (uses cache); pass `force=true` to purge the cache and re-embed from scratch
 - Generation guards at both start and commit prevent stale background threads from overwriting a rebuilt index
 
-### MCP capabilities
+### MCP skills
 
 - `knowledge_index_rebuild(force: bool = False)` — rebuild using cache (fast) or from scratch (`force=true`, slow)
 - `knowledge_index_status` — index health + cache file sizes
@@ -197,5 +197,5 @@ work_buddy/knowledge/
 
 The knowledge system integrates with the MCP registry:
 - `search_registry()` delegates to the store for richer results
-- Exact capability/workflow lookups fall through to the store when registry filtering removes them
+- Exact skill/workflow lookups fall through to the store when registry filtering removes them
 - `knowledge` is the unified query interface; `agent_docs` for system docs only; legacy `docs_query`/`docs_get` still work

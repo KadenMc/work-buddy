@@ -1,8 +1,8 @@
 ---
 name: Conversations
 kind: system
-description: Conversations capabilities and workflows
-summary: Container for 8 capabilities and workflows.
+description: Conversations skills and workflows
+summary: Container for 8 skills and workflows.
 tags:
 - conversations
 ---

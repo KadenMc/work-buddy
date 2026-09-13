@@ -1,11 +1,10 @@
 ---
 name: Session Resume
-kind: capability
+kind: skill
 description: Resume an existing Claude Code session in a new local terminal window. No prompt is sent and remote-control is off — the terminal opens directly into the conversation, ready for the user to type. cwd is auto-derived from the session's recorded working directory.
-capability_name: session_resume
 category: sidecar
 op: op.wb.session_resume
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
@@ -23,6 +22,7 @@ mutates_state: true
 retry_policy: manual
 consent_operations:
 - sidecar:remote_session_launch
+skill_name: session_resume
 tags:
 - sidecar
 - session

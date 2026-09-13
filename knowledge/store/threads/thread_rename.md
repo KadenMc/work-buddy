@@ -1,11 +1,10 @@
 ---
 name: Thread Rename
-kind: capability
+kind: skill
 description: Rewrite a thread's title (and description) — used by the action-chip 'Rename' affordance and by the LLM cluster-refinement step when it overrides an algorithmic cluster label.
-capability_name: thread_rename
 category: threads
 op: op.wb.thread_rename
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -21,6 +20,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: thread_rename
 tags:
 - threads
 - thread

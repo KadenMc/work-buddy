@@ -9,14 +9,14 @@ work-buddy's functionality is reached through five MCP tools that appear in your
 | Tool | Purpose |
 |------|---------|
 | `wb_init(session_id)` | **REQUIRED first call.** Registers your session. Pass your `WORK_BUDDY_SESSION_ID`. |
-| `wb_search(query)` | Find a **capability to call**. Natural language → ranked capabilities/workflows. Exact name → its parameter schema. *Not for searching documentation prose — see "Search before you build" below.* |
-| `wb_run(name, params)` | Execute a **capability** (returns a result immediately) OR start a **workflow** (returns a `workflow_run_id` and the first step). |
+| `wb_search(query)` | Find a **skill to call**. Natural language → ranked skills/workflows. Exact name → its parameter schema. *Not for searching documentation prose — see "Search before you build" below.* |
+| `wb_run(skill, params)` | Execute a **skill** (returns a result immediately) OR start a **workflow** (returns a `workflow_run_id` and the first step). |
 | `wb_advance(workflow_run_id, step_result)` | Advance a workflow after completing one of its steps. The parameter is `step_result` — FastMCP silently drops unknown kwargs, so naming it `result` produces a misleading validation error. |
 | `wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
 
-### Capability vs workflow
+### Skill vs workflow
 
-- **Capability** — a single atomic operation (`task_create`, `agent_docs`, `consent_request`, …). `wb_run` executes it and returns a result.
+- **Skill** — a single atomic operation (`task_create`, `agent_docs`, `consent_request`, …). `wb_run` executes it and returns a result.
 - **Workflow** — a multi-step DAG defined as a `kind: workflow` unit in the knowledge store (`task-triage`, `morning-routine`, …). `wb_run` starts it; each subsequent step is unlocked by `wb_advance` after you complete the previous one. Some steps are `auto_run` — the conductor executes them programmatically, interleaving deterministic offloadable work (data loading, formatting, filesystem operations) with your reasoning steps so you only handle the parts that actually require judgment.
 
 ### Workflow consent (composable)
@@ -26,13 +26,13 @@ Starting a workflow may prompt the user once to authorize the workflow's compone
 - `workflow_class:<name>` — set by **Allow for 15 min** / **Allow always**. Authorizes any *future* run of `<name>` within the TTL window. Re-runs check this key and skip the prompt.
 - `workflow_run:<name>:<run_id>` — set by `start_workflow` for every active run. Authorizes the workflow's sub-operations as constituents of *this* run. Revoked when the run completes.
 
-Inside a workflow run, `@requires_consent`-gated calls check (in order): individual op grant → any live `workflow_run:*` or `workflow_class:*` key → the legacy `__workflow_consent__` blanket (deprecation-logged). Capabilities tagged with `consent_weight="high"` bypass the workflow-grant carry entirely — they always re-prompt individually, even inside an approved workflow.
+Inside a workflow run, `@requires_consent`-gated calls check (in order): individual op grant → any live `workflow_run:*` or `workflow_class:*` key → the legacy `__workflow_consent__` blanket (deprecation-logged). Skills tagged with `consent_weight="high"` bypass the workflow-grant carry entirely — they always re-prompt individually, even inside an approved workflow.
 
 The pre-flight prompt is **skipped** when (a) the workflow's `workflow_class` grant is already live for this session, or (b) the dispatch happens inside a `user_initiated()` context (UI button click, dashboard endpoint, slash-command handler that wraps its dispatch — the click *is* the consent affordance). Workflows whose declared operations are all low-weight auto-bypass the prompt entirely (the audit script `scripts/audit_workflow_consent.py` lists which workflows are in this set vs. which need the prompt).
 
 Behavior the model deliberately does NOT allow: workflow grants do **not** time-travel through the sidecar retry queue. A queued op replayed days later only sees its individual grant (if any) — the workflow grant active at queue-time has long since been scoped out.
 
-Per-invocation exact-review operations are stricter than ordinary or workflow consent. They offer only **Allow once** or **Deny**, bind approval to the server-composed operation fingerprint, consume it before the matching execution, and write no reusable grant. Existing grants and `user_initiated()` cannot bypass this boundary. If the prompt times out, later approval cannot authorize the old call or a retry; invoke the capability again for a fresh review.
+Per-invocation exact-review operations are stricter than ordinary or workflow consent. They offer only **Allow once** or **Deny**, bind approval to the server-composed operation fingerprint, consume it before the matching execution, and write no reusable grant. Existing grants and `user_initiated()` cannot bypass this boundary. If the prompt times out, later approval cannot authorize the old call or a retry; invoke the skill again for a fresh review.
 
 ### Session init (mandatory)
 
@@ -42,13 +42,13 @@ Per-invocation exact-review operations are stricter than ordinary or workflow co
 mcp__work-buddy__wb_init(session_id="<your WORK_BUDDY_SESSION_ID>")
 ```
 
-Every other `wb_*` tool returns an error until `wb_init` runs. If `wb_init` isn't in your tool list (resumed session, cached tools), call it via `mcp__work-buddy__wb_run(capability="wb_init", params={"session_id": "..."})`.
+Every other `wb_*` tool returns an error until `wb_init` runs. If `wb_init` isn't in your tool list (resumed session, cached tools), call it via `mcp__work-buddy__wb_run(skill="wb_init", params={"session_id": "..."})`.
 
 ## Agent knowledge
 
-work-buddy maintains a **knowledge store** of tagged, interlinked units documenting every subsystem, capability, workflow, and behavioral direction. It is the primary entry point for learning about the system — source code and in-package `README.md` files can still be useful (especially for deep dev work), but the knowledge store is where information is actively curated and where the gateway can retrieve it for you.
+work-buddy maintains a **knowledge store** of tagged, interlinked units documenting every subsystem, skill, workflow, and behavioral direction. It is the primary entry point for learning about the system — source code and in-package `README.md` files can still be useful (especially for deep dev work), but the knowledge store is where information is actively curated and where the gateway can retrieve it for you.
 
-The `agent_docs` capability is how you walk the store. Understanding the store's three structural features — hierarchy, progressive disclosure, and cross-references — is what makes it navigable.
+The `agent_docs` skill is how you walk the store. Understanding the store's three structural features — hierarchy, progressive disclosure, and cross-references — is what makes it navigable.
 
 ### Hierarchy
 
@@ -101,12 +101,12 @@ Before writing Python that touches work-buddy state, search first. work-buddy ha
 
 |                          | `wb_search`                                              | `agent_docs(query=...)`                                                              |
 |--------------------------|----------------------------------------------------------|--------------------------------------------------------------------------------------|
-| **Indexes**              | capabilities + workflows (callable things)               | every knowledge unit kind (see `architecture/knowledge-system` for the full taxonomy) |
+| **Indexes**              | skills + workflows (callable things)                     | every knowledge unit kind (see `architecture/knowledge-system` for the full taxonomy) |
 | **Use when you want to…** | **call** something                                      | **read** something                                                                   |
-| **Question shape**       | "What's the capability for X?" / "What params does Y take?" | "What's the rule for X?" / "How does subsystem Y work?" / "What does the X directions unit say?" |
+| **Question shape**       | "What's the skill for X?" / "What params does Y take?" | "What's the rule for X?" / "How does subsystem Y work?" / "What does the X directions unit say?" |
 | **Returns**              | callable name + parameter schema                         | knowledge unit prose                                                                 |
 
-If your question is about *prose* — directions, behavior, how something works — `wb_search` will return plausible-looking capability hits but **not** the directions unit that actually answers you. Reach for `agent_docs(query=...)` instead.
+If your question is about *prose* — directions, behavior, how something works — `wb_search` will return plausible-looking skill hits but **not** the directions unit that actually answers you. Reach for `agent_docs(query=...)` instead.
 
 `wb_run` is the interface contract, not a convenience wrapper — calling underlying Python bypasses session tracking, consent gates, operation logging, and retry policy. The operation is not equivalent even if the outcome looks the same.
 
@@ -125,7 +125,7 @@ mcp__work-buddy__wb_run("task_toggle", {"task_id": "...", "done": true})
     → executes
 ```
 
-If `wb_search` returns nothing relevant, the capability may not exist. If `agent_docs(query=...)` returns nothing, the rule or behavior may not be documented yet. In both cases, **ask the user** before building.
+If `wb_search` returns nothing relevant, the skill may not exist. If `agent_docs(query=...)` returns nothing, the rule or behavior may not be documented yet. In both cases, **ask the user** before building.
 
 ## Domain map
 
@@ -150,7 +150,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `notifications/` | Notify, request, consent, surfaces |
 | `events/` | Durable in-process delivery spine for event-shaped facts — CloudEvents-superset envelope, SQLite log (dedup + offsets + DLQ), one drain thread, consent gate; `event_publish` to emit, plus user-authored **pull sources** (poll → diff → CEL condition → notify) authored via `/wb-event-new` |
 | `truth/` | Scoped evidence, claims, registered documents with tracked-edit proposals, human confirmation, provenance, revision, registry, and integrity sweeps |
-| `cowork/` | Co-work Folder and document lifecycle: setup, catalog, create/register/scratch, source-safe **From file** import, durable editing, explicit Markdown writes, frozen-target content provenance, drift/reimport/retirement, sittings, feedback, conversations, canonical-Markdown reads and rendered export, and `cowork_doc_*` proposal capabilities |
+| `cowork/` | Co-work Folder and document lifecycle: setup, catalog, create/register/scratch, source-safe **From file** import, durable editing, explicit Markdown writes, frozen-target content provenance, drift/reimport/retirement, sittings, feedback, conversations, canonical-Markdown reads and rendered export, and `cowork_doc_*` proposal skills |
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
 | `settings/` | Registry-driven settings, Apps-based placement, authority, persistence, Journal policy |
 | `features/` | Preferences and feature opt-in |

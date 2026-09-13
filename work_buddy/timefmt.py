@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-# Relative-window shorthand shared by every capability that takes a time bound
+# Relative-window shorthand shared by every skill that takes a time bound
 # (chrome_activity, activity_timeline, hot_files, the context-bundle window, …):
 # an integer amount + a unit whose first letter is m / h / d.
 _RELATIVE_RE = re.compile(r"\s*(\d+)\s*(m|min|h|hour|hours|d|day|days)\s*", re.IGNORECASE)
@@ -31,7 +31,7 @@ def parse_time_bound(
     """Parse one end of a time window to an aware-UTC datetime.
 
     The single canonical parser for the work-buddy window vocabulary used
-    across capability declarations and the context pipeline:
+    across skill declarations and the context pipeline:
 
       * **relative shorthand** — ``"2h"``, ``"30m"``, ``"1d"`` (also
         ``min`` / ``hour(s)`` / ``day(s)``): resolved as ``now - delta``.

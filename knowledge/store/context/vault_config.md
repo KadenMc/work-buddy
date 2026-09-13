@@ -1,17 +1,16 @@
 ---
 name: Vault Config
-kind: capability
+kind: skill
 description: Add/update ('set') or remove a vault in the semantic index's vault_index.vaults config. Writes config.local.yaml (the user-override layer); changes apply on the next vault build (the 5-min cron or a manual vault_index build) — no restart. Removing a vault deletes only its config entry; its already-indexed chunks stay searchable until an explicit prune.
-capability_name: vault_config
 category: context
 op: op.wb.vault_config
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 mutates_state: true
 consent_required: true
 parameters:
   action:
     type: str
-    description: "'set' (add/update a vault) or 'remove'"
+    description: '''set'' (add/update a vault) or ''remove'''
     required: false
   id:
     type: str
@@ -23,12 +22,13 @@ parameters:
     required: false
   include:
     type: list
-    description: "Gitignore-style include globs (default ['**/*.md'])."
+    description: Gitignore-style include globs (default ['**/*.md']).
     required: false
   exclude:
     type: list
     description: Gitignore-style exclude globs.
     required: false
+skill_name: vault_config
 tags:
 - context
 - vault

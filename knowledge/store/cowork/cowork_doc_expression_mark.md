@@ -1,11 +1,10 @@
 ---
 name: Cowork Doc Expression Mark
-kind: capability
+kind: skill
 description: Propose linking an existing passage to an existing claim (an expression row), propose-weight and read-mostly in v1.
-capability_name: cowork_doc_expression_mark
 category: cowork
 op: op.wb.cowork_doc_expression_mark
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -17,7 +16,7 @@ parameters:
     required: true
   span:
     type: dict
-    description: "A mapping of {exact, prefix, suffix, node_id_hint?} for the passage."
+    description: A mapping of {exact, prefix, suffix, node_id_hint?} for the passage.
     required: true
   claim_ref:
     type: str
@@ -50,6 +49,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_doc_expression_mark
 tags:
 - cowork
 - doc

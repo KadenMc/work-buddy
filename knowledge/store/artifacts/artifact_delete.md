@@ -1,11 +1,10 @@
 ---
 name: Artifact Delete
-kind: capability
+kind: skill
 description: Delete an artifact and its metadata by ID.
-capability_name: artifact_delete
 category: artifacts
 op: op.wb.artifact_delete
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   id:
     type: str
@@ -13,6 +12,7 @@ parameters:
     required: true
 mutates_state: true
 retry_policy: manual
+skill_name: artifact_delete
 tags:
 - artifacts
 - artifact

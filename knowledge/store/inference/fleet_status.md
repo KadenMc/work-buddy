@@ -1,11 +1,11 @@
 ---
 name: Fleet Status
-kind: capability
-description: 'Local model fleet snapshot — per-machine reachability, currently loaded model(s) with live context utilization, and hardware (GPU/VRAM/RAM), across the local-inference fleet (LM Studio + LM Link).'
-capability_name: fleet_status
+kind: skill
+description: Local model fleet snapshot — per-machine reachability, currently loaded model(s) with live context utilization, and hardware (GPU/VRAM/RAM), across the local-inference fleet (LM Studio + LM Link).
 category: inference
 op: op.wb.fleet_status
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: fleet_status
 tags:
 - inference
 - fleet

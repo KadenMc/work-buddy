@@ -1,11 +1,10 @@
 ---
 name: Chrome Activity
-kind: capability
+kind: skill
 description: 'Query Chrome browsing history from the rolling tab ledger. Supports: hot_tabs (ranked by engagement), changes (opened/closed/navigated/engaged/moved), sessions (domain clusters), tabs_at (snapshot at a time), context (tab proximity and window layout), details (full URLs by filter), status (ledger health). Output is compact (no URLs) — use details query for full URLs.'
-capability_name: chrome_activity
 category: context
 op: op.wb.chrome_activity
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -31,6 +30,7 @@ parameters:
     type: str
     description: 'For details query: domain or title substring to match'
     required: false
+skill_name: chrome_activity
 tags:
 - context
 - chrome

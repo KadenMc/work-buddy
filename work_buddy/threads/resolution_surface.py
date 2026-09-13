@@ -21,7 +21,7 @@ Why notifications, not consent
 
 DESIGN.md §7.3 says the Resolution Request "flows through the
 existing consent subsystem." The existing consent subsystem
-(``work_buddy/consent.py``) is shaped around capability-call
+(``work_buddy/consent.py``) is shaped around skill-call
 gating decorators, not generic typed messages. Retrofitting it
 to carry ResolutionRequest payloads is open work; in the meantime,
 the notifications subsystem already has a
@@ -88,7 +88,7 @@ def build_resolution_request(
 # Notification dispatch
 # ---------------------------------------------------------------------------
 #
-# Mirrors the conversation_chat / capability_consent pattern:
+# Mirrors the conversation_chat / skill_consent pattern:
 # create a Notification with a custom_template, dispatch via
 # SurfaceDispatcher, the dashboard's poll loop spawns a workflow-
 # view, and the frontend Resolution Surface renderer picks it up.

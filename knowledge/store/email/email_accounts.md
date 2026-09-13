@@ -1,11 +1,11 @@
 ---
 name: Email Accounts
-kind: capability
+kind: skill
 description: List the email accounts visible through the bridge — only accounts the user has explicitly allowed in the extension's options page are exposed (default-deny).
-capability_name: email_accounts
 category: email
 op: op.wb.email_accounts
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: email_accounts
 tags:
 - email
 - accounts

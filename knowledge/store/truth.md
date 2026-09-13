@@ -37,5 +37,5 @@ filter, not a second claim kind. Document expressions identify where prose says
 a claim; evidence remains the distinct basis for believing it. See
 `cowork/truth-surface` for the interaction and editor-lens contract.
 
-Use the `truth_*` capabilities for agent access. Use `wbuddy truth` for direct
+Use the `truth_*` skills for agent access. Use `wbuddy truth` for direct
 local inspection and interactive CLI confirmation.

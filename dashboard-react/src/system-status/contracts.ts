@@ -3,7 +3,7 @@ export type ControlNodeKind =
   | "subsystem"
   | "component"
   | "requirement"
-  | "capability";
+  | "skill";
 
 export type ControlEffectiveState =
   | "ok"

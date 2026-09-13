@@ -24,7 +24,7 @@ Module boundaries (load-bearing)
   owned by that subsystem, not by Threads. Threads enqueue into it;
   they do not own queue state. **Do NOT add a queue table or worker
   to this package.**
-- The **capability/workflow registry** lives in
+- The **skill/workflow registry** lives in
   ``work_buddy/mcp_server``. Threads dispatch into the registries via
   the Action Catalog (a typed lens, not a new registry).
 - The **conductor** lives in ``work_buddy/sidecar``. Threads dispatch

@@ -1,11 +1,10 @@
 ---
 name: Calendar Create Event
-kind: capability
+kind: skill
 description: Create a new event on one of the user's real calendars. Heavy per-change consent — the approval prompt shows the target calendar, title, and start–end in the user's timezone, with a shared-calendar warning when others can see the calendar.
-capability_name: create_calendar_event
 category: calendar
 op: op.wb.calendar_create_event
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 mutates_state: true
 consent_required: true
 parameters:
@@ -41,6 +40,7 @@ parameters:
     type: str
     description: IANA timezone for timed events; defaults to the user's configured timezone
     required: false
+skill_name: create_calendar_event
 tags:
 - calendar
 - write
@@ -58,7 +58,7 @@ requires:
 ---
 
 Creates an event on a real calendar through the provider seam. Consent is gated
-in the capability layer (`work_buddy.calendar.capabilities`) with
+in the skill layer (`work_buddy.calendar.skills`) with
 `consent_weight="high"`, so the prompt fires individually for every create — it
 is never carried by a workflow grant. The prompt body is rendered from the actual
 pending change (calendar name, title, start–end in `USER_TZ`) and escalates when

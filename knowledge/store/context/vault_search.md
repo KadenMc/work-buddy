@@ -1,11 +1,10 @@
 ---
 name: Vault Search
-kind: capability
+kind: skill
 description: Hybrid (lexical + dense) semantic search over your indexed vault(s) — notes and repos chunked at heading level, running natively in work-buddy (not Obsidian / Smart Connections). Returns ranked chunk excerpts with bm25 and dense scores. Served warm from the embedding service's resident matrix; degrades to lexical-only (FTS5) if the embedding service is down.
-capability_name: vault_search
 category: context
 op: op.wb.vault_search
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -17,7 +16,7 @@ parameters:
     required: false
   method:
     type: str
-    description: "Retrieval method: 'hybrid' (default), 'lexical' (FTS5 only), or 'dense' (vectors only)."
+    description: 'Retrieval method: ''hybrid'' (default), ''lexical'' (FTS5 only), or ''dense'' (vectors only).'
     required: false
   vault_id:
     type: str
@@ -27,6 +26,7 @@ parameters:
     type: bool
     description: Apply a recency bias to ranking (default false).
     required: false
+skill_name: vault_search
 tags:
 - context
 - vault

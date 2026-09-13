@@ -335,7 +335,7 @@ STATE_ENTRY_SIDE_EFFECTS: dict[FSMState, str] = {
     FSMState.AWAITING_REDIRECT:
         "publish ResolutionRequest (redirect card) via consent system",
     FSMState.EXECUTING:
-        "dispatch action into capability/workflow/agent runtime; record execution_started event",
+        "dispatch action into skill/workflow/agent runtime; record execution_started event",
     FSMState.MONITORING:
         "watch sub-threads; transition to done when all terminal",
     FSMState.DONE:

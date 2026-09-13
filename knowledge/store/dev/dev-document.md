@@ -154,11 +154,11 @@ Reasoning step. You're looking at the `scan` output and producing a list of conc
 
 1. **Read each candidate_unit at `depth="full"`** via `agent_docs(path=..., depth="full")` that you haven't already loaded. Skim, decide: is this unit's content still accurate? Does it need new content added?
 
-2. **Do 2-4 semantic searches** against `agent_docs(query=...)` for concepts your change touches that the scan may have missed. Examples: if you added a workflow, query `"workflow authoring"`, `"how to add workflow"`, and the specific capability names. The scan is good at surfacing units that mention the changed file or its docstring vocabulary; ad-hoc semantic searches catch units that describe the same concept from a different angle (e.g. a directions unit that names the workflow rather than the implementation file).
+2. **Do 2-4 semantic searches** against `agent_docs(query=...)` for concepts your change touches that the scan may have missed. Examples: if you added a workflow, query `"workflow authoring"`, `"how to add workflow"`, and the specific skill names. The scan is good at surfacing units that mention the changed file or its docstring vocabulary; ad-hoc semantic searches catch units that describe the same concept from a different angle (e.g. a directions unit that names the workflow rather than the implementation file).
 
 3. **Check CLAUDE.md** (the top-level instruction surface) for stale references: grep for keywords from your change. Stale entries in CLAUDE.md mislead every future agent.
 
-4. **Consider new units**: if you added a new subsystem, capability cluster, or workflow, there may be nothing in the store that describes it yet. Propose `action: "create"` with an appropriate path, kind, and content.
+4. **Consider new units**: if you added a new subsystem, skill cluster, or workflow, there may be nothing in the store that describes it yet. Propose `action: "create"` with an appropriate path, kind, and content.
 
 ## Field placement — `content_full` vs `dev_notes`
 
@@ -167,7 +167,7 @@ Every proposal must consciously route content between **two** body fields:
 - **`content_full`** — read by every agent (operational + dev) on `agent_docs(depth="full")`. Surfaces, semantic contracts, user-visible behavior.
 - **`dev_notes`** — surfaced only when dev mode is on (`mode_toggle`, auto-enabled by `/wb-dev`). Implementation patterns, snapshot/cache invariants, refactor footguns, decision rationale.
 
-The default failure mode is dumping everything into `content_full`. **Resist it.** Operational agents reading this unit shouldn't have their context window filled with implementation detail they cannot act on. The decision test: "if an operational agent was calling this subsystem from a capability, would they want this in their context window?" Yes → `content_full`. No, only useful while editing the code → `dev_notes`.
+The default failure mode is dumping everything into `content_full`. **Resist it.** Operational agents reading this unit shouldn't have their context window filled with implementation detail they cannot act on. The decision test: "if an operational agent was calling this subsystem from a skill, would they want this in their context window?" Yes → `content_full`. No, only useful while editing the code → `dev_notes`.
 
 When updating an existing unit, route **new** facts by their nature, not by which field you happen to be editing. Adding both a public surface and an internal pattern to the same unit is **two** `fields` entries on the same proposal: one for `content_full`, one for `dev_notes`.
 
@@ -256,7 +256,7 @@ If `step_results.confirm.confirmed` is `false`, skip everything and return `{app
 Otherwise, iterate the proposals. Each unit is one Markdown file at `knowledge/store/<path>.md` — applying an edit is editing that file. For each:
 
 - `action: "update"` (any kind) → open `knowledge/store/<path>.md` and apply the proposal's `fields` with your native `Edit` tool. YAML frontmatter carries the structured fields (`description`, `dev_notes`, `parents`, and for workflow units the `steps` DAG); the Markdown body is `content_full`. For a workflow unit, keep the frontmatter `steps` ids and the `## <step-id>` body sections in sync.
-- `action: "create"` (any kind) → write a new `knowledge/store/<path>.md` with native `Write`: YAML frontmatter (`name`, `kind`, `description`, kind-specific fields such as `trigger` / `workflow_name` / `capability_name`, `parents`, optional `dev_notes`) followed by the `content_full` body. Copy the shape from a sibling unit of the same kind.
+- `action: "create"` (any kind) → write a new `knowledge/store/<path>.md` with native `Write`: YAML frontmatter (`name`, `kind`, `description`, kind-specific fields such as `trigger` / `workflow_name` / `skill_name`, `parents`, optional `dev_notes`) followed by the `content_full` body. Copy the shape from a sibling unit of the same kind.
 - `action: "delete"` → `docs_delete(path=...)`.
 - `action: "no_op"` → skip.
 
@@ -269,7 +269,7 @@ After all file edits, call `agent_docs_rebuild()` **once** to reconcile the stor
 
 ## validate
 
-Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.docs_validate()` with no args, running every registered check (the canonical list lives in the `context/docs_validate` capability unit's `checks` parameter). Returns:
+Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.docs_validate()` with no args, running every registered check (the canonical list lives in the `context/docs_validate` skill unit's `checks` parameter). Returns:
 - `passed` (bool): true iff every check found zero blocking errors.
 - `failed` (int): blocking error count across all checks.
 - `warnings` (int): advisory finding count (e.g. the durable_surfaces content audit); never blocks.
@@ -287,7 +287,7 @@ Why this gate exists: doc edits are easy to get structurally wrong (orphaned par
 Reasoning step. Short summary of what changed:
 - Count of applied / failed / skipped edits (from `apply`).
 - **Validation outcome** (from `validate`): if `passed: false`, enumerate the errors by check type and path. These are structural problems you introduced and need to resolve before committing. Advisory warnings (the `warnings` count, e.g. durable_surfaces findings) are different: report the count and any findings your edits introduced, but they never block a commit — the open warning list is the documented cleanup backlog.
-- For any CLAUDE.md or similar non-store files the user still needs to edit manually, flag them explicitly (the store capabilities don't touch CLAUDE.md).
+- For any CLAUDE.md or similar non-store files the user still needs to edit manually, flag them explicitly (the store skills don't touch CLAUDE.md).
 
 If validation failed, recommend concrete next actions to the user: typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`) to fix the path/field. Do NOT treat validation failures as cosmetic; they indicate the store is in a broken state.
 

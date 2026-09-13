@@ -2,11 +2,11 @@
 name: Task Creation Directions
 kind: directions
 description: How to create a task via the task-new workflow, choosing registered project links independently of free-form namespace organization.
-summary: 'Route user task requests through plan → enrich → confirm → create. Tasks can link to several registered projects through project_ids. Namespaces are independent; task_set_tags never changes project membership. Avoid unnecessary prompting for existing or explicitly requested organization.'
+summary: Route user task requests through plan → enrich → confirm → create. Tasks can link to several registered projects through project_ids. Namespaces are independent; task_set_tags never changes project membership. Avoid unnecessary prompting for existing or explicitly requested organization.
 trigger: user asks to create a new task
 command: wb-task-new
 workflow: tasks/task-new
-capabilities:
+skills:
 - tasks/task_create
 tags:
 - tasks
@@ -19,7 +19,7 @@ aliases:
 - add task
 parents:
 - tasks
-dev_notes: Project and tag validation live in the native task service. The optional legacy project field resolves a slug or alias only at explicit ingress; project_ids carries stable registry membership. Enrichment returns registry IDs in known_projects and treats old projects/ subtree hints only as namespace context. The enrich auto-run must stay on work_buddy.tasks.capabilities.enrich_plan; importing the legacy Obsidian namespace module would reintroduce a task runtime dependency.
+dev_notes: Project and tag validation live in the native task service. The optional legacy project field resolves a slug or alias only at explicit ingress; project_ids carries stable registry membership. Enrichment returns registry IDs in known_projects and treats old projects/ subtree hints only as namespace context. The enrich auto-run must stay on work_buddy.tasks.skills.enrich_plan; importing the legacy Obsidian namespace module would reintroduce a task runtime dependency.
 ---
 
 Route user task requests through the task-new workflow. The workflow's DAG enforces plan → enrich → confirm → create; agents don't manually sequence the suggester. Choose project associations from the registry when supported by the request or context. Zero or several projects are valid. Choose namespaces separately according to the user's organization; no project prefix is required.
@@ -51,7 +51,7 @@ The task-new workflow's `plan` step doesn't currently emit these fields — they
 
 `task_set_tags` replaces the complete structured tag set and marks every supplied
 entry as a namespace. Use task detail's separate fields when preserving ordinary
-tags. This capability does not assign or remove projects. Edit
+tags. This skill does not assign or remove projects. Edit
 project associations separately in task detail. Registered IDs are required
 for new links; create an explicitly requested new project through `project_create`
 first. Namespace organization offers previewed bulk changes and guarded Undo.

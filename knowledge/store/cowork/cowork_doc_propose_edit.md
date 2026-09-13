@@ -1,11 +1,10 @@
 ---
 name: Cowork Doc Propose Edit
-kind: capability
+kind: skill
 description: Propose one or more quote-anchored tracked edits on a cowork doc as an open proposal. Normal consent weight, no decision authority.
-capability_name: cowork_doc_propose_edit
 category: cowork
 op: op.wb.cowork_doc_propose_edit
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -17,7 +16,7 @@ parameters:
     required: true
   hunks:
     type: list
-    description: "One or more edits, each a mapping of {quote_anchor:{exact,prefix,suffix}, replacement, node_id_hint?}. Set replacement to the empty string to delete the anchored text. Missing, non-string, and whitespace-only replacements are invalid; meaningful leading and trailing whitespace on a nonempty replacement is preserved. The quote anchor is resolved by the kernel anchor resolver, never by node id."
+    description: One or more edits, each a mapping of {quote_anchor:{exact,prefix,suffix}, replacement, node_id_hint?}. Set replacement to the empty string to delete the anchored text. Missing, non-string, and whitespace-only replacements are invalid; meaningful leading and trailing whitespace on a nonempty replacement is preserved. The quote anchor is resolved by the kernel anchor resolver, never by node id.
     required: true
   rationale:
     type: str
@@ -37,7 +36,7 @@ parameters:
     required: false
   claim_refs:
     type: list
-    description: "Optional for non-deletion edits. A list of {claim, role} where claim is a local claim id or a wb-truth URI and role is one of quote, paraphrase, summary, or instantiation, defaulting to instantiation. Accepting mints one expression per ref carrying that ref's role. A batch containing a deletion cannot carry claim refs because deleted text leaves no passage to express them."
+    description: Optional for non-deletion edits. A list of {claim, role} where claim is a local claim id or a wb-truth URI and role is one of quote, paraphrase, summary, or instantiation, defaulting to instantiation. Accepting mints one expression per ref carrying that ref's role. A batch containing a deletion cannot carry claim refs because deleted text leaves no passage to express them.
     required: false
   meta:
     type: dict
@@ -62,6 +61,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_doc_propose_edit
 tags:
 - cowork
 - doc
@@ -77,7 +77,7 @@ parents:
 ---
 
 Document agents supply `conversation_id`, `consumer`, and `generation`
-together. The capability verifies that the conversation is the real binding for
+together. The skill verifies that the conversation is the real binding for
 this store and document, then holds that exact live lease while the proposal is
 created. Other callers may omit the complete tuple. Partial or mismatched tuples
 are rejected.

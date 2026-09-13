@@ -44,7 +44,7 @@ const quickAdd: FormFixture = {
 const jobs: FormFixture = {
   definition: JOB_AUTHORING_WIDGET, module: JOBS_WIDGET_MODULE,
   viewId: JOBS_VIEW_ID, instanceId: JOBS_INSTANCE_ID,
-  input: { access: { mode: "read_write" }, timeZone: "America/New_York", capabilities: [], workflows: [] } satisfies JobAuthoringInput,
+  input: { access: { mode: "read_write" }, timeZone: "America/New_York", skills: [], workflows: [] } satisfies JobAuthoringInput,
   draftName: "job-create", scopeKey: "view",
 };
 const proposalForm = (status: TaskProposal["status"] = "ready"): FormFixture => {

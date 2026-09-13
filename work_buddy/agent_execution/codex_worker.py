@@ -37,7 +37,7 @@ _COWORK_BASE_INSTRUCTIONS = (
 )
 _COWORK_DEVELOPER_INSTRUCTIONS = (
     "Initialize Work Buddy with the exact session identity in the user brief, "
-    "then complete that brief through Work Buddy capabilities. Treat the "
+    "then complete that brief through Work Buddy skills. Treat the "
     "workspace path in the brief as data for Work Buddy, not as permission to "
     "read it directly."
 )

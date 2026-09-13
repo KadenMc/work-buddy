@@ -5,7 +5,7 @@ description: Parameter defaults, slug rules, when to ask vs infer, and post-crea
 summary: 'Required: slug (lowercase-hyphens, infer from name if given) and name. Status defaults to ''active'' — only ask if ambiguous. Ask for description if not provided (it powers semantic search). After creation, confirm slug and suggest an initial project_observe to seed memory.'
 trigger: user wants to register a new project
 command: wb-project-new
-capabilities:
+skills:
 - projects/project_create
 - projects/project_observe
 tags:

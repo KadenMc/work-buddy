@@ -1,9 +1,9 @@
 """Entity-domain ops.
 
-Each op here is referenced by a capability declaration (a
-``kind: "capability"`` knowledge-store unit carrying a matching ``op``
+Each op here is referenced by a skill declaration (a
+``kind: "skill"`` knowledge-store unit carrying a matching ``op``
 field). The op_registry is the integration boundary between the
-declarative knowledge-store capability units (under
+declarative knowledge-store skill units (under
 ``knowledge/store/entities/``) and the Python wrappers in
 :mod:`work_buddy.mcp_server.context_wrappers`.
 """

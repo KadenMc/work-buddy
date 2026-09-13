@@ -125,7 +125,7 @@ async def guarded_bridge_call(
     are mapped onto the taxonomy; ``ObsidianPostWriteUncertain`` propagates
     untouched (re-raised, not returned as an Outcome). Retry is NOT added
     here — an outer layer owns retry (``@bridge_retry`` for decorated
-    capabilities, ``build_obsidian_pipeline()`` for explicitly-composed
+    skills, ``build_obsidian_pipeline()`` for explicitly-composed
     pipelines), per the one-retry-layer rule.
 
     Returns an :class:`Outcome` — except that ``ObsidianPostWriteUncertain``

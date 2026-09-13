@@ -1,11 +1,10 @@
 ---
 name: Truth Claim Reject
-kind: capability
+kind: skill
 description: Ask the human to reject one exact claim as plain noise, false content, or a preference correction.
-capability_name: truth_claim_reject
 category: truth
 op: op.wb.truth_claim_reject
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -40,6 +39,7 @@ retry_policy: manual
 auto_retry: false
 consent_operations:
 - truth.claim_reject
+skill_name: truth_claim_reject
 tags:
 - truth
 - claim

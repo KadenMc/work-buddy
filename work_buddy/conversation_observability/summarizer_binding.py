@@ -4,7 +4,7 @@
 `SessionSource × LayeredDisclosureStrategy × DurableSummaryStore`. The
 backwards-compatible `summaries.py` shims use it to preserve the existing
 read/write API (dashboard `/api/chats/<id>/topics`, the
-`conversation_observability_summarize` MCP capability, the sidecar job, the
+`conversation_observability_summarize` MCP skill, the sidecar job, the
 `agent_session_summary` context collector).
 """
 

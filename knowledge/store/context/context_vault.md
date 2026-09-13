@@ -1,11 +1,11 @@
 ---
 name: Context Vault
-kind: capability
+kind: skill
 description: 'Vault context: contract-relevant notes from the native vault index'
-capability_name: context_vault
 category: context
 op: op.wb.context_vault
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: context_vault
 tags:
 - context
 - vault
@@ -17,5 +17,4 @@ aliases:
 - notes relevant to my work
 parents:
 - context
-requires: []
 ---

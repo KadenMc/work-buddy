@@ -1,4 +1,4 @@
-"""Heavy-consent calendar write capabilities.
+"""Heavy-consent calendar write skills.
 
 Exercises the four heavy-consent properties without a live prompt: per-write
 ``consent_weight="high"``, the change-specific prompt body (rendered before the
@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from work_buddy.calendar import capabilities as caps
+from work_buddy.calendar import skills as caps
 from work_buddy.calendar.errors import CalendarError, CalendarWriteUnsupported
 from work_buddy.calendar.identity import stable_key_for
 from work_buddy.calendar.models import CalendarEvent, EventTime

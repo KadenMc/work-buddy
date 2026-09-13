@@ -1,11 +1,10 @@
 ---
 name: Hot Files
-kind: capability
+kind: skill
 description: Explicit legacy-only Obsidian activity view that fuses Vault Events and Keep the Rhythm. Disabled when Obsidian is opted out; retained only for compatibility inspection.
-capability_name: hot_files
 category: journal
 op: op.wb.hot_files
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   since:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Max files per directory before collapsing (default 5)
     required: false
+skill_name: hot_files
 tags:
 - journal
 - hot

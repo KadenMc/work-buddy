@@ -1,11 +1,10 @@
 ---
 name: Artifact Save
-kind: capability
+kind: skill
 description: Save an artifact (context bundle, export, report, snapshot, or scratch) to the centralized data store with metadata and TTL-based lifecycle.
-capability_name: artifact_save
 category: artifacts
 op: op.wb.artifact_save
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   content:
     type: str
@@ -41,6 +40,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: replay
+skill_name: artifact_save
 tags:
 - artifacts
 - artifact

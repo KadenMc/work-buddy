@@ -114,7 +114,7 @@ def parse_priority(value: str | Priority | None) -> Priority | None:
     Accepts a :class:`Priority` (returned as-is), ``None`` (returned as
     ``None`` so the caller falls through to its own default), or a
     case-insensitive name string (``"interactive"`` / ``"workflow"`` /
-    ``"background"``). Exists for the MCP boundary, where capability
+    ``"background"``). Exists for the MCP boundary, where skill
     params arrive as JSON strings and must map onto the enum before
     reaching the broker.
 

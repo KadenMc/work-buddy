@@ -1,7 +1,7 @@
 ---
 name: Journal
 kind: system
-description: Journal capabilities, logical-day policy, mutable notes, planning, and dashboard projections.
+description: Journal skills, logical-day policy, mutable notes, planning, and dashboard projections.
 summary: Daily-note operations share one timezone-aware day policy; React views project provider-owned Journal state through standardized widgets.
 tags:
 - journal

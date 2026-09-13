@@ -3,7 +3,7 @@
 When a workflow step's ``requires`` list names a tool that's currently
 reporting unavailable, the conductor calls ``recheck_tool`` to re-probe
 before failing the step. Mirrors the gateway's CP-A3 wiring for the
-direct-capability dispatch path.
+direct-skill dispatch path.
 
 These tests focus on the recheck-decision logic without spinning up a
 full workflow DAG. The advance loop's surface is too broad to mock

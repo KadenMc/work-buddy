@@ -1,11 +1,10 @@
 ---
 name: Co-work Verify Job Submit
-kind: capability
+kind: skill
 description: Submit one typed output for the exact job and role encoded by a constrained Co-work Verify worker session.
-capability_name: cowork_verify_job_submit
 category: cowork
 op: op.wb.cowork_verify_job_submit
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   job_id:
     type: str
@@ -18,6 +17,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_verify_job_submit
 tags:
 - cowork
 - verify

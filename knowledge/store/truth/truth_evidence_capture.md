@@ -1,11 +1,10 @@
 ---
 name: Truth Evidence Capture
-kind: capability
+kind: skill
 description: Validate a source locator and capture immutable evidence with engine-assigned trust and authoritative agent provenance.
-capability_name: truth_evidence_capture
 category: truth
 op: op.wb.truth_evidence_capture
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -66,6 +65,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_evidence_capture
 tags:
 - truth
 - evidence

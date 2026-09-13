@@ -1,11 +1,10 @@
 ---
 name: Notification Send
-kind: capability
+kind: skill
 description: Send a fire-and-forget notification to the user via all available surfaces (Obsidian, Telegram if enabled). No response expected. Optionally target specific surfaces.
-capability_name: notification_send
 category: notifications
 op: op.wb.notification_send
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   title:
     type: str
@@ -37,6 +36,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: notification_send
 tags:
 - notifications
 - notification

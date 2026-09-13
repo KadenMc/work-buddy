@@ -7,9 +7,9 @@ This module preserves the legacy callable surface — `refresh_session_summaries
 existing consumers see no change:
 
 - the dashboard `/api/chats/<id>/topics` endpoint (`dashboard/service.py`)
-- the `conversation_observability_summarize` MCP capability (op binding in
+- the `conversation_observability_summarize` MCP skill (op binding in
   `mcp_server/ops/conversation_observability_ops.py`)
-- the `conversation_observability_summary_get` MCP capability
+- the `conversation_observability_summary_get` MCP skill
 - the `agent_session_summary` context collector
 - the sidecar job `conversation-observability-summarize.md`
 - the legacy test stubs that pass `llm_call=...` as a bare callable
@@ -153,7 +153,7 @@ def query_session_summary(session_id: str) -> dict[str, Any] | None:
 
     Consumed by: the dashboard `/api/chats/<id>/topics` endpoint, the
     `agent_session_summary` context collector, and the `session_summary_get` /
-    `conversation_observability_summary_get` MCP capabilities — all via the
+    `conversation_observability_summary_get` MCP skills — all via the
     canonical helper.
     """
     from work_buddy.conversation_observability.session_summary_row import (

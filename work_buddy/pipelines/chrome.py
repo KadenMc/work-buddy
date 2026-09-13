@@ -20,7 +20,7 @@ Wires the existing Chrome adapter + clustering into the unified
 
 Stage 4 (LLM cluster refinement) runs through the shared
 ``refine_clusters``; the Chrome action library declares which
-capabilities the LLM may pick.
+skills the LLM may pick.
 
 Action library
 --------------
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 CHROME_ACTIONS: list[ActionDescriptor] = [
     ActionDescriptor(
-        capability_name="chrome_tab_close",
+        skill_name="chrome_tab_close",
         label="Close all tabs",
         description=(
             "Close every tab in this group. Use when the user is done "
@@ -65,7 +65,7 @@ CHROME_ACTIONS: list[ActionDescriptor] = [
         icon="x-square",
     ),
     ActionDescriptor(
-        capability_name="chrome_tab_group",
+        skill_name="chrome_tab_group",
         label="Group in Chrome",
         description=(
             "Create or update a Chrome tab group with the cluster's "
@@ -77,7 +77,7 @@ CHROME_ACTIONS: list[ActionDescriptor] = [
         icon="folder",
     ),
     ActionDescriptor(
-        capability_name="chrome_tab_move",
+        skill_name="chrome_tab_move",
         label="Move to focus window",
         description=(
             "Move every tab in this group to a separate Chrome window "
@@ -87,7 +87,7 @@ CHROME_ACTIONS: list[ActionDescriptor] = [
         icon="external-link",
     ),
     ActionDescriptor(
-        capability_name="chrome_route_to_tasks",
+        skill_name="chrome_route_to_tasks",
         label="Create one task per tab",
         description=(
             "Walk each tab in this group and create a task in the "
@@ -98,7 +98,7 @@ CHROME_ACTIONS: list[ActionDescriptor] = [
         icon="check-square",
     ),
     ActionDescriptor(
-        capability_name="chrome_route_to_umbrella_task",
+        skill_name="chrome_route_to_umbrella_task",
         label="Create umbrella task",
         description=(
             "Create a single task representing the whole group. The "

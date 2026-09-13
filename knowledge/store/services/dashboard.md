@@ -125,7 +125,7 @@ Settings responses are no-store. Writes and resets honor dashboard read-only mod
 
 ## Form-bridge endpoints
 
-* ``POST /api/dashboard/interact`` — typed entry point for agents driving forms (called by the ``dashboard_interact`` MCP capability and any other process). Body ``{action, form_id, field?, value?, timeout_seconds?}``.
+* ``POST /api/dashboard/interact`` — typed entry point for agents driving forms (called by the ``dashboard_interact`` MCP skill and any other process). Body ``{action, form_id, field?, value?, timeout_seconds?}``.
 * ``POST /api/dashboard/interact/result/<request_id>`` — frontend's postback for rendezvous-backed actions (``form_submit``, ``form_get_state``). Body ``{ok, error?, errors_by_field?, fields?}``.
 
 Both pass through the central request policy and retain shared ``_reject_read_only()`` checks. These are retained compatibility routes and cannot drive the React Jobs authoring form. See ``services/dashboard/form-bridge`` for the protocol.
@@ -133,7 +133,7 @@ Both pass through the central request policy and retain shared ``_reject_read_on
 ## User-job endpoints
 
 * `GET /api/jobs/authoring` — report authoring access and the configured time zone without creating a job.
-* `POST /api/jobs/authoring` — human submission from `/app/jobs`, gated by dashboard read-only mode and enrolled identity. It validates the draft and delegates to the normal user-job capability and exclusive-create writer.
+* `POST /api/jobs/authoring` — human submission from `/app/jobs`, gated by dashboard read-only mode and enrolled identity. It validates the draft and delegates to the normal user-job skill and exclusive-create writer.
 * ``POST /api/user_jobs`` — retained legacy user-job creation route, not an assisted-draft submission path.
 * ``POST /api/user_jobs/help`` — retained migration response: HTTP 410 with `job_authoring_moved` and `/app/jobs`, subject to read-only rejection. It does not spawn an agent or create a conversation.
 
@@ -145,13 +145,13 @@ Tasks Quick Add, Journal Quick Capture, and Jobs authoring reuse widget-native d
 
 ## Triage flow (no separate dashboard endpoints)
 
-Triage runs through the unified source pipeline (the ``run_source_pipeline`` capability, currently dispatching to the registered ``EmailTriagePipeline`` and ``ChromeTriagePipeline``). Native Journal capture and task proposals use the Journal API and proposal path described above; the retired Markdown ``JournalBacklogPipeline`` and inline-capture adapters are not registered source pipelines. Spawned Threads land on the **Threads tab** for the user to approve/reject/defer per child. There is no separate Review-tab surface or Resolution-Surface endpoints — those were retired in the clarify → Threads migration. Per-cluster actions resolve via the standard Threads action-chip dispatch path.
+Triage runs through the unified source pipeline (the ``run_source_pipeline`` skill, currently dispatching to the registered ``EmailTriagePipeline`` and ``ChromeTriagePipeline``). Native Journal capture and task proposals use the Journal API and proposal path described above; the retired Markdown ``JournalBacklogPipeline`` and inline-capture adapters are not registered source pipelines. Spawned Threads land on the **Threads tab** for the user to approve/reject/defer per child. There is no separate Review-tab surface or Resolution-Surface endpoints — those were retired in the clarify → Threads migration. Per-cluster actions resolve via the standard Threads action-chip dispatch path.
 
 ## CRITICAL for all agents modifying dashboard code
 
 * **Never add browser-side fetches to sibling localhost ports** (5123, 5124, 27125, etc.) — these break on mobile and over Tailscale. All cross-service reads must happen server-side.
 * **Keep the central request guard first.** Non-safe routes inherit read-only refusal. Any read-only exception must name the exact registered endpoint, state its reason and authentication policy, and pass the runtime audit. Writable routes own their authority checks. Retain shared route-level checks as defense in depth.
 * **Same-origin only** for any fetch from the frontend.
-* **Silent conversation create for sidebar-bound chats** — call ``conversations.store.create_conversation`` directly, NOT the ``conversation_create`` capability, so ``_notify_conversation_created`` does not double-mount the conversation as both a CHAT toast/workflow-view tab and a sidebar.
+* **Silent conversation create for sidebar-bound chats** — call ``conversations.store.create_conversation`` directly, NOT the ``conversation_create`` skill, so ``_notify_conversation_created`` does not double-mount the conversation as both a CHAT toast/workflow-view tab and a sidebar.
 * **Keep the legacy form bridge frozen.** Existing handlers route ``dashboard.form.*`` events through ``wbFormBridge``; new consumers use widget-native assisted drafts and human-only submission, not DOM-driving events.
 * **Keep request handlers off the hot-path anti-patterns** — no per-request config parse, per-open schema work, N+1 store opens, or unbounded synchronous bridge/subprocess calls. Serve expensive reads from a background-refreshed cache and pre-warm at startup. See ``architecture/hot-path-discipline``.

@@ -1,11 +1,10 @@
 ---
 name: Truth Claim Propose From Conversation
-kind: capability
+kind: skill
 description: Propose an unconfirmed Truth claim supported by one exact durable Work Buddy conversation message.
-capability_name: truth_claim_propose_from_conversation
 category: truth
 op: op.wb.truth_claim_propose_from_conversation
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -74,6 +73,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_claim_propose_from_conversation
 tags:
 - truth
 - conversation
@@ -97,7 +97,7 @@ receipt, and managed-use receipt alongside a proposed claim. It accepts no
 source-message text from the caller. Equal text in another message is a
 different occurrence and cannot satisfy the request.
 
-The gateway session determines the semantic agent actor. The capability has no
+The gateway session determines the semantic agent actor. The skill has no
 actor, issuer, tenant, reviewer, or decision parameters that a caller can
 spoof. Conversation-source authorship remains whatever the durable provider can
 actually establish; a `user` role alone is not treated as proof of human

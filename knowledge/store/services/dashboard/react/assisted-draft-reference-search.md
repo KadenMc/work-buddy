@@ -1,15 +1,14 @@
 ---
 name: Assisted Draft Reference Search
-kind: capability
-description: "Search one form-authorized, host-visible reference projection for a hosted assisted-draft worker without dispatching any returned capability or workflow."
-capability_name: assisted_draft_reference_search
+kind: skill
+description: Search one form-authorized, host-visible reference projection for a hosted assisted-draft worker without dispatching any returned skill or workflow.
 category: assistance
 op: op.wb.assisted_draft_reference_search
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   assistant_session_id:
     type: string
-    description: "Exact assistant session from the worker's server-authored binding."
+    description: Exact assistant session from the worker's server-authored binding.
     required: true
   conversation_id:
     type: string
@@ -37,7 +36,7 @@ parameters:
     required: true
   reference_kind:
     type: string
-    description: "Form-authorized reference projection: job_capability or job_workflow."
+    description: 'Form-authorized reference projection: job_skill or job_workflow.'
     required: true
   query:
     type: string
@@ -46,13 +45,14 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
-parents:
-- services/dashboard/react/assisted-drafts
+skill_name: assisted_draft_reference_search
 tags:
 - dashboard
 - assistance
 - jobs
 - discovery
+parents:
+- services/dashboard/react/assisted-drafts
 ---
 
 Returns at most eight names, one-line descriptions, slash aliases and reduced
@@ -62,7 +62,7 @@ turn and manifest-declared reference scope. Its payload and Sources disclosure
 receipt are persisted for stable replay.
 
 This is discovery for form authoring, not execution authority. It cannot invoke
-a capability, start a workflow, search the web, create or schedule a job, submit
+a skill, start a workflow, search the web, create or schedule a job, submit
 a form, or read arbitrary registry prose. Returned names can reach the visible
 draft only through the existing typed patch, conflict and Undo protocol; the
 human's normal form action remains the sole submission path.

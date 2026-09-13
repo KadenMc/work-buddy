@@ -5,7 +5,7 @@ description: How to run /wb-event-new — author an event source in conversation
 trigger: When the user invokes /wb-event-new or asks to watch a source, get notified when something changes, or create an event source / watcher
 command: wb-event-new
 workflow: events/event-new
-capabilities:
+skills:
 - event_source_create
 - event_source_dry_run
 - event_source_list
@@ -72,7 +72,7 @@ preview.
 ## Scope + autonomy
 
 A source runs only the actions in its `allowed_actions`, and `notify_only` means
-the action notifies — it never executes a state-changing capability on the user's
+the action notifies — it never executes a state-changing skill on the user's
 behalf. The notification is the surface; the user decides what to do with it.
 
 ## Managing sources

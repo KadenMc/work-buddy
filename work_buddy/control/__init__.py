@@ -14,5 +14,5 @@ every ~45 s; preference writes invalidate the cache eagerly.
 Public entry points:
 
     from work_buddy.control.graph import build_graph, invalidate_graph
-    from work_buddy.control.capability_resolver import resolve_dependencies
+    from work_buddy.control.skill_resolver import resolve_dependencies
 """

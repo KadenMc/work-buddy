@@ -1,11 +1,10 @@
 ---
 name: Task Delete
-kind: capability
+kind: skill
 description: Soft-delete a native task into Trash. Task history and Co-work knowledge remain recoverable.
-capability_name: task_delete
 category: tasks
 op: op.wb.task_delete
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_id:
     type: str
@@ -23,6 +22,7 @@ mutates_state: true
 retry_policy: manual
 consent_operations:
 - tasks.delete_task
+skill_name: task_delete
 tags:
 - tasks
 - task
@@ -37,7 +37,6 @@ aliases:
 - drop task
 parents:
 - tasks
-requires: []
 ---
 
 Delete is reversible. Restore keeps retired document history and creates a new

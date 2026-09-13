@@ -5,7 +5,7 @@ function with user-facing keyword parameters.  Config is loaded internally
 so these can be called directly via ``wb_run``.
 
 Design tenets (see dev/design-tenets in knowledge store):
-- **Progressive disclosure** — each collector is its own capability
+- **Progressive disclosure** — each collector is its own skill
 - **Just-in-time retrieval** — returns data directly, not file paths
 - **Programmatic offloading** — deterministic code, not workflow steps
 """
@@ -164,7 +164,7 @@ def chrome_activity(
 ) -> str:
     """Query Chrome tab browsing history from the rolling ledger.
 
-    The ledger captures tab snapshots every 5 minutes. This capability
+    The ledger captures tab snapshots every 5 minutes. This skill
     provides computed views over that raw data. Output is compact (titles
     + domains, no full URLs) to save context. Use ``details`` query to
     get full URLs when needed.
@@ -1352,7 +1352,7 @@ def collect_bundle(
     """Run all (or selected) collectors and save a context bundle to disk.
 
     Returns the bundle path and list of collectors run. Use the individual
-    collector capabilities (``git_context``, ``chat_context``, etc.) when you
+    collector skills (``git_context``, ``chat_context``, etc.) when you
     only need one source — this is for full snapshots.
 
     Args:
@@ -1822,7 +1822,7 @@ def journal_sign_in(
 ) -> dict[str, Any]:
     """Read sign-in state and wellness trends, optionally write fields.
 
-    Composite capability: replaces the need to call extract_sign_in(),
+    Composite skill: replaces the need to call extract_sign_in(),
     interpret_wellness(), and write_sign_in() separately.
 
     Args:
@@ -2004,7 +2004,7 @@ def day_planner(
         if action == "generate_and_write":
             from work_buddy.obsidian.day_planner import trigger_resync, write_plan
             # write_plan raises a typed ObsidianError on a transient bridge
-            # failure; it propagates to this capability's @bridge_retry, so we
+            # failure; it propagates to this skill's @bridge_retry, so we
             # don't need to inspect the nested write_result for transience.
             write_result = write_plan(journal_path, entries)
             trigger_resync()
@@ -2602,7 +2602,7 @@ def entity_create(
     """Create a new entity. Consent-gated for agent-author writes.
 
     User-author writes (``author='user'``, the default) skip the
-    consent gate — the user invoking the capability is the consent.
+    consent gate — the user invoking the skill is the consent.
     Agent-author writes raise ``ConsentRequired`` on first call so the
     user can approve the creation pattern; subsequent writes ride the
     cached grant within its TTL.
@@ -2823,7 +2823,7 @@ def entity_add_reference(
     """Explicitly append a reference row for an entity.
 
     The standard recording path is the side effect of ``entity_resolve``
-    + ``entity_create`` + ``entity_update``. This capability exists for
+    + ``entity_create`` + ``entity_update``. This skill exists for
     scripts, tests, and dashboard-driven recording that don't ride one
     of those flows. De-dup window applies (same store default, 3600s
     per ``(entity_id, source_path, source_kind)``).

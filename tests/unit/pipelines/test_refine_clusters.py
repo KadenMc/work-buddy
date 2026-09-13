@@ -6,7 +6,7 @@ Stub the LLM to keep the unit tests offline. Cover:
   actions.
 - Fallback to algorithmic clusters on LLM failure / unparseable JSON.
 - Validation rejects: missing item_ids, duplicate item_ids,
-  unknown capability, out-of-range confidence.
+  unknown skill, out-of-range confidence.
 """
 
 from __future__ import annotations
@@ -39,13 +39,13 @@ def _items(n: int) -> list[CapturedItem]:
 def _library() -> ActionLibrary:
     return ActionLibrary([
         ActionDescriptor(
-            capability_name="journal_route_to_tasks",
+            skill_name="journal_route_to_tasks",
             label="Route to tasks",
             description="Each item becomes a task.",
             cardinality=CARDINALITY_PER_GROUP,
         ),
         ActionDescriptor(
-            capability_name="thread_dismiss",
+            skill_name="thread_dismiss",
             label="Dismiss",
             description="Mark the group dismissed.",
             cardinality=CARDINALITY_PER_GROUP,
@@ -117,7 +117,7 @@ class TestHappyPath:
                     "label": "Auto-extraction tooling",
                     "item_ids": ["i0", "i1"],
                     "proposed_action": {
-                        "capability_name": "journal_route_to_tasks",
+                        "skill_name": "journal_route_to_tasks",
                         "rationale": "These are concrete TODOs.",
                         "confidence": 0.85,
                     },
@@ -138,7 +138,7 @@ class TestHappyPath:
         assert len(out) == 2
         assert out[0].label == "Auto-extraction tooling"
         assert out[0].item_ids == ("i0", "i1")
-        assert out[0].proposed_action.capability_name == "journal_route_to_tasks"
+        assert out[0].proposed_action.skill_name == "journal_route_to_tasks"
         assert out[0].proposed_action.confidence == 0.85
         assert out[1].proposed_action is None
 
@@ -258,14 +258,14 @@ class TestValidation:
             )
         assert out == pre
 
-    def test_unknown_capability_name_falls_back(self, items, pre):
+    def test_unknown_skill_name_falls_back(self, items, pre):
         bad = _ok({
             "clusters": [
                 {
                     "label": "All",
                     "item_ids": ["i0", "i1", "i2"],
                     "proposed_action": {
-                        "capability_name": "nonexistent_capability",
+                        "skill_name": "nonexistent_skill",
                         "rationale": "fake",
                         "confidence": 0.5,
                     },
@@ -287,7 +287,7 @@ class TestValidation:
                     "label": "All",
                     "item_ids": ["i0", "i1", "i2"],
                     "proposed_action": {
-                        "capability_name": "journal_route_to_tasks",
+                        "skill_name": "journal_route_to_tasks",
                         "rationale": "ok",
                         "confidence": 1.5,
                     },

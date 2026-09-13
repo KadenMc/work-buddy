@@ -1,11 +1,10 @@
 ---
 name: Query Messages
-kind: capability
+kind: skill
 description: Query messages by recipient, sender, status, or limit
-capability_name: query_messages
 category: messaging
 op: op.wb.query_messages
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   recipient:
     type: str
@@ -23,6 +22,7 @@ parameters:
     type: int
     description: Max messages to return (default 50)
     required: false
+skill_name: query_messages
 tags:
 - messaging
 - query

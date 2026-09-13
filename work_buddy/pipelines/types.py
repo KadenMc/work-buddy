@@ -96,11 +96,11 @@ class ActionProposal:
     sub-thread) — chosen by the LLM cluster-refinement step or by the
     user via the action-chip dropdown.
 
-    The ``capability_name`` resolves to an entry in the work-buddy
-    capability registry (any registered capability with
+    The ``skill_name`` resolves to an entry in the work-buddy
+    skill registry (any registered skill with
     ``is_action=True`` is a candidate). Parameters are bound at
     approval time — the runtime fills in ``item_ids`` (or whatever the
-    capability's parameter schema requires) from the cluster's
+    skill's parameter schema requires) from the cluster's
     members.
 
     ``tier_used`` / ``model_used`` are populated when the proposal came
@@ -110,7 +110,7 @@ class ActionProposal:
     the proposal correctly.
     """
 
-    capability_name: str
+    skill_name: str
     parameters: dict[str, Any] = field(default_factory=dict)
     rationale: str | None = None
     confidence: float = 0.0
@@ -119,7 +119,7 @@ class ActionProposal:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "capability_name": self.capability_name,
+            "skill_name": self.skill_name,
             "parameters": dict(self.parameters),
             "rationale": self.rationale,
             "confidence": self.confidence,
@@ -130,7 +130,7 @@ class ActionProposal:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ActionProposal:
         return cls(
-            capability_name=d["capability_name"],
+            skill_name=d["skill_name"],
             parameters=dict(d.get("parameters") or {}),
             rationale=d.get("rationale"),
             confidence=float(d.get("confidence") or 0.0),

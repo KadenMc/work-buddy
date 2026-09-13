@@ -4,7 +4,7 @@ Phases 1-7 of the LLM + Context refactor migrated every internal
 Python caller from ``run_task`` / ``llm_with_tools`` / ``llm/call.py``
 onto :class:`work_buddy.llm.LLMRunner`. The legacy modules remain for
 a bounded period so the MCP-exposed ``llm_call`` / ``llm_with_tools``
-capabilities keep working for external agents.
+skills keep working for external agents.
 
 This test enforces that no **new** Python caller inside
 ``work_buddy/`` starts using the legacy APIs during that transition.
@@ -18,7 +18,7 @@ Exceptions (expected callers that haven't been removed yet):
     - work_buddy/llm/runner_v2.py (internal delegation — removed when
       LLMRunner grows its own Anthropic + local backends)
     - work_buddy/llm/__init__.py (re-exports for back-compat)
-    - work_buddy/mcp_server/registry.py (the MCP-exposed capabilities
+    - work_buddy/mcp_server/registry.py (the MCP-exposed skills
       registration)
 """
 
@@ -59,9 +59,9 @@ _ALLOWED_EXCEPTIONS = {
     "work_buddy/llm/runner_v2.py",
     # Package-level re-exports for back-compat with external callers.
     "work_buddy/llm/__init__.py",
-    # MCP registry still exposes legacy capabilities for external agents.
+    # MCP registry still exposes the established skills for external agents.
     "work_buddy/mcp_server/registry.py",
-    # The llm_call / llm_with_tools MCP capabilities are ops: their data
+    # The llm_call / llm_with_tools MCP skills are ops: their data
     # declarations live in the knowledge store, their callables in this op
     # module, which legitimately imports the legacy llm entry points.
     "work_buddy/mcp_server/ops/llm_ops.py",
@@ -101,7 +101,7 @@ def test_no_new_callers_of_legacy_llm_apis():
         lines.append(
             "Migrate to LLMRunner.call() from work_buddy.llm instead of "
             "adding to the exceptions list. If the legacy path is "
-            "genuinely needed (e.g. a new MCP capability), update "
+            "genuinely needed (e.g. a new MCP skill), update "
             "_ALLOWED_EXCEPTIONS with a rationale in the commit."
         )
         pytest.fail("\n".join(lines))

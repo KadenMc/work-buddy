@@ -1,11 +1,10 @@
 ---
 name: Knowledge Mint
-kind: capability
+kind: skill
 description: Create or update a versioned personal-knowledge record in SQLite, with stable aliases, provenance, and idempotent mutation receipts.
-capability_name: knowledge_mint
 category: context
 op: op.wb.knowledge_mint
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   name:
     type: str
@@ -53,6 +52,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: knowledge_mint
 tags:
 - context
 - knowledge
@@ -69,7 +69,7 @@ parents:
 - context
 ---
 
-After the personal-knowledge authority seal, this capability never creates or
+After the personal-knowledge authority seal, this skill never creates or
 edits a Markdown file. It writes one immutable revision plus the current SQLite
 projection. Legacy logical paths remain aliases, so callers can keep using
 familiar names without treating a filesystem path as identity.

@@ -1,8 +1,7 @@
 ---
 name: Entity Get
-kind: capability
+kind: skill
 description: Fetch a single entity by canonical name, alias, or integer id. Returns tags, aliases, and the 5 most-recent reference rows.
-capability_name: entity_get
 category: entities
 parameters:
   name_or_id:
@@ -10,7 +9,8 @@ parameters:
     description: Canonical name, alias, or integer id (numeric string accepted).
     required: true
 op: op.wb.entity_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_get
 tags:
 - entities
 - entity

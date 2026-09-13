@@ -1,9 +1,9 @@
-"""Job executor — runs capabilities, workflows, and agent sessions.
+"""Job executor — runs skills, workflows, and agent sessions.
 
 This module handles the actual execution of jobs dispatched by the
 scheduler or the message poller. Three execution paths:
 
-1. **capability**: Look up in MCP registry, call directly (Tier 1).
+1. **skill**: Look up a direct skill in the MCP registry and call it (Tier 1).
 2. **workflow**: Start the workflow DAG, auto-advance code steps,
    spawn agent for reasoning steps (Tier 1 + Tier 3).
 3. **prompt**: Spawn a ``claude -p`` one-shot agent session (Tier 3).
@@ -102,8 +102,8 @@ def execute_job(job: Job) -> dict[str, Any]:
         Dict with at least ``status`` (``"ok"`` | ``"error"`` |
         ``"consent_required"``) and optional ``result`` or ``error`` keys.
     """
-    if job.job_type == "capability":
-        return _execute_capability(job.capability, job.params)
+    if job.job_type == "skill":
+        return _execute_skill(job.skill, job.params)
     elif job.job_type == "workflow":
         return _execute_workflow(job.workflow, job.params)
     elif job.job_type == "prompt":
@@ -112,41 +112,41 @@ def execute_job(job: Job) -> dict[str, Any]:
         return {"status": "error", "error": f"Unknown job type: {job.job_type}"}
 
 
-def _execute_capability(name: str, params: dict[str, Any]) -> dict[str, Any]:
-    """Execute a registered MCP gateway capability by name.
+def _execute_skill(name: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Execute a registered direct work-buddy skill by name.
 
     The sidecar runs in its own process so it CAN import heavy libs
     (unlike the MCP server which has asyncio import deadlock constraints).
     """
     if not name:
-        return {"status": "error", "error": "No capability name specified."}
+        return {"status": "error", "error": "No skill name specified."}
 
     try:
-        from work_buddy.mcp_server.registry import get_registry, Capability
+        from work_buddy.mcp_server.registry import get_registry, Skill
 
         registry = get_registry()
         entry = registry.get(name)
 
         if entry is None:
-            from work_buddy.tools import DISABLED_CAPABILITIES
-            missing = DISABLED_CAPABILITIES.get(name)
+            from work_buddy.tools import DISABLED_SKILLS
+            missing = DISABLED_SKILLS.get(name)
             if missing:
-                return {"status": "error", "error": f"Capability '{name}' unavailable: requires {', '.join(missing)}"}
-            return {"status": "error", "error": f"Capability '{name}' not found in registry."}
+                return {"status": "error", "error": f"Skill '{name}' unavailable: requires {', '.join(missing)}"}
+            return {"status": "error", "error": f"Skill '{name}' not found in registry."}
 
-        if not isinstance(entry, Capability):
-            return {"status": "error", "error": f"'{name}' is a workflow, not a capability. Use job_type='workflow'."}
+        if not isinstance(entry, Skill):
+            return {"status": "error", "error": f"'{name}' is a workflow, not a direct skill. Use job_type='workflow'."}
 
         denied = _runtime_admission_error(entry)
         if denied is not None:
             return denied
 
-        logger.debug("Executing capability: %s(%s)", name, params)
+        logger.debug("Executing skill: %s(%s)", name, params)
         result = entry.callable(**params)
         return {"status": "ok", "result": result}
 
     except Exception as exc:
-        logger.error("Capability '%s' failed: %s", name, exc, exc_info=True)
+        logger.error("Skill '%s' failed: %s", name, exc, exc_info=True)
         return {"status": "error", "error": str(exc)}
 
 
@@ -159,7 +159,7 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
     """Execute a registered workflow by name.
 
     Auto-advances ``step_type="code"`` steps by calling the matching
-    capability.  ``step_type="reasoning"`` steps require an agent and
+    direct skill. ``step_type="reasoning"`` steps require an agent and
     are executed via ``_spawn_agent()`` (consent-gated).
 
     Steps that are neither code nor reasoning are skipped with a note.
@@ -182,7 +182,7 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
             return {"status": "error", "error": f"Workflow '{name}' not found in registry."}
 
         if not isinstance(entry, WorkflowDefinition):
-            return {"status": "error", "error": f"'{name}' is a capability, not a workflow. Use job_type='capability'."}
+            return {"status": "error", "error": f"'{name}' is a direct skill, not a workflow. Use job_type='skill'."}
 
         denied = _runtime_admission_error(entry)
         if denied is not None:
@@ -223,7 +223,7 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
             step_name = current.get("name", step_id)
 
             if step_type == "code":
-                # Code steps: look up the step_id as a capability and call it
+                # Code steps: look up the step_id as a direct skill and call it
                 result = _execute_code_step(step_id, step_name)
                 step_results.append({"step": step_id, "type": "code", "result": result})
                 completed_steps += 1
@@ -301,29 +301,29 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
 
 
 def _execute_code_step(step_id: str, step_name: str) -> Any:
-    """Execute a code step by looking up step_id as a capability.
+    """Execute a code step by looking up step_id as a direct skill.
 
-    Falls back to returning a placeholder if no matching capability exists.
+    Falls back to returning a placeholder if no matching skill exists.
     """
     try:
-        from work_buddy.mcp_server.registry import get_registry, Capability
+        from work_buddy.mcp_server.registry import get_registry, Skill
 
         registry = get_registry()
         entry = registry.get(step_id)
 
-        if entry is not None and isinstance(entry, Capability):
+        if entry is not None and isinstance(entry, Skill):
             denied = _runtime_admission_error(entry)
             if denied is not None:
                 return denied
-            logger.info("Code step '%s' → capability '%s'", step_name, step_id)
+            logger.info("Code step '%s' → skill '%s'", step_name, step_id)
             return entry.callable()
 
-        # No matching capability — just note it
+        # No matching skill — just note it
         logger.info(
-            "Code step '%s' has no matching capability '%s' — passing through.",
+            "Code step '%s' has no matching skill '%s' — passing through.",
             step_name, step_id,
         )
-        return f"Code step '{step_name}' executed (no capability match for '{step_id}')."
+        return f"Code step '{step_name}' executed (no skill match for '{step_id}')."
 
     except Exception as exc:
         logger.error("Code step '%s' failed: %s", step_name, exc, exc_info=True)

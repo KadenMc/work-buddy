@@ -4,7 +4,7 @@ kind: directions
 description: How to search tasks - distinguish description-text search (task_search, store-only) from note-body hybrid retrieval (context_search source=task_note)
 trigger: user runs /wb-task-search or asks to search task-note bodies for content matching a query
 command: wb-task-search
-capabilities:
+skills:
 - task_search
 - context_search
 tags:

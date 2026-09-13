@@ -1,11 +1,10 @@
 ---
 name: Feature Status
-kind: capability
-description: Show which tools, features, and capabilities are available or disabled, and why. Use this to diagnose missing integrations.
-capability_name: feature_status
+kind: skill
+description: Show which tools, features, and skills are available or disabled, and why. Use this to diagnose missing integrations.
 category: status
 op: op.wb.feature_status
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   verbose:
     type: bool
@@ -15,6 +14,7 @@ parameters:
     type: bool
     description: Re-run probes for wanted tools instead of reading cached results. Force never overrides features.<component>.wanted=false and never probes an opted-out Obsidian bridge or child plugin.
     required: false
+skill_name: feature_status
 tags:
 - status
 - feature

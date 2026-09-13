@@ -1,11 +1,10 @@
 ---
 name: Email Close
-kind: capability
+kind: skill
 description: 'Mark an email cluster as not actionable — newsletters, automated notifications, etc. Advisory only: dismisses the Thread without touching the underlying mailbox (Thunderbird bridge is read-first in v1).'
-capability_name: email_close
 category: email
 op: op.wb.email_close
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -21,6 +20,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: email_close
 tags:
 - email
 - close

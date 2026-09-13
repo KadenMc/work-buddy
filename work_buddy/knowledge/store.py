@@ -78,6 +78,28 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return result
 
 
+def _normalize_local_unit_input(data: dict[str, Any]) -> dict[str, Any]:
+    """Map supported older ``store.local`` fields to the canonical schema.
+
+    ``knowledge/store.local`` is a persistent, user-authored JSON overlay that
+    repository migrations do not rewrite. This input-only adapter keeps those
+    overlays readable; repository-owned units and all serializers use only
+    ``skill`` / ``skill_name`` / ``wb-skill/v1`` / ``skills``.
+    """
+    normalized = dict(data)
+    if normalized.get("kind") == "capability":
+        normalized["kind"] = "skill"
+    if "skill_name" not in normalized and "capability_name" in normalized:
+        normalized["skill_name"] = normalized["capability_name"]
+    normalized.pop("capability_name", None)
+    if normalized.get("schema_version") == "wb-capability/v1":
+        normalized["schema_version"] = "wb-skill/v1"
+    if "skills" not in normalized and "capabilities" in normalized:
+        normalized["skills"] = normalized["capabilities"]
+    normalized.pop("capabilities", None)
+    return normalized
+
+
 def _load_system_raw() -> dict[str, dict[str, Any]]:
     """Load the system store's raw unit dicts from the file-per-unit store."""
     from work_buddy.knowledge.file_store import load_units_from_dir
@@ -170,6 +192,11 @@ def load_store(
         local = _load_json_dir(_LOCAL_DIR)
         if local:
             for path, patch_data in local.items():
+                # Local JSON is a persistent user-authored input boundary. Map
+                # supported older field names before merging so an old overlay
+                # can still override the corresponding canonical field on a
+                # repository-owned unit.
+                patch_data = _normalize_local_unit_input(patch_data)
                 if path in raw:
                     raw[path] = _deep_merge(raw[path], patch_data)
                     logger.debug("Applied local patch to %s", path)

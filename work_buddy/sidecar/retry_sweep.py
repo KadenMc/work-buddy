@@ -2,7 +2,7 @@
 
 Called by the sidecar daemon on each tick. Scans operation records for
 failed operations that are queued for retry, replays them using the
-capability registry, and notifies the originating agent session on
+skill registry, and notifies the originating agent session on
 success or exhaustion.
 
 Design notes:
@@ -63,7 +63,7 @@ class RetrySweep:
     def sweep(self) -> list[dict[str, Any]]:
         """Scan and process all ready-to-retry operations.
 
-        Returns list of ``{op_id, capability, success, error?, attempt}``
+        Returns list of ``{op_id, skill, success, error?, attempt}``
         for logging / observability.
         """
         if not self._enabled:
@@ -103,7 +103,7 @@ class RetrySweep:
             # Execute
             replay_result = self._replay(record)
             replay_result["op_id"] = record["operation_id"]
-            replay_result["capability"] = record["name"]
+            replay_result["skill"] = record["name"]
             replay_result["attempt"] = record["attempt"]
             results.append(replay_result)
 
@@ -151,6 +151,11 @@ class RetrySweep:
                     record = json.loads(path.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError):
                     return None
+                # Operation records survive upgrades.  Normalize the former
+                # direct-call spelling at the persistence boundary so every
+                # subsequent write uses the canonical ``skill`` type.
+                if record.get("type") == "capability":
+                    record["type"] = "skill"
                 if not self._is_ready(record, now):
                     return None
                 lease_seconds = int(record.get("lease_seconds") or 90)
@@ -230,7 +235,7 @@ class RetrySweep:
         ``pwu_carrier`` shape (set by gateway when enqueuing the retry):
             ``{"path": str, "content_hint": str | None, "write_mode": str}``
 
-        ``record`` is the operation record. When the capability has a
+        ``record`` is the operation record. When the skill has a
         declared effects manifest (Fix-(b)), the verifier walks ALL
         declared effects rather than just the path on the PWU
         exception. This catches partial-state failures (some effects
@@ -254,15 +259,15 @@ class RetrySweep:
             # normal replay rather than blocking.
             return None
 
-        # Fix-(b): effect-graph-aware verify when the capability has a
+        # Fix-(b): effect-graph-aware verify when the skill has a
         # manifest. Otherwise fall back to single-effect.
         #
-        # Wrapper-aware path: when the queued capability is a retry
+        # Wrapper-aware path: when the queued skill is a retry
         # wrapper (``retry`` / ``obsidian_retry``) that replays an
         # inner op by id, the wrapper itself has no manifest.
         # Single-effect verify on the carrier path would report
         # "verified" on a partial-state write whenever the carrier
-        # happens to point at one of the inner capability's
+        # happens to point at one of the inner skill's
         # successfully-landed effects. Resolve the inner op's manifest
         # and walk THAT instead. Falls back to single-effect when the
         # inner record can't be loaded.
@@ -272,12 +277,12 @@ class RetrySweep:
             try:
                 from work_buddy.mcp_server.registry import (
                     get_registry,
-                    get_disabled_registry,
+                    get_disabled_skill_registry,
                 )
 
                 def _lookup_entry(name: str | None):
-                    """Lookup a capability across both active and disabled
-                    registries — a capability disabled by a transient tool
+                    """Lookup a skill across both active and disabled
+                    registries — a skill disabled by a transient tool
                     probe failure still has its declared ``effects`` and
                     is the right source of truth for the verifier."""
                     if not name:
@@ -287,7 +292,7 @@ class RetrySweep:
                     if found is not None:
                         return found
                     try:
-                        return get_disabled_registry().get(name)
+                        return get_disabled_skill_registry().get(name)
                     except Exception:
                         return None
 
@@ -305,7 +310,7 @@ class RetrySweep:
                             verify_params = inner.get("params") or {}
                             logger.info(
                                 "_pre_verify_pwu: wrapper %r — using inner "
-                                "capability %r's effects manifest (%d effects)",
+                                "skill %r's effects manifest (%d effects)",
                                 record.get("name"),
                                 inner.get("name"),
                                 len(inner_effects),
@@ -324,14 +329,14 @@ class RetrySweep:
                 # Only "verified" (all effects landed) skips the replay.
                 if verdict != "verified":
                     logger.info(
-                        "_pre_verify_pwu (effects): %s for capability=%r "
+                        "_pre_verify_pwu (effects): %s for skill=%r "
                         "(%d effects); proceeding with normal replay",
                         verdict, record.get("name") if record else "?",
                         len(declared_effects),
                     )
                     return None
                 logger.info(
-                    "_pre_verify_pwu (effects): VERIFIED for capability=%r "
+                    "_pre_verify_pwu (effects): VERIFIED for skill=%r "
                     "(%d effects); skipping replay",
                     record.get("name") if record else "?",
                     len(declared_effects),
@@ -376,7 +381,7 @@ class RetrySweep:
         return {"success": True, "result": recovery_result}
 
     def _replay(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Replay a capability using the registry (direct call, not MCP).
+        """Replay a skill using the registry (direct call, not MCP).
 
         Sets an originating-session context var so artifacts written by
         the callable (e.g. the LLM cost log) land in the requesting
@@ -387,10 +392,10 @@ class RetrySweep:
         If the op record carries a ``pwu_carrier`` (set by the gateway
         when an ObsidianPostWriteUncertain was enqueued because verify
         said absent/indeterminate), re-run verify_post_write FIRST
-        before invoking the capability. This catches the race where the
+        before invoking the skill. This catches the race where the
         plugin's late commit lands between the gateway's verify and
         the sweep's replay. Without this pre-verify, the sweep's read-
-        modify-write capability would re-read the now-late-committed
+        modify-write skill would re-read the now-late-committed
         file and add a second insertion → double-write.
         """
         if record.get("type") == "internal":
@@ -412,8 +417,8 @@ class RetrySweep:
             }
         try:
             from work_buddy.mcp_server.registry import (
-                Capability,
-                get_disabled_registry,
+                Skill,
+                get_disabled_skill_registry,
                 get_registry,
             )
             from work_buddy.agent_session import (
@@ -422,7 +427,7 @@ class RetrySweep:
             )
 
             reg = get_registry()
-            disabled = get_disabled_registry()
+            disabled = get_disabled_skill_registry()
 
             admission = _runtime_admission_for_record(
                 record,
@@ -432,7 +437,7 @@ class RetrySweep:
             if not admission.preference_available:
                 return {
                     "success": False,
-                    "error": "Capability suppressed because feature preferences could not be verified.",
+                    "error": "Skill suppressed because feature preferences could not be verified.",
                     "error_code": "feature_preference_unavailable",
                     "transient": False,
                     "suppressed": True,
@@ -441,7 +446,7 @@ class RetrySweep:
                 return {
                     "success": False,
                     "error": (
-                        "Capability suppressed because its feature is opted "
+                        "Skill suppressed because its feature is opted "
                         f"out: {', '.join(admission.opted_out)}"
                     ),
                     "error_code": "feature_opted_out",
@@ -453,38 +458,38 @@ class RetrySweep:
             entry = reg.get(record["name"])
 
             if entry is None:
-                # Slice C.5: a capability may be DISABLED (not "missing")
+                # Slice C.5: a skill may be DISABLED (not "missing")
                 # because its tool probe failed at registry-build time.
                 # On a flaky bridge that recovers, transient probe
-                # failures permanently disable capabilities until the
+                # failures permanently disable skills until the
                 # next manual reload — and the sidecar's retry sweep
                 # then misreports the disabled state as "not found in
                 # registry", which exhausts retries for ops that would
                 # otherwise succeed.
                 #
                 # Recovery uses the existing CP-A3 lazy auto-recovery
-                # mechanism (work_buddy.recovery.recheck_disabled_capability)
-                # — re-probes ONLY the capability's missing tools (per-
+                # mechanism (work_buddy.recovery.recheck_disabled_skill)
+                # — re-probes ONLY the skill's missing tools (per-
                 # tool cool-down, single _RECOVERY_LOCK), and on success
-                # mutates _REGISTRY in place to restore the capability.
+                # mutates _REGISTRY in place to restore the skill.
                 # Strictly cheaper than a full registry rebuild, and
                 # this is the same path the gateway uses (gateway.py:887).
                 disabled_entry = disabled.get(record["name"])
                 if disabled_entry is not None:
                     logger.info(
-                        "_replay: capability %r is disabled; calling "
-                        "recheck_disabled_capability to re-probe its tools "
+                        "_replay: skill %r is disabled; calling "
+                        "recheck_disabled_skill to re-probe its tools "
                         "(without rebuilding the whole registry)",
                         record["name"],
                     )
                     try:
                         from work_buddy.recovery import (
-                            recheck_disabled_capability,
+                            recheck_disabled_skill,
                         )
-                        recovered = recheck_disabled_capability(record["name"])
+                        recovered = recheck_disabled_skill(record["name"])
                     except Exception as exc:  # noqa: BLE001 — defensive
                         logger.warning(
-                            "_replay: recheck_disabled_capability(%s) "
+                            "_replay: recheck_disabled_skill(%s) "
                             "raised: %s — falling through to disabled-entry "
                             "fallback",
                             record["name"], exc,
@@ -492,7 +497,7 @@ class RetrySweep:
                         recovered = False
 
                     if recovered:
-                        # Recovery restored the capability to the live
+                        # Recovery restored the skill to the live
                         # registry. Re-fetch.
                         reg = get_registry()
                         entry = reg.get(record["name"])
@@ -511,16 +516,16 @@ class RetrySweep:
                         )
 
             if entry is None:
-                return {"success": False, "error": f"Capability '{record['name']}' not found in registry"}
-            if not isinstance(entry, Capability):
-                return {"success": False, "error": f"'{record['name']}' is a workflow, not a capability"}
+                return {"success": False, "error": f"Skill '{record['name']}' not found in registry"}
+            if not isinstance(entry, Skill):
+                return {"success": False, "error": f"'{record['name']}' is a workflow, not a skill"}
 
-            # CP-A7: pre-verify before invoking the capability when the
+            # CP-A7: pre-verify before invoking the skill when the
             # op was enqueued from a PostWriteUncertain-absent path.
             pwu_carrier = record.get("pwu_carrier")
             if pwu_carrier and isinstance(pwu_carrier, dict) and pwu_carrier.get("path"):
                 # Pass the record so _pre_verify_pwu can look up the
-                # capability's effects manifest (Fix-(b)) and walk all
+                # skill's effects manifest (Fix-(b)) and walk all
                 # declared effects rather than just the path on the PWU.
                 pre_verify = self._pre_verify_pwu(pwu_carrier, record=record)
                 if pre_verify is not None:
@@ -531,7 +536,7 @@ class RetrySweep:
                 # gateway-style flow rather than the stale one we just
                 # checked. (The sweep doesn't have the gateway-style
                 # exception handler; the carrier is set anew if the
-                # capability raises again, via the except block below.)
+                # skill raises again, via the except block below.)
                 record.pop("pwu_carrier", None)
 
             originating = record.get("originating_session_id")
@@ -564,12 +569,12 @@ class RetrySweep:
             # original note identity even when the consent wait outran the
             # cache TTL, so the sweep heals rather than orphaning a note.
             from work_buddy.tasks.runtime import (
-                is_task_mutation_capability,
+                is_task_mutation_skill,
                 native_authority_active,
             )
 
             if (
-                is_task_mutation_capability(record.get("name"))
+                is_task_mutation_skill(record.get("name"))
                 and not native_authority_active()
             ):
                 try:
@@ -601,19 +606,19 @@ class RetrySweep:
                     else:
                         return {"success": False, "error": str(err), "transient": False}
 
-                # Inspect the inner capability's per-effect verification
-                # dict. A capability reporting via ``verified`` that one
+                # Inspect the inner skill's per-effect verification
+                # dict. A skill reporting via ``verified`` that one
                 # of its effects didn't land (e.g. note wrote, master-
                 # list line didn't) would otherwise pass the absence-of-
                 # ``error`` check and fire retry_success on a partial-
-                # state write. Capabilities with declared effects are
+                # state write. Skills with declared effects are
                 # required to be idempotent under retry, so re-
                 # enqueueing is safe and the next replay heals the
                 # half-state.
                 failing = _partial_verified_fields(result.get("verified"))
                 if failing:
                     msg = (
-                        f"Capability reported partial verification: "
+                        f"Skill reported partial verification: "
                         f"{', '.join(failing)}"
                     )
                     return {
@@ -636,7 +641,7 @@ class RetrySweep:
 
         except Exception as exc:
             # CP5: post-write-verify on retried writes. The retry sweep
-            # re-invokes the capability from scratch — if the underlying
+            # re-invokes the skill from scratch — if the underlying
             # bridge call raises ObsidianPostWriteUncertain, the
             # filesystem may show the write actually landed this time
             # (or even from a previous attempt that the user/bridge
@@ -697,8 +702,8 @@ class RetrySweep:
             # CP-A7: if this exception is PostWriteUncertain (we got here
             # because the verify above said absent/indeterminate),
             # persist the carrier so the NEXT sweep tick can pre-verify
-            # before re-invoking the capability. Without this, the next
-            # sweep would re-run the read-modify-write capability and
+            # before re-invoking the skill. Without this, the next
+            # sweep would re-run the read-modify-write skill and
             # potentially double-write (the bug CP-A7 is designed to
             # prevent end-to-end across sweep ticks).
             if isinstance(exc, ObsidianPostWriteUncertain):
@@ -722,7 +727,7 @@ class RetrySweep:
             }
 
     def _replay_internal(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Execute a closed internal handler outside the capability registry."""
+        """Execute a closed internal handler outside the skill registry."""
 
         try:
             from work_buddy.sidecar.internal_operations import (
@@ -779,7 +784,7 @@ class RetrySweep:
                         subject=f"Retry succeeded: {record['name']}",
                         body=json.dumps({
                             "operation_id": record["operation_id"],
-                            "capability": record["name"],
+                            "skill": record["name"],
                             "attempt": record.get("attempt", 1),
                             "result_preview": result_preview,
                         }),
@@ -877,7 +882,7 @@ class RetrySweep:
                         subject=f"Retry exhausted: {record['name']}",
                         body=json.dumps({
                             "operation_id": record["operation_id"],
-                            "capability": record["name"],
+                            "skill": record["name"],
                             "attempts": record.get("attempt", 1),
                             "last_error": replay_result.get("error", ""),
                             "retry_history": record.get("retry_history", []),
@@ -1010,12 +1015,12 @@ class RetrySweep:
 
 
 def _partial_verified_fields(verified: Any) -> list[str]:
-    """Return the keys of a capability's ``verified`` dict whose value
+    """Return the keys of a skill's ``verified`` dict whose value
     is NOT a positive verification signal.
 
     Accepts both the boolean shape (``True`` / ``False``) and the
     string-verdict shape (``"verified" | "absent" | "indeterminate" |
-    "partial"``) so capabilities can use either vocabulary. Anything
+    "partial"``) so skills can use either vocabulary. Anything
     other than ``True`` or ``"verified"`` is treated as a not-yet-
     verified effect — empty return list means everything verified.
 
@@ -1038,11 +1043,11 @@ def _partial_verified_fields(verified: Any) -> list[str]:
 # Wrapper-aware inner-op resolution
 # ---------------------------------------------------------------------------
 
-# Capability names that wrap another operation by id, replaying it via the
+# Skill names that wrap another operation by id, replaying it via the
 # registry. These take a single ``operation_id`` parameter that points at an
 # inner op record. The wrapper itself has no effects manifest — verify paths
-# need the inner capability's manifest to walk multi-effect state correctly.
-_WRAPPER_CAPS: frozenset[str] = frozenset({"retry", "obsidian_retry"})
+# need the inner skill's manifest to walk multi-effect state correctly.
+_WRAPPER_SKILLS: frozenset[str] = frozenset({"retry", "obsidian_retry"})
 
 
 def _runtime_admission_for_record(
@@ -1056,19 +1061,19 @@ def _runtime_admission_for_record(
     Retry wrappers point at an inner operation, so their own (usually empty)
     requirement list is not authoritative for preference gating.  Use the
     inner record when present and fall back to the registry's disabled-tool
-    inventory when no Capability object is currently reachable.
+    inventory when no Skill object is currently reachable.
     """
     effective = _resolve_inner_op_for_wrapper(record) or record
-    capability_name = str(effective.get("name") or "")
+    skill_name = str(effective.get("name") or "")
     entry = (
-        active_registry.get(capability_name)
-        or disabled_registry.get(capability_name)
+        active_registry.get(skill_name)
+        or disabled_registry.get(skill_name)
     )
     required = list(getattr(entry, "requires", []) or [])
     if entry is None:
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_SKILLS
 
-        required = list(DISABLED_CAPABILITIES.get(capability_name, []))
+        required = list(DISABLED_SKILLS.get(skill_name, []))
 
     from types import SimpleNamespace
 
@@ -1086,12 +1091,12 @@ def _effective_task_record(record: dict[str, Any]) -> dict[str, Any]:
 def _native_task_record(record: dict[str, Any]) -> bool:
     effective = _effective_task_record(record)
     from work_buddy.tasks.runtime import (
-        is_task_mutation_capability,
+        is_task_mutation_skill,
         native_authority_active,
     )
 
     return (
-        is_task_mutation_capability(effective.get("name"))
+        is_task_mutation_skill(effective.get("name"))
         and native_authority_active()
     )
 
@@ -1102,11 +1107,11 @@ def _assert_task_replay_boundary(record: dict[str, Any]) -> None:
     effective = _effective_task_record(record)
     from work_buddy.tasks.runtime import (
         assert_task_replay_authority,
-        is_task_mutation_capability,
+        is_task_mutation_skill,
         native_authority_active,
     )
 
-    if not is_task_mutation_capability(effective.get("name")):
+    if not is_task_mutation_skill(effective.get("name")):
         return
     assert_task_replay_authority(effective.get("task_authority_epoch"))
     carrier = effective.get("pwu_carrier") or record.get("pwu_carrier")
@@ -1119,10 +1124,10 @@ def _assert_task_replay_boundary(record: dict[str, Any]) -> None:
 def _resolve_inner_op_for_wrapper(
     record: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Return the inner op record a wrapper capability references, or None.
+    """Return the inner op record a wrapper skill references, or None.
 
     Used by ``_pre_verify_pwu`` so wrapper-style queued ops walk the inner
-    capability's effects manifest instead of single-effect-verifying just
+    skill's effects manifest instead of single-effect-verifying just
     the path on the PWU carrier.
 
     Returns None when the record isn't a wrapper, doesn't carry an
@@ -1130,7 +1135,7 @@ def _resolve_inner_op_for_wrapper(
     """
     if not record:
         return None
-    if record.get("name") not in _WRAPPER_CAPS:
+    if record.get("name") not in _WRAPPER_SKILLS:
         return None
     inner_id = (record.get("params") or {}).get("operation_id")
     if not inner_id:

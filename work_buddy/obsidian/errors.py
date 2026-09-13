@@ -15,7 +15,7 @@ see it in places like:
   - ``pwu_carrier`` on op records — ``{path, content_hint, write_mode}``
     persisted by the gateway when an ObsidianPostWriteUncertain was
     enqueued for sweep retry, so the sweep can pre-verify before
-    replaying the read-modify-write capability.
+    replaying the read-modify-write skill.
   - ``_pre_verify_pwu`` in ``work_buddy.sidecar.retry_sweep`` — the
     helper that re-reads the file before each sweep replay attempt.
   - Log lines like ``_pre_verify_pwu: VERIFIED for path=...``.
@@ -46,9 +46,9 @@ Hierarchy mirrors the four-state taxonomy in
 Discipline:
   - Bridge layer raises typed exceptions. No more returning ``False``/``None``
     for failure (one transitional shim aside; see ``bridge.write_file_raw``).
-  - Capabilities do NOT try/except by default — let exceptions propagate.
+  - Skills do NOT try/except by default — let exceptions propagate.
     The gateway has a single top-level handler that classifies via isinstance.
-  - Capabilities catch selectively only for genuine domain-specific recovery:
+  - Skills catch selectively only for genuine domain-specific recovery:
     filesystem fallback in ``vault_write``; post-write verify is gateway-side
     via :func:`work_buddy.obsidian.post_write_verify.verify_post_write`.
 
@@ -218,7 +218,7 @@ class ObsidianEditorConflict(ObsidianHTTPError):
     Always retryable, but the *payload* must be recomputed from a fresh
     read after the user finishes editing — replaying the original bytes
     would clobber the user's saved typing. The retry sweep re-invokes
-    the whole capability, which performs a fresh read-modify-write.
+    the whole skill, which performs a fresh read-modify-write.
 
     Replaces the standalone ``EditorConflict`` exception that lived
     in :mod:`work_buddy.obsidian.bridge` before CP1. Constructor

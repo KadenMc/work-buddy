@@ -2,8 +2,8 @@
 schedule: "*/15 * * * *"  # chrome cadence — tiny corpus, sub-second incremental
 recurring: true
 jitter_seconds: 120  # distinct offset; spread 15-minute pile-ups
-type: capability
-capability: index_rebuild
+type: skill
+skill: index_rebuild
 params:
   partition: chrome
   force: false

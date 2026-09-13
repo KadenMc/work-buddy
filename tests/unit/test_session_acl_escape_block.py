@@ -2,7 +2,7 @@
 
 Discovered 2026-04-17 in live testing: a local model invoked under
 ``llm_with_tools`` with a ``readonly_safe`` preset successfully called
-``wb_run(capability='wb_init', session_id='hijack-attempt')`` to swap
+``wb_run(skill='wb_init', session_id='hijack-attempt')`` to swap
 its MCP connection to an attacker-chosen session id. Because ACLs are
 keyed on agent session id and the fresh id was unknown to the ACL
 store, the subsequent calls had no whitelist enforced.
@@ -28,10 +28,10 @@ from work_buddy.mcp_server import session_acl
 
 def test_no_preset_exposes_wb_init():
     """Defense #1: wb_init must not appear in any named preset."""
-    for name, caps in PRESETS.items():
-        assert "wb_init" not in caps, (
+    for name, skills in PRESETS.items():
+        assert "wb_init" not in skills, (
             f"Preset {name!r} contains wb_init — this would let a local "
-            f"model call wb_run(capability='wb_init') and escape the ACL."
+            f"model call wb_run(skill='wb_init') and escape the ACL."
         )
 
 
@@ -96,7 +96,7 @@ def test_form_execution_has_only_bound_form_reference_and_conversation_tools():
         "conversation_close", "cowork_doc_get", "wb_init", "agent_docs",
         "web_search", "web_fetch", "user_job_create",
     ):
-        assert not session_acl.is_capability_allowed(sid, forbidden)
+        assert not session_acl.is_skill_allowed(sid, forbidden)
     filtered = session_acl.filter_search_results(
         _fake_results("assisted_draft_context_get", "task_create"), sid,
     )
@@ -113,10 +113,10 @@ def test_form_execution_has_only_bound_form_reference_and_conversation_tools():
 # Fail-closed behavior when session cannot be resolved
 # ---------------------------------------------------------------------------
 # Regression: discovered during retro (2026-04-17) that
-# ``is_capability_allowed(None, cap)`` returned True unconditionally,
+# ``is_skill_allowed(None, skill)`` returned True unconditionally,
 # which silently let a local-model call through when the MCP transport
 # didn't forward the X-Work-Buddy-Session header on tool-call requests.
-# The fix makes ``is_capability_allowed`` fail closed whenever the
+# The fix makes ``is_skill_allowed`` fail closed whenever the
 # session resolves to None AND any ACL is registered in-process — the
 # only callers that legitimately resolve to None are normal agents in
 # a process with no ACL-scoped runs active, and they'll never race
@@ -150,8 +150,8 @@ def test_any_acl_registered_false_after_clear():
 
 def test_default_open_when_no_acl_anywhere():
     """Normal agents in a process with no ACL-scoped runs: default-open."""
-    assert session_acl.is_capability_allowed(None, "anything") is True
-    assert session_acl.is_capability_allowed("some-sid", "anything") is True
+    assert session_acl.is_skill_allowed(None, "anything") is True
+    assert session_acl.is_skill_allowed("some-sid", "anything") is True
 
 
 def test_fail_closed_when_session_none_and_acl_active():
@@ -162,16 +162,16 @@ def test_fail_closed_when_session_none_and_acl_active():
     its ACL via ``ctx``."""
     session_acl.set_session_acl("lms-abc", ["task_briefing"])
     # Unresolved session while an ACL is active → refuse
-    assert session_acl.is_capability_allowed(None, "task_briefing") is False
-    assert session_acl.is_capability_allowed(None, "anything-else") is False
+    assert session_acl.is_skill_allowed(None, "task_briefing") is False
+    assert session_acl.is_skill_allowed(None, "anything-else") is False
 
 
 def test_acl_scoped_session_still_gets_membership_check():
     """Fail-closed is ONLY for unresolved sessions. A resolved session
     that owns an ACL still gets the normal membership check."""
     session_acl.set_session_acl("lms-abc", ["task_briefing"])
-    assert session_acl.is_capability_allowed("lms-abc", "task_briefing") is True
-    assert session_acl.is_capability_allowed("lms-abc", "task_toggle") is False
+    assert session_acl.is_skill_allowed("lms-abc", "task_briefing") is True
+    assert session_acl.is_skill_allowed("lms-abc", "task_toggle") is False
 
 
 def test_resolved_non_acl_session_passes_through_even_with_other_acl_active():
@@ -180,7 +180,7 @@ def test_resolved_non_acl_session_passes_through_even_with_other_acl_active():
     applies to it — the other session's ACL doesn't leak across."""
     session_acl.set_session_acl("lms-abc", ["task_briefing"])
     # Normal agent, resolved to its own session id (not the ACL-scoped one)
-    assert session_acl.is_capability_allowed("normal-agent-sid", "task_toggle") is True
+    assert session_acl.is_skill_allowed("normal-agent-sid", "task_toggle") is True
 
 
 # ---------------------------------------------------------------------------

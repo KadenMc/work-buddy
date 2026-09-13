@@ -345,7 +345,7 @@ def human_field_ingress_identity(
 ) -> HumanFieldIngressIdentity:
     """Bind an MCP sign-in value to the enrolled user and relaying session.
 
-    The capability contract treats ``write_fields`` as user-supplied Journal
+    The skill contract treats ``write_fields`` as user-supplied Journal
     input.  The gateway remains the issuer, and the session digest records the
     relay without claiming that the agent authored the value.
     """

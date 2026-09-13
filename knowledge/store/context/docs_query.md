@@ -1,11 +1,10 @@
 ---
 name: Docs Query
-kind: capability
+kind: skill
 description: '[Legacy] Search knowledge units. Use agent_docs instead.'
-capability_name: docs_query
 category: context
 op: op.wb.docs_query
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -21,6 +20,7 @@ parameters:
     required: false
 invokes:
 - agent_docs
+skill_name: docs_query
 tags:
 - context
 - docs

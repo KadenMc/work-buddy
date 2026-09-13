@@ -1,11 +1,11 @@
 ---
 name: Context Chrome
-kind: capability
+kind: skill
 description: Currently open Chrome tabs (requires Chrome extension running)
-capability_name: context_chrome
 category: context
 op: op.wb.context_chrome
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: context_chrome
 tags:
 - context
 - chrome

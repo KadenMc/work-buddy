@@ -1,11 +1,10 @@
 ---
 name: Truth Sweep
-kind: capability
+kind: skill
 description: Run and record an integrity, supersession-dependency, or source-dependency sweep for one Truth store.
-capability_name: truth_sweep
 category: truth
 op: op.wb.truth_sweep
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -30,6 +29,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_sweep
 tags:
 - truth
 - sweep

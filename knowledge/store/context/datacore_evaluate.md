@@ -1,11 +1,10 @@
 ---
 name: Datacore Evaluate
-kind: capability
+kind: skill
 description: Evaluate a Datacore expression (e.g. arithmetic, field access).
-capability_name: datacore_evaluate
 category: context
 op: op.wb.datacore_evaluate
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   expression:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: str
     description: Vault path for 'this' context
     required: false
+skill_name: datacore_evaluate
 tags:
 - context
 - datacore

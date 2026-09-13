@@ -1,4 +1,4 @@
-"""Capability registry — discovers and indexes work-buddy functions and workflows.
+"""Skill registry — discovers and indexes work-buddy skills and workflows.
 
 The registry is built once at first access by scanning Python modules and
 loading workflow definitions from the knowledge store. It powers the
@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping
 
 from work_buddy.frontmatter import parse_frontmatter
 
-# Capability/workflow definitions get four Threads-FSM-related fields
+# Skill/workflow definitions get four Threads-FSM-related fields
 # (is_action, available_in, intrinsic_amplifiers,
 # parameter_schema_for_action, requires_post_review). The
 # InvocationContext enum lives in work_buddy.threads.enums (a
@@ -38,7 +38,7 @@ _SLASH_CMD_DIR = paths.asset_root() / ".claude" / "commands"
 # ---------------------------------------------------------------------------
 
 @dataclass
-class Capability:
+class Skill:
     """A simple callable function exposed through the gateway."""
 
     name: str
@@ -49,53 +49,53 @@ class Capability:
     search_aliases: list[str] = field(default_factory=list)  # extra phrases for search scoring
     param_aliases: dict[str, str] = field(default_factory=dict)  # {alias: canonical} e.g. {"target_date": "target"}
     requires: list[str] = field(default_factory=list)  # tool/component IDs, e.g. ["obsidian", "hindsight"]
-    # Names of other capabilities this capability calls directly. Used by
+    # Names of other skills this skill calls directly. Used by
     # the control graph to resolve transitive component dependencies
     # (e.g. a workflow step invokes `task_toggle` which requires `obsidian`,
     # so the step and workflow inherit the `obsidian` dependency).
     # Empty list means "audited, no invocations"; missing entries are
     # treated the same — see tests/unit/test_registry_invariants.py.
     invokes: list[str] = field(default_factory=list)
-    mutates_state: bool = False  # whether this capability modifies state
+    mutates_state: bool = False  # whether this skill modifies state
     retry_policy: str = "manual"  # "replay" | "verify_first" | "manual"
     # When True (default), the gateway auto-enqueues transient failures
-    # of non-mutating capabilities for background retry. Capabilities
+    # of non-mutating skills for background retry. Skills
     # that represent real work with non-recoverable failure modes (e.g.
     # local-LLM calls where a timeout means the model is hung and
     # retrying wastes tokens and spams consent prompts) should set this
     # to False to keep the failure in the caller's face.
     auto_retry: bool = True
     slash_command: str | None = None  # e.g. "wb-journal-update"
-    consent_operations: list[str] = field(default_factory=list)  # @requires_consent op IDs this capability may trigger
-    # Carve-out for the workflow-blanket consent model: capabilities tagged
+    consent_operations: list[str] = field(default_factory=list)  # @requires_consent op IDs this skill may trigger
+    # Carve-out for the workflow-blanket consent model: skills tagged
     # ``"high"`` are NEVER carried by a workflow grant, even inside an
     # approved workflow run — the per-op consent gate always fires for them.
     # The default ``"low"`` participates in workflow grants normally;
     # ``"moderate"`` matches the default risk semantics. Workflows that
-    # invoke any ``"high"`` capability cannot be silently authorized end-to-
+    # invoke any ``"high"`` skill cannot be silently authorized end-to-
     # end; the workflow's plan/confirm step or an individual consent prompt
     # is the user's decision point for the high-weight op.
     consent_weight: str = "low"  # "low" | "moderate" | "high"
-    # Effect manifest for multi-effect capabilities — used by
+    # Effect manifest for multi-effect skills — used by
     # ``verify_post_write_effects`` to detect "some effects landed,
-    # some didn't" partial states after a PostWriteUncertain. Capabilities
+    # some didn't" partial states after a PostWriteUncertain. Skills
     # WITHOUT a manifest fall back to single-effect verify (the existing
     # behavior). See ``work_buddy.obsidian.effects.EffectSpec`` for the
-    # schema and ``architecture/capability-registry`` for the picking
-    # rule. Capabilities with a manifest MUST be idempotent on retry —
-    # the partial-state recovery path retries the full capability.
+    # schema and ``architecture/skill-registry`` for the picking
+    # rule. Skills with a manifest MUST be idempotent on retry —
+    # the partial-state recovery path retries the full skill.
     effects: list[Any] = field(default_factory=list)  # list[EffectSpec]
 
-    # The ``op.<namespace>.<name>`` ID this Capability resolved against, when it
-    # was loaded from an inert *declaration* (a ``kind: "capability"`` knowledge
+    # The ``op.<namespace>.<name>`` ID this Skill resolved against, when it
+    # was loaded from an inert *declaration* (a ``kind: "skill"`` knowledge
     # unit with an ``op`` field) by
-    # ``capability_loader.load_declared_capabilities`` — the standard path. None
-    # for a Capability constructed directly (e.g. in tests).
+    # ``skill_loader.load_declared_skills`` — the standard path. None
+    # for a Skill constructed directly (e.g. in tests).
     op_id: str | None = None
 
     # Optional mode-availability gate — the raw gate-DSL string from the
     # declaration's ``available_when`` (validated at load). When set,
-    # ``wb_search`` hides and ``wb_run`` rejects this capability unless the gate
+    # ``wb_search`` hides and ``wb_run`` rejects this skill unless the gate
     # is satisfied by the session's active modes. The raw string (not a parsed
     # AST) is stored so the gate is re-parsed against the current ``gates``
     # module at evaluation time — immune to the class-identity skew an
@@ -104,17 +104,17 @@ class Capability:
 
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
 
-    # Whether this capability appears in the Action Catalog (i.e.
+    # Whether this skill appears in the Action Catalog (i.e.
     # whether action inference may propose it as the action to take
-    # for a Thread). False by default; capabilities the FSM should
+    # for a Thread). False by default; skills the FSM should
     # be able to dispatch as Standard Actions opt in by setting True.
     is_action: bool = False
 
-    # Set of contexts where this capability is discoverable / callable.
-    # The default mirrors what existing capabilities expect: every
+    # Set of contexts where this skill is discoverable / callable.
+    # The default mirrors what existing skills expect: every
     # context EXCEPT FSM_INTERNAL (which is reserved for FSM-engine-only
     # operations the agent should never see directly). Sensitive
-    # capabilities and FSM internals override this set.
+    # skills and FSM internals override this set.
     available_in: set[InvocationContext] = field(
         default_factory=lambda: {
             InvocationContext.AGENT_CONVERSATION,
@@ -145,14 +145,14 @@ class Capability:
     # decompositions) opt in by setting True.
     requires_post_review: bool = False
 
-    # Wall-time budget for one gateway dispatch of this capability, owned by
+    # Wall-time budget for one gateway dispatch of this skill, owned by
     # the operation (never supplied by the caller). The gateway resolves it
     # to a concrete budget per dispatch, most-specific-wins:
     #   - a callable ``(params) -> float | None`` derives the budget from the
     #     actual invocation (for operations whose runtime scales with input);
     #   - a ``float`` is a fixed ceiling in seconds;
     #   - ``None`` (the default) means "unset" — the gateway applies the
-    #     domain default (capabilities requiring the Obsidian bridge are
+    #     domain default (skills requiring the Obsidian bridge are
     #     self-retrying and run unbounded; everything else gets 30s).
     # A resolved budget of ``math.inf`` (or a callable/scalar that yields it)
     # means no gateway timeout. See ``mcp_server.dispatch_resilience``.
@@ -217,11 +217,11 @@ class WorkflowStep:
     workflow_file: str | None = None  # sub-workflow reference
     optional: bool = False
     requires: list[str] = field(default_factory=list)  # tool IDs for conductor gating
-    # Capability names this step calls. For auto_run steps, this is typically
-    # a single capability owning the callable; for reasoning steps it's the
-    # capabilities the agent is instructed to invoke. Populated via
+    # Skill names this step calls. For auto_run steps, this is typically
+    # a single skill owning the callable; for reasoning steps it's the
+    # skills the agent is instructed to invoke. Populated via
     # `invokes: [...]` in the workflow unit's step frontmatter. The control-graph
-    # capability resolver walks this to compute transitive component dependencies.
+    # skill resolver walks this to compute transitive component dependencies.
     invokes: list[str] = field(default_factory=list)
     auto_run: AutoRun | None = None  # conductor auto-executes this step
     result_schema: dict[str, Any] | None = None  # validate agent output before storing
@@ -243,7 +243,7 @@ class WorkflowDefinition:
     slash_command: str | None = None  # e.g. "wb-morning"
     # Computed at registry-build time: the union of all tool/component IDs
     # required by this workflow's steps — both `step.requires` directly and
-    # the `requires` of capabilities named in `step.invokes`. Do not
+    # the `requires` of skills named in `step.invokes`. Do not
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
 
@@ -256,7 +256,7 @@ class WorkflowDefinition:
     bound_directions_path: str | None = None
 
     # Optional schema for caller-provided initial params, mirrors
-    # ``Capability.parameters``: ``{name: {type, description, required}}``.
+    # ``Skill.parameters``: ``{name: {type, description, required}}``.
     # Workflows that declare no schema reject any non-empty params at
     # ``start_workflow`` time. Consumed by ``input_map`` via the
     # synthetic ``__params__`` source key (see conductor) and surfaced
@@ -274,7 +274,7 @@ class WorkflowDefinition:
     # ---------------- Action Catalog fields (defaults are the legacy non-action shape) ----
     # Workflows can also be Action Catalog
     # entries (i.e. a Standard Action whose execution dispatches
-    # into the workflow conductor). The fields mirror Capability's.
+    # into the workflow conductor). The fields mirror Skill's.
 
     is_action: bool = False
     available_in: set[InvocationContext] = field(
@@ -298,23 +298,23 @@ class WorkflowDefinition:
 # Registry singleton
 # ---------------------------------------------------------------------------
 
-_REGISTRY: dict[str, Capability | WorkflowDefinition] | None = None
+_REGISTRY: dict[str, Skill | WorkflowDefinition] | None = None
 
-# Stash of full ``Capability`` objects for capabilities filtered out of the
+# Stash of full ``Skill`` objects for skills filtered out of the
 # live registry by the `_build_registry` filter pass (because their tool
-# requirements aren't met). Populated alongside ``DISABLED_CAPABILITIES``.
-# Used by ``work_buddy.recovery.recheck_disabled_capability`` to restore a
-# capability to the live registry without re-running the full registry
+# requirements aren't met). Populated alongside ``DISABLED_SKILLS``.
+# Used by ``work_buddy.recovery.recheck_disabled_skill`` to restore a
+# skill to the live registry without re-running the full registry
 # build (~6s + sys.modules purge). Keys MUST stay in sync with
-# ``DISABLED_CAPABILITIES`` keys; see invariant tests.
+# ``DISABLED_SKILLS`` keys; see invariant tests.
 #
 # Cleared at the top of every ``_build_registry()`` invocation so a stale
-# Capability whose closure references a purged module never survives a
+# Skill whose closure references a purged module never survives a
 # reload (mcp_registry_reload purges work_buddy.* from sys.modules).
-_DISABLED_REGISTRY: dict[str, Capability] = {}
+_DISABLED_SKILL_REGISTRY: dict[str, Skill] = {}
 
 
-def get_registry() -> dict[str, Capability | WorkflowDefinition]:
+def get_registry() -> dict[str, Skill | WorkflowDefinition]:
     """Return the registry, building it on first access."""
     global _REGISTRY
     if _REGISTRY is None:
@@ -322,26 +322,26 @@ def get_registry() -> dict[str, Capability | WorkflowDefinition]:
     return _REGISTRY
 
 
-def get_disabled_registry() -> dict[str, Capability]:
-    """Return the stash of full Capability objects for disabled capabilities.
+def get_disabled_skill_registry() -> dict[str, Skill]:
+    """Return the stash of full Skill objects for disabled skills.
 
-    Read-only access for ``work_buddy.recovery.recheck_disabled_capability``
+    Read-only access for ``work_buddy.recovery.recheck_disabled_skill``
     and observability tools. The dict is mutated only inside
     ``_build_registry()`` (cleared + repopulated) and inside the recovery
     module under its lock (popped on successful restore). Callers MUST
     NOT mutate it directly.
     """
     # Trigger a build if the registry hasn't been initialised — populates
-    # _DISABLED_REGISTRY as a side effect.
+    # _DISABLED_SKILL_REGISTRY as a side effect.
     get_registry()
-    return _DISABLED_REGISTRY
+    return _DISABLED_SKILL_REGISTRY
 
 
 def invalidate_registry() -> None:
     """Clear the cached registry so it rebuilds on next access.
 
     Also purges ``work_buddy.*`` modules from ``sys.modules`` so deferred
-    imports in capability builders re-read the current source code.
+    imports in skill builders re-read the current source code.
     Clears tool probe cache so tools are re-probed on rebuild.
 
     **Re-bootstraps the Threads FSM after the purge.** Purging
@@ -350,7 +350,7 @@ def invalidate_registry() -> None:
     the FSM state-entry handlers (enqueue inference, publish
     Resolution Surface card, etc.) live. Without re-bootstrap, the
     next FSM transition after a registry reload would land in a
-    wait state with no handlers registered, so spawn capabilities
+    wait state with no handlers registered, so spawn skills
     would silently dead-end at AWAITING_INFERENCE.
     """
     import sys
@@ -373,7 +373,7 @@ def invalidate_registry() -> None:
 
     # Re-bootstrap the Threads FSM in this subprocess. Best-effort: if
     # bootstrap fails (e.g. budget hook init issue), the registry is
-    # still valid — capabilities will work, but FSM transitions on
+    # still valid — skills will work, but FSM transitions on
     # Threads won't fire side effects. Fail loud so the user notices.
     try:
         from work_buddy.threads.bootstrap import bootstrap_for_subprocess
@@ -382,18 +382,18 @@ def invalidate_registry() -> None:
         import logging
         logging.getLogger(__name__).warning(
             "Threads re-bootstrap after registry reload failed: %s. "
-            "FSM state-entry handlers may be missing; spawn capabilities "
+            "FSM state-entry handlers may be missing; spawn skills "
             "could dead-end. Restart the gateway to recover.",
             exc,
         )
 
 
-def reload_capability_data() -> dict[str, Any]:
+def reload_skill_data() -> dict[str, Any]:
     """Data-only registry refresh — reload declarations + workflows from disk
     and rebuild the registry WITHOUT purging ``sys.modules``.
 
     Contrast with ``invalidate_registry``, which purges ``work_buddy.*`` from
-    ``sys.modules`` and re-imports it. That purge re-creates the ``Capability`` /
+    ``sys.modules`` and re-imports it. That purge re-creates the ``Skill`` /
     ``WorkflowDefinition`` classes, so a long-lived FastMCP gateway — whose
     ``wb_run`` / ``wb_search`` are frozen against the boot module generation —
     ends up reading a stale/mixed generation and the rebuild never reaches the
@@ -405,7 +405,7 @@ def reload_capability_data() -> dict[str, Any]:
     ``_build_registry()``. Because no module is re-imported, class identity is
     stable and the frozen gateway reads the rebuilt ``_REGISTRY`` directly.
 
-    Picks up WITHOUT a restart: edited/added capability declarations (including
+    Picks up WITHOUT a restart: edited/added skill declarations (including
     parameter-schema changes) and new workflow units whose referenced Ops are
     already registered. Does NOT pick up edited Op *code* or brand-new Op modules
     — those require re-importing Python, which only a process restart does safely.
@@ -421,8 +421,8 @@ def reload_capability_data() -> dict[str, Any]:
     return {"status": "ok", "entries": len(reg)}
 
 
-def _disabled_reason(capability_name: str) -> str:
-    """Human-readable reason a capability is disabled in the live registry.
+def _disabled_reason(skill_name: str) -> str:
+    """Human-readable reason a skill is disabled in the live registry.
 
     Returns a string like "Dependency unavailable: obsidian (probe says
     'Bridge unreachable', last probe Ns ago)" so an agent consuming
@@ -438,18 +438,18 @@ def _disabled_reason(capability_name: str) -> str:
     1. **Probe still failing** — auto-recovery already tried (CP-A3) or
        the cool-down hasn't expired; tool is genuinely down. Format:
        "<tool> probe failed Ns ago: '<reason>'".
-    2. **Probe now passing but cap still in DISABLED_CAPABILITIES** —
-       rare race; suggest reload_capability_data. Format: "<tool> probe
-       reports available but capability not yet in registry".
+    2. **Probe now passing but skill still in DISABLED_SKILLS** —
+       rare race; suggest reload_skill_data. Format: "<tool> probe
+       reports available but skill not yet in registry".
     3. **No probe data yet** — cold-start race; agent should retry or
-       run reload_capability_data. Format: "<tool> probe hasn't completed
+       run reload_skill_data. Format: "<tool> probe hasn't completed
        yet".
     """
     try:
-        from work_buddy.tools import DISABLED_CAPABILITIES, get_tool_status
-        deps = DISABLED_CAPABILITIES.get(capability_name)
+        from work_buddy.tools import DISABLED_SKILLS, get_tool_status
+        deps = DISABLED_SKILLS.get(skill_name)
         if not deps:
-            return "Not registered in the live capability set"
+            return "Not registered in the live skill set"
 
         # Pull fresh probe state per missing tool. get_tool_status returns
         # {tools: {tool_id: {available, probe_ms, reason, ...}}, ...}.
@@ -468,17 +468,17 @@ def _disabled_reason(capability_name: str) -> str:
                 # State 3: no probe data yet. Cold start.
                 per_tool.append(
                     f"{dep} (no probe data yet — wait {probe_age_str} or "
-                    f"run reload_capability_data)"
+                    f"run reload_skill_data)"
                 )
                 continue
             if entry.get("available"):
-                # State 2: probe passing but cap still disabled. This
-                # happens if the user calls a disabled cap WITHOUT going
+                # State 2: probe passing but skill still disabled. This
+                # happens if the user calls a disabled skill WITHOUT going
                 # through the wb_run dispatch path (which would auto-
                 # recover via CP-A3) — e.g. wb_search hits.
                 per_tool.append(
                     f"{dep} (probe reports available — run "
-                    f"reload_capability_data to re-enable this capability)"
+                    f"reload_skill_data to re-enable this skill)"
                 )
                 continue
             # State 1: probe still failing.
@@ -492,13 +492,13 @@ def _disabled_reason(capability_name: str) -> str:
         # Defensive fallback: if anything in the enriched path fails,
         # don't crash wb_search — return a usable string.
         try:
-            from work_buddy.tools import DISABLED_CAPABILITIES
-            deps = DISABLED_CAPABILITIES.get(capability_name)
+            from work_buddy.tools import DISABLED_SKILLS
+            deps = DISABLED_SKILLS.get(skill_name)
             if deps:
                 return f"Dependency unavailable: {', '.join(deps)}"
         except Exception:
             pass
-    return "Not registered in the live capability set"
+    return "Not registered in the live skill set"
 
 
 def _format_probe_age() -> str:
@@ -594,10 +594,10 @@ def search_registry(
     category: str | None = None,
     top_n: int = 3,
 ) -> list[dict[str, Any]]:
-    """Search capabilities and workflows.
+    """Search skills and workflows.
 
     Searches the unified knowledge store first (includes directions,
-    system docs, capabilities, and workflows). Falls back to the legacy
+    system docs, skills, and workflows). Falls back to the legacy
     registry-only search if the store is unavailable.
 
     Empty query returns all entries (browse mode). Category filter is
@@ -616,20 +616,20 @@ def search_registry(
     # Exact name not in registry (maybe filtered out) — check store by path
     try:
         from work_buddy.knowledge.store import load_store
-        from work_buddy.knowledge.model import CapabilityUnit, WorkflowUnit
+        from work_buddy.knowledge.model import SkillUnit, WorkflowUnit
         store = load_store()
-        # Search store for a CapabilityUnit with this exact capability_name
+        # Search store for a SkillUnit with this exact skill_name
         for path, unit in store.items():
-            if isinstance(unit, CapabilityUnit) and unit.capability_name == query:
+            if isinstance(unit, SkillUnit) and unit.skill_name == query:
                 result = {
-                    "name": unit.capability_name,
+                    "name": unit.skill_name,
                     "description": unit.description,
                     "category": unit.category,
                     "type": "function",
                     "parameters": unit.parameters,
                     "search_score": 1.0,
                     "disabled": True,
-                    "disabled_reason": _disabled_reason(unit.capability_name),
+                    "disabled_reason": _disabled_reason(unit.skill_name),
                     # Back-compat alias — remove after 2026-Q3
                     "unavailable": True,
                 }
@@ -637,7 +637,7 @@ def search_registry(
             if isinstance(unit, WorkflowUnit) and unit.workflow_name == query:
                 # Exact-name hit in the store only means the registry
                 # didn't have it — same "tool deps unmet" condition
-                # as the CapabilityUnit branch above. Flag it.
+                # as the SkillUnit branch above. Flag it.
                 result = {
                     "name": unit.workflow_name,
                     "description": unit.description,
@@ -666,7 +666,7 @@ def search_registry(
         results = []
         for entry in reg.values():
             if category:
-                entry_cat = entry.category if isinstance(entry, Capability) else "workflow"
+                entry_cat = entry.category if isinstance(entry, Skill) else "workflow"
                 if entry_cat != category:
                     continue
             results.append(_entry_to_dict(entry))
@@ -688,7 +688,7 @@ def search_registry(
         if entry is None:
             continue
         if category:
-            entry_cat = entry.category if isinstance(entry, Capability) else "workflow"
+            entry_cat = entry.category if isinstance(entry, Skill) else "workflow"
             if entry_cat != category:
                 continue
         result = _entry_to_dict(entry)
@@ -706,11 +706,11 @@ def _search_via_store(
     """Search the unified knowledge store, returning registry-compatible dicts.
 
     Returns None if the store is unavailable or empty, triggering fallback.
-    For capability/workflow results, enriches with registry execution metadata
+    For skill/workflow results, enriches with registry execution metadata
     (parameters, steps) so wb_search callers get the same shape they expect.
     """
     from work_buddy.knowledge.search import search as store_search
-    from work_buddy.knowledge.model import CapabilityUnit, WorkflowUnit
+    from work_buddy.knowledge.model import SkillUnit, WorkflowUnit
 
     # Map category to store kind for filtering
     kind = None
@@ -729,25 +729,25 @@ def _search_via_store(
         unit_name = hit.get("name", "")
         score = hit.get("score", 0.0)
 
-        # For capabilities: return registry-compatible dict
-        if unit_kind == "capability":
-            cap_name = hit.get("capability_name", "")
-            entry = reg.get(cap_name)
+        # For skills: return registry-compatible dict
+        if unit_kind == "skill":
+            skill_name = hit.get("skill_name", "")
+            entry = reg.get(skill_name)
             if entry is not None:
                 result = _entry_to_dict(entry)
                 result["search_score"] = score
                 results.append(result)
                 continue
-            # Capability not in registry (tool requirements unmet) — show from store
+            # Skill not in registry (tool requirements unmet) — show from store
             result = {
-                "name": cap_name,
+                "name": skill_name,
                 "description": hit.get("description", ""),
                 "category": hit.get("category", ""),
                 "type": "function",
                 "parameters": hit.get("parameters", {}),
                 "search_score": score,
                 "disabled": True,
-                "disabled_reason": _disabled_reason(cap_name),
+                "disabled_reason": _disabled_reason(skill_name),
                 # Back-compat alias — remove after 2026-Q3
                 "unavailable": True,
             }
@@ -765,7 +765,7 @@ def _search_via_store(
                 results.append(result)
                 continue
             # Workflow in the store but not registered live — mirror
-            # the CapabilityUnit branch above and flag it clearly so
+            # the SkillUnit branch above and flag it clearly so
             # agents don't try to call a workflow whose dependencies
             # aren't met.
             result = {
@@ -800,7 +800,7 @@ def _search_via_store(
     return results if results else None
 
 
-def get_entry(name: str) -> Capability | WorkflowDefinition | None:
+def get_entry(name: str) -> Skill | WorkflowDefinition | None:
     """Look up a single registry entry by exact name."""
     return get_registry().get(name)
 
@@ -809,23 +809,23 @@ def get_entry(name: str) -> Capability | WorkflowDefinition | None:
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
-def _entry_to_dict(entry: Capability | WorkflowDefinition) -> dict[str, Any]:
+def _entry_to_dict(entry: Skill | WorkflowDefinition) -> dict[str, Any]:
     """Convert a registry entry to a JSON-friendly dict.
 
-    Discriminates on shape (``.callable`` for Capability, ``.steps`` for
+    Discriminates on shape (``.callable`` for Skill, ``.steps`` for
     WorkflowDefinition) rather than ``isinstance``.  Across an
-    ``mcp_registry_reload`` the class identity of ``Capability`` /
+    ``mcp_registry_reload`` the class identity of ``Skill`` /
     ``WorkflowDefinition`` changes (``sys.modules`` is purged and the
     classes are re-imported), so entries created before the reload no
     longer match ``isinstance`` against the post-reload classes.  When
     that happens, the workflow branch tries ``entry.execution`` on a
-    Capability and raises ``AttributeError: 'Capability' object has no
+    Skill and raises ``AttributeError: 'Skill' object has no
     attribute 'execution'`` — an unhelpful error that leaks through the
     gateway's parameter-error reporting path.  Duck typing avoids this
     failure mode regardless of how stale the entry's class identity is.
     """
-    is_capability = hasattr(entry, "callable") and not hasattr(entry, "steps")
-    if is_capability:
+    is_skill = hasattr(entry, "callable") and not hasattr(entry, "steps")
+    if is_skill:
         d = {
             "name": entry.name,
             "description": entry.description,
@@ -939,22 +939,22 @@ def _warm_knowledge_index() -> None:
 # Registry builder
 # ---------------------------------------------------------------------------
 
-def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
+def _build_registry() -> dict[str, Skill | WorkflowDefinition]:
     """Scan modules and workflow files to populate the registry.
 
     !! IMPORT DEADLOCK RISK !!
-    Capability callables run via asyncio.to_thread(). Any callable that
+    Skill callables run via asyncio.to_thread(). Any callable that
     does a deferred import of a C-extension module (numpy, sqlite3, etc.)
     can permanently deadlock the MCP server. See the knowledge store unit
     architecture/mcp-import-discipline for the full explanation.
-    When adding capabilities, ensure callables only use
+    When adding skills, ensure callables only use
     lightweight imports (urllib, json, pathlib) or HTTP calls to services.
     """
     import time
     from work_buddy.mcp_server.search import _log_to_file, _get_search_log
     from work_buddy.tools import (
         _register_default_probes, probe_all, is_tool_available,
-        obsidian_backed_tools, DISABLED_CAPABILITIES,
+        obsidian_backed_tools, DISABLED_SKILLS,
     )
     _lf = _get_search_log()
     _log_to_file(_lf, "Registry build starting...")
@@ -972,51 +972,51 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     _log_to_file(_lf, f"  tool_probes: {_section_times['tool_probes']:.2f}s — "
                        f"available={available}, unavailable={unavailable}")
 
-    registry: dict[str, Capability | WorkflowDefinition] = {}
+    registry: dict[str, Skill | WorkflowDefinition] = {}
 
-    # --- Capabilities (resolved from declarations) ---
-    # Every capability is a declaration: a ``kind: "capability"`` knowledge
+    # --- Skills (resolved from declarations) ---
+    # Every skill is a declaration: a ``kind: "skill"`` knowledge
     # unit carrying an ``op`` field. The loader resolves each against the Op
-    # registry and returns ready-to-dispatch Capability objects, resolved
-    # before the tool-requirements filter below so capabilities with unmet
+    # registry and returns ready-to-dispatch Skill objects, resolved
+    # before the tool-requirements filter below so skills with unmet
     # ``requires`` are filtered out by the same pass. A name appearing in two
     # declarations is a mistake we surface, not silently shadow.
     t = time.time()
     try:
-        from work_buddy.knowledge.capability_loader import load_declared_capabilities
-        declared, decl_issues = load_declared_capabilities()
-        for cap in declared:
-            if cap.name in registry:
+        from work_buddy.knowledge.skill_loader import load_declared_skills
+        declared, decl_issues = load_declared_skills()
+        for skill in declared:
+            if skill.name in registry:
                 logger.error(
-                    "capability declaration conflict for %r — keeping the "
+                    "skill declaration conflict for %r — keeping the "
                     "existing registry entry, ignoring the declaration",
-                    cap.name,
+                    skill.name,
                 )
                 continue
-            registry[cap.name] = cap
+            registry[skill.name] = skill
         for issue in decl_issues:
-            logger.warning("capability declaration issue: %s", issue)
-        _log_to_file(_lf, f"  declared_capabilities: {time.time()-t:.2f}s "
+            logger.warning("skill declaration issue: %s", issue)
+        _log_to_file(_lf, f"  declared_skills: {time.time()-t:.2f}s "
                            f"({len(declared)} loaded, {len(decl_issues)} issues)")
     except Exception as e:
-        _log_to_file(_lf, f"  declared_capabilities: FAILED in {time.time()-t:.2f}s — {e}")
-        logger.exception("declaration-based capability loading failed")
+        _log_to_file(_lf, f"  declared_skills: FAILED in {time.time()-t:.2f}s — {e}")
+        logger.exception("declaration-based skill loading failed")
 
-    # --- Filter capabilities with unmet tool requirements ---
+    # --- Filter skills with unmet tool requirements ---
     t = time.time()
     # Auto-extract requires from @requires_tool decorated callables
-    for cap in list(registry.values()):
-        if isinstance(cap, Capability):
-            inferred = getattr(cap.callable, '_requires_tools', [])
-            if inferred and not cap.requires:
-                cap.requires = list(inferred)
+    for skill in list(registry.values()):
+        if isinstance(skill, Skill):
+            inferred = getattr(skill.callable, '_requires_tools', [])
+            if inferred and not skill.requires:
+                skill.requires = list(inferred)
 
-    DISABLED_CAPABILITIES.clear()
-    # CP-A1: also clear the full-Capability stash. Critical for
+    DISABLED_SKILLS.clear()
+    # CP-A1: also clear the full-Skill stash. Critical for
     # closure-correctness across mcp_registry_reload (which purges
-    # sys.modules); a Capability stashed during the previous build
+    # sys.modules); a Skill stashed during the previous build
     # would dereference a now-dead module if it survived.
-    _DISABLED_REGISTRY.clear()
+    _DISABLED_SKILL_REGISTRY.clear()
     bridge_tools = obsidian_backed_tools()
     bridge_down = not is_tool_available("obsidian")
     try:
@@ -1027,14 +1027,14 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
         obsidian_opted_out = False
     for name in list(registry):
         entry = registry[name]
-        if isinstance(entry, Capability) and entry.requires:
+        if isinstance(entry, Skill) and entry.requires:
             missing = [t_id for t_id in entry.requires if not is_tool_available(t_id)]
             # Obsidian-bridge availability is governed at runtime by a circuit
             # breaker on the gateway dispatch, not by this build-time flip. A
             # transient bridge probe failure must not disable every bridge-
-            # dependent capability (the bridge itself AND its in-Obsidian
+            # dependent skill (the bridge itself AND its in-Obsidian
             # plugins: datacore, ...) for the whole session;
-            # an admitted capability whose bridge is down fails fast per call
+            # an admitted skill whose bridge is down fails fast per call
             # and recovers the instant the bridge returns (no registry reload).
             # Transitive-only: we only skip the hard-disable when the bridge
             # ITSELF is down (so the plugin is unavailable *because of* the
@@ -1045,17 +1045,17 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
             if bridge_down and not obsidian_opted_out:
                 missing = [t_id for t_id in missing if t_id not in bridge_tools]
             if missing:
-                DISABLED_CAPABILITIES[name] = missing
-                # CP-A1: stash the full Capability object so the recovery
+                DISABLED_SKILLS[name] = missing
+                # CP-A1: stash the full Skill object so the recovery
                 # module can restore it without rebuilding the registry.
-                _DISABLED_REGISTRY[name] = entry
+                _DISABLED_SKILL_REGISTRY[name] = entry
                 del registry[name]
 
-    if DISABLED_CAPABILITIES:
-        _log_to_file(_lf, f"  filtered: {len(DISABLED_CAPABILITIES)} capabilities "
+    if DISABLED_SKILLS:
+        _log_to_file(_lf, f"  filtered: {len(DISABLED_SKILLS)} skills "
                            f"disabled due to missing tools")
     else:
-        _log_to_file(_lf, f"  filtered: 0 capabilities disabled (all tools available)")
+        _log_to_file(_lf, f"  filtered: 0 skills disabled (all tools available)")
     _log_to_file(_lf, f"  filter_pass: {time.time()-t:.2f}s")
 
     t = time.time()
@@ -1064,7 +1064,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
     _log_to_file(_lf, f"  workflows (store): {time.time()-t:.2f}s")
 
     # Compute WorkflowDefinition.requires as the union of each step's
-    # `requires` plus the `requires` of capabilities named in step.invokes.
+    # `requires` plus the `requires` of skills named in step.invokes.
     # Computed, never hand-authored.
     t = time.time()
     _compute_workflow_requires(registry)
@@ -1117,7 +1117,7 @@ def _build_registry() -> dict[str, Capability | WorkflowDefinition]:
 
 
 # ---------------------------------------------------------------------------
-# Function capabilities (unchanged)
+# Function skills (unchanged)
 # ---------------------------------------------------------------------------
 
 def _setup_help_component_param_description() -> str:
@@ -1148,9 +1148,9 @@ def _context_block(
     custom: dict[str, dict] | None = None,
     format: str = "markdown",
 ) -> dict[str, Any]:
-    """MCP callable for the ``context_block`` capability.
+    """MCP callable for the ``context_block`` skill.
 
-    Top-level so the capability's ``callable`` reference stays stable
+    Top-level so the skill's ``callable`` reference stays stable
     across registry rebuilds. Returns a dict with ``rendered`` (the
     block) and ``sources`` (per-source item counts + metadata) so MCP
     clients can inspect what was included.
@@ -1321,23 +1321,23 @@ def _build_slash_command_index() -> dict[str, str]:
 
 
 def _compute_workflow_requires(
-    registry: dict[str, Capability | WorkflowDefinition],
+    registry: dict[str, Skill | WorkflowDefinition],
 ) -> None:
     """Populate ``WorkflowDefinition.requires`` in-place.
 
     For each workflow, unions:
       - Every step's own ``requires`` (tool/component IDs).
-      - The ``requires`` of every capability named in ``step.invokes``.
+      - The ``requires`` of every skill named in ``step.invokes``.
 
-    Invoked capabilities that are not (yet) in the registry (e.g. filtered
+    Invoked skills that are not (yet) in the registry (e.g. filtered
     out by tool availability) are skipped silently — the workflow will
     show an incomplete dependency set, which is recoverable once the
     upstream component comes back.
 
-    Transitive closure (capability A.invokes = [B], B.requires = [obsidian])
+    Transitive closure (skill A.invokes = [B], B.requires = [obsidian])
     is followed one hop. Multi-hop chains (A invokes B invokes C) are not
     resolved here; the control-graph resolver in
-    ``work_buddy.control.capability_resolver`` handles the full closure on
+    ``work_buddy.control.skill_resolver`` handles the full closure on
     demand without bloating the workflow dataclass.
     """
     for entry in registry.values():
@@ -1347,10 +1347,10 @@ def _compute_workflow_requires(
         for step in entry.steps:
             for t_id in step.requires:
                 seen.add(t_id)
-            for cap_name in step.invokes:
-                cap = registry.get(cap_name)
-                if isinstance(cap, Capability):
-                    for t_id in cap.requires:
+            for skill_name in step.invokes:
+                skill = registry.get(skill_name)
+                if isinstance(skill, Skill):
+                    for t_id in skill.requires:
                         seen.add(t_id)
         entry.requires = sorted(seen)
 
@@ -1388,7 +1388,7 @@ def _resolve_mode_gate(raw: str | None, source: str) -> str | None:
     Returns ``None`` when unset. On a malformed expression or a reference to an
     unknown mode id, logs a warning and returns ``None`` — a surface with a
     broken gate stays visible rather than silently hidden forever. (The
-    capability loader handles its own resolution so it can surface the failure
+    skill loader handles its own resolution so it can surface the failure
     as a hard, count-checked issue instead.) The validated string is stored,
     not a parsed AST: the gate is re-parsed at evaluation time so it never
     carries a stale class identity across an ``mcp_registry_reload``.

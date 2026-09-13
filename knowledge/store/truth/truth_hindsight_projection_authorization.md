@@ -1,11 +1,10 @@
 ---
 name: Truth Hindsight Projection Authorization
-kind: capability
+kind: skill
 description: Preview, grant, inspect, or revoke a narrow expiring authorization for background projection of eligible confirmed Truth into Hindsight.
-capability_name: truth_hindsight_projection_authorization
 category: truth
 op: op.wb.truth_hindsight_projection_authorization
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: string
@@ -50,6 +49,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_hindsight_projection_authorization
 tags:
 - truth
 - hindsight

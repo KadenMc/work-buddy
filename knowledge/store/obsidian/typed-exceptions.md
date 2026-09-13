@@ -56,18 +56,18 @@ The shorthand exists because `ObsidianPostWriteUncertain` is one of the most-ref
 
 **Bridge layer raises typed exceptions.** `_request_with_status` and `write_file_raw` translate urllib failures and HTTP statuses into typed exceptions at the boundary. They no longer return False/None for failure (CP6 removed the transitional shim).
 
-**Capabilities do NOT try/except by default.** The pre-CP6 sprawl of 'wrap bridge call, translate to result dict' was removed. Capabilities call bridge functions and let exceptions propagate. The `@bridge_retry` decorator catches transient subclasses, retries, and translates to `bridge_failure(...)` dicts at exhaustion. The gateway's outer try/except classifies via `isinstance` and enqueues for retry.
+**Skills do NOT try/except by default.** The pre-CP6 sprawl of 'wrap bridge call, translate to result dict' was removed. Skills call bridge functions and let exceptions propagate. The `@bridge_retry` decorator catches transient subclasses, retries, and translates to `bridge_failure(...)` dicts at exhaustion. The gateway's outer try/except classifies via `isinstance` and enqueues for retry.
 
 **Critical exception** (CP-A6): `@bridge_retry` and `obsidian_retry` MUST NOT catch and retry `ObsidianPostWriteUncertain`. Blind retry causes double-writes (each attempt re-reads the file, including any late-committed plugin write, and inserts again). Both raise it through to the gateway, which decides via verify-then-decide.
 
-**Capabilities catch selectively** for genuine domain-specific recovery:
+**Skills catch selectively** for genuine domain-specific recovery:
 - `vault_writer.vault_write` catches `ObsidianUnreachable` for the filesystem fallback.
 - `inline_todos.cleanup_handled_todos` catches `ObsidianError` per-file because it's a best-effort batch operation that aggregates per-file errors.
 - `obsidian/tasks/mutations.py::delete_task` catches `ObsidianError` to record partial-state in its `removed` dict.
 
 **Gateway classifies once** at the top of `wb_run` dispatch (`mcp_server/tools/gateway.py`). `classify_error` keys on the exception's `error_kind` (the same signal `is_transient_result` uses for result dicts), so a raised exception and a `bridge_failure` return-dict classify identically. The retry sweep (`sidecar/retry_sweep.py::_replay`) does the same.
 
-`bridge.require_available()` — the precondition guard most bridge capabilities call first — raises these typed exceptions too (via the shared `_classify_unreachable()` disambiguator), so a precondition failure and a request-time failure for the same condition classify identically.
+`bridge.require_available()` — the precondition guard most bridge skills call first — raises these typed exceptions too (via the shared `_classify_unreachable()` disambiguator), so a precondition failure and a request-time failure for the same condition classify identically.
 
 ## Policy table
 
@@ -111,7 +111,7 @@ CP5 alone closed the double-write hazard for the FIRST gateway dispatch. CP-A6 c
 2. **At gateway dispatch** (CP5): `verify_post_write` decides verified vs. enqueue.
 3. **Across sweep ticks** (CP-A7):
    - Gateway persists `pwu_carrier = {path, content_hint, write_mode}` on the op record when verify says absent/indeterminate (Fix A).
-   - `retry_sweep._replay` calls `_pre_verify_pwu(carrier)` BEFORE invoking the capability (Fix B). If verified, mark complete and skip the replay. If absent/indeterminate, strip the stale carrier and proceed with normal replay.
+   - `retry_sweep._replay` calls `_pre_verify_pwu(carrier)` BEFORE invoking the skill (Fix B). If verified, mark complete and skip the replay. If absent/indeterminate, strip the stale carrier and proceed with normal replay.
    - `_replay`'s except-PWU branch persists a fresh carrier when its own bridge call raises PWU — so the NEXT sweep tick can pre-verify too.
 
 The race that CP-A7 closes: gateway verify reads filesystem at T1 (says absent); plugin late-commits the write at T2; sweep replays at T3. Without pre-verify, the sweep's read-modify-write reads the now-late-committed file and adds another insertion. With pre-verify, the sweep sees the late commit and short-circuits.

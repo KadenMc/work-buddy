@@ -2,8 +2,8 @@
 schedule: "0 * * * *"  # conversation cadence — heavy corpus (tens of thousands of spans), hourly
 recurring: true
 jitter_seconds: 150  # distinct offset; spread the top-of-hour fire
-type: capability
-capability: index_rebuild
+type: skill
+skill: index_rebuild
 params:
   partition: conversation
   force: false

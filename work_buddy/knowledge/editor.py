@@ -7,11 +7,11 @@ its file — and this module is the *transactional* API around the file-store se
 duplicate-placeholder rejection, DAG validation, and cache invalidation.
 
 Surface: ``delete_unit`` / ``move_unit`` back the ``docs_delete`` / ``docs_move``
-capabilities. ``create_unit`` / ``update_unit`` are the validated write
+skills. ``create_unit`` / ``update_unit`` are the validated write
 primitives. Content authoring and creation go through the ``docs_edit`` workflow
 — the agent edits a unit's ``.md`` file directly and the commit step validates +
 reconciles — so there is no ``docs_create`` / ``docs_update`` field-replacement
-capability and no ``workflow_create`` / ``workflow_update`` (workflow units are
+skill and no ``workflow_create`` / ``workflow_update`` (workflow units are
 edited the same way, frontmatter ``steps`` and all).
 
 ``children`` is not authored or stored — a unit's children are derived at load
@@ -221,7 +221,7 @@ def create_unit(
     trigger: str = "",
     command: str | None = None,
     workflow: str | None = None,
-    capabilities: list[str] | None = None,
+    skills: list[str] | None = None,
     parents: list[str] | None = None,
     tags: list[str] | None = None,
     aliases: list[str] | None = None,
@@ -283,13 +283,15 @@ def create_unit(
             unit_data["command"] = command
         if workflow:
             unit_data["workflow"] = workflow
-        if capabilities:
-            unit_data["capabilities"] = capabilities
-    elif kind == "capability":
+        if skills:
+            unit_data["skills"] = skills
+    elif kind == "skill":
         if extra:
-            for k in ("capability_name", "category", "parameters", "mutates_state",
+            for k in ("skill_name", "category", "parameters", "mutates_state",
                       "retry_policy", "consent_required", "consent_operations",
-                      "op", "schema_version"):
+                      "invokes", "param_aliases", "auto_retry", "slash_command",
+                      "is_action", "intrinsic_amplifiers", "op", "schema_version",
+                      "available_when"):
                 if k in extra:
                     unit_data[k] = extra[k]
     elif kind == "workflow":

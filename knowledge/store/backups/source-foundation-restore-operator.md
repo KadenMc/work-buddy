@@ -1,11 +1,10 @@
 ---
 name: Source Foundation Restore Operator
-kind: capability
+kind: skill
 description: Inspect or explicitly reconcile the fail-closed Source Foundation fence left by a machine restore.
-capability_name: source_foundation_restore_operator
 category: backups
 op: op.wb.source_foundation_restore_operator
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: string
@@ -56,6 +55,7 @@ consent_operations:
 - source_foundation.restore_reconcile
 retry_policy: manual
 auto_retry: false
+skill_name: source_foundation_restore_operator
 tags:
 - backups
 - restore

@@ -423,7 +423,7 @@ def check_sidecar_heartbeat() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 #
 # Single helper shared by:
-#   - The ``tailscale_status`` MCP capability (registry.py).
+#   - The ``tailscale_status`` MCP skill (registry.py).
 #   - The ``check_tailscale_*`` component health checks below.
 #   - The ``check_tailscale_*`` requirement checks in requirement_checks.py.
 #

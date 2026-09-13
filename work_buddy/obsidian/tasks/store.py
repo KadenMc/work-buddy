@@ -857,7 +857,7 @@ def restore(task_id: str) -> bool:
 
     Used by the snapshot-restore path (see ``architecture/backups``)
     and by any future "undo deletion" UX (e.g. a ``task_recover``
-    capability).
+    skill).
     """
     conn = get_connection()
     try:

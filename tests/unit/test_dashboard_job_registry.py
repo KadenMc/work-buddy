@@ -4,7 +4,7 @@ from work_buddy.dashboard.job_registry import (
     job_registry_projection,
     search_job_registry,
 )
-from work_buddy.mcp_server.registry import Capability, WorkflowDefinition
+from work_buddy.mcp_server.registry import Skill, WorkflowDefinition
 
 
 def _registry():
@@ -23,7 +23,7 @@ def _registry():
                 }
             },
         ),
-        "web_search": Capability(
+        "web_search": Skill(
             name="web_search",
             description="General web search.\nLong detail.",
             category="websearch",
@@ -45,7 +45,7 @@ def test_projection_and_search_share_exact_authoring_metadata(monkeypatch):
     )
 
     projection = job_registry_projection()
-    assert projection["capabilities"] == [
+    assert projection["skills"] == [
         {
             "name": "web_search",
             "description": "General web search.",
@@ -62,8 +62,8 @@ def test_projection_and_search_share_exact_authoring_metadata(monkeypatch):
     ]
     assert projection["workflows"][0]["slash_command"] == "wb-morning"
     assert search_job_registry(
-        reference_kind="job_capability", query="web search"
-    ) == projection["capabilities"]
+        reference_kind="job_skill", query="web search"
+    ) == projection["skills"]
     assert search_job_registry(
         reference_kind="job_workflow", query="wb morning"
     ) == projection["workflows"]
@@ -71,7 +71,7 @@ def test_projection_and_search_share_exact_authoring_metadata(monkeypatch):
 
 def test_reference_search_is_bounded_and_never_dispatches(monkeypatch):
     registry = {
-        f"match_{index}": Capability(
+        f"match_{index}": Skill(
             name=f"match_{index}",
             description="Matching operation",
             category="test",
@@ -87,7 +87,7 @@ def test_reference_search_is_bounded_and_never_dispatches(monkeypatch):
     )
 
     result = search_job_registry(
-        reference_kind="job_capability", query="matching", limit=100
+        reference_kind="job_skill", query="matching", limit=100
     )
     assert len(result) == 8
     assert [item["name"] for item in result] == [

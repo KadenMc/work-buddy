@@ -21,7 +21,7 @@ from work_buddy.knowledge.model import (
     KnowledgeUnit,
     DirectionsUnit,
     SystemUnit,
-    CapabilityUnit,
+    SkillUnit,
     VaultUnit,
 )
 
@@ -50,11 +50,11 @@ def _make_store() -> dict[str, KnowledgeUnit]:
             tags=["consent", "permissions"],
             aliases=["approval", "grants"],
         ),
-        "tasks/create": CapabilityUnit(
+        "tasks/create": SkillUnit(
             path="tasks/create",
             name="Task Create",
             description="Create a new task in the master list",
-            capability_name="task_create",
+            skill_name="task_create",
             category="tasks",
             content={
                 "summary": "Creates a task with optional project tag and due date.",
@@ -111,7 +111,7 @@ def _make_store() -> dict[str, KnowledgeUnit]:
                     "Note resolvers: 'latest_journal' (respects day boundary), "
                     "'today', or explicit vault-relative path. Section finding "
                     "matches headers at any level, ignores formatting, partial "
-                    "prefix match. MCP capability: vault_write_at_location."
+                    "prefix match. MCP skill: vault_write_at_location."
                 ),
             },
             tags=["vault", "obsidian", "writing"],

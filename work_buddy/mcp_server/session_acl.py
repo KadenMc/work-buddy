@@ -1,16 +1,16 @@
-"""Per-session capability ACL for gateway-enforced tool access.
+"""Per-session skill ACL for gateway-enforced tool access.
 
 work-buddy's MCP surface exposes a small fixed set of top-level tools
 (``wb_init``, ``wb_run``, ``wb_search``, ``wb_status``, ``wb_advance``,
-``wb_step_result``); every domain capability (``task_briefing``,
+``wb_step_result``); every domain skill (``task_briefing``,
 ``project_get``, etc.) is dispatched *through* ``wb_run``. That means
-restricting which capabilities a given MCP client can invoke cannot be
+restricting which skills a given MCP client can invoke cannot be
 done at LM Studio's ``integrations.allowed_tools`` layer — from its
 vantage point there's only one tool (``wb_run``). The whitelist has to
 live on the work-buddy gateway.
 
 This module provides a simple in-process map from an agent session id
-to a frozen set of capability names that session is permitted to
+to a frozen set of skill names that session is permitted to
 dispatch via ``wb_run``. ``llm_with_tools`` sets the ACL before firing
 its LM Studio request and clears it afterward; the gateway's ``wb_run``
 and ``wb_search`` paths consult it to enforce / filter accordingly.
@@ -18,7 +18,7 @@ and ``wb_search`` paths consult it to enforce / filter accordingly.
 Design notes:
 - **Default-open for normal agents.** When a session has no ACL
   registered, the gateway behaves exactly as before (all registered
-  capabilities accessible, subject to consent). Only sessions that
+  skills accessible, subject to consent). Only sessions that
   opt-in by registering an ACL are constrained.
 - **In-process only.** The MCP gateway and ``llm_with_tools`` run in
   the same process (the MCP sidecar service), so a plain module-level
@@ -35,7 +35,7 @@ from typing import Any, Iterable
 
 
 _SESSION_ACL: dict[str, frozenset[str]] = {}
-_ASSISTED_DRAFT_CAPABILITIES = frozenset(
+_ASSISTED_DRAFT_SKILLS = frozenset(
     {
         "assisted_draft_context_get",
         "assisted_draft_propose_patch",
@@ -47,7 +47,7 @@ _ASSISTED_DRAFT_CAPABILITIES = frozenset(
         "conversation_ack",
     }
 )
-_COWORK_EXECUTION_CAPABILITIES = frozenset(
+_COWORK_EXECUTION_SKILLS = frozenset(
     {
         "cowork_action_snapshot_get",
         "cowork_doc_get",
@@ -60,13 +60,13 @@ _COWORK_EXECUTION_CAPABILITIES = frozenset(
         "conversation_ack",
     }
 )
-_COWORK_VERIFY_JOB_CAPABILITIES = frozenset(
+_COWORK_VERIFY_JOB_SKILLS = frozenset(
     {
         "cowork_verify_job_get",
         "cowork_verify_job_submit",
     }
 )
-_COWORK_TRUTH_ANALYSIS_CAPABILITIES = frozenset(
+_COWORK_TRUTH_ANALYSIS_SKILLS = frozenset(
     {
         "cowork_truth_analysis_job_get",
         "cowork_truth_analysis_search",
@@ -74,13 +74,13 @@ _COWORK_TRUTH_ANALYSIS_CAPABILITIES = frozenset(
         "cowork_truth_analysis_job_submit",
     }
 )
-_JOURNAL_PROMPT_GENERATION_CAPABILITIES = frozenset(
+_JOURNAL_PROMPT_GENERATION_SKILLS = frozenset(
     {
         "journal_prompt_generation_context",
         "journal_prompt_generation_complete",
     }
 )
-_JOURNAL_SMART_PROCESSING_CAPABILITIES = frozenset(
+_JOURNAL_SMART_PROCESSING_SKILLS = frozenset(
     {
         "journal_smart_processing_context",
         "journal_smart_processing_complete",
@@ -105,34 +105,34 @@ def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
     )
 
     if journal_smart_request_from_session(session_id) is not None:
-        return _JOURNAL_SMART_PROCESSING_CAPABILITIES
+        return _JOURNAL_SMART_PROCESSING_SKILLS
 
     if journal_prompt_request_from_session(session_id) is not None:
-        return _JOURNAL_PROMPT_GENERATION_CAPABILITIES
+        return _JOURNAL_PROMPT_GENERATION_SKILLS
 
     if assistance_generation_from_session(session_id) is not None:
-        return _ASSISTED_DRAFT_CAPABILITIES
+        return _ASSISTED_DRAFT_SKILLS
 
     # Verify workers are intentionally narrower than the persistent document
     # agent.  The submit operation derives and validates the bound role from
     # the transport session; a caller-provided role cannot widen this ACL.
     if cowork_verify_job_from_session(session_id) is not None:
-        return _COWORK_VERIFY_JOB_CAPABILITIES
+        return _COWORK_VERIFY_JOB_SKILLS
     if cowork_truth_analysis_run_from_session(session_id) is not None:
-        return _COWORK_TRUTH_ANALYSIS_CAPABILITIES
+        return _COWORK_TRUTH_ANALYSIS_SKILLS
     if cowork_generation_from_session(session_id) is None:
         return None
-    return _COWORK_EXECUTION_CAPABILITIES
+    return _COWORK_EXECUTION_SKILLS
 
 
-def set_session_acl(session_id: str, allowed_capabilities: Iterable[str]) -> None:
-    """Register a capability whitelist for ``session_id``.
+def set_session_acl(session_id: str, allowed_skills: Iterable[str]) -> None:
+    """Register a skill whitelist for ``session_id``.
 
-    While the ACL is set, ``wb_run`` rejects any capability not in
-    ``allowed_capabilities`` and ``wb_search`` filters its results to
+    While the ACL is set, ``wb_run`` rejects any skill not in
+    ``allowed_skills`` and ``wb_search`` filters its results to
     the allowed set. Replacing an existing ACL is allowed (overwrites).
     """
-    _SESSION_ACL[session_id] = frozenset(allowed_capabilities)
+    _SESSION_ACL[session_id] = frozenset(allowed_skills)
 
 
 def clear_session_acl(session_id: str) -> None:
@@ -169,8 +169,8 @@ def any_acl_registered() -> bool:
     return bool(_SESSION_ACL)
 
 
-def is_capability_allowed(session_id: str | None, capability: str) -> bool:
-    """Check whether ``capability`` is allowed for ``session_id``.
+def is_skill_allowed(session_id: str | None, skill: str) -> bool:
+    """Check whether ``skill`` is allowed for ``session_id``.
 
     Semantics:
     - ``session_id`` resolves to a registered ACL → membership check.
@@ -188,7 +188,7 @@ def is_capability_allowed(session_id: str | None, capability: str) -> bool:
     """
     acl = get_session_acl(session_id)
     if acl is not None:
-        return capability in acl
+        return skill in acl
     # No ACL for this (possibly None) session id.
     if session_id is None and any_acl_registered():
         return False
@@ -212,7 +212,7 @@ def filter_search_results(
 
     Fail-closed bookend: when ``session_id`` is None AND an ACL is
     active anywhere in the process, we treat the ACL as empty and
-    surface the trim. This mirrors ``is_capability_allowed``'s
+    surface the trim. This mirrors ``is_skill_allowed``'s
     refuse-by-default stance for unresolved sessions.
 
     Extracted from the gateway's ``wb_search`` handler so the response
@@ -239,6 +239,6 @@ def filter_search_results(
             f"{hidden} result(s) matched the query but were hidden by "
             f"your session ACL (the caller restricted this session to "
             f"a named preset). Further searches with reworded queries "
-            f"will not reveal them — stick to capabilities you can see."
+            f"will not reveal them — stick to skills you can see."
         ),
     }

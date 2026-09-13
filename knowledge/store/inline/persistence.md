@@ -16,6 +16,6 @@ parents:
 ---
 
 The `sidecar_jobs/inline-sync.md` schedule is disabled and the public watcher
-capability declarations are removed. Existing `inline.db` rows are inert
+skill declarations are removed. Existing `inline.db` rows are inert
 migration evidence. Do not scan the vault, enqueue watcher executions, cancel
 rows based on file changes, or offer Obsidian setup advice.

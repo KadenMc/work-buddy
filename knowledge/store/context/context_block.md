@@ -1,11 +1,10 @@
 ---
 name: Context Block
-kind: capability
+kind: skill
 description: Collect and render native context sources plus explicitly enabled compatibility sources. Obsidian, Obsidian wellness/tasks, Day Planner, and Datacore sources are skipped before cache or collector access when Obsidian is opted out; filesystem Vault and provider-neutral Calendar remain independent. Supports per-source depth, target-date windows, max-chars budgets, Markdown or JSON, and cache reuse.
-capability_name: context_block
 category: context
 op: op.wb.context_block
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   sources:
     type: list
@@ -47,6 +46,7 @@ parameters:
     type: str
     description: markdown (default) or json.
     required: false
+skill_name: context_block
 tags:
 - context
 - block

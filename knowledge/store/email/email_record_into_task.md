@@ -1,11 +1,10 @@
 ---
 name: Email Record Into Task
-kind: capability
+kind: skill
 description: Append an email cluster as context in an existing task's Co-work knowledge document. The target task must already have an active document.
-capability_name: email_record_into_task
 category: email
 op: op.wb.email_record_into_task
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -25,6 +24,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: email_record_into_task
 tags:
 - email
 - record
@@ -36,7 +36,6 @@ aliases:
 - attach emails to existing task
 parents:
 - email
-requires: []
 ---
 
 The native result carries task/document identity, task revision, and mutation

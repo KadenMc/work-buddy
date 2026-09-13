@@ -2,6 +2,6 @@ id: dev
 label: Dev mode
 description: >-
   Developer and diagnostic surfaces. While active, knowledge queries surface
-  each unit's dev_notes, and dev-gated capabilities/workflows become
+  each unit's dev_notes, and dev-gated skills/workflows become
   discoverable and callable.
 activatable_when: null

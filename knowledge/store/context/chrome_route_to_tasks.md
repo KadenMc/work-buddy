@@ -1,11 +1,10 @@
 ---
 name: Chrome Route To Tasks
-kind: capability
+kind: skill
 description: Walk a Chrome-group thread's tabs and create one task per tab. Each tab's title becomes the task text; the URL goes into a linked summary note.
-capability_name: chrome_route_to_tasks
 category: context
 op: op.wb.chrome_route_to_tasks
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -25,6 +24,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: chrome_route_to_tasks
 tags:
 - context
 - chrome
@@ -37,5 +37,4 @@ aliases:
 - spin out tabs as tasks
 parents:
 - context
-requires: []
 ---

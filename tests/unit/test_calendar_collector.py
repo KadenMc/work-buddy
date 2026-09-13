@@ -181,10 +181,10 @@ def test_collect_coverage_footer_opt_in(monkeypatch):
     prov.add_calendar("sk", "SickKids")
     prov.add_events([_timed("Work", "work", "e1", 13, 0, 60, "Lunch")])
     _use_fake(monkeypatch, prov)
-    # build_coverage_report is imported inside the footer from capabilities,
+    # build_coverage_report is imported inside the footer from skills,
     # which calls get_calendar_provider; patch there too.
-    from work_buddy.calendar import capabilities as caps
-    monkeypatch.setattr(caps, "get_calendar_provider", lambda: prov)
+    from work_buddy.calendar import skills
+    monkeypatch.setattr(skills, "get_calendar_provider", lambda: prov)
 
     out = cc.collect({"include_coverage": True})
     assert "## Calendar coverage" in out

@@ -1,11 +1,10 @@
 ---
 name: Journal Prompt Generation Complete
-kind: capability
+kind: skill
 description: Retain one lease-bound Journal worker result as identified agent output and bind it as an unreviewed prompt variant.
-capability_name: journal_prompt_generation_complete
 category: journal
 op: op.wb.journal_prompt_generation_complete
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   request_id:
     type: str
@@ -21,13 +20,13 @@ parameters:
     required: true
 mutates_state: true
 retry_policy: verify_first
+skill_name: journal_prompt_generation_complete
 tags:
 - journal
 - internal
 - generation
 parents:
 - journal
-requires: []
 ---
 
 The output call causally acknowledges the worker's recorded input disclosure,

@@ -17,7 +17,7 @@ directory is a configurable Repository-Setup requirement
 
 The dashboard project-edit path routes ``POST /api/projects/<slug>``
 through :meth:`apply_mutation`, which writes the project's markdown note
-and the SQLite registry together. The ``project_sync`` capability
+and the SQLite registry together. The ``project_sync`` skill
 reconciles drift on a recurring schedule, catching notes hand-edited in
 Obsidian out-of-band.
 

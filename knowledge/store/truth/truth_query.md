@@ -1,11 +1,10 @@
 ---
 name: Truth Query
-kind: capability
+kind: skill
 description: Query confirmed claims by current or historical belief time, or inspect active conflicts and review findings.
-capability_name: truth_query
 category: truth
 op: op.wb.truth_query
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -39,6 +38,7 @@ parameters:
     type: str
     description: Optional claim filter for the conflicts view.
     required: false
+skill_name: truth_query
 tags:
 - truth
 - query

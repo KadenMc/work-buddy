@@ -51,12 +51,12 @@ def _format(summary: dict[str, Any], events: dict[str, Any]) -> str:
             lines.append(f"- **{cat}:** {count}")
         lines.append("")
 
-    # Top capabilities
-    by_cap = summary.get("by_capability", {})
-    if by_cap:
-        lines.append("### Top capabilities invoked")
-        for cap, count in list(by_cap.items())[:8]:
-            lines.append(f"- `{cap}` x{count}")
+    # Top skills
+    by_skill = summary.get("by_skill", {})
+    if by_skill:
+        lines.append("### Top skills invoked")
+        for skill, count in list(by_skill.items())[:8]:
+            lines.append(f"- `{skill}` x{count}")
         lines.append("")
 
     # Workflows
@@ -90,12 +90,12 @@ def _format(summary: dict[str, Any], events: dict[str, Any]) -> str:
             # Extract just the time part
             time_part = ts[11:19] if len(ts) > 19 else ts
             ev_type = ev.get("type", "")
-            if ev_type == "capability_invoked":
-                cap = ev.get("capability", "?")
+            if ev_type in ("skill_invoked", "capability_invoked"):
+                skill = ev.get("skill") or ev.get("capability") or "?"
                 status = ev.get("status", "?")
                 dur_ms = ev.get("duration_ms", 0)
                 marker = "[ERR]" if status == "error" else "[CONSENT]" if status == "consent_required" else "->"
-                lines.append(f"- {time_part} {marker} `{cap}` ({dur_ms}ms)")
+                lines.append(f"- {time_part} {marker} `{skill}` ({dur_ms}ms)")
             elif ev_type == "workflow_started":
                 wf = ev.get("workflow_name", "?")
                 lines.append(f"- {time_part} [WF] workflow `{wf}`")

@@ -2,7 +2,7 @@
 
 The test harness neutralizes outbound notification delivery by default
 (``_isolate_notification_delivery`` in ``tests/conftest.py``) so that a
-capability emitting a fire-and-forget notification (for example
+skill emitting a fire-and-forget notification (for example
 ``tasks.archive_completed`` -> ``_send_archive_summary_notification``) cannot
 send a real message during a test run. These tests pin both halves of that
 contract: stubbed by default, restorable via the opt-out marker.

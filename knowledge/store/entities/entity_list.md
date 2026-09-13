@@ -1,8 +1,7 @@
 ---
 name: Entity List
-kind: capability
+kind: skill
 description: 'List entities ordered by most-recently-updated. Optional hierarchical tag filter: tag=''person'' returns ''person'', ''person/family'', ''person/colleague'', etc.'
-capability_name: entity_list
 category: entities
 parameters:
   tag:
@@ -14,7 +13,8 @@ parameters:
     description: Cap on the result set; omit for everything.
     required: false
 op: op.wb.entity_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_list
 tags:
 - entities
 - entity

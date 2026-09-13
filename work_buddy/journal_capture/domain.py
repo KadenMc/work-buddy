@@ -2740,7 +2740,7 @@ class JournalDomainService:
         request_id: str,
         lease_token: str,
     ) -> Mapping[str, Any]:
-        """Validate a worker capability before any result Source is resolved."""
+        """Validate a worker lease before any result Source is resolved."""
 
         now = _now()
         with self.store._connect() as conn:
@@ -2767,7 +2767,7 @@ class JournalDomainService:
         lease_token: str,
         worker_id: str,
     ) -> Mapping[str, Any]:
-        """Validate both the capability secret and its bound execution session."""
+        """Validate both the lease secret and its bound execution session."""
 
         result = self.validate_prompt_generation_lease(
             request_id=request_id,

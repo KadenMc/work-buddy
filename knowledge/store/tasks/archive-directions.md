@@ -5,7 +5,7 @@ description: How to archive completed tasks — map the user's scope intent to o
 summary: Sets the native archived lifecycle on eligible completed tasks. Default scope leaves the last 7 days visible; no Markdown is moved or rendered.
 trigger: user runs /wb-task-archive or asks to archive, clean up, or tidy completed tasks
 command: wb-task-archive
-capabilities:
+skills:
 - tasks/task_archive
 tags:
 - tasks
@@ -30,7 +30,7 @@ dependency.
 
 ## Choosing older_than_days
 
-Default to **7** — the capability's recently-done buffer. Override that default when the user's intended scope is clear, reading both the argument and the surrounding conversation:
+Default to **7** — the skill's recently-done buffer. Override that default when the user's intended scope is clear, reading both the argument and the surrounding conversation:
 
 - `all` / `everything` / "every completed task" → **0** (archive every completed task regardless of age)
 - a bare number, "N days", or "last N days" → **N**
@@ -49,6 +49,6 @@ Report concisely how many native tasks were archived. A summary notification is 
 
 ## Do NOT
 
-- Do not try to archive incomplete tasks — the capability only moves completed ones.
+- Do not try to archive incomplete tasks — the skill only moves completed ones.
 - Do not list every archived task.
 - Do not recommend process changes or a different cadence; just do the archive the user asked for.

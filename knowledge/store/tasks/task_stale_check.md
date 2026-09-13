@@ -1,11 +1,11 @@
 ---
 name: Task Stale Check
-kind: capability
+kind: skill
 description: Find forgotten/stale tasks across inbox, snoozed, MIT, and focused
-capability_name: task_stale_check
 category: tasks
 op: op.wb.task_stale_check
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: task_stale_check
 tags:
 - tasks
 - task
@@ -21,7 +21,6 @@ aliases:
 - tasks going stale
 parents:
 - tasks
-requires: []
 ---
 
 Staleness is derived from native task timestamps and lifecycle history.

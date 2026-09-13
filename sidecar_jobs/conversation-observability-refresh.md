@@ -2,8 +2,8 @@
 schedule: "2-59/5 * * * *"  # every 5 minutes, offset 2 minutes from ir-index-rebuild
 recurring: true
 jitter_seconds: 60
-type: capability
-capability: conversation_observability_refresh
+type: skill
+skill: conversation_observability_refresh
 params:
   days: 7
   max_sessions: 5

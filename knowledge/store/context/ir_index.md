@@ -1,11 +1,10 @@
 ---
 name: Ir Index
-kind: capability
+kind: skill
 description: Build or check the IR search index. Run 'build' to (re)encode dense vectors for indexed documents; builds across every IR source share one SQLite DB and serialize on a DB-wide advisory lock, so a build that arrives while another is running returns {skipped true, reason 'build_in_progress'} rather than queueing behind it. 'status' is never gated and returns per-source counts including dense_eligible_docs (how many docs CAN be encoded) and pending_eligible (real backlog — NOT doc_count vs vector_count, which is misleading because sources like conversation intentionally leave dense_text empty for tool-only spans).
-capability_name: ir_index
 category: context
 op: op.wb.ir_index
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: str
@@ -23,6 +22,7 @@ parameters:
     type: bool
     description: Rebuild from scratch (default False)
     required: false
+skill_name: ir_index
 tags:
 - context
 - ir

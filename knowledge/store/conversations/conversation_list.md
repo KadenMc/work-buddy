@@ -1,15 +1,15 @@
 ---
 name: Conversation List
-kind: capability
+kind: skill
 description: List conversations.
-capability_name: conversation_list
 category: conversations
 op: op.wb.conversation_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   status:
     type: string
     description: 'Filter: ''open'' (default), ''closed'', or ''all'''
+skill_name: conversation_list
 tags:
 - conversations
 - conversation

@@ -2,10 +2,10 @@
 name: Task Assign Directions
 kind: directions
 description: How to assign a task — presentation format, completion tracking, state change protocol
-summary: 'Use the capability directly. task_assign = claim + read; use task_read for inspection only. Present native fields, current Co-work knowledge, revision, and session count. Assignment does not change attention state.'
+summary: Use the skill directly. task_assign = claim + read; use task_read for inspection only. Present native fields, current Co-work knowledge, revision, and session count. Assignment does not change attention state.
 trigger: user runs /wb-task-assign or asks to assign a task to the current session
 command: wb-task-assign
-capabilities:
+skills:
 - tasks/task_assign
 - tasks/task_toggle
 tags:

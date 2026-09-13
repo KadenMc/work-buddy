@@ -727,22 +727,22 @@ def test_resolve_workflow_consent_denied_writes_no_grants(cache):
     assert ok is False
 
 
-def test_resolve_capability_consent_unchanged(cache):
-    """A non-workflow-consent notification (e.g. capability bundle)
+def test_resolve_skill_consent_unchanged(cache):
+    """A non-workflow-consent notification (e.g. skill bundle)
     does NOT mint a workflow_class grant. The new code path is gated
     on ``context.kind == "workflow_consent"``."""
     from work_buddy.consent import (
         create_consent_request, resolve_consent_request,
         is_workflow_authorized, _cache,
     )
-    # Capability-style bundle (no ``kind`` field).
+    # Skill-style bundle (no ``kind`` field).
     record = create_consent_request(
         operation="bundle:task_create",
         reason="(test)",
         risk="moderate",
         default_ttl=15,
         requester="gateway:task_create",
-        context={"capability": "task_create", "operations": ["tasks.create_task"]},
+        context={"skill": "task_create", "operations": ["tasks.create_task"]},
     )
     nid = record["notification_id"]
 
@@ -973,8 +973,8 @@ def test_finalize_returns_not_found_for_unknown_id(cache):
     assert out["status"] == "not_found"
 
 
-def test_finalize_capability_bundle_writes_individual_op_grants(cache):
-    """For a capability-bundle consent (the ``bundle:<cap>`` shape), the
+def test_finalize_skill_bundle_writes_individual_op_grants(cache):
+    """For a skill-bundle consent (the ``bundle:<skill>`` shape), the
     helper grants each underlying op so the ``@requires_consent``
     decorators (which check individual op names) pass."""
     from work_buddy.consent import (
@@ -986,7 +986,7 @@ def test_finalize_capability_bundle_writes_individual_op_grants(cache):
         operation="bundle:task_create",
         reason="(test)", risk="moderate", default_ttl=15,
         requester="gateway:task_create",
-        context={"capability": "task_create", "operations": ["tasks.create_task"]},
+        context={"skill": "task_create", "operations": ["tasks.create_task"]},
     )
     nid = record["notification_id"]
     respond_to_notification(
@@ -1034,7 +1034,7 @@ def test_finalize_denied_writes_no_grants(cache):
 
 # ---------------------------------------------------------------------------
 # _auto_consent_request session routing — the bug an earlier session
-# exposed: capability-bundle consent prompts had their
+# exposed: skill-bundle consent prompts had their
 # ``callback_session_id`` set from ``os.environ.get("WORK_BUDDY_SESSION_ID")``
 # (the MCP server's bootstrap session), not from the agent's session.
 # Out-of-band approvals (Telegram callback, Obsidian-modal click after
@@ -1099,7 +1099,7 @@ def test_auto_consent_request_routes_callback_to_explicit_session(
 
     gateway._auto_consent_request(
         operations=["test.op"],
-        capability_name="test_cap",
+        skill_name="test_skill",
         op_id="op_test",
         session_id="explicit-agent-sid",
     )
@@ -1147,7 +1147,7 @@ def test_auto_consent_request_falls_back_to_env_when_session_id_none(
 
     gateway._auto_consent_request(
         operations=["test.op"],
-        capability_name="test_cap",
+        skill_name="test_skill",
         op_id="op_test",
         # No session_id arg.
     )

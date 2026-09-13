@@ -1,8 +1,7 @@
 ---
 name: Entity List References
-kind: capability
+kind: skill
 description: List references for an entity, newest first. Default limit 50 to keep dashboard responses small.
-capability_name: entity_list_references
 category: entities
 parameters:
   entity_id:
@@ -14,7 +13,8 @@ parameters:
     description: Cap on the result set. Default 50; pass a larger value for the full history.
     required: false
 op: op.wb.entity_list_references
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_list_references
 tags:
 - entities
 - entity

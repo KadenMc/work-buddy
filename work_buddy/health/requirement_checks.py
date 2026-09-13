@@ -705,7 +705,7 @@ def check_work_buddy_plugin() -> dict[str, Any]:
 
     The plugin (https://github.com/KadenMc/obsidian-work-buddy) is what
     provides the Obsidian bridge HTTP endpoint on port 27125 that the
-    ``obsidian`` tool probe and every bridge-backed capability depends
+    ``obsidian`` tool probe and every bridge-backed skill depends
     on. Delegates to ``_community_plugin_state`` for the two-part
     installed-vs-enabled distinction.
     """
@@ -945,7 +945,7 @@ def check_thunderbird_bridge() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 #
 # Both checks delegate to the shared helper in ``work_buddy.health.checks``
-# (the same one the ``tailscale_status`` MCP capability uses), mirroring
+# (the same one the ``tailscale_status`` MCP skill uses), mirroring
 # the ``check_lmstudio_reachable`` pattern. The helper memoizes briefly so
 # running these alongside the component health checks doesn't trigger
 # multiple ``tailscale`` subprocess invocations within one diagnose pass.

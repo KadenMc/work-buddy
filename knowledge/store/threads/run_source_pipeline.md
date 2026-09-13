@@ -1,11 +1,10 @@
 ---
 name: Run Source Pipeline
-kind: capability
+kind: skill
 description: 'Run an end-to-end non-Journal source pipeline: collect raw items, annotate with tags + summary, algorithmically cluster, LLM-refine cluster boundaries + per-cluster action proposals (local-first tier_chain), and spawn a group umbrella thread + group sub-threads with the items as ContextItems.'
-capability_name: run_source_pipeline
 category: threads
 op: op.wb.run_source_pipeline
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   source:
     type: str
@@ -13,7 +12,7 @@ parameters:
     required: true
   profile:
     type: str
-    description: 'Optional source-specific pipeline profile'
+    description: Optional source-specific pipeline profile
     required: false
   engagement_window:
     type: str
@@ -57,6 +56,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: run_source_pipeline
 tags:
 - threads
 - run

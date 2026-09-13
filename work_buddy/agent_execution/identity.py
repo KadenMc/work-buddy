@@ -29,7 +29,7 @@ def prompt_with_execution_identity(
             "load the exact `mcp__work-buddy__wb_init` tool before calling "
             "that tool. After initialization, use ToolSearch only to load "
             "`mcp__work-buddy__*` tools required by the scoped-agent brief; "
-            "load `mcp__work-buddy__wb_search` before capability discovery. "
+            "load `mcp__work-buddy__wb_search` before skill discovery. "
             "Do not load or use any non-Work-Buddy tool.\n"
         )
     return (

@@ -1,6 +1,6 @@
 """Conversations-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). The closure code below
 is moved verbatim from the former ``registry.py`` builder.
 """
@@ -12,12 +12,12 @@ from work_buddy.mcp_server.op_registry import register_op
 
 
 def _register() -> None:
-    """Conversation capabilities — multi-turn agent-user dialogue.
+    """Conversation skills — multi-turn agent-user dialogue.
 
     Conversations are a standalone subsystem backed by SQLite. The
     dashboard renders them in a sidebar chat panel.
 
-    Renamed from ``_thread_capabilities``; the ``thread`` namespace
+    Renamed from ``_thread_skills``; the ``thread`` namespace
     is reserved for the universal-entity primitive in
     :mod:`work_buddy.threads`.
     """

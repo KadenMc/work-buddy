@@ -1,7 +1,7 @@
 """Consent / policy hook at the processor boundary.
 
 The one behavioral change the backbone introduces: consent is enforced **between the dispatcher and ``Processor.run()``**, not
-only inside individual capabilities. Capabilities still *declare* their
+only inside individual skills. Skills still *declare* their
 ``consent_weight``; this boundary *enforces* it.
 
 ``policy_check`` returns one of ``"allow" | "deny" | "prompt"``:

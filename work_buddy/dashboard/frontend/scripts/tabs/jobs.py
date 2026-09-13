@@ -133,7 +133,7 @@ window.jobsSurface = {
 // ---- Form-bridge registration ----
 //
 // Schema-driven agent ↔ form integration. The dashboard_interact MCP
-// capability addresses this form via form_id="jobs-add-job"; the
+// skill addresses this form via form_id="jobs-add-job"; the
 // bridge dispatches each event to the matching handler below.
 //
 // Knowledge of which DOM input each schema field maps to lives ONLY
@@ -152,12 +152,12 @@ function _wbJobsSetTypeAndKind(jobType) {
     if (!selectEl) return;
     if (jobType === 'prompt') {
         selectEl.value = 'prompt';
-    } else if (jobType === 'capability' || jobType === 'workflow') {
+    } else if (jobType === 'skill' || jobType === 'workflow') {
         selectEl.value = 'invoke';
         if (kindEl) kindEl.value = jobType;
     }
     if (typeof onJobTypeChange === 'function') onJobTypeChange();
-    if ((jobType === 'capability' || jobType === 'workflow')
+    if ((jobType === 'skill' || jobType === 'workflow')
         && typeof onInvokeKindChange === 'function') {
         onInvokeKindChange();
     }
@@ -178,8 +178,8 @@ function _wbJobsReadFormState() {
     if (typeSel === 'prompt') {
         out.job_type = 'prompt';
     } else if (typeSel === 'invoke') {
-        out.job_type = (kindSel === 'workflow') ? 'workflow' : 'capability';
-        if (out.job_type === 'capability') out.capability = get('job-form-invoke-name');
+        out.job_type = (kindSel === 'workflow') ? 'workflow' : 'skill';
+        if (out.job_type === 'skill') out.skill = get('job-form-invoke-name');
         else out.workflow = get('job-form-invoke-name');
     }
     return out;
@@ -194,7 +194,7 @@ if (window.wbFormBridge && typeof window.wbFormBridge.register === 'function') {
                 if (typeof onCronInput === 'function') onCronInput();
             },
             job_type:   v => _wbJobsSetTypeAndKind(v),
-            capability: v => {
+            skill:      v => {
                 _wbJobsSetInput('job-form-invoke-name', v);
                 if (typeof onInvokeNameInput === 'function') onInvokeNameInput();
             },
@@ -464,9 +464,9 @@ async function onEditJobClick(name) {
     } else {
         document.getElementById('job-form-type').value = 'invoke';
         if (typeof onJobTypeChange === 'function') onJobTypeChange();
-        document.getElementById('job-form-invoke-kind').value = data.job_type || 'capability';
+        document.getElementById('job-form-invoke-kind').value = data.job_type || 'skill';
         if (typeof onInvokeKindChange === 'function') onInvokeKindChange();
-        const invokeName = data.job_type === 'workflow' ? data.workflow : data.capability;
+        const invokeName = data.job_type === 'workflow' ? data.workflow : data.skill;
         document.getElementById('job-form-invoke-name').value = invokeName || '';
         if (data.params && Object.keys(data.params).length) {
             document.getElementById('job-form-params').value = JSON.stringify(data.params, null, 2);
@@ -505,7 +505,7 @@ async function onDeleteJobClick(name) {
 }
 
 // ---- Add-job form ----
-// Cached registry list (capabilities + workflows). The first call to
+// Cached registry list (skills + workflows). The first call to
 // /api/registry/list in the dashboard process triggers a full registry
 // build (10-20s cold), so we kick the fetch at page-load time — by the
 // time the user clicks Add Job it's almost always warm.
@@ -528,7 +528,7 @@ function _loadJobRegistry() {
         .then(r => r.json())
         .then(j => { _jobRegistry = j; return j; })
         .catch(() => {
-            _jobRegistry = {capabilities: [], workflows: []};
+            _jobRegistry = {skills: [], workflows: []};
             return _jobRegistry;
         });
     return _jobRegistryPromise;
@@ -546,7 +546,7 @@ async function showAddJobForm(legacyEdit = false) {
     // if the registry is still cold-loading.
     const slot = document.getElementById('job-form-params-schema');
     if (slot && !_jobRegistry) {
-        slot.innerHTML = '<em>Loading capabilities…</em>';
+        slot.innerHTML = '<em>Loading skills…</em>';
         slot.hidden = false;
     }
     await _loadJobRegistry();
@@ -565,7 +565,7 @@ function hideAddJobForm() {
         .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     if (typeof onJitterInput === 'function') onJitterInput();
     document.getElementById('job-form-type').value = 'prompt';
-    document.getElementById('job-form-invoke-kind').value = 'capability';
+    document.getElementById('job-form-invoke-kind').value = 'skill';
     document.getElementById('job-form-invoke-hint').textContent = '';
     const schema = document.getElementById('job-form-params-schema');
     if (schema) { schema.hidden = true; schema.innerHTML = ''; }
@@ -589,7 +589,7 @@ function onJobTypeChange() {
 function onInvokeKindChange() {
     const kind = document.getElementById('job-form-invoke-kind').value;
     document.getElementById('job-form-invoke-name-label').textContent =
-        kind === 'workflow' ? 'Workflow name' : 'Capability name';
+        kind === 'workflow' ? 'Workflow name' : 'Skill name';
     document.getElementById('job-form-invoke-name').placeholder =
         kind === 'workflow' ? 'morning-routine' : 'task_briefing';
     // Re-populate the datalist with the right slice + reset description hint
@@ -606,7 +606,7 @@ function rebuildInvokeDatalist() {
     if (!dl) return;
     if (!_jobRegistry) { dl.innerHTML = ''; return; }
     const kind = document.getElementById('job-form-invoke-kind').value;
-    const entries = (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.capabilities) || [];
+    const entries = (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.skills) || [];
     // ONE <option> per registry entry. The ``value`` is the canonical
     // name (what gets inserted on selection); the label embeds both
     // the slash-command alias (if any) and the description so the
@@ -649,7 +649,7 @@ function _resolveInvokeEntry(entries, value) {
 function onInvokeNameInput() {
     if (!_jobRegistry) return;
     const kind = document.getElementById('job-form-invoke-kind').value;
-    const entries = (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.capabilities) || [];
+    const entries = (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.skills) || [];
     const inputEl = document.getElementById('job-form-invoke-name');
     const value = inputEl.value.trim();
     const resolved = _resolveInvokeEntry(entries, value);
@@ -681,9 +681,9 @@ function onInvokeNameInput() {
 }
 
 // Render the parameter schema below the params textarea — works for
-// both capabilities and workflows. The params textarea itself stays
+// both skills and workflows. The params textarea itself stays
 // hidden for entries that declare no parameters (workflows without a
-// declared schema, or capabilities with empty parameters).
+// declared schema, or skills with empty parameters).
 function renderParamsSchema(kind, entry) {
     const slot = document.getElementById('job-form-params-schema');
     const wrap = document.getElementById('job-form-params-wrap');
@@ -754,7 +754,7 @@ function _currentInvokeSchema() {
     const kind = document.getElementById('job-form-invoke-kind').value;
     const name = document.getElementById('job-form-invoke-name').value.trim();
     if (!name) return null;
-    const entries = (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.capabilities) || [];
+    const entries = (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.skills) || [];
     const hit = entries.find(e => e.name === name);
     return hit ? (hit.parameters || []) : null;
 }
@@ -788,7 +788,7 @@ function onParamsInput() {
         // that we can't yet check key names against any schema.
         el.classList.remove('cron-preview-hint', 'cron-preview-invalid');
         el.classList.add('cron-preview-valid');
-        el.textContent = `✓ Valid JSON object (${givenKeys.length} ${givenKeys.length === 1 ? 'key' : 'keys'}). Pick a capability/workflow above to check key names.`;
+        el.textContent = `✓ Valid JSON object (${givenKeys.length} ${givenKeys.length === 1 ? 'key' : 'keys'}). Pick a skill/workflow above to check key names.`;
         return;
     }
 
@@ -988,13 +988,13 @@ async function submitAddJobForm() {
         // The hint already showed the canonical name to the user, so
         // this is transparent rewriting, not behind-their-back.
         const entries = _jobRegistry
-            ? (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.capabilities) || []
+            ? (kind === 'workflow' ? _jobRegistry.workflows : _jobRegistry.skills) || []
             : [];
         const resolved = _resolveInvokeEntry(entries, rawName);
         const invokeName = resolved ? resolved.entry.name : rawName;
         payload.job_type = kind;
-        if (kind === 'capability') {
-            payload.capability = invokeName;
+        if (kind === 'skill') {
+            payload.skill = invokeName;
         } else {
             payload.workflow = invokeName;
         }
@@ -1040,7 +1040,7 @@ async function submitAddJobForm() {
         const fieldToInputId = {
             name: 'job-form-name',
             schedule: 'job-form-schedule',
-            capability: 'job-form-invoke-name',
+            skill: 'job-form-invoke-name',
             workflow: 'job-form-invoke-name',
             prompt: 'job-form-prompt',
             params: 'job-form-params',

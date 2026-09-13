@@ -105,7 +105,6 @@ This bus is the **lossy real-time UI** layer — drop-oldest, no durability, no 
   * ``events.publish_cross_process(event_type, payload)`` — POSTs ``{event_type, payload}`` to the dashboard's loopback ``/internal/bus`` endpoint.
   * ``events.publish_auto(event_type, payload)`` — routes by process flag (``mark_dashboard_process()`` set in ``service.main()``).
   * ``events.start_heartbeat(interval, bus)`` — publishes ``bus.heartbeat`` every ``interval`` seconds (default 10 s).
-  * ``work_buddy.clarify.capabilities.triage_review_pool.compose_entry_presentation_group(entry)`` — single-entry presentation composer used by ``ClarifyPool.submit`` / ``submit_raw`` for fat-add events.
 
 * **HTTP**
   * ``GET /api/events`` — SSE stream. No read-only gate. ``Cache-Control: no-cache``, ``X-Accel-Buffering: no``. 15 s idle keepalive comment to defeat intermediary idle-close.

@@ -4,7 +4,7 @@ Pins the observable shapes of ``session_commits``, ``build_session_map``,
 ``_extract_writes_from_jsonl``, and ``session_uncommitted`` so the
 upcoming migration into ``work_buddy.conversation_observability`` can
 preserve callers (``GitSource``, journal directions, the ``session_*``
-gateway capabilities) without behavior drift.
+gateway skills) without behavior drift.
 
 These tests describe the *current* contract. They are not specifications
 of what those APIs should ideally look like — they are a snapshot of

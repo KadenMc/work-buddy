@@ -61,7 +61,7 @@ you drive the dialogue with ``conversation_ask`` /
   use ``conversation_ask`` (with ``timeout_seconds=110``) for every
   follow-up input you need from the user.
 - Use ``conversation_send`` for short status messages (e.g. "Let me
-  search for that capability...").
+  search for that skill...").
 - Plain text in messages — no markdown, no code fences. Chat renders
   plain text.
 - Keep messages short. The user is not technical; do not dump schemas.
@@ -82,7 +82,7 @@ When all required fields are gathered, summarize back to the user in
 3-4 short lines and ask Yes/No to confirm (use ``conversation_ask``
 with ``response_type="yes_no"``).
 
-On Yes, call ``form_submit`` (see structural section). The capability
+On Yes, call ``form_submit`` (see structural section). The skill
 returns a typed result:
 
 - ``{{"ok": true, ...}}``: send a brief "Created — it's in your Jobs
@@ -93,8 +93,8 @@ returns a typed result:
 
 ### Recovery rules for specific failure modes
 
-- **Unknown capability/workflow name** (error includes "Unknown
-  capability" or "Unknown workflow"). The validator embeds the closest
+- **Unknown skill/workflow name** (error includes "Unknown
+  skill" or "Unknown workflow"). The validator embeds the closest
   matches from the registry in the error message ("Did you mean:
   'morning-routine', 'dev-orient'?"). Don't blindly accept the first
   suggestion — it's a hint, not a guarantee. Verify with

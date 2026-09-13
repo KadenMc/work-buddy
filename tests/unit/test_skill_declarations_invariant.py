@@ -1,24 +1,30 @@
-"""Live-store invariants for the data-first capability layer.
+"""Live-store invariants for the data-first skill layer.
 
-The capability bulk-migration's definition of done is that every capability
-is a *declaration* (a ``kind: "capability"`` knowledge-store unit carrying an
+The schema conversion's definition of done is that every skill is a
+*declaration* (a ``kind: "skill"`` knowledge-store unit carrying an
 ``op`` field) plus a registered Op. These tests are the regression guard: a
 future change that adds a declaration without registering its op, registers
 an op without a declaration, or breaks the loader's signature validation will
-fail here even if no per-category test exists for that capability.
+fail here even if no per-category test exists for that skill.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from work_buddy.knowledge.capability_loader import (
+from work_buddy.knowledge.skill_loader import (
     SCHEMA_VERSION,
-    load_declared_capabilities,
+    load_declared_skills,
 )
-from work_buddy.knowledge.model import CapabilityUnit
+from work_buddy.knowledge.file_store import list_unit_paths, read_unit
+from work_buddy.knowledge.model import SkillUnit
 from work_buddy.knowledge.store import load_store
 from work_buddy.mcp_server import op_registry
+
+
+_STORE_DIR = Path(__file__).resolve().parents[2] / "knowledge" / "store"
 
 
 @pytest.fixture
@@ -27,45 +33,66 @@ def loaded() -> dict:
     op_registry.clear_ops()
     op_registry.load_builtin_ops()
     store = load_store()
-    caps, issues = load_declared_capabilities(store)
-    return {"store": store, "caps": caps, "issues": issues}
+    skills, issues = load_declared_skills(store)
+    return {"store": store, "skills": skills, "issues": issues}
 
 
-def _capability_units(store: dict) -> list[CapabilityUnit]:
-    return [u for u in store.values() if isinstance(u, CapabilityUnit)]
+def _skill_units(store: dict) -> list[SkillUnit]:
+    return [u for u in store.values() if isinstance(u, SkillUnit)]
 
 
 def _expected_op_module(category: str) -> str:
-    """Convention: capabilities of ``category`` are registered by
+    """Convention: skills of ``category`` are registered by
     ``ops/<category>_ops.py``. Used to identify declarations whose op is
     expected to be unregistered when the corresponding op module failed to
     load (e.g. an optional runtime dependency is missing)."""
     return f"{category}_ops"
 
 
-def _is_expected_unregistered(unit: CapabilityUnit, failed_modules: set[str]) -> bool:
+def _is_expected_unregistered(unit: SkillUnit, failed_modules: set[str]) -> bool:
     """True when ``unit``'s op is unresolved because its op module failed
     to load — an expected per-environment gap, not a regression."""
     return _expected_op_module(unit.category) in failed_modules
 
 
-def test_every_capability_unit_is_a_declaration(loaded) -> None:
-    """Every capability knowledge unit carries an ``op`` field."""
+def test_repository_store_uses_only_canonical_skill_schema() -> None:
+    stale: list[tuple[str, str]] = []
+    skill_count = 0
+    for unit_path in list_unit_paths(_STORE_DIR):
+        raw = read_unit(_STORE_DIR, unit_path)
+        assert raw is not None
+        if raw.get("kind") == "skill":
+            skill_count += 1
+        if raw.get("kind") == "capability":
+            stale.append((unit_path, "kind"))
+        if "capability_name" in raw:
+            stale.append((unit_path, "capability_name"))
+        if raw.get("schema_version") == "wb-capability/v1":
+            stale.append((unit_path, "schema_version"))
+        if "capabilities" in raw:
+            stale.append((unit_path, "capabilities"))
+
+    assert skill_count > 0, "expected repository-owned skill declarations"
+    assert stale == [], f"repository store contains stale skill schema fields: {stale[:5]}"
+
+
+def test_every_skill_unit_is_a_declaration(loaded) -> None:
+    """Every skill knowledge unit carries an ``op`` field."""
     missing = [
         u.path
-        for u in _capability_units(loaded["store"])
+        for u in _skill_units(loaded["store"])
         if not u.op
     ]
     assert missing == [], (
-        f"{len(missing)} capability unit(s) missing an op field — every "
-        f"capability must be a declaration: {missing[:5]}"
+        f"{len(missing)} skill unit(s) missing an op field — every "
+        f"skill must be a declaration: {missing[:5]}"
     )
 
 
 def test_every_declaration_uses_the_current_schema_version(loaded) -> None:
     wrong_version = [
         (u.path, u.schema_version)
-        for u in _capability_units(loaded["store"])
+        for u in _skill_units(loaded["store"])
         if u.schema_version != SCHEMA_VERSION
     ]
     assert wrong_version == [], (
@@ -75,7 +102,7 @@ def test_every_declaration_uses_the_current_schema_version(loaded) -> None:
 
 
 def test_loader_resolves_every_declaration_with_zero_issues(loaded) -> None:
-    """``load_declared_capabilities`` returns no unexpected warnings.
+    """``load_declared_skills`` returns no unexpected warnings.
 
     A declaration whose op module failed to load (because the host
     environment lacks the module's optional runtime dependency) is allowed
@@ -83,7 +110,7 @@ def test_loader_resolves_every_declaration_with_zero_issues(loaded) -> None:
     safe-degradation path, not a regression. Every other issue is a bug.
     """
     failed = op_registry.failed_op_modules()
-    by_path = {u.path: u for u in _capability_units(loaded["store"])}
+    by_path = {u.path: u for u in _skill_units(loaded["store"])}
     unexpected = [
         i for i in loaded["issues"]
         if not (
@@ -98,17 +125,17 @@ def test_loader_resolves_every_declaration_with_zero_issues(loaded) -> None:
     )
 
 
-def test_resolved_capability_count_matches_unit_count(loaded) -> None:
-    """Every capability unit resolves, modulo declarations whose op module
+def test_resolved_skill_count_matches_unit_count(loaded) -> None:
+    """Every skill unit resolves, modulo declarations whose op module
     legitimately failed to load in this environment."""
     failed = op_registry.failed_op_modules()
     expected = [
-        u for u in _capability_units(loaded["store"])
+        u for u in _skill_units(loaded["store"])
         if not _is_expected_unregistered(u, failed)
     ]
-    resolved_count = len(loaded["caps"])
+    resolved_count = len(loaded["skills"])
     assert resolved_count == len(expected), (
-        f"{len(expected)} capability unit(s) expected to resolve in this "
+        f"{len(expected)} skill unit(s) expected to resolve in this "
         f"environment but only {resolved_count} resolved — the missing "
         f"ones likely point at an op that is not registered. "
         f"Failed op modules this run: {sorted(failed) or 'none'}."
@@ -121,7 +148,7 @@ def test_every_op_id_is_registered(loaded) -> None:
     failed = op_registry.failed_op_modules()
     unregistered = [
         (u.path, u.op)
-        for u in _capability_units(loaded["store"])
+        for u in _skill_units(loaded["store"])
         if u.op
            and op_registry.get_op(u.op) is None
            and not _is_expected_unregistered(u, failed)
@@ -138,7 +165,7 @@ def test_op_ids_match_op_namespace_grammar(loaded) -> None:
     """Every ``op`` field is a well-formed ``op.<namespace>.<name>`` id."""
     malformed = [
         (u.path, u.op)
-        for u in _capability_units(loaded["store"])
+        for u in _skill_units(loaded["store"])
         if not op_registry.is_valid_op_id(u.op)
     ]
     assert malformed == [], (

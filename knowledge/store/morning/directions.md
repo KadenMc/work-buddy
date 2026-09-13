@@ -6,7 +6,7 @@ summary: Resolve the active Journal composition, then run a warm 2-3 message sig
 trigger: user wants to start their morning routine or check in for the day
 command: wb-morning
 workflow: morning/morning-routine
-capabilities:
+skills:
 - context/context_bundle
 - journal/journal_sign_in
 - tasks/task_briefing

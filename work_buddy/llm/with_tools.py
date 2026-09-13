@@ -2,9 +2,9 @@
 
 Routes a query to a local LM Studio model via ``/api/v1/chat``, which
 supports MCP tool-call loops server-side. The model invokes work-buddy
-tools; the **gateway enforces the capability whitelist**, not LM
+tools; the **gateway enforces the skill whitelist**, not LM
 Studio. MCP clients only see 6 top-level tools (``wb_run`` et al.);
-every domain capability is dispatched through ``wb_run``. Whitelisting
+every domain skill is dispatched through ``wb_run``. Whitelisting
 therefore has to live server-side — see ``session_acl``.
 
 This is the tool-enabled companion to ``llm_call`` (bounded synchronous
@@ -14,13 +14,13 @@ look something up" use case without treating local models as fully
 agentic Claude replacements.
 
 .. deprecated::
-   Retained for the MCP-exposed ``llm_with_tools`` capability only.
+   Retained for the MCP-exposed ``llm_with_tools`` skill only.
    All internal Python callers migrated to
    :class:`work_buddy.llm.LLMRunner` in phase 3 of the LLM + Context
    refactor. New code should NOT import from this module — use
    ``LLMRunner.call(tier=..., tools=[...])`` instead (tool-call
    support lands in a follow-up). A follow-up task will remove this
-   file once external MCP clients migrate off the legacy capability.
+   file once external MCP clients migrate off the legacy skill.
 
 ## How authentication + authorization work here
 
@@ -34,9 +34,9 @@ agentic Claude replacements.
    distinct, traceable session id.
 
 2. **Authorization.** Before firing the request, we call
-   ``session_acl.set_session_acl(session_id, allowed_capabilities)``.
+   ``session_acl.set_session_acl(session_id, allowed_skills)``.
    The gateway's ``wb_run`` path consults the ACL and rejects any
-   capability not in the whitelist; ``wb_search`` filters its
+   skill not in the whitelist; ``wb_search`` filters its
    results to the allowed set so the model doesn't see tools it
    can't use. On completion (or error), the ACL is cleared in a
    ``finally``.
@@ -73,7 +73,7 @@ def llm_with_tools(
     user: str,
     profile: str,
     tool_preset: str,
-    required_capabilities: list[str] | None = None,
+    required_skills: list[str] | None = None,
     previous_response_id: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.0,
@@ -95,7 +95,7 @@ def llm_with_tools(
             ``work_buddy/llm/tool_presets.py`` (e.g. ``"readonly_safe"``,
             ``"readonly_context"``). Required; no arbitrary tool list
             accepted at call time.
-        required_capabilities: Optional list of capability names the
+        required_skills: Optional list of skill names the
             model MUST be able to call to complete its task (e.g.
             ``["update-journal", "journal_write"]``). Pre-flight
             checked against ``resolve_preset(tool_preset)``; if any
@@ -151,14 +151,14 @@ def llm_with_tools(
 
     # Pre-flight goal-preset mismatch check. Catches the "I reused the
     # preset from last call without checking whether it covers this
-    # task" failure mode — explicit required_capabilities forces the
+    # task" failure mode — explicit required_skills forces the
     # caller to name what the model must reach, and we verify every
     # one is in the preset before firing.
-    if required_capabilities:
-        missing = [c for c in required_capabilities if c not in allowed_tools]
+    if required_skills:
+        missing = [c for c in required_skills if c not in allowed_tools]
         if missing:
             return _error(
-                f"required_capabilities not in preset {tool_preset!r}: "
+                f"required_skills not in preset {tool_preset!r}: "
                 f"{missing}. Either pick a preset that covers them, "
                 f"or add a new preset in work_buddy/llm/tool_presets.py "
                 f"(reviewed PR).",
@@ -196,7 +196,7 @@ def llm_with_tools(
             # What LM Studio advertises to the model: the 2 top-level
             # MCP tools it needs to do its job. The real per-call
             # whitelist is enforced on the gateway side via the ACL
-            # set below. Domain capabilities (task_briefing, etc.)
+            # set below. Domain skills (task_briefing, etc.)
             # are NOT in this list — they're dispatched through
             # wb_run, which the gateway gates.
             "allowed_tools": list(_LM_STUDIO_ALLOWED_MCP_TOOLS),

@@ -11,7 +11,7 @@ The fleet is provider-neutral. ``merge_fleet`` is a pure function over already-
 parsed inputs and knows nothing about any specific backend. A provider adapter
 (today: LM Studio via the ``lms`` CLI) is the only place that talks to the
 backend; swapping to vLLM / Ollama / llama.cpp later means writing a new adapter,
-not touching ``merge_fleet``, the dashboard reader, the route, or the capability.
+not touching ``merge_fleet``, the dashboard reader, the route, or the skill.
 
 ## Data layers
 

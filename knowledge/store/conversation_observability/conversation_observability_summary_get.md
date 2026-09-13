@@ -1,16 +1,16 @@
 ---
 name: Conversation Observability Summary Get
-kind: capability
-description: 'DEPRECATED ALIAS — use `session_summary_get` instead. Same callable, shorter canonical name. Look up the cached tldr + topic summaries for one session_id; returns None when nothing has been summarized yet.'
-capability_name: conversation_observability_summary_get
+kind: skill
+description: DEPRECATED ALIAS — use `session_summary_get` instead. Same callable, shorter canonical name. Look up the cached tldr + topic summaries for one session_id; returns None when nothing has been summarized yet.
 category: conversation_observability
 op: op.wb.conversation_observability_summary_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
     description: Full or 8-char prefix session UUID.
     required: true
+skill_name: conversation_observability_summary_get
 tags:
 - conversation_observability
 - conversation

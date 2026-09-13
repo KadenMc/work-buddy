@@ -1,11 +1,10 @@
 ---
 name: Knowledge Personal
-kind: capability
+kind: skill
 description: Search personal knowledge from the SQLite authority. Includes versioned insights, patterns, feedback, preferences, aliases, and relationships, with category and severity filters.
-capability_name: knowledge_personal
 category: context
 op: op.wb.knowledge_personal
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -39,6 +38,7 @@ parameters:
     type: bool
     description: Include dev_notes. Auto-set in dev mode.
     required: false
+skill_name: knowledge_personal
 tags:
 - context
 - knowledge

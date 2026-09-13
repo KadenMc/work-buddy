@@ -87,7 +87,7 @@ The Stop block text surfaces the verb inline. Two equivalent ways:
 
 - `bash /tmp/wb/resolve --id <message-id>` — the generated helper (PATCHes the
   message to `resolved`).
-- `update_message_status(msg_id, "resolved")` — the capability.
+- `update_message_status(msg_id, "resolved")` — the skill.
 
 `read` / `reply` do **not** clear the block: they record a read or create a new
 message, neither of which changes `messages.status`. Reading a *normal* message is

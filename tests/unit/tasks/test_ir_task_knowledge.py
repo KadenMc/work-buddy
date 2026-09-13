@@ -9,7 +9,7 @@ import pytest
 
 from work_buddy.document_kernel.protocol import sha256_bytes, structured_head_sha256
 from work_buddy.ir.sources.task_notes import TaskNoteSource
-from work_buddy.tasks import capabilities, runtime
+from work_buddy.tasks import runtime, skills
 from work_buddy.tasks.documents import TaskDocumentService, TaskDocumentStoreManager
 from work_buddy.tasks.models import TaskDocumentLink
 from work_buddy.tasks.service import TaskApplicationService
@@ -152,5 +152,5 @@ def test_native_ir_and_task_read_follow_live_cowork_head(
     refreshed = source.parse(f"task_note:{note_uuid}")[0]
     assert "Fresh uncompacted body." in refreshed.fields["body"]
     assert "file_path" not in refreshed.metadata
-    read = capabilities.task_read(task.task_id)
+    read = skills.task_read(task.task_id)
     assert "Fresh uncompacted body." in read["note_content"]

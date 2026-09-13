@@ -36,7 +36,7 @@ from work_buddy.sidecar.state import SidecarState
 # ---------------------------------------------------------------------------
 
 
-def _write_capability_job(
+def _write_skill_job(
     dir_path: Path,
     stem: str,
     *,
@@ -49,8 +49,8 @@ def _write_capability_job(
     lines = [
         "---",
         f'schedule: "{schedule}"',
-        "type: capability",
-        "capability: noop",
+        "type: skill",
+        "skill: noop",
         f"recurring: {str(bool(recurring)).lower()}",
         f"enabled: {str(bool(enabled)).lower()}",
     ]
@@ -122,7 +122,7 @@ def test_stable_offset_deterministic(tmp_path):
     sch_b = _make_scheduler(tmp_path)
     job = Job(
         name="t", file_path=Path("."), schedule="*/5 * * * *",
-        job_type="capability", capability="noop", jitter_seconds=120,
+        job_type="skill", skill="noop", jitter_seconds=120,
     )
     assert sch_a._stable_jitter_offset(job) == sch_b._stable_jitter_offset(job)
 
@@ -132,7 +132,7 @@ def test_offset_within_range(tmp_path):
     for seed in range(50):
         job = Job(
             name=f"job-{seed}", file_path=Path("."), schedule="*/5 * * * *",
-            job_type="capability", capability="noop", jitter_seconds=90,
+            job_type="skill", skill="noop", jitter_seconds=90,
         )
         offset = sch._stable_jitter_offset(job)
         assert 0 <= offset <= 90, f"offset {offset} out of [0, 90] for seed {seed}"
@@ -142,7 +142,7 @@ def test_zero_jitter_returns_zero_offset(tmp_path):
     sch = _make_scheduler(tmp_path)
     job = Job(
         name="t", file_path=Path("."), schedule="*/5 * * * *",
-        job_type="capability", capability="noop", jitter_seconds=0,
+        job_type="skill", skill="noop", jitter_seconds=0,
     )
     assert sch._stable_jitter_offset(job) == 0
 
@@ -151,11 +151,11 @@ def test_offset_changes_with_inputs(tmp_path):
     sch = _make_scheduler(tmp_path)
     job_a = Job(
         name="a", file_path=Path("."), schedule="*/5 * * * *",
-        job_type="capability", capability="noop", jitter_seconds=120,
+        job_type="skill", skill="noop", jitter_seconds=120,
     )
     job_b = Job(
         name="b", file_path=Path("."), schedule="*/5 * * * *",
-        job_type="capability", capability="noop", jitter_seconds=120,
+        job_type="skill", skill="noop", jitter_seconds=120,
     )
     # With 50 distinct names and jitter_seconds=120 the chance of two
     # adjacent names hashing to the same offset is tiny but non-zero,
@@ -211,7 +211,7 @@ def test_no_jitter_fires_immediately(tmp_path, monkeypatch):
     """When jitter_seconds=0, jobs fire inline on cron match (no pending queue)."""
     user_dir = tmp_path / "user"
     user_dir.mkdir(exist_ok=True)
-    _write_capability_job(user_dir, "instant", schedule="* * * * *")
+    _write_skill_job(user_dir, "instant", schedule="* * * * *")
 
     fired: list[str] = []
     _patch_executor(monkeypatch, fired)
@@ -227,7 +227,7 @@ def test_jittered_job_deferred_until_due(tmp_path, monkeypatch):
     """Cron-matching tick queues; only a later tick at/after due_at fires."""
     user_dir = tmp_path / "user"
     user_dir.mkdir(exist_ok=True)
-    _write_capability_job(
+    _write_skill_job(
         user_dir, "delayed", schedule="* * * * *", jitter_seconds=120,
     )
 
@@ -266,7 +266,7 @@ def test_jittered_dedupe_within_minute(tmp_path, monkeypatch):
     """Repeated ticks during the same cron minute don't enqueue duplicates."""
     user_dir = tmp_path / "user"
     user_dir.mkdir(exist_ok=True)
-    _write_capability_job(
+    _write_skill_job(
         user_dir, "dedupe", schedule="* * * * *", jitter_seconds=120,
     )
 
@@ -293,7 +293,7 @@ def test_jittered_recurring_false_clears_after_actual_execution(
     match — the schedule is cleared only after the deferred fire runs."""
     user_dir = tmp_path / "user"
     user_dir.mkdir(exist_ok=True)
-    job_path = _write_capability_job(
+    job_path = _write_skill_job(
         user_dir, "once", schedule="* * * * *",
         jitter_seconds=120, recurring=False,
     )
@@ -323,7 +323,7 @@ def test_jittered_recurring_false_clears_after_actual_execution(
 def test_hot_reload_drops_pending_for_removed_job(tmp_path, monkeypatch):
     user_dir = tmp_path / "user"
     user_dir.mkdir(exist_ok=True)
-    job_path = _write_capability_job(
+    job_path = _write_skill_job(
         user_dir, "transient", schedule="* * * * *", jitter_seconds=120,
     )
 
@@ -345,7 +345,7 @@ def test_hot_reload_drops_pending_for_removed_job(tmp_path, monkeypatch):
 def test_hot_reload_drops_pending_for_disabled_job(tmp_path, monkeypatch):
     user_dir = tmp_path / "user"
     user_dir.mkdir(exist_ok=True)
-    job_path = _write_capability_job(
+    job_path = _write_skill_job(
         user_dir, "togglable", schedule="* * * * *", jitter_seconds=120,
     )
 
@@ -358,7 +358,7 @@ def test_hot_reload_drops_pending_for_disabled_job(tmp_path, monkeypatch):
     assert sch._pending_fires
 
     # Rewrite the file with enabled: false.
-    _write_capability_job(
+    _write_skill_job(
         user_dir, "togglable", schedule="* * * * *",
         jitter_seconds=120, enabled=False,
     )
@@ -377,7 +377,7 @@ def test_update_state_effective_at_no_pending(tmp_path):
     user_dir = tmp_path / "user"
     sys_dir.mkdir()
     user_dir.mkdir()
-    _write_capability_job(
+    _write_skill_job(
         user_dir, "viewable", schedule="*/5 * * * *", jitter_seconds=90,
     )
     sch = _make_scheduler(tmp_path)
@@ -398,7 +398,7 @@ def test_update_state_effective_at_no_pending(tmp_path):
 def test_update_state_effective_at_with_pending(tmp_path, monkeypatch):
     user_dir = tmp_path / "user"
     user_dir.mkdir(exist_ok=True)
-    _write_capability_job(
+    _write_skill_job(
         user_dir, "queued", schedule="* * * * *", jitter_seconds=120,
     )
 

@@ -1,11 +1,11 @@
 ---
 name: Active Contracts
-kind: capability
+kind: skill
 description: List active contracts from the Contracts SQLite authority; before the authority seal only, the provider may use its read-only legacy import fallback.
-capability_name: active_contracts
 category: contracts
 op: op.wb.active_contracts
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: active_contracts
 tags:
 - contracts
 - active

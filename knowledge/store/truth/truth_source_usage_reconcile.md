@@ -1,11 +1,10 @@
 ---
 name: Truth Source Usage Reconcile
-kind: capability
+kind: skill
 description: Recover Sources acknowledgement receipts for Truth mutations that committed before a process interruption.
-capability_name: truth_source_usage_reconcile
 category: truth
 op: op.wb.truth_source_usage_reconcile
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: string
@@ -18,6 +17,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_source_usage_reconcile
 tags:
 - truth
 - sources
@@ -34,6 +34,6 @@ parents:
 
 Truth and Sources are separate durable authorities. A process may stop after a
 Truth transaction commits but before the corresponding Sources usage is
-acknowledged. This capability resumes only those exact, already-recorded usage
+acknowledged. This skill resumes only those exact, already-recorded usage
 receipts. It does not re-resolve source content, create another claim, or infer
 that a redacted source is clean.

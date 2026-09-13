@@ -20,7 +20,7 @@ JOBS_FORM_SCHEMA = FormSchema(
     form_id="jobs-add-job",
     description=(
         "Personal scheduled cron job. Schedule + a payload (a "
-        "capability call, a workflow run, or a freeform prompt) "
+        "skill call, a workflow run, or a freeform prompt) "
         "fires when the cron matches."
     ),
     submit_label="Create job",
@@ -51,20 +51,20 @@ JOBS_FORM_SCHEMA = FormSchema(
             required=True,
             description=(
                 "What kind of work fires when the cron matches: "
-                "``capability`` (single registered capability), "
+                "``skill`` (single registered direct skill), "
                 "``workflow`` (multi-step workflow), or "
                 "``prompt`` (freeform task — agent runs the prompt body)."
             ),
-            enum_values=("capability", "workflow", "prompt"),
+            enum_values=("skill", "workflow", "prompt"),
         ),
         Field(
-            name="capability",
+            name="skill",
             type="str",
             ui_id="job-form-invoke-name",
             description=(
-                "Registered capability name. Set only when "
-                "job_type=capability. Use ``wb_search`` to confirm the "
-                "capability exists before setting."
+                "Registered skill name. Set only when "
+                "job_type=skill. Use ``wb_search`` to confirm the "
+                "skill exists before setting."
             ),
         ),
         Field(
@@ -90,7 +90,7 @@ JOBS_FORM_SCHEMA = FormSchema(
             type="dict",
             ui_id="job-form-params",
             description=(
-                "JSON parameters dict. Set only when job_type is capability "
+                "JSON parameters dict. Set only when job_type is skill "
                 "or workflow and the chosen target declares parameters."
             ),
         ),

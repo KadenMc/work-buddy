@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from work_buddy.knowledge.capability_loader import SCHEMA_VERSION
+from work_buddy.knowledge.skill_loader import SCHEMA_VERSION
 from work_buddy.knowledge.file_store import workflow_body_heading_issues
-from work_buddy.knowledge.model import CapabilityUnit, DirectionsUnit, WorkflowUnit
+from work_buddy.knowledge.model import DirectionsUnit, SkillUnit, WorkflowUnit
 from work_buddy.knowledge.validate import (
-    _check_capability_op_resolution,
+    _check_skill_op_resolution,
     _check_directions_workflow_resolution,
     _check_placeholder_duplicates,
     _check_workflow_delegation_resolution,
@@ -118,8 +118,8 @@ class TestPlaceholderDuplicateCheck:
         assert _check_placeholder_duplicates(store) == []
 
 
-class TestCapabilityOpResolutionCheck:
-    """``capability_op_resolution`` resolves declaration-based capability
+class TestSkillOpResolutionCheck:
+    """``skill_op_resolution`` resolves declaration-based skill
     units against the Op registry and reports failures as *warnings* — the
     direct and declaration-based registration paths coexist, so an unresolved
     declaration is surfaced without failing the store.
@@ -131,30 +131,30 @@ class TestCapabilityOpResolutionCheck:
         yield
         op_registry.clear_ops()
 
-    def _declaration(self, **overrides) -> CapabilityUnit:
+    def _declaration(self, **overrides) -> SkillUnit:
         fields = dict(
-            path="tasks/sample_cap",
-            name="Sample Cap",
-            description="A sample capability.",
-            capability_name="sample_cap",
+            path="tasks/sample_skill",
+            name="Sample Skill",
+            description="A sample skill.",
+            skill_name="sample_skill",
             category="tasks",
             parameters={"x": {"type": "str", "required": True}},
             op="op.wb.sample",
             schema_version=SCHEMA_VERSION,
         )
         fields.update(overrides)
-        return CapabilityUnit(**fields)
+        return SkillUnit(**fields)
 
     def test_no_declarations_returns_empty(self):
         store = {"a": DirectionsUnit(path="a", name="A", description="a")}
-        assert _check_capability_op_resolution(store) == []
+        assert _check_skill_op_resolution(store) == []
 
     def test_unresolved_declaration_flagged_as_warning(self):
         # op.wb.sample is never registered.
-        store = {"tasks/sample_cap": self._declaration()}
-        issues = _check_capability_op_resolution(store)
+        store = {"tasks/sample_skill": self._declaration()}
+        issues = _check_skill_op_resolution(store)
         assert len(issues) == 1
-        assert issues[0]["check"] == "capability_op_resolution"
+        assert issues[0]["check"] == "skill_op_resolution"
         assert issues[0]["severity"] == "warning"
 
     def test_resolved_declaration_produces_no_issue(self):
@@ -162,8 +162,8 @@ class TestCapabilityOpResolutionCheck:
             return x
 
         op_registry.register_op("op.wb.sample", sample_op)
-        store = {"tasks/sample_cap": self._declaration()}
-        assert _check_capability_op_resolution(store) == []
+        store = {"tasks/sample_skill": self._declaration()}
+        assert _check_skill_op_resolution(store) == []
 
 
 def _wf(path: str, steps: list[dict], instructions: dict | None = None) -> WorkflowUnit:
@@ -345,7 +345,7 @@ class TestWorkflowDelegationResolutionCheck:
     that runtime directions-delivery cannot rescue."""
 
     def test_dangling_hyphenated_delegation_is_error(self):
-        # A kebab-shaped name that is neither a workflow nor a capability.
+        # A kebab-shaped name that is neither a workflow nor a skill.
         caller = _wf_with_prose(
             "x", 'do `mcp__work-buddy__wb_run("ghost-workflow")` then advance',
         )
@@ -385,17 +385,17 @@ class TestWorkflowDelegationResolutionCheck:
         )
         assert _check_workflow_delegation_resolution({"x": caller, "y": target}) == []
 
-    def test_capability_call_is_not_a_delegation(self):
-        cap = CapabilityUnit(
-            path="c", name="C", description="d", capability_name="task_briefing",
+    def test_skill_call_is_not_a_delegation(self):
+        skill = SkillUnit(
+            path="s", name="S", description="d", skill_name="task_briefing",
         )
         caller = _wf_with_prose("x", 'wb_run("task_briefing")')
-        assert _check_workflow_delegation_resolution({"x": caller, "c": cap}) == []
+        assert _check_workflow_delegation_resolution({"x": caller, "s": skill}) == []
 
     def test_snake_case_unknown_is_not_flagged(self):
-        # Assumed to be an op-registered capability without a store declaration;
-        # left to capability_op_resolution, not flagged here.
-        caller = _wf_with_prose("x", 'wb_run("some_unknown_cap")')
+        # Assumed to be an op-registered skill without a store declaration;
+        # left to skill_op_resolution, not flagged here.
+        caller = _wf_with_prose("x", 'wb_run("some_unknown_skill")')
         assert _check_workflow_delegation_resolution({"x": caller}) == []
 
     def test_self_reference_is_ignored(self):
@@ -585,10 +585,10 @@ class TestDurableSurfacesCheck:
         assert len(findings) == 1
         assert "stage_label" in findings[0]["message"]
 
-    def test_capability_parameters_scanned(self):
-        u = CapabilityUnit(
+    def test_skill_parameters_scanned(self):
+        u = SkillUnit(
             path="a", name="N", description="d", content={},
-            capability_name="cap",
+            skill_name="skill",
             parameters={"task_id": {"description": "e.g. 't-a3f8c1e2'"}},
         )
         findings = self._run(u)

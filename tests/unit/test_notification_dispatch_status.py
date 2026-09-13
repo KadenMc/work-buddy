@@ -20,7 +20,7 @@ def _dispatch(disposition):
 
     with patch("work_buddy.messaging.client.send_message", _fake_send):
         _dispatch_via_messaging(
-            {"capability": "consent_grant", "params": {}},
+            {"skill": "consent_grant", "params": {}},
             title="Consent: foo",
             notification_id="n1",
             recipient_session="sess-1",
@@ -39,3 +39,23 @@ def test_actionable_callback_stays_pending():
     sent = _dispatch("actionable")
     assert sent["status"] == "pending"
     assert sent["disposition"] == "actionable"
+
+
+def test_legacy_capability_callback_is_still_accepted():
+    captured = {}
+
+    def _fake_send(**kwargs):
+        captured.update(kwargs)
+        return {"id": "m1"}
+
+    with patch("work_buddy.messaging.client.send_message", _fake_send):
+        result = _dispatch_via_messaging(
+            {"capability": "consent_grant", "params": {}},
+            title="Consent: legacy",
+            notification_id="n-legacy",
+            recipient_session="sess-1",
+            disposition="actionable",
+        )
+
+    assert captured["subject"] == "consent_grant"
+    assert result["skill"] == "consent_grant"

@@ -5,7 +5,7 @@ description: How to scan for active work-pattern blindspots — intervention lev
 summary: Load the user's documented patterns from personal knowledge (any accountability category they track — work patterns, habits, health signals, etc.), gather current context, name the 1–2 active patterns with evidence, apply the matching intervention level, check cascades, keep output to 4 lines.
 trigger: user wants to check their current work for active cognitive or behavioral patterns
 command: wb-meta-blindspots
-capabilities:
+skills:
 - context/context_bundle
 - tasks/task_briefing
 - contracts/contract_health
@@ -35,7 +35,7 @@ The specific patterns live in personal knowledge, not in this unit. Load all cat
 ```
 mcp__work-buddy__wb_run("knowledge_personal", {"category": "work_pattern"})
 mcp__work-buddy__wb_run("knowledge_personal", {"category": "self_regulation"})
-// or any other category they track — see the `knowledge_personal` capability for the full category list
+// or any other category they track — see the `knowledge_personal` skill for the full category list
 ```
 
 If no personal pattern units exist yet, tell the user: "No documented patterns yet — `knowledge_mint` one first, or we'll be guessing." Do not invent pattern names.

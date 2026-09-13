@@ -3,8 +3,8 @@
 Covers:
 - ``recheck_tool``: cool-down honoured, force bypasses cool-down, probe
   failures don't update timestamp (so next call retries cleanly).
-- ``recheck_disabled_capability``: full recovery (all tools available),
-  partial recovery (some tools still missing — DISABLED_CAPABILITIES
+- ``recheck_disabled_skill``: full recovery (all tools available),
+  partial recovery (some tools still missing — DISABLED_SKILLS
   shrinks but cap stays out of registry), unknown name returns True
   without probing, restore-order safety (_REGISTRY populated before
   disabled maps cleared).
@@ -26,18 +26,18 @@ import pytest
 def reset_recovery_state():
     """Reset module-level state between tests."""
     from work_buddy import recovery
-    from work_buddy.tools import DISABLED_CAPABILITIES
-    from work_buddy.mcp_server.registry import _DISABLED_REGISTRY, _REGISTRY  # noqa: F401
+    from work_buddy.tools import DISABLED_SKILLS
+    from work_buddy.mcp_server.registry import _DISABLED_SKILL_REGISTRY, _REGISTRY  # noqa: F401
 
     recovery._LAST_RECHECK_AT.clear()
     recovery.set_cooldown_seconds(30.0)
-    DISABLED_CAPABILITIES.clear()
-    _DISABLED_REGISTRY.clear()
+    DISABLED_SKILLS.clear()
+    _DISABLED_SKILL_REGISTRY.clear()
     yield
     recovery._LAST_RECHECK_AT.clear()
     recovery.set_cooldown_seconds(30.0)
-    DISABLED_CAPABILITIES.clear()
-    _DISABLED_REGISTRY.clear()
+    DISABLED_SKILLS.clear()
+    _DISABLED_SKILL_REGISTRY.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -133,17 +133,17 @@ class TestRecheckTool:
 
 
 # ---------------------------------------------------------------------------
-# recheck_disabled_capability
+# recheck_disabled_skill
 # ---------------------------------------------------------------------------
 
 
-def _make_capability(name: str, requires: list[str]):
-    """Build a minimal Capability instance for tests."""
-    from work_buddy.mcp_server.registry import Capability
+def _make_skill(name: str, requires: list[str]):
+    """Build a minimal Skill instance for tests."""
+    from work_buddy.mcp_server.registry import Skill
 
-    return Capability(
+    return Skill(
         name=name,
-        description=f"test capability {name}",
+        description=f"test skill {name}",
         category="test",
         parameters={},
         callable=lambda: {"test": name},
@@ -151,36 +151,36 @@ def _make_capability(name: str, requires: list[str]):
     )
 
 
-def _seed_disabled(name: str, missing: list[str], capability=None):
-    """Populate DISABLED_CAPABILITIES + _DISABLED_REGISTRY for one cap."""
-    from work_buddy.tools import DISABLED_CAPABILITIES
-    from work_buddy.mcp_server.registry import _DISABLED_REGISTRY
+def _seed_disabled(name: str, missing: list[str], skill=None):
+    """Populate DISABLED_SKILLS + _DISABLED_SKILL_REGISTRY for one cap."""
+    from work_buddy.tools import DISABLED_SKILLS
+    from work_buddy.mcp_server.registry import _DISABLED_SKILL_REGISTRY
 
-    DISABLED_CAPABILITIES[name] = list(missing)
-    _DISABLED_REGISTRY[name] = capability or _make_capability(name, missing)
+    DISABLED_SKILLS[name] = list(missing)
+    _DISABLED_SKILL_REGISTRY[name] = skill or _make_skill(name, missing)
 
 
-class TestRecheckDisabledCapability:
+class TestRecheckDisabledSkill:
     def test_unknown_name_returns_true_without_probing(self):
-        """Capability not in DISABLED_CAPABILITIES → no-op, returns True."""
+        """Skill not in DISABLED_SKILLS → no-op, returns True."""
         from work_buddy import recovery
 
         with patch("work_buddy.tools.reprobe_one") as mock_probe:
-            result = recovery.recheck_disabled_capability("never_disabled")
+            result = recovery.recheck_disabled_skill("never_disabled")
 
         assert result is True
         assert mock_probe.call_count == 0
 
-    def test_all_tools_recovered_restores_capability(self):
+    def test_all_tools_recovered_restores_skill(self):
         """All missing tools probe as available → cap restored to live registry."""
         from work_buddy import recovery
         from work_buddy.mcp_server.registry import (
-            _DISABLED_REGISTRY,
+            _DISABLED_SKILL_REGISTRY,
             get_registry,
         )
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_SKILLS
 
-        cap = _make_capability("test_cap", ["obsidian"])
+        cap = _make_skill("test_cap", ["obsidian"])
         _seed_disabled("test_cap", ["obsidian"], cap)
         # Ensure registry is initialised so the restore can land somewhere.
         with patch("work_buddy.tools.is_tool_available", return_value=True):
@@ -189,20 +189,20 @@ class TestRecheckDisabledCapability:
             _seed_disabled("test_cap", ["obsidian"], cap)
 
             with patch("work_buddy.tools.reprobe_one"):
-                result = recovery.recheck_disabled_capability("test_cap")
+                result = recovery.recheck_disabled_skill("test_cap")
 
         assert result is True
-        assert "test_cap" in registry, "capability should be in live registry post-restore"
-        assert "test_cap" not in DISABLED_CAPABILITIES
-        assert "test_cap" not in _DISABLED_REGISTRY
+        assert "test_cap" in registry, "skill should be in live registry post-restore"
+        assert "test_cap" not in DISABLED_SKILLS
+        assert "test_cap" not in _DISABLED_SKILL_REGISTRY
 
     def test_partial_recovery_shrinks_missing_list(self):
         """Multi-tool cap, one tool recovers, one stays down. Cap stays
-        disabled but DISABLED_CAPABILITIES[name] shrinks."""
+        disabled but DISABLED_SKILLS[name] shrinks."""
         from work_buddy import recovery
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_SKILLS
 
-        cap = _make_capability("multi_cap", ["obsidian", "chrome_extension"])
+        cap = _make_skill("multi_cap", ["obsidian", "chrome_extension"])
         _seed_disabled("multi_cap", ["obsidian", "chrome_extension"], cap)
 
         # Mock: obsidian recovers (True), chrome stays down (False).
@@ -211,33 +211,33 @@ class TestRecheckDisabledCapability:
 
         with patch("work_buddy.tools.reprobe_one"), \
              patch("work_buddy.tools.is_tool_available", side_effect=fake_avail):
-            result = recovery.recheck_disabled_capability("multi_cap")
+            result = recovery.recheck_disabled_skill("multi_cap")
 
         assert result is False
-        assert DISABLED_CAPABILITIES["multi_cap"] == ["chrome_extension"], (
+        assert DISABLED_SKILLS["multi_cap"] == ["chrome_extension"], (
             "Recovered tools should be removed from the missing list"
         )
 
     def test_no_tools_recover_keeps_full_missing_list(self):
         from work_buddy import recovery
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_SKILLS
 
-        cap = _make_capability("test_cap", ["obsidian"])
+        cap = _make_skill("test_cap", ["obsidian"])
         _seed_disabled("test_cap", ["obsidian"], cap)
 
         with patch("work_buddy.tools.reprobe_one"), \
              patch("work_buddy.tools.is_tool_available", return_value=False):
-            result = recovery.recheck_disabled_capability("test_cap")
+            result = recovery.recheck_disabled_skill("test_cap")
 
         assert result is False
-        assert DISABLED_CAPABILITIES["test_cap"] == ["obsidian"]
+        assert DISABLED_SKILLS["test_cap"] == ["obsidian"]
 
     def test_cooldown_skipped_for_recently_probed_tools(self):
-        """If recheck_tool ran recently for a tool, the disabled-capability
+        """If recheck_tool ran recently for a tool, the disabled-skill
         recheck doesn't re-probe it (uses cached availability)."""
         from work_buddy import recovery
 
-        cap = _make_capability("test_cap", ["obsidian"])
+        cap = _make_skill("test_cap", ["obsidian"])
         _seed_disabled("test_cap", ["obsidian"], cap)
 
         # Pre-warm the cool-down timestamp.
@@ -245,22 +245,22 @@ class TestRecheckDisabledCapability:
 
         with patch("work_buddy.tools.reprobe_one") as mock_probe, \
              patch("work_buddy.tools.is_tool_available", return_value=False):
-            recovery.recheck_disabled_capability("test_cap")
+            recovery.recheck_disabled_skill("test_cap")
 
         assert mock_probe.call_count == 0, (
             "Cool-down should suppress re-probe within the window"
         )
 
-    def test_force_bypasses_cooldown_for_capability_recheck(self):
+    def test_force_bypasses_cooldown_for_skill_recheck(self):
         from work_buddy import recovery
 
-        cap = _make_capability("test_cap", ["obsidian"])
+        cap = _make_skill("test_cap", ["obsidian"])
         _seed_disabled("test_cap", ["obsidian"], cap)
         recovery._LAST_RECHECK_AT["obsidian"] = time.monotonic()
 
         with patch("work_buddy.tools.reprobe_one") as mock_probe, \
              patch("work_buddy.tools.is_tool_available", return_value=False):
-            recovery.recheck_disabled_capability("test_cap", force=True)
+            recovery.recheck_disabled_skill("test_cap", force=True)
 
         assert mock_probe.call_count == 1
 
@@ -301,13 +301,13 @@ class TestConcurrency:
             f"got {len(probe_calls)}"
         )
 
-    def test_concurrent_recheck_disabled_capability_serializes(self):
-        """N parallel threads call recheck_disabled_capability. The first
-        restores the capability; subsequent callers see early-return."""
+    def test_concurrent_recheck_disabled_skill_serializes(self):
+        """N parallel threads call recheck_disabled_skill. The first
+        restores the skill; subsequent callers see early-return."""
         from work_buddy import recovery
         from work_buddy.mcp_server.registry import get_registry
 
-        cap = _make_capability("concurrent_cap", ["obsidian"])
+        cap = _make_skill("concurrent_cap", ["obsidian"])
         with patch("work_buddy.tools.is_tool_available", return_value=True):
             get_registry()
             _seed_disabled("concurrent_cap", ["obsidian"], cap)
@@ -323,7 +323,7 @@ class TestConcurrency:
             with patch("work_buddy.tools.reprobe_one", side_effect=slow_probe):
                 threads = [
                     threading.Thread(
-                        target=recovery.recheck_disabled_capability,
+                        target=recovery.recheck_disabled_skill,
                         args=("concurrent_cap",),
                     )
                     for _ in range(10)
@@ -334,7 +334,7 @@ class TestConcurrency:
                     t.join()
 
         # Only the first caller probes; the rest see the cap already restored
-        # and early-return via the "not in DISABLED_CAPABILITIES" guard.
+        # and early-return via the "not in DISABLED_SKILLS" guard.
         assert len(probe_calls) == 1, (
             f"Expected exactly 1 probe call, got {len(probe_calls)}"
         )

@@ -2,7 +2,7 @@
 wb_search results, and for the workflow-level parity in flagging.
 
 Context: During a retro (2026-04-17) a reasoning model saw
-``unavailable: true`` on a capability search result and concluded
+``unavailable: true`` on a skill search result and concluded
 "I don't have permission to use this" — but the flag actually meant
 "the backing service is down (Obsidian bridge probed offline)". The
 two failure modes had been collapsed into one ambiguous field.
@@ -10,7 +10,7 @@ two failure modes had been collapsed into one ambiguous field.
 Also fixed: workflows in the knowledge store but not registered
 (tool deps unmet) used to come back WITHOUT any disabled flag at
 all — agents would see a clean hit and try to run a workflow whose
-dependencies weren't met. Now workflow hits mirror the capability
+dependencies weren't met. Now workflow hits mirror the skill
 branch: ``disabled: true`` + a ``disabled_reason`` explaining why.
 """
 
@@ -22,9 +22,9 @@ from work_buddy.mcp_server.registry import _disabled_reason
 
 
 def test_disabled_reason_surfaces_missing_deps():
-    """When DISABLED_CAPABILITIES has an entry, the reason names it."""
+    """When DISABLED_SKILLS has an entry, the reason names it."""
     with patch(
-        "work_buddy.tools.DISABLED_CAPABILITIES",
+        "work_buddy.tools.DISABLED_SKILLS",
         {"journal_write": ["obsidian"]},
     ):
         reason = _disabled_reason("journal_write")
@@ -34,7 +34,7 @@ def test_disabled_reason_surfaces_missing_deps():
 
 def test_disabled_reason_handles_multiple_deps():
     with patch(
-        "work_buddy.tools.DISABLED_CAPABILITIES",
+        "work_buddy.tools.DISABLED_SKILLS",
         {"datacore_query": ["obsidian", "datacore"]},
     ):
         reason = _disabled_reason("datacore_query")
@@ -55,7 +55,7 @@ class TestDisabledReasonEnriched:
 
     def test_probe_still_failing_includes_reason_and_age(self):
         with patch(
-            "work_buddy.tools.DISABLED_CAPABILITIES",
+            "work_buddy.tools.DISABLED_SKILLS",
             {"journal_write": ["obsidian"]},
         ), patch(
             "work_buddy.tools.get_tool_status",
@@ -77,12 +77,12 @@ class TestDisabledReasonEnriched:
         assert "Bridge unreachable" in reason
         assert "ago" in reason  # probe age formatting
 
-    def test_probe_now_passing_recommends_reload_capability_data(self):
+    def test_probe_now_passing_recommends_reload_skill_data(self):
         """The rare race where the probe is reporting available but the
-        capability is still in DISABLED_CAPABILITIES — should suggest
+        skill is still in DISABLED_SKILLS — should suggest
         the manual remediation."""
         with patch(
-            "work_buddy.tools.DISABLED_CAPABILITIES",
+            "work_buddy.tools.DISABLED_SKILLS",
             {"journal_write": ["obsidian"]},
         ), patch(
             "work_buddy.tools.get_tool_status",
@@ -100,13 +100,13 @@ class TestDisabledReasonEnriched:
             reason = _disabled_reason("journal_write")
 
         assert "available" in reason.lower()
-        assert "reload_capability_data" in reason
+        assert "reload_skill_data" in reason
 
     def test_no_probe_data_yet_distinct_message(self):
         """Cold-start race: tool isn't in get_tool_status's tools dict
         at all (probe hasn't completed yet)."""
         with patch(
-            "work_buddy.tools.DISABLED_CAPABILITIES",
+            "work_buddy.tools.DISABLED_SKILLS",
             {"journal_write": ["obsidian"]},
         ), patch(
             "work_buddy.tools.get_tool_status",
@@ -118,10 +118,10 @@ class TestDisabledReasonEnriched:
         assert "no probe data yet" in reason
 
     def test_multi_tool_reports_each_state_separately(self):
-        """Multi-tool capability: one tool failing, one tool passing-but-
+        """Multi-tool skill: one tool failing, one tool passing-but-
         stale. Each reported with its own state."""
         with patch(
-            "work_buddy.tools.DISABLED_CAPABILITIES",
+            "work_buddy.tools.DISABLED_SKILLS",
             {"datacore_query": ["obsidian", "datacore"]},
         ), patch(
             "work_buddy.tools.get_tool_status",
@@ -148,13 +148,13 @@ class TestDisabledReasonEnriched:
         assert "Bridge unreachable" in reason
         assert "datacore" in reason
         assert "available" in reason.lower()
-        assert "reload_capability_data" in reason
+        assert "reload_skill_data" in reason
 
     def test_falls_back_when_get_tool_status_raises(self):
         """If the enriched-message machinery throws, we still return the
         legacy 'Dependency unavailable: <deps>' string instead of crashing."""
         with patch(
-            "work_buddy.tools.DISABLED_CAPABILITIES",
+            "work_buddy.tools.DISABLED_SKILLS",
             {"journal_write": ["obsidian"]},
         ), patch(
             "work_buddy.tools.get_tool_status",
@@ -211,12 +211,12 @@ class TestProbeAgeFormat:
         assert "unknown" in out
 
 
-def test_disabled_reason_fallback_for_unknown_capability():
-    """Not in DISABLED_CAPABILITIES (genuinely not in the live
+def test_disabled_reason_fallback_for_unknown_skill():
+    """Not in DISABLED_SKILLS (genuinely not in the live
     registry, for reasons other than unmet deps). Reason still
     readable and non-empty."""
-    with patch("work_buddy.tools.DISABLED_CAPABILITIES", {}):
-        reason = _disabled_reason("something_not_even_a_capability")
+    with patch("work_buddy.tools.DISABLED_SKILLS", {}):
+        reason = _disabled_reason("something_not_even_a_skill")
     assert reason
     assert isinstance(reason, str)
     # Sentinel phrase from the helper's fallback path
@@ -224,7 +224,7 @@ def test_disabled_reason_fallback_for_unknown_capability():
 
 
 def test_disabled_reason_survives_import_failure(monkeypatch):
-    """If DISABLED_CAPABILITIES isn't importable (shouldn't happen in
+    """If DISABLED_SKILLS isn't importable (shouldn't happen in
     practice, but guarded in the helper), we still get a usable
     string instead of an exception propagating into wb_search."""
     import work_buddy.mcp_server.registry as registry
@@ -235,7 +235,7 @@ def test_disabled_reason_survives_import_failure(monkeypatch):
         raise RuntimeError("simulated import failure")
 
     monkeypatch.setattr(
-        "work_buddy.tools.DISABLED_CAPABILITIES",
+        "work_buddy.tools.DISABLED_SKILLS",
         property(_raising_import),
     )
     # The helper should still return a string, not raise

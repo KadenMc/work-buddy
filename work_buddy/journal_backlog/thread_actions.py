@@ -5,7 +5,7 @@ backlog primitives (``route.create_task``, ``route.create_consideration``,
 
 Backs the journal-specific entries in the per-source action library
 (``work_buddy/pipelines/journal.py:JOURNAL_ACTIONS``). Each function
-here is registered as a capability with ``is_action=True`` so the
+here is registered as a skill with ``is_action=True`` so the
 LLM cluster-refinement step + the dashboard action chip can both pick
 it as a proposal.
 

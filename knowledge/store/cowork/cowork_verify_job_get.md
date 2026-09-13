@@ -1,11 +1,10 @@
 ---
 name: Co-work Verify Job Get
-kind: capability
+kind: skill
 description: Read the exact immutable context and output schema bound to one job-scoped Co-work Verify worker.
-capability_name: cowork_verify_job_get
 category: cowork
 op: op.wb.cowork_verify_job_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   job_id:
     type: str
@@ -14,6 +13,7 @@ parameters:
 mutates_state: false
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_verify_job_get
 tags:
 - cowork
 - verify
@@ -27,7 +27,7 @@ parents:
 - cowork
 ---
 
-This capability is available only to a server-authored
+This skill is available only to a server-authored
 `<job-id>-cowork-verify-<role>` session. The transport identity, not the
 argument, grants access. A mismatch fails before store or document resolution.
 

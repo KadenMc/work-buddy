@@ -1,8 +1,8 @@
 ---
 schedule: "*/5 * * * *"  # every 5 minutes; each source fires only when its own interval has elapsed
 recurring: true
-type: capability
-capability: event_sources_poll
+type: skill
+skill: event_sources_poll
 params: {}
 ---
 Event-source poll tick. Every 5 minutes, poll each enabled event source whose

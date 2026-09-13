@@ -1,11 +1,10 @@
 ---
 name: Conversation Send
-kind: capability
+kind: skill
 description: Send a message in an existing conversation (fire-and-forget, no response expected).
-capability_name: conversation_send
 category: conversations
 op: op.wb.conversation_send
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   conversation_id:
     type: string
@@ -29,6 +28,7 @@ parameters:
     description: Exact receipt returned by cowork_action_snapshot_get; required while replying to a targeted turn
 mutates_state: true
 retry_policy: manual
+skill_name: conversation_send
 tags:
 - conversations
 - conversation

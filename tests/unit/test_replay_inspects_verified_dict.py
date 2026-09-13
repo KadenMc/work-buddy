@@ -1,5 +1,5 @@
 """Regression test for ``RetrySweep._replay`` inspecting the inner
-capability's ``result["verified"]`` dict.
+skill's ``result["verified"]`` dict.
 
 ``create_task`` can return a response like::
 
@@ -11,8 +11,8 @@ task-list line never landed but the note + store did). The sweep's
 absence-of-``error`` success criterion is not enough — it must also
 inspect ``verified`` and treat any non-``True``/``\"verified\"`` field
 as a transient partial-failure so the outer sweep re-enqueues.
-Capabilities with declared effects are required to be idempotent under
-retry, so the next replay heals the half-state. Capabilities without a
+Skills with declared effects are required to be idempotent under
+retry, so the next replay heals the half-state. Skills without a
 ``verified`` field are unaffected.
 """
 
@@ -40,16 +40,16 @@ def operations_dir(tmp_path: Path, monkeypatch) -> Path:
     return ops_dir
 
 
-def _make_fake_capability_entry(
+def _make_fake_skill_entry(
     monkeypatch,
     name: str,
     return_value: dict[str, Any],
 ) -> None:
-    """Patch the registry so ``reg.get(name)`` returns a stub Capability
+    """Patch the registry so ``reg.get(name)`` returns a stub Skill
     whose ``.callable`` returns ``return_value``."""
-    from work_buddy.mcp_server.registry import Capability
+    from work_buddy.mcp_server.registry import Skill
 
-    fake_entry = Capability(
+    fake_entry = Skill(
         name=name,
         description="test stub",
         category="test",
@@ -82,7 +82,7 @@ def test_replay_treats_verified_false_as_partial_failure(
     schedules another retry rather than firing ``retry_success`` on a
     partial-state write.
     """
-    _make_fake_capability_entry(
+    _make_fake_skill_entry(
         monkeypatch,
         "fake_partial_cap",
         {
@@ -116,7 +116,7 @@ def test_replay_passes_when_all_verified_true(
     operations_dir: Path, monkeypatch,
 ) -> None:
     """All True in ``verified`` → success, same as before."""
-    _make_fake_capability_entry(
+    _make_fake_skill_entry(
         monkeypatch,
         "fake_all_verified",
         {
@@ -144,9 +144,9 @@ def test_replay_passes_when_all_verified_true(
 def test_replay_unchanged_when_no_verified_field(
     operations_dir: Path, monkeypatch,
 ) -> None:
-    """Capabilities that don't return a ``verified`` field are
-    unaffected (most capabilities)."""
-    _make_fake_capability_entry(
+    """Skills that don't return a ``verified`` field are
+    unaffected (most skills)."""
+    _make_fake_skill_entry(
         monkeypatch,
         "fake_no_verified",
         {"success": True, "data": "anything"},
@@ -173,11 +173,11 @@ def test_replay_verified_string_values_treated_as_failure_when_not_verified(
 ) -> None:
     """Verdict values use both legacy boolean (``True``/``False``) and
     string vocabulary (``verified | absent | indeterminate | partial``)
-    depending on the capability. Any value other than ``True`` or
+    depending on the skill. Any value other than ``True`` or
     ``"verified"`` is treated as a not-yet-verified effect — the helper
     accepts both shapes uniformly.
     """
-    _make_fake_capability_entry(
+    _make_fake_skill_entry(
         monkeypatch,
         "fake_string_verdicts",
         {

@@ -1,11 +1,10 @@
 ---
 name: Journal Route To Tasks
-kind: capability
-description: 'Explicit legacy compatibility action that routes an archived journal-group thread into native tasks. Disabled when Obsidian is opted out; new Journal actions use native item routing.'
-capability_name: journal_route_to_tasks
+kind: skill
+description: Explicit legacy compatibility action that routes an archived journal-group thread into native tasks. Disabled when Obsidian is opted out; new Journal actions use native item routing.
 category: journal
 op: op.wb.journal_route_to_tasks
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -29,6 +28,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: journal_route_to_tasks
 tags:
 - journal
 - route

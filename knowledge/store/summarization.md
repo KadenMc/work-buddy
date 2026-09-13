@@ -24,7 +24,7 @@ Summaries are produced by registered framework compositions, not by direct calle
 
 ## Consumers / search
 
-Three capabilities consume summaries; pick by the question you're answering.
+Three skills consume summaries; pick by the question you're answering.
 
 - **`summary_search(query, scope=?)`** — coarse-to-fine retrieval funnel. Stage 1 ranks summary nodes; stage 2 (optional, default on) drills the top items via `session_search`. Returns `stage1_hits` + `candidate_items` + `drilled`. Each hit carries a `drill_node_id` ready to hand to `drill_tree`. **Use this when you have a topic and don't know which item.**
 - **`drill_tree(domain="summary", node_id=..., depth=...)`** — walk one specific item's tree at three depths. **Use this when you have an item id and want its structure.** See `disclosure/drill_tree`.

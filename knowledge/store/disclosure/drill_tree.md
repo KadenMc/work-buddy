@@ -1,8 +1,7 @@
 ---
 name: Drill Tree
-kind: capability
+kind: skill
 description: 'Walk a tree-shaped drillable resource at three depths (index|summary|full). Default depth is `index` — cheapest walk. Today''s domains: knowledge (units via agent_docs), summary (summarization framework''s per-node store).'
-capability_name: drill_tree
 category: disclosure
 parameters:
   domain:
@@ -18,7 +17,8 @@ parameters:
     description: '''index'' (default; node + child names only — cheapest), ''summary'' (node + each child''s summary text), or ''full'' (everything).'
     required: false
 op: op.wb.drill_tree
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: drill_tree
 tags:
 - allow-transient-labels
 - disclosure
@@ -69,4 +69,4 @@ Node_id is the unit path (`tasks/triage-directions`, `architecture/summarization
 
 ## Adding a new domain
 
-Implement a class with `domain: str` and `get(node_id, depth) -> TreeView` (raise `DrillError` on bad input), then register via `register_drillable(domain, factory)`. New tree-shaped domains plug in immediately — no per-domain capability to write.
+Implement a class with `domain: str` and `get(node_id, depth) -> TreeView` (raise `DrillError` on bad input), then register via `register_drillable(domain, factory)`. New tree-shaped domains plug in immediately — no per-domain skill to write.

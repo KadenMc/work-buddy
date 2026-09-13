@@ -22,7 +22,7 @@ def _native_contract_service():
     """Return the sealed SQLite authority, if one has been published.
 
     The import is deliberately lazy: legacy-only installations should not
-    create or migrate a contracts database merely because a read capability
+    create or migrate a contracts database merely because a read skill
     was imported by the gateway.
     """
 

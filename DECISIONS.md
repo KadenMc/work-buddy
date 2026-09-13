@@ -155,3 +155,13 @@ The hourly journal-triage cron was spawning a fresh "Daily note: <date>" umbrell
 2. **Knowledge unit for implied-consent policy** — `architecture/consent/implied-consent` should be authored to document the click-as-consent rule, which triggers participate, the `USER_INITIATED_COVERED` audit, and the risk policy (no current capability is high-blast enough to override the click). Cited in commit `abdae019` but not yet in the store.
 3. **Pre-existing test environment hygiene** — `freezegun` / `lmstudio` / `knowledge_index` import errors in unrelated test modules are environment hygiene, not regressions on this branch.
 4. **Live verification of Test 2** — with implied consent now wired, the "Approve one + Reject one → DONE" path should run cleanly through to terminal. The previous live test stalled at AWAITING_REDIRECT because of the consent re-prompt; that bug is now fixed.
+
+---
+
+## 2026-09-12 — Canonical callable terminology is “skill”
+
+**Decision:** work-buddy's directly callable registry entries are skills. Runtime types, registry/recovery APIs, knowledge declarations, job schemas, gateway fields, documentation, and generated harness projections use `Skill`, `kind: skill`, `skill_name`, and `wb-skill/v1`. Product language distinguishes direct skills from workflow skills; workflows remain their separate multi-step runtime type.
+
+**Compatibility boundary:** old capability-shaped data is normalized only at explicit legacy-read edges (notably `knowledge/store.local`, persisted job/activity data, and cached MCP clients). New serialization and authored declarations emit only skill-shaped forms. The old `reload_capability_data` operation remains a narrow alias for `reload_skill_data`; it is not the documented surface.
+
+**Scope:** historical changelogs, prior decision/design records, reviews, and fidelity fixtures retain their original wording. Ordinary uses of “capability” for host features, model abilities, protocol traits, and lease/object capabilities also remain because they are not Work Buddy skill identifiers.

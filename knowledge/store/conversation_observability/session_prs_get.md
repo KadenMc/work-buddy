@@ -1,16 +1,16 @@
 ---
 name: Session PRs Get
-kind: capability
+kind: skill
 description: List the GitHub pull-request events (created / merged / closed / reviewed) attributed to one session, detected structurally from `gh pr` Bash invocations in its JSONL. Read-only.
-capability_name: session_prs_get
 category: conversation_observability
 op: op.wb.session_prs_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
     description: Full or 8-char prefix session UUID.
     required: true
+skill_name: session_prs_get
 tags:
 - conversation_observability
 - conversation

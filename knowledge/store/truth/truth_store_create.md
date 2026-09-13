@@ -1,11 +1,10 @@
 ---
 name: Truth Store Create
-kind: capability
+kind: skill
 description: Safely initialize and register one Folder's canonical .wbuddy/cowork Truth store from a complete profile. A store id is minted when neither the request nor profile supplies one.
-capability_name: truth_store_create
 category: truth
 op: op.wb.truth_store_create
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   root:
     type: str
@@ -24,6 +23,7 @@ retry_policy: manual
 auto_retry: false
 consent_operations:
 - truth.store_create
+skill_name: truth_store_create
 tags:
 - truth
 - store
@@ -39,7 +39,7 @@ parents:
 - truth
 ---
 
-Store creation delegates the folder work to Co-work's setup path, so the capability inherits one boundary proof rather than repeating it. The folder is walked exactly once, inside the folder operation locks, and that single walk is what authorizes the write: it classifies the folder from the filesystem and proceeds only if the folder holds no Co-work store, sits inside no Co-work folder, and encloses none. There is no partial outcome. A failure part way through removes the store directory, restores the exact manifest bytes, unregisters the store, and leaves the folder as it was.
+Store creation delegates the folder work to Co-work's setup path, so the skill inherits one boundary proof rather than repeating it. The folder is walked exactly once, inside the folder operation locks, and that single walk is what authorizes the write: it classifies the folder from the filesystem and proceeds only if the folder holds no Co-work store, sits inside no Co-work folder, and encloses none. There is no partial outcome. A failure part way through removes the store directory, restores the exact manifest bytes, unregisters the store, and leaves the folder as it was.
 
 This caller shows the folder to nobody between deciding and writing, so it holds no prior observation to pin and passes no inspection fingerprint. That choice is what makes its refusals useful. Instead of a generic report that the folder changed, a refusal carries the reason code for the state the walk actually found: `folder_already_initialized`, `inside_existing_folder`, `contains_nested_folder`, `folder_too_large_for_safe_setup`, `folder_layout_incomplete`, or `identity_conflict`. Each message names both the folder's state and the action that answers it, which is the whole contract for an agent caller that reads the exception text and nothing else.
 
