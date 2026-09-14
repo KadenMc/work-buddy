@@ -1,17 +1,15 @@
-"""work_buddy.threads — universal-entity primitive.
+"""work_buddy.threads — FSM-resolution subtype of the WorkItem primitive.
 
-A Thread is the universal entity for "context that may need an
-action." Subsumes the v4 PoolEntry (now folded into Thread states)
-and ActionItem (folded into sub-Threads with parent_id). Task
-survives as a subclass.
+``WorkItem`` is the common primitive. ``Thread`` and ``Task`` are sibling
+subtypes: Thread owns the resolution FSM, while Task owns the task-list
+contract without an FSM.
 
 Modules in this package
 -----------------------
 
-- ``enums``    — FSMState, InferenceTarget, ReasoningTier,
-                  InvocationContext, ActionKind, Authorship,
-                  SurfaceUrgency.
-- ``models``   — Thread, Task(Thread), ContextItem, ResolutionRequest,
+- ``enums``    — Thread FSM enums plus a compatibility re-export of the
+                  canonical ``work_buddy.workflows.context.InvocationContext``.
+- ``models``   — Thread(WorkItem), Task(WorkItem), ContextItem, ResolutionRequest,
                   AutonomyPolicy, Proposal.
 - ``events``   — ThreadEvent, event-kind catalog, OptimisticLockConflict.
 - ``fsm``      — TRANSITION_TABLE plus lookup helpers (data only;
@@ -24,9 +22,10 @@ Module boundaries (load-bearing)
   owned by that subsystem, not by Threads. Threads enqueue into it;
   they do not own queue state. **Do NOT add a queue table or worker
   to this package.**
-- The **skill/workflow registry** lives in
-  ``work_buddy/mcp_server``. Threads dispatch into the registries via
-  the Action Catalog (a typed lens, not a new registry).
-- The **conductor** lives in ``work_buddy/sidecar``. Threads dispatch
-  workflow-backed actions into it; the conductor itself is unchanged.
+- The **Skill/Workflow registry** and execution conductor live in
+  ``work_buddy/mcp_server``. Transport-neutral Workflow admission and
+  lifecycle routing live in ``work_buddy/workflows``. Threads expose
+  registered behavior through the Action Catalog; an adapter that starts a
+  Workflow must cross ``WorkflowService`` rather than owning a second registry
+  or execution engine.
 """

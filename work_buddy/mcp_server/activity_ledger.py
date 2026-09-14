@@ -201,11 +201,13 @@ def record_workflow_started(
     step_count: int,
     first_step_id: str | None,
     *,
+    workflow_id: str | None = None,
+    workflow_revision: str | None = None,
     agent_session_id: str | None = None,
 ) -> None:
     """Record a workflow start."""
     sid = agent_session_id or _session_id()
-    _append_event({
+    event = {
         "ts": _now_iso(),
         "session_id": sid,
         "type": "workflow_started",
@@ -214,7 +216,12 @@ def record_workflow_started(
         "operation_id": operation_id,
         "step_count": step_count,
         "first_step_id": first_step_id,
-    }, agent_session_id=agent_session_id)
+    }
+    if workflow_id:
+        event["workflow_id"] = workflow_id
+    if workflow_revision:
+        event["workflow_revision"] = workflow_revision
+    _append_event(event, agent_session_id=agent_session_id)
 
 
 def record_workflow_step(

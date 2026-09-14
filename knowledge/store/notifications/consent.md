@@ -37,7 +37,7 @@ dev_notes: |-
 
   The carry policy is a property of the principal *kind* (`ConsentPrincipal.allows_workflow_carry`), not a free-form flag — it is what the older `from_originating` boolean encoded for the replay path. The sidecar's synthetic `WORK_BUDDY_SESSION_ID` (set in `work_buddy/sidecar/__main__.py` "for logging") IS the sidecar principal's session; consult it for consent ONLY via `sidecar_self()`, never as an ambient default for an agent's check.
 
-  **Orphan prevention.** Headless (sidecar-scheduled) workflow runs get an isolated per-run session (`<run_id>-srun`) and a TTL-bounded `workflow_run` grant via `conductor.start_workflow(headless=True)`, so a scheduled run can neither carry-authorize a concurrent sidecar op nor orphan forever. `daemon.run()` reconciles the sidecar's own session at boot to sweep any leftover orphan a hard-killed run left behind. (`get_session_dir` keys session directories on `session_id[:8]`, so per-run ids lead with the uuid-based `run_id` to stay unique — a `sidecar-*` prefix would collide.)
+  **Orphan prevention.** Headless (sidecar-scheduled) Workflow requests enter through `WorkflowService` with the scheduler's executor facilities and are admitted before the conductor creates anything. An admitted run gets an isolated per-run session (`<run_id>-srun`) and a TTL-bounded `workflow_run` grant, so it can neither carry-authorize a concurrent sidecar op nor orphan forever. `daemon.run()` reconciles the sidecar's own session at boot to sweep any leftover orphan a hard-killed run left behind. (`get_session_dir` keys session directories on `session_id[:8]`, so per-run ids lead with the uuid-based `run_id` to stay unique — a `sidecar-*` prefix would collide.)
 
   **Implied consent for thread approvals.** `work_buddy/dashboard/service.py:_post_thread_action` and `work_buddy/threads/group.py:_run_child_accept` wrap `engine.transition` in `user_initiated()` for user-click triggers. The trigger allowlist `_THREAD_USER_INITIATED_TRIGGERS` lives at the top of service.py. To add a new user-click trigger to the bypass, add it to that set; non-listed triggers (e.g. agent-initiated `begin_inference`, `inference_done`) take the bare `engine.transition` path. Tests live in `tests/unit/test_consent_user_initiated.py` (8 cases covering reentrancy, exception cleanup, USER_INITIATED audit emission). `_consent_ctx` is `threading.local`-backed so cross-thread leaks aren't a concern; the side-effect dispatcher runs side effects in the same thread that called `engine.transition`, so the context propagates naturally through the transition machinery.
 
@@ -141,10 +141,12 @@ When the sidecar's retry sweep replays a previously-consented operation, the con
 
 ## Composable workflow consent
 
-Starting a workflow may prompt the user once to authorize the workflow's component operations. Two grant levels live in the session's `consent.db`:
+Workflow admission and consent are separate gates. `WorkflowService` first checks address authorization without resolving or leaking registry membership, then resolves the requested address, aggregates the invocation-context, preference, component, and executor-facility constraints, and validates params. Only an admitted request can reach consent, and a denial creates neither a run nor a run grant.
+
+Starting an admitted Workflow may then prompt the user once to authorize the Workflow's component operations. Two grant levels live in the session's `consent.db`:
 
 - `workflow_class:<name>` — the "Allow for 15 min" or "Allow always" key. Set by the gateway's pre-flight prompt when the user approves a non-`once` mode. TTL-bounded (15 min for `temporary`, 24h for `always`). While live, future invocations of the same workflow skip the pre-flight prompt.
-- `workflow_run:<name>:<run_id>` — minted by `start_workflow` for every active run. Authorizes the workflow's sub-operations *as constituents of that run*. No TTL; revoked when the run completes (or via cascade when the class grant is explicitly revoked).
+- `workflow_run:<name>:<run_id>` — minted by `start_workflow` for every active run. Authorizes the workflow's sub-operations *as constituents of that run*. Interactive runs have no TTL and are revoked on completion (or via class-grant cascade); headless sidecar starts receive a six-hour safety ceiling as well as normal early revocation.
 
 The gateway pre-flight prompt fires when ALL of the following hold:
 
@@ -152,7 +154,7 @@ The gateway pre-flight prompt fires when ALL of the following hold:
 2. The dispatch is NOT inside a `user_initiated()` context.
 3. The workflow's declared `consent_operations` include at least one moderate- or high-risk op (low-only workflows auto-bypass under the hybrid migration policy — see below).
 
-User choices in the prompt: **Allow once** (no class grant; only the run grant covers this invocation), **Allow for 15 min** (class grant minted with 15-min TTL), **Allow always (this session, 24h)** (class grant minted with 24-h TTL), or **Deny** (the workflow does not start; `start_workflow` is short-circuited and the operation completes with a `consent denied` error).
+User choices in the prompt: **Allow once** (no class grant; only the run grant covers this invocation), **Allow for 15 min** (class grant minted with 15-min TTL), **Allow always (this session, 24h)** (class grant minted with 24-h TTL), or **Deny** (the Workflow does not start; `WorkflowService` returns the consent denial before run creation).
 
 ### Decorator carry path
 

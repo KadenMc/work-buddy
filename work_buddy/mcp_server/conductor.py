@@ -68,7 +68,23 @@ _DEFAULT_IDLE_TIMEOUT_HOURS = 24.0
 _SIDECAR_RUN_GRANT_TTL_MINUTES = 6 * 60
 
 
-def _validate_workflow_params(
+def _workflow_identity_fields(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
+    """Return the definition/run identity pinned to a DAG."""
+
+    fields: dict[str, Any] = {"workflow_run_id": run_id}
+    workflow_id = getattr(dag, "workflow_id", None)
+    workflow_revision = getattr(dag, "workflow_revision", None)
+    workflow_name = getattr(dag, "workflow_name", None)
+    if workflow_id:
+        fields["workflow_id"] = workflow_id
+    if workflow_revision:
+        fields["workflow_revision"] = workflow_revision
+    if workflow_name:
+        fields["workflow_name"] = workflow_name
+    return fields
+
+
+def validate_workflow_params(
     entry: WorkflowDefinition,
     params: dict[str, Any] | None,
 ) -> tuple[bool, str | None]:
@@ -111,6 +127,12 @@ def _validate_workflow_params(
     return True, None
 
 
+# Compatibility import retained for callers/tests that used the former
+# private helper before WorkflowService made parameter validation part of the
+# application boundary.
+_validate_workflow_params = validate_workflow_params
+
+
 def _resolve_params_source(
     source: str,
     initial_params: dict[str, Any] | None,
@@ -140,6 +162,7 @@ def start_workflow(
     agent_session_id: str | None = None,
     *,
     headless: bool = False,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     """Start a workflow and return its first available step.
 
@@ -162,10 +185,23 @@ def start_workflow(
         return {"error": f"Unknown workflow: {workflow_name!r}"}
     if not isinstance(entry, WorkflowDefinition):
         return {"error": f"{workflow_name!r} is a function, not a workflow. Use wb_run to execute it."}
+    if expected_revision and entry.workflow_revision != expected_revision:
+        return {
+            "error": (
+                f"Workflow {entry.name!r} changed after admission; "
+                "invoke it again to evaluate the current revision."
+            ),
+            "error_code": "workflow_revision_changed",
+            "workflow_id": entry.workflow_id,
+            "expected_workflow_revision": expected_revision,
+            "workflow_revision": entry.workflow_revision,
+        }
     if not entry.steps:
         return {"error": f"Workflow {workflow_name!r} has no steps defined in frontmatter."}
 
-    ok, err = _validate_workflow_params(entry, params)
+    canonical_name = entry.name
+
+    ok, err = validate_workflow_params(entry, params)
     if not ok:
         return {"error": err}
 
@@ -182,8 +218,12 @@ def start_workflow(
         agent_session_id = f"{run_id}-srun"
 
     dag = WorkflowDAG(
-        name=f"{workflow_name}:{run_id}",
-        description=f"Run of workflow {workflow_name}",
+        name=f"{canonical_name}:{run_id}",
+        description=f"Run of workflow {canonical_name}",
+        workflow_id=entry.workflow_id or None,
+        workflow_revision=entry.workflow_revision or None,
+        workflow_run_id=run_id,
+        workflow_name=canonical_name,
     )
     # Stash caller-provided params on the DAG. Persisted via _save and
     # re-read by _execute_auto_run when an input_map references __params__.
@@ -210,6 +250,8 @@ def start_workflow(
             meta["requires_individual_consent"] = True
         if step.requires:
             meta["requires"] = list(step.requires)
+        if getattr(step, "target_workflow_id", None):
+            meta["target_workflow_id"] = step.target_workflow_id
 
         dag.add_task(
             task_id=step.id,
@@ -231,7 +273,7 @@ def start_workflow(
     # Pin the workflow's class name so downstream lifecycle code (revoke
     # at completion, cascade from class-revoke, orphan reconciliation)
     # can look it up without parsing dag.name.
-    dag.workflow_name = workflow_name  # type: ignore[attr-defined]
+    dag.workflow_name = canonical_name
 
     dag.save()
     with _ACTIVE_RUNS_LOCK:
@@ -247,7 +289,7 @@ def start_workflow(
     # normal completion still revokes early, but an abnormally-terminated
     # headless run self-heals at expiry instead of lingering forever.
     grant_workflow_run(
-        workflow_name, run_id, session_id=agent_session_id,
+        canonical_name, run_id, session_id=agent_session_id,
         ttl_minutes=_SIDECAR_RUN_GRANT_TTL_MINUTES if headless else None,
     )
 
@@ -355,7 +397,7 @@ def advance_workflow(
                 )
             return {
                 "type": "validation_error",
-                "workflow_run_id": workflow_run_id,
+                **_workflow_identity_fields(workflow_run_id, dag),
                 "step_id": current_id,
                 "error": validation_error,
                 "hint": hint,
@@ -424,7 +466,7 @@ def get_workflow_status(workflow_run_id: str) -> dict[str, Any]:
         return {"error": f"Unknown workflow run: {workflow_run_id!r}"}
 
     return {
-        "workflow_run_id": workflow_run_id,
+        **_workflow_identity_fields(workflow_run_id, dag),
         "summary": dag.summary(),
         "is_complete": dag.is_complete(),
         "diagram": _dag_to_mermaid(dag),
@@ -437,7 +479,7 @@ def list_active_runs() -> list[dict[str, Any]]:
         snapshot = list(_ACTIVE_RUNS.items())
     return [
         {
-            "workflow_run_id": run_id,
+            **_workflow_identity_fields(run_id, dag),
             "name": dag.name,
             "is_complete": dag.is_complete(),
             "cancelled": getattr(dag, "cancelled", False),
@@ -642,9 +684,11 @@ def get_step_result(
     if dag is None:
         return {"error": f"Workflow {workflow_run_id!r} not found (active or on disk)"}
 
+    identity = _workflow_identity_fields(workflow_run_id, dag)
     all_results = dag.get_all_results()
     if step_id not in all_results:
         return {
+            **identity,
             "error": f"No result for step {step_id!r}",
             "available_steps": list(all_results.keys()),
         }
@@ -661,6 +705,7 @@ def get_step_result(
                 serialized = str(value)
             if len(serialized) > _STEP_RESULT_CAP:
                 return {
+                    **identity,
                     "step_id": step_id,
                     "key": key,
                     "_truncated": True,
@@ -668,9 +713,13 @@ def get_step_result(
                     "_message": f"Key value too large ({len(serialized):,} chars). "
                                 f"Full data is in the DAG state file.",
                 }
-            return {"step_id": step_id, "key": key, "value": value}
+            return {**identity, "step_id": step_id, "key": key, "value": value}
         available = list(result.keys()) if isinstance(result, dict) else []
-        return {"error": f"Key {key!r} not found in step {step_id!r}", "available_keys": available}
+        return {
+            **identity,
+            "error": f"Key {key!r} not found in step {step_id!r}",
+            "available_keys": available,
+        }
 
     # Return full result (subject to cap)
     try:
@@ -679,6 +728,7 @@ def get_step_result(
         serialized = str(result)
     if len(serialized) > _STEP_RESULT_CAP:
         return {
+            **identity,
             "step_id": step_id,
             "_truncated": True,
             "_size": len(serialized),
@@ -686,7 +736,7 @@ def get_step_result(
             "_message": f"Result too large ({len(serialized):,} chars). "
                         f"Use the 'key' parameter to retrieve specific keys.",
         }
-    return {"step_id": step_id, "result": result}
+    return {**identity, "step_id": step_id, "result": result}
 
 
 def _iter_dag_files() -> Iterator[Path]:
@@ -725,16 +775,27 @@ def _iter_dag_files() -> Iterator[Path]:
 def _load_dag_from_disk(workflow_run_id: str) -> WorkflowDAG | None:
     """Find a persisted DAG by run id, scanning every agent session.
 
-    The run id is matched against the DAG ``name`` (format
-    ``"<workflow>:<run_id>"``), not the filename — filenames are
-    lower-cased and colon-sanitized, so the id may not survive verbatim.
+    DAGs carry an explicit ``workflow_run_id``.  For persisted DAGs that
+    predate that field, match the exact final ``":"``-delimited segment of
+    ``name`` (format ``"<workflow>:<run_id>"``), not a substring and not the
+    filename — filenames are lower-cased and colon-sanitized, so the id may
+    not survive verbatim.
     """
     for path in _iter_dag_files():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        if workflow_run_id in data.get("name", ""):
+        persisted_run_id = data.get("workflow_run_id")
+        persisted_name = data.get("name")
+        encoded_run_id = (
+            persisted_name.rsplit(":", 1)[1]
+            if isinstance(persisted_name, str) and ":" in persisted_name
+            else None
+        )
+        if persisted_run_id == workflow_run_id or (
+            persisted_run_id is None and encoded_run_id == workflow_run_id
+        ):
             try:
                 return WorkflowDAG.load(path)
             except Exception:  # pragma: no cover — defensive
@@ -921,14 +982,14 @@ def cancel_workflow(
         return {
             "cancelled": True,
             "already_cancelled": True,
-            "workflow_run_id": workflow_run_id,
+            **_workflow_identity_fields(workflow_run_id, dag),
             "reason": getattr(dag, "cancelled_reason", None),
         }
 
     if dag.is_complete():
         return {
             "cancelled": False,
-            "workflow_run_id": workflow_run_id,
+            **_workflow_identity_fields(workflow_run_id, dag),
             "detail": "Workflow run already complete — nothing to cancel.",
         }
 
@@ -963,7 +1024,7 @@ def cancel_workflow(
     )
     return {
         "cancelled": True,
-        "workflow_run_id": workflow_run_id,
+        **_workflow_identity_fields(workflow_run_id, dag),
         "reason": reason,
         "was_active": was_active,
     }
@@ -1052,16 +1113,18 @@ def recover_active_runs(
             errors += 1
             continue
 
-        # run_id is the segment after the last ':' in "<workflow>:<run_id>".
+        # New records persist run identity explicitly; old records derive it
+        # from the historical "<workflow>:<run_id>" composite name.
         name = dag.name or ""
-        if ":" not in name:
+        run_id = getattr(dag, "workflow_run_id", None)
+        if not run_id and ":" not in name:
             logger.warning(
                 "recover_active_runs: DAG at %s has un-keyable name %r — "
                 "skipping", path, name,
             )
             skipped += 1
             continue
-        run_id = name.rsplit(":", 1)[1]
+        run_id = run_id or name.rsplit(":", 1)[1]
 
         if dag.is_complete() or getattr(dag, "cancelled", False):
             skipped += 1
@@ -1380,6 +1443,9 @@ def _build_response(
 
     if next_task.get("workflow_file"):
         current_step["workflow_file"] = next_task["workflow_file"]
+    target_workflow_id = meta.get("target_workflow_id")
+    if target_workflow_id:
+        current_step["target_workflow_id"] = target_workflow_id
 
     total = dag._graph.number_of_nodes()
     completed = sum(
@@ -1389,7 +1455,7 @@ def _build_response(
 
     response: dict[str, Any] = {
         "type": "workflow_step",
-        "workflow_run_id": run_id,
+        **_workflow_identity_fields(run_id, dag),
         "current_step": current_step,
         "progress": f"{completed}/{total} steps completed",
         "remaining_steps": [
@@ -1713,7 +1779,7 @@ def _build_complete_response(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
     total = dag._graph.number_of_nodes()
     return {
         "type": "workflow_complete",
-        "workflow_run_id": run_id,
+        **_workflow_identity_fields(run_id, dag),
         "summary": dag.summary(),
         "progress": f"{total}/{total} steps completed",
         "step_results": _visibility_filter_results(dag),
@@ -1772,7 +1838,7 @@ def _build_blocked_response(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
 
     return {
         "type": "workflow_blocked",
-        "workflow_run_id": run_id,
+        **_workflow_identity_fields(run_id, dag),
         "summary": dag.summary(),
         "progress": (
             f"{completed}/{total} steps completed "
@@ -1964,8 +2030,9 @@ def _dag_to_mermaid(dag: WorkflowDAG) -> str:
         "failed": "failed",
     }
 
-    # Extract workflow name from DAG name (format: "workflow_name:run_id")
-    wf_name = dag.name.split(":")[0] if ":" in dag.name else dag.name
+    wf_name = getattr(dag, "workflow_name", None) or (
+        dag.name.split(":")[0] if ":" in dag.name else dag.name
+    )
 
     lines = [
         "---",
@@ -2001,9 +2068,15 @@ def _dag_to_mermaid(dag: WorkflowDAG) -> str:
 
 
 def _get_wf_def(dag: WorkflowDAG) -> WorkflowDefinition | None:
-    """Try to recover the WorkflowDefinition from a running DAG's name."""
-    wf_name = dag.name.split(":")[0] if ":" in dag.name else dag.name
-    entry = get_entry(wf_name)
+    """Resolve the current definition by stable ID, then its saved slug."""
+
+    workflow_id = getattr(dag, "workflow_id", None)
+    wf_name = getattr(dag, "workflow_name", None) or (
+        dag.name.split(":")[0] if ":" in dag.name else dag.name
+    )
+    entry = get_entry(workflow_id) if workflow_id else None
+    if not isinstance(entry, WorkflowDefinition):
+        entry = get_entry(wf_name)
     return entry if isinstance(entry, WorkflowDefinition) else None
 
 

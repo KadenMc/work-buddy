@@ -1,7 +1,7 @@
 ---
 name: Docs Move
 kind: skill
-description: Move a unit to a new path. Updates all parent/child references across the store.
+description: Move a unit to a new path. Updates parent/child references; for a Workflow, preserves workflow_id and rewrites path-based Directions bindings.
 category: context
 op: op.wb.docs_move
 schema_version: wb-skill/v1

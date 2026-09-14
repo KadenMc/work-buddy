@@ -4,6 +4,7 @@ kind: workflow
 description: Given a batch of discrete information items (each with an ID, raw text, and optional agent-proposed metadata), present routing recommendations to the user in clusters, get confirmation or correction, and execute the approved routings.
 summary: Given a batch of discrete information items (each with an ID, raw text, and optional agent-proposed metadata), present routing recommendations to the user in clusters, get confirmation or correction, and execute the approved routings.
 workflow_name: route-information
+workflow_id: wfd_a7f061f4f6dd46a6bc48504de8be5451
 execution: main
 steps:
 - id: cluster-items

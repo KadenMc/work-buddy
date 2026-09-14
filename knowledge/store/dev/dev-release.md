@@ -3,6 +3,7 @@ name: Dev Release
 kind: workflow
 description: Cut a tagged three-platform work-buddy release with preflight gates, native artifact acceptance, one draft-release aggregation job, and a human-only publish step.
 workflow_name: dev-release
+workflow_id: wfd_1810d282a2c34834a84cc26a8a65f758
 execution: main
 allow_override: false
 steps:

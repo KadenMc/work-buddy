@@ -3,6 +3,7 @@ name: Weekly Review
 kind: workflow
 description: Agentic weekly planning session. The agent assembles the strategic picture,
 workflow_name: weekly-review
+workflow_id: wfd_bfa2021d9d614906b9835377233737b3
 execution: main
 allow_override: false
 steps:

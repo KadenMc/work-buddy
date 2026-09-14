@@ -27,7 +27,8 @@ def test_build_rulesync_input_generates_codex_skills_from_claude_commands(
     command_dir = asset_root / ".claude" / "commands"
     command_dir.mkdir(parents=True)
     (asset_root / "CLAUDE.md").write_text(
-        "You are work-buddy running in Claude Code.\n",
+        "You are work-buddy running in Claude Code.\n"
+        "Pass your WORK_BUDDY_SESSION_ID when initializing.\n",
         encoding="utf-8",
     )
     (command_dir / "wb-dev-pr.md").write_text(
@@ -56,6 +57,8 @@ def test_build_rulesync_input_generates_codex_skills_from_claude_commands(
     )
     assert rule_meta["targets"] == ["codexcli"]
     assert "Codex" in rule_body
+    assert "CODEX_THREAD_ID" in rule_body
+    assert "WORK_BUDDY_SESSION_ID" not in rule_body
     mcp = yaml.safe_load((root / "mcp.json").read_text(encoding="utf-8"))
     assert mcp["mcpServers"]["work-buddy"]["url"] == "http://localhost:5126/mcp"
     hooks = json.loads((root / "hooks.json").read_text(encoding="utf-8"))

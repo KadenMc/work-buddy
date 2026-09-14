@@ -4,6 +4,7 @@ kind: workflow
 description: Read the Running Notes section from a journal file, identify coherent threads of related content, and annotate the text with inline thread IDs. The raw text is never modified â€” only HTML comment tags are inserted.
 summary: Read the Running Notes section from a journal file, identify coherent threads of related content, and annotate the text with inline thread IDs. The raw text is never modified â€” only HTML comment tags are inserted.
 workflow_name: segment-notes
+workflow_id: wfd_d8cb81551d464d66b503c3326122dd92
 execution: subagent
 steps:
 - id: extract-section

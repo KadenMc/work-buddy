@@ -84,15 +84,21 @@ Your skill becomes discoverable via `wb_search` and executable via `wb_run`.
 
 ### Adding a Workflow
 
-Workflows are multi-step DAGs — each is a `kind: workflow` unit (one Markdown file) in the knowledge store, with its `steps` DAG in frontmatter and per-step prose under `## <step-id>` body sections. The conductor handles dependency ordering, state persistence, and step execution — you describe the steps and their instructions, and the framework runs them.
+Workflows are multi-step DAGs — each is a `kind: workflow` unit (one Markdown file) in the knowledge store, with its `steps` DAG in frontmatter and per-step prose under `## <step-id>` body sections. The Workflow Registry discovers and compiles definitions, `WorkflowService` resolves and admits invocations, and the conductor handles dependency ordering, state persistence, and step execution.
 
 A workflow unit contains:
+- **Definition identity** — an immutable `workflow_id` in the form `wfd_<32 lowercase hex>`, distinct from the canonical `workflow_name` and any `workflow_aliases`
+- **Revision** — a deterministic `sha256:<64 lowercase hex>` digest derived at compile time; each invocation also gets a separate `wf_<8 lowercase hex>` run ID
 - **Steps** — a DAG of `{id, name, depends_on}` entries that define execution order
 - **Step instructions** — per-step text that the agent receives when executing each step
 - **Execution policy** — whether steps run in the main session or delegate to subagents
 - **Auto-run specs** — steps that execute deterministic code automatically (no agent reasoning needed)
 
-**The easiest way to add a workflow:** describe what you want to your agent and let it author the unit via the `docs_edit` workflow (`wb_run("docs-edit", {"path": ..., "create": true, "kind": "workflow"})`). The commit step validates the step DAG and reconciles; restart the MCP server so the new workflow name is callable. Add a thin slash command in `.claude/commands/wb-your-workflow.md` and it's accessible via `/wb-` autocomplete.
+**The easiest way to add a workflow:** describe what you want to your agent and let it author the unit via the `docs_edit` workflow (`wb_run("docs-edit", {"path": ..., "create": true, "kind": "workflow"})`). The create scaffold assigns the stable definition ID; the commit step validates identity, addresses, and the step DAG before reconciling.
+
+Treat `workflow_id` as immutable after creation. Structured create, update, and move operations preserve it, and the `docs_edit` resolve→commit guard rejects replacement. A native edit outside that flow must retain the existing value explicitly. A rename keeps the former canonical name as an invocation alias, while a move keeps the identity and rebinds any attached Directions to the new path. After a data-only declaration or Workflow edit, call `wb_run("reload_skill_data")`; a gateway Python-code change instead requires a **Ctrl+R** restart of the MCP connection.
+
+Agent callers can find or invoke a Workflow by canonical name, executable alias, or stable ID. Add a thin slash command in `.claude/commands/wb-your-workflow.md` if the Workflow should also be accessible via `/wb-` autocomplete.
 
 Browse existing workflows via `wb_search("workflow")` or `agent_docs` to see real-world patterns including auto-run steps, subagent delegation, sub-workflow chaining, and conditional branching.
 
@@ -117,7 +123,7 @@ work-buddy is designed to be developed by the same agents that use it. Most comm
 /wb-dev                    # Orient on architecture and patterns
 # ... make your changes ...
 /wb-dev-test               # Run tests for what you changed, check coverage
-/wb-dev-push               # Pre-push checklist: tests, knowledge store, DAG integrity
+/wb-dev-pr                 # Cleanup, tests, docs, PII scan, signed commit, push, and PR
 /wb-task-handoff            # If the work spans sessions, package context for the next one
 ```
 
@@ -125,7 +131,7 @@ work-buddy is designed to be developed by the same agents that use it. Most comm
 
 - You don't need to memorize the codebase. Point your agent at `/wb-dev` and it will discover what it needs via `agent_docs`.
 - You don't need to figure out which tests to run. `/wb-dev-test` detects what changed and runs the right subset.
-- You don't need to manually check if your workflow DAG is valid. `/wb-dev-push` validates everything before you ship.
+- You don't need to manually check if your workflow DAG is valid. `/wb-dev-pr` validates everything before you ship.
 - If your work takes multiple sessions, `/wb-task-handoff` creates a structured handoff note so the next agent picks up exactly where you left off — no context loss.
 
 **A few conventions that support this model:**
@@ -138,7 +144,7 @@ You're welcome to develop however you prefer — by hand, with Claude Code, or w
 
 ## Pull Request Checklist
 
-Run `/wb-dev-push` to check most of these automatically. When submitting your PR, ensure:
+Run `/wb-dev-pr` to check most of these automatically. When submitting your PR, ensure:
 
 - [ ] All tests pass (`uv run pytest` or `/wb-dev-test`)
 - [ ] All commits are signed off (`git commit -s` — see [License and the Developer Certificate of Origin](#license-and-the-developer-certificate-of-origin))

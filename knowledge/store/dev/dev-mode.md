@@ -57,8 +57,8 @@ If any list you advance with is empty or trivial, you have not oriented yet — 
 
 Three core constructs, with design heuristics for deciding between them:
 
-- **Skills** — atomic Python functions registered in `registry.py`. Single operation, reusable from anywhere. Invoked via `wb_run("name", params)`, executes immediately.
-- **Workflows** — `kind: workflow` units, one Markdown file per workflow under `knowledge/store/`. Multi-step procedures requiring ordering, user decisions, or state threading. Started via `wb_run("name")`, advanced via `wb_advance(run_id, result)`.
+- **Skills** — `kind: skill` declarations whose `op` resolves to a registered Python implementation and which the shared registry loads as agent-invocable entries. A Skill executes immediately through `wb_run("name", params)`.
+- **Workflows** — `kind: workflow` units, one Markdown file per definition under `knowledge/store/`. Each has an immutable `workflow_id`, mutable canonical `workflow_name`, optional executable `workflow_aliases`, and a computed `workflow_revision`; every invocation gets a separate `workflow_run_id`. Start one by canonical name, executable alias, or stable ID via `wb_run`, then advance a reasoning step with `wb_advance(workflow_run_id=..., step_result=...)`.
 - **Auto-run steps** — workflow steps marked `auto_run` in the unit's frontmatter. The conductor executes these transparently in a subprocess; the agent never sees them. Use for deterministic code (config loading, data formatting) that needs no agent reasoning. A subprocess that times out is retried once automatically (transient host contention is the dominant cause); set `auto_run.retry_on_timeout: false` for steps that mutate external state where a second attempt would not be idempotent (git commits, outbound message sends, source-pipeline drives).
 
 **Decision heuristic.** Can you write a unit test with a fixed expected output? → Skill. Does the "correct" output depend on interpretation, user input, or synthesis? → Workflow step. Is the step itself deterministic with no side effects? → Auto-run step.
@@ -79,21 +79,30 @@ A skill is an **Op** (a Python callable) plus a **declaration unit** (a `kind: s
 4. Verify: `mcp__work-buddy__wb_search("your_skill")`.
 
 ### Workflows
-A workflow is a `kind: workflow` unit — one Markdown file per workflow under `knowledge/store/`. The conductor (`work_buddy/mcp_server/conductor.py`) discovers them at runtime via `_discover_workflows_from_store()`, which scans every store file for `kind == "workflow"`. The `steps` DAG lives in the unit's YAML frontmatter; each step's prose lives under a `## <step-id>` body section.
+A Workflow is a `kind: workflow` unit — one Markdown file per definition under `knowledge/store/`. The registry compiler in `work_buddy/mcp_server/registry.py` discovers definitions, validates identity and addresses, compiles references, and computes revisions. `WorkflowService` resolves and admits requests from MCP and sidecar adapters; `work_buddy/mcp_server/conductor.py` executes admitted runs. The `steps` DAG lives in YAML frontmatter; each step's prose lives under a `## <step-id>` body section.
+
+Identity fields have different jobs:
+
+- `workflow_id` is an opaque, immutable definition identity (`wfd_...`).
+- `workflow_name` is the mutable primary invocation address.
+- `workflow_aliases` are durable executable addresses; when renaming, retain the previous canonical name here.
+- Generic `aliases` remain search phrases, not invocation addresses.
+- `workflow_revision` is computed from the serialized authored definition snapshot, its directly bound Directions snapshot, and compiled child-Workflow target identities. Never author it. It is a start/admission guard and run marker, not a versioned-definition archive.
+- `workflow_run_id` (`wf_...`) identifies one execution.
 
 **To add a workflow:**
-1. Scaffold and author the unit with the `docs_edit` workflow: `mcp__work-buddy__wb_run("docs-edit", {"path": "<domain>/<name>", "create": true, "kind": "workflow"})`, then edit the scaffold's frontmatter `steps` and the `## <step-id>` body sections with your native `Edit` tool. The commit step validates the step DAG (cycles, dangling deps, heading↔step-id consistency) and reconciles.
+1. Scaffold and author the unit with the `docs_edit` workflow: `mcp__work-buddy__wb_run("docs-edit", {"path": "<domain>/<name>", "create": true, "kind": "workflow"})`. The scaffold mints a fresh `workflow_id`; preserve it exactly. Then edit the remaining frontmatter, `steps`, and `## <step-id>` body sections with your native `Edit` tool. The commit step validates identity/address collisions and the step DAG, then reconciles.
 2. Create a matching slash command in `.claude/commands/wb-<name>.md` (thin launcher) if it's user-facing.
 3. Create a behavioral directions unit (`kind: directions`) via `docs_edit`, loaded by the slash command.
 4. Update CLAUDE.md if the workflow belongs in a user-facing table.
-5. **Reload with `reload_skill_data`** — a new workflow is data, so the data-only reload makes it callable via `wb_run` with no restart (a restart also works but isn't needed).
+5. **Reload with `reload_skill_data`** — a new Workflow is data, so the data-only reload refreshes definitions, ID/alias indexes, and revisions without a process restart.
 
-**To edit an existing workflow:** use `docs_edit` and edit the unit's `.md` directly — frontmatter `steps` (the DAG) and the `## <step-id>` body sections. The commit step re-validates the DAG.
+**To edit an existing Workflow:** use `docs_edit` and preserve its existing `workflow_id`; the resolve→commit guard carries the original value and rejects replacement. If `workflow_name` changes through a native/raw edit, append the former name to `workflow_aliases`. Use `docs_move` for a path move so the ID remains stable and path-based Directions bindings are rewritten. Structured editor updates also enforce ID immutability. Only a native edit performed entirely outside `docs_edit` lacks a pre-edit identity guard, so that author must preserve the existing value explicitly.
 
 ### Knowledge units (any kind)
 The system store is one Markdown file per unit (`knowledge/store/<path>.md`) — editing a unit is editing its file. Use the **`docs_edit` workflow** (`wb_run("docs-edit", {"path": ...})`): it returns the file path, you edit it with your native `Edit` tool, and the commit step validates (kind-aware) and reconciles the store cache + search index. `create: true` + `kind` scaffolds a new unit. `dev_notes` is just a frontmatter field — edit it inline.
 
-A direct `Edit` of a unit's `.md` is equally valid; if you bypass the workflow, run `agent_docs_rebuild` afterward so the store and index reflect the change. Structural operations that aren't content edits — deleting or moving a unit — use the `docs_delete` / `docs_move` skills. **Skill units** (`kind: skill`) are authored the same way (see "MCP skills" above for the Op + declaration pair).
+A direct `Edit` of a unit's `.md` is equally valid; if you bypass the workflow, run `agent_docs_rebuild` afterward so the store and index reflect the change. For a Skill declaration or Workflow definition/address/schema edit, also run `reload_skill_data` after the active editing Workflow finishes so the live gateway registry reflects it. Structural operations that aren't content edits — deleting or moving a unit — use the `docs_delete` / `docs_move` skills. **Skill units** (`kind: skill`) are authored the same way (see "MCP skills" above for the Op + declaration pair).
 
 ### Health system (preferences / requirements / components / fixers)
 
@@ -143,12 +152,15 @@ mcp__work-buddy__wb_search("your_query")              # verify discovery
 mcp__work-buddy__wb_run("skill_name", {...})     # test execution
 ```
 
-**Caveat — data vs code:** `reload_skill_data` makes *data* changes live with no restart: new/edited **declarations** (including param schemas) and new **workflows** whose Op already exists. It does NOT pick up edited Op **code** or a brand-new Op **module** — those are Python and need a `Ctrl+R` restart. (The retired `mcp_registry_reload` claimed to hot-patch code but silently did nothing in the long-lived FastMCP gateway — see `dev/mcp-reload`.)
+**Caveat — data vs code:** `reload_skill_data` makes *data* changes live with no restart: new/edited declarations (including param schemas) and Workflows, including their ID/alias indexes and computed revisions. It does NOT pick up edited gateway or Op Python or a brand-new Op module — those require **Ctrl+R** so the MCP client reconnects to the rebuilt process. Auto-run callables are freshly imported in their subprocess on each execution. (The retired `mcp_registry_reload` claimed to hot-patch code but silently did nothing in the long-lived FastMCP gateway — see `dev/mcp-reload`.)
 
 ### Restarting services
 ```
-mcp__work-buddy__wb_run("service_restart", {"service": "dashboard"})
+uv run --frozen wbuddy restart
+uv run --frozen wbuddy status
 ```
+
+This restarts the sidecar-managed child services, including the dashboard. Gateway Python changes still require **Ctrl+R** in the agent client after the process is rebuilt so its cached MCP connection and tool schema are refreshed.
 
 ### Live testing
 
@@ -169,7 +181,7 @@ work-buddy enforces a Developer Certificate of Origin: **every commit must be si
 - **Don't guess at imports** — `mcp__work-buddy__wb_search()` first, then check the code.
 - **Don't add features without slash commands** — every user-facing skill needs one.
 - **Don't double-run doc hygiene** — `/wb-dev-pr` already runs `/wb-dev-document` as a chained step, so never tell the user (or yourself) to "run /wb-dev-document then /wb-dev-pr." Run `/wb-dev-document` standalone only to *preview* doc edits before the PR flow.
-- **Reconcile after a direct file edit** — a raw `Edit` of a unit's `.md` is fine, but run `agent_docs_rebuild` (or use the `docs_edit` workflow, which does it for you) so the store cache and search index pick up the change.
+- **Reconcile after a direct file edit** — a raw `Edit` of a unit's `.md` is fine, but run `agent_docs_rebuild` (or use the `docs_edit` workflow, which does it for you) so the store cache and search index pick up the change. If the unit is a Skill declaration or Workflow definition, follow with `reload_skill_data` after the editing Workflow completes so the executable registry is not stale.
 - **Don't commit unrelated files** — stage only what you changed.
 - **Don't commit without `-s`** — work-buddy enforces a DCO; an unsigned commit fails the required `DCO` check and blocks the PR.
 - **Don't ship transient narrative in durable surfaces.** See `<<wb:dev/durable-surfaces>>`.

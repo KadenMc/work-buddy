@@ -22,10 +22,9 @@ from work_buddy.frontmatter import parse_frontmatter
 # Skill/workflow definitions get four Threads-FSM-related fields
 # (is_action, available_in, intrinsic_amplifiers,
 # parameter_schema_for_action, requires_post_review). The
-# InvocationContext enum lives in work_buddy.threads.enums (a
-# pure-data module with no other work_buddy deps, so this import is
-# cycle-safe).
-from work_buddy.threads.enums import InvocationContext
+# InvocationContext is shared application policy, not Threads ownership.
+# ``work_buddy.threads.enums`` re-exports this exact class for compatibility.
+from work_buddy.workflows.context import InvocationContext
 from work_buddy import paths
 
 logger = logging.getLogger(__name__)
@@ -215,6 +214,9 @@ class WorkflowStep:
     depends_on: list[str] = field(default_factory=list)
     execution: str = "main"  # "main" or "subagent"
     workflow_file: str | None = None  # sub-workflow reference
+    # Stable target resolved from ``workflow_file``/``workflow_ref`` during
+    # registry compilation. The source alias remains for compatibility.
+    target_workflow_id: str | None = None
     optional: bool = False
     requires: list[str] = field(default_factory=list)  # tool IDs for conductor gating
     # Skill names this step calls. For auto_run steps, this is typically
@@ -237,6 +239,10 @@ class WorkflowDefinition:
     description: str
     workflow_file: str  # relative path from repo root
     execution: str  # default execution policy
+    workflow_id: str = ""
+    workflow_revision: str = ""
+    display_name: str = ""
+    aliases: tuple[str, ...] = ()
     allow_override: bool = True
     steps: list[WorkflowStep] = field(default_factory=list)
     context: str = ""  # philosophy, "What NOT to do" sections
@@ -246,6 +252,12 @@ class WorkflowDefinition:
     # the `requires` of skills named in `step.invokes`. Do not
     # hand-author; see `_compute_workflow_requires()`.
     requires: list[str] = field(default_factory=list)
+    # Admission-critical subset of ``requires``. Dependencies reachable only
+    # through optional Steps are omitted so the conductor can preserve its
+    # established skip-on-unavailable behavior. ``None`` means an older or
+    # ad-hoc definition that has not been compiled; admission then falls back
+    # to the full ``requires`` list.
+    required_components: list[str] | None = None
 
     # Computed at registry-build time: the store path of the kind:directions
     # unit whose `workflow:` field targets this workflow (its bound directions
@@ -299,6 +311,8 @@ class WorkflowDefinition:
 # ---------------------------------------------------------------------------
 
 _REGISTRY: dict[str, Skill | WorkflowDefinition] | None = None
+_WORKFLOW_ID_INDEX: dict[str, WorkflowDefinition] = {}
+_WORKFLOW_ALIAS_INDEX: dict[str, WorkflowDefinition] = {}
 
 # Stash of full ``Skill`` objects for skills filtered out of the
 # live registry by the `_build_registry` filter pass (because their tool
@@ -358,6 +372,8 @@ def invalidate_registry() -> None:
 
     global _REGISTRY
     _REGISTRY = None
+    _WORKFLOW_ID_INDEX.clear()
+    _WORKFLOW_ALIAS_INDEX.clear()
     invalidate_tool_status()
 
     # Purge work_buddy modules so next import picks up new code.
@@ -607,7 +623,7 @@ def search_registry(
 
     # Exact name match — check registry first, then store
     normalized = query.replace("-", "_").replace(" ", "_")
-    exact = reg.get(query) or reg.get(normalized)
+    exact = get_entry(query) or get_entry(normalized)
     if exact is not None:
         result = _entry_to_dict(exact)
         result["search_score"] = 1.0
@@ -634,7 +650,10 @@ def search_registry(
                     "unavailable": True,
                 }
                 return [result]
-            if isinstance(unit, WorkflowUnit) and unit.workflow_name == query:
+            if (
+                isinstance(unit, WorkflowUnit)
+                and query in (unit.workflow_name, *unit.workflow_aliases)
+            ):
                 # Exact-name hit in the store only means the registry
                 # didn't have it — same "tool deps unmet" condition
                 # as the SkillUnit branch above. Flag it.
@@ -643,6 +662,7 @@ def search_registry(
                     "description": unit.description,
                     "category": "workflow",
                     "type": "workflow",
+                    "parameters": unit.params_schema or {},
                     "search_score": 1.0,
                     "disabled": True,
                     "disabled_reason": _disabled_reason(unit.workflow_name),
@@ -773,6 +793,7 @@ def _search_via_store(
                 "description": hit.get("description", ""),
                 "category": "workflow",
                 "type": "workflow",
+                "parameters": hit.get("params_schema", {}) or {},
                 "search_score": score,
                 "disabled": True,
                 "disabled_reason": _disabled_reason(wf_name),
@@ -801,8 +822,12 @@ def _search_via_store(
 
 
 def get_entry(name: str) -> Skill | WorkflowDefinition | None:
-    """Look up a single registry entry by exact name."""
-    return get_registry().get(name)
+    """Resolve a Skill name or Workflow slug, alias, or stable ID."""
+
+    entry = get_registry().get(name)
+    if entry is not None:
+        return entry
+    return _WORKFLOW_ID_INDEX.get(name) or _WORKFLOW_ALIAS_INDEX.get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -842,17 +867,25 @@ def _entry_to_dict(entry: Skill | WorkflowDefinition) -> dict[str, Any]:
     else:
         d = {
             "name": entry.name,
+            "display_name": getattr(entry, "display_name", "") or entry.name,
             "description": entry.description,
             "category": "workflow",
             "type": "workflow",
+            "parameters": getattr(entry, "params_schema", {}) or {},
+            "workflow_id": getattr(entry, "workflow_id", ""),
+            "workflow_revision": getattr(entry, "workflow_revision", ""),
             "execution": entry.execution,
             "steps": [
                 {"id": s.id, "name": s.name, "step_type": s.step_type,
                  "execution": s.execution, "depends_on": s.depends_on,
-                 "workflow_file": s.workflow_file}
+                 "workflow_file": s.workflow_file,
+                 "target_workflow_id": getattr(s, "target_workflow_id", None)}
                 for s in entry.steps
             ],
         }
+        aliases = tuple(getattr(entry, "aliases", ()) or ())
+        if aliases:
+            d["aliases"] = list(aliases)
         if entry.slash_command:
             d["slash_command"] = entry.slash_command
         return d
@@ -1059,13 +1092,27 @@ def _build_registry() -> dict[str, Skill | WorkflowDefinition]:
     _log_to_file(_lf, f"  filter_pass: {time.time()-t:.2f}s")
 
     t = time.time()
-    for wf in _discover_workflows_from_store():
+    workflows = _discover_workflows_from_store()
+    workflow_ids, workflow_aliases = _build_workflow_indexes(workflows)
+    skill_namespace = set(registry) | set(_DISABLED_SKILL_REGISTRY)
+    collisions = sorted(
+        skill_namespace.intersection(set(workflow_aliases) | set(workflow_ids))
+    )
+    if collisions:
+        raise ValueError(
+            "Workflow addresses collide with Skill names: " + ", ".join(collisions)
+        )
+    _WORKFLOW_ID_INDEX.clear()
+    _WORKFLOW_ID_INDEX.update(workflow_ids)
+    _WORKFLOW_ALIAS_INDEX.clear()
+    _WORKFLOW_ALIAS_INDEX.update(workflow_aliases)
+    for wf in workflows:
         registry[wf.name] = wf
     _log_to_file(_lf, f"  workflows (store): {time.time()-t:.2f}s")
 
-    # Compute WorkflowDefinition.requires as the union of each step's
-    # `requires` plus the `requires` of skills named in step.invokes.
-    # Computed, never hand-authored.
+    # Compute the full dependency closure and its admission-critical subset.
+    # These fields are derived from Steps, Skill invocations, and referenced
+    # Workflows; they are never hand-authored.
     t = time.time()
     _compute_workflow_requires(registry)
     _log_to_file(_lf, f"  workflow_requires: {time.time()-t:.2f}s")
@@ -1323,36 +1370,124 @@ def _build_slash_command_index() -> dict[str, str]:
 def _compute_workflow_requires(
     registry: dict[str, Skill | WorkflowDefinition],
 ) -> None:
-    """Populate ``WorkflowDefinition.requires`` in-place.
+    """Populate Workflow dependency closures in-place.
 
-    For each workflow, unions:
-      - Every step's own ``requires`` (tool/component IDs).
-      - The ``requires`` of every skill named in ``step.invokes``.
+    ``requires`` contains every direct and transitive component dependency.
+    ``required_components`` contains the subset reachable through mandatory
+    Steps, which is the set that must pass whole-Workflow admission.
 
-    Invoked skills that are not (yet) in the registry (e.g. filtered
-    out by tool availability) are skipped silently — the workflow will
-    show an incomplete dependency set, which is recoverable once the
-    upstream component comes back.
-
-    Transitive closure (skill A.invokes = [B], B.requires = [obsidian])
-    is followed one hop. Multi-hop chains (A invokes B invokes C) are not
-    resolved here; the control-graph resolver in
-    ``work_buddy.control.skill_resolver`` handles the full closure on
-    demand without bloating the workflow dataclass.
+    The traversal follows Skill ``invokes`` and Workflow references (including
+    stable IDs and aliases), and includes disabled Skill declarations. Otherwise
+    a Workflow could lose the dependency that caused its child Skill to be
+    filtered, defeating runtime admission.
     """
+    lookup: dict[str, Skill | WorkflowDefinition] = {
+        **_DISABLED_SKILL_REGISTRY,
+        **registry,
+    }
+    for candidate in registry.values():
+        if isinstance(candidate, WorkflowDefinition):
+            if candidate.workflow_id:
+                lookup[candidate.workflow_id] = candidate
+            for alias in candidate.aliases:
+                lookup[alias] = candidate
+
+    def collect(
+        steps: list[WorkflowStep],
+        *,
+        mandatory_only: bool,
+    ) -> set[str]:
+        seen: set[str] = set()
+        visited_targets: set[int] = set()
+
+        def visit_target(target_name: str) -> None:
+            invoked = lookup.get(target_name)
+            if invoked is None or id(invoked) in visited_targets:
+                return
+            visited_targets.add(id(invoked))
+            if isinstance(invoked, Skill):
+                seen.update(invoked.requires)
+                for nested_name in invoked.invokes:
+                    visit_target(nested_name)
+                return
+            for nested_step in invoked.steps:
+                visit_step(nested_step)
+
+        def visit_step(step: WorkflowStep) -> None:
+            if mandatory_only and step.optional:
+                return
+            seen.update(step.requires)
+            for invoked_name in step.invokes:
+                visit_target(invoked_name)
+            workflow_target = step.target_workflow_id or step.workflow_file
+            if workflow_target:
+                visit_target(workflow_target)
+
+        for root_step in steps:
+            visit_step(root_step)
+        return seen
+
     for entry in registry.values():
         if not isinstance(entry, WorkflowDefinition):
             continue
-        seen: set[str] = set()
-        for step in entry.steps:
-            for t_id in step.requires:
-                seen.add(t_id)
-            for skill_name in step.invokes:
-                skill = registry.get(skill_name)
-                if isinstance(skill, Skill):
-                    for t_id in skill.requires:
-                        seen.add(t_id)
-        entry.requires = sorted(seen)
+        entry.requires = sorted(collect(entry.steps, mandatory_only=False))
+        entry.required_components = sorted(
+            collect(entry.steps, mandatory_only=True)
+        )
+
+
+def _build_workflow_indexes(
+    workflows: list[WorkflowDefinition],
+) -> tuple[dict[str, WorkflowDefinition], dict[str, WorkflowDefinition]]:
+    """Build secondary identity/alias indexes, rejecting ambiguity."""
+
+    from work_buddy.workflows.identity import require_workflow_id
+
+    by_id: dict[str, WorkflowDefinition] = {}
+    by_alias: dict[str, WorkflowDefinition] = {}
+    for workflow in workflows:
+        workflow_id = require_workflow_id(workflow.workflow_id)
+        previous = by_id.get(workflow_id)
+        if previous is not None:
+            raise ValueError(
+                f"duplicate workflow_id {workflow_id!r}: "
+                f"{previous.workflow_file!r} and {workflow.workflow_file!r}"
+            )
+        by_id[workflow_id] = workflow
+        seen_for_workflow: set[str] = set()
+        for alias in (workflow.name, *workflow.aliases):
+            alias = alias.strip()
+            if not alias:
+                continue
+            if alias in seen_for_workflow:
+                raise ValueError(
+                    f"duplicate workflow alias {alias!r} on "
+                    f"{workflow.workflow_file!r}"
+                )
+            seen_for_workflow.add(alias)
+            try:
+                require_workflow_id(alias)
+            except ValueError:
+                pass
+            else:
+                raise ValueError(
+                    f"workflow alias {alias!r} on {workflow.workflow_file!r} "
+                    "uses the reserved stable-ID namespace"
+                )
+            prior = by_alias.get(alias)
+            if prior is not None and prior.workflow_id != workflow_id:
+                raise ValueError(
+                    f"duplicate workflow alias {alias!r}: "
+                    f"{prior.workflow_file!r} and {workflow.workflow_file!r}"
+                )
+            by_alias[alias] = workflow
+    reserved_collisions = sorted(set(by_id).intersection(by_alias))
+    if reserved_collisions:
+        raise ValueError(
+            "Workflow aliases collide with stable workflow IDs: "
+            + ", ".join(reserved_collisions)
+        )
+    return by_id, by_alias
 
 
 def _index_directions_by_workflow(store: dict[str, Any]) -> dict[str, str]:
@@ -1416,10 +1551,15 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
     """
     from work_buddy.knowledge.store import load_store
     from work_buddy.knowledge.model import WorkflowUnit
+    from work_buddy.workflows.identity import (
+        compute_workflow_revision,
+        derived_workflow_id,
+    )
 
     store = load_store()
     directions_by_workflow = _index_directions_by_workflow(store)
     workflows: list[WorkflowDefinition] = []
+    revision_sources: dict[str, tuple[WorkflowUnit, Any | None]] = {}
 
     for _path, unit in store.items():
         if not isinstance(unit, WorkflowUnit):
@@ -1477,19 +1617,75 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
         if unit.content and isinstance(unit.content, dict):
             context = unit.content.get("full", "")
 
+        workflow_id = unit.workflow_id or derived_workflow_id(unit.workflow_name)
+        if not unit.workflow_id:
+            logger.warning(
+                "Workflow %s has no persisted workflow_id; using deterministic "
+                "read-compat identity %s until it is edited",
+                _path,
+                workflow_id,
+            )
+        bound_directions_path = directions_by_workflow.get(_path)
+        bound_directions = store.get(bound_directions_path) if bound_directions_path else None
+        if not isinstance(unit.workflow_aliases, list) or any(
+            not isinstance(alias, str) or not alias.strip()
+            for alias in unit.workflow_aliases
+        ):
+            raise ValueError(
+                f"Workflow {_path!r} workflow_aliases must be a list of non-empty strings"
+            )
+        revision_sources[workflow_id] = (unit, bound_directions)
         workflows.append(WorkflowDefinition(
             name=unit.workflow_name,
+            display_name=unit.name,
             description=unit.description,
             workflow_file=f"store:{_path}",  # provenance marker
             execution=wf_execution,
+            workflow_id=workflow_id,
+            workflow_revision="",
+            aliases=tuple(
+                str(alias).strip()
+                for alias in unit.workflow_aliases
+                if str(alias).strip()
+            ),
             allow_override=unit.allow_override,
             steps=steps,
             context=context,
             slash_command=unit.command,
             params_schema=unit.params_schema or {},
-            bound_directions_path=directions_by_workflow.get(_path),
+            bound_directions_path=bound_directions_path,
             available_when=_resolve_mode_gate(unit.available_when, f"store:{_path}"),
         ))
+
+    workflow_ids, aliases = _build_workflow_indexes(workflows)
+    for workflow in workflows:
+        for step in workflow.steps:
+            if step.workflow_file:
+                target = (
+                    aliases.get(step.workflow_file)
+                    or workflow_ids.get(step.workflow_file)
+                )
+                if target is None:
+                    raise ValueError(
+                        f"Workflow {workflow.name!r} step {step.id!r} references "
+                        f"unknown workflow alias {step.workflow_file!r}"
+                    )
+                step.target_workflow_id = target.workflow_id
+
+        unit, bound_directions = revision_sources[workflow.workflow_id]
+        resolved_workflow_refs = [
+            {
+                "step_id": step.id,
+                "target_workflow_id": step.target_workflow_id,
+            }
+            for step in workflow.steps
+            if step.workflow_file
+        ]
+        workflow.workflow_revision = compute_workflow_revision(
+            unit,
+            bound_instructions=bound_directions,
+            resolved_workflow_refs=resolved_workflow_refs,
+        )
 
     return workflows
 

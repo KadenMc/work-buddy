@@ -72,9 +72,22 @@ class WorkflowDAG:
     - started_at / completed_at: timestamps
     """
 
-    def __init__(self, name: str, description: str = ""):
+    def __init__(
+        self,
+        name: str,
+        description: str = "",
+        *,
+        workflow_id: str | None = None,
+        workflow_revision: str | None = None,
+        workflow_run_id: str | None = None,
+        workflow_name: str | None = None,
+    ):
         self.name = name
         self.description = description
+        self.workflow_id = workflow_id
+        self.workflow_revision = workflow_revision
+        self.workflow_run_id = workflow_run_id
+        self.workflow_name = workflow_name
         self._graph = nx.DiGraph()
         self._created_at = datetime.now(timezone.utc).isoformat()
 
@@ -455,6 +468,12 @@ class WorkflowDAG:
         data = {
             "name": self.name,
             "description": self.description,
+            # Definition identity, exact compiled revision, and individual
+            # execution identity are deliberately separate durable fields.
+            "workflow_id": self.workflow_id,
+            "workflow_revision": self.workflow_revision,
+            "workflow_run_id": self.workflow_run_id,
+            "workflow_name": self.workflow_name,
             "created_at": self._created_at,
             "saved_at": datetime.now(timezone.utc).isoformat(),
             # Agent session that owns this run — needed to resolve consent
@@ -490,7 +509,26 @@ class WorkflowDAG:
     def load(cls, path: Path) -> "WorkflowDAG":
         """Load a DAG from a saved JSON file."""
         raw = json.loads(path.read_text(encoding="utf-8"))
-        dag = cls(name=raw["name"], description=raw.get("description", ""))
+        persisted_name = raw["name"]
+        fallback_workflow_name = (
+            persisted_name.split(":", 1)[0]
+            if ":" in persisted_name
+            else persisted_name
+        )
+        fallback_run_id = (
+            persisted_name.rsplit(":", 1)[1]
+            if ":" in persisted_name
+            and persisted_name.rsplit(":", 1)[1].startswith("wf_")
+            else None
+        )
+        dag = cls(
+            name=persisted_name,
+            description=raw.get("description", ""),
+            workflow_id=raw.get("workflow_id"),
+            workflow_revision=raw.get("workflow_revision"),
+            workflow_run_id=raw.get("workflow_run_id") or fallback_run_id,
+            workflow_name=raw.get("workflow_name") or fallback_workflow_name,
+        )
         dag._created_at = raw.get("created_at", "")
         dag._loaded_from = Path(path)
         # Restore initial_params if persisted (None for older save files).

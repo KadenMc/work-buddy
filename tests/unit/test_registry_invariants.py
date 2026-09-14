@@ -389,11 +389,37 @@ class TestEntryToDictDuckTyping:
             name = "fake-workflow"
             description = "test"
             execution = "main"
+            params_schema = {
+                "target": {"type": "str", "required": True},
+            }
             steps = [FakeStep()]
             slash_command = None
 
         d = _entry_to_dict(FakeWorkflow())
         assert d["type"] == "workflow"
         assert d["execution"] == "main"
+        assert d["parameters"] == FakeWorkflow.params_schema
         assert len(d["steps"]) == 1
         assert d["steps"][0]["id"] == "s1"
+
+
+def test_search_registry_browse_fallback_uses_live_registry(monkeypatch):
+    """Store-search outages retain the registry-only discovery fallback."""
+    from work_buddy.mcp_server import registry
+
+    class FakeSkill:
+        name = "fallback_skill"
+        description = "Available through the registry fallback."
+        category = "test"
+        parameters = {}
+        callable = staticmethod(lambda: None)
+        mutates_state = False
+        retry_policy = "manual"
+        slash_command = None
+
+    monkeypatch.setattr(registry, "_REGISTRY", {FakeSkill.name: FakeSkill()})
+    monkeypatch.setattr(registry, "_search_via_store", lambda *_args, **_kwargs: None)
+
+    results = registry.search_registry("")
+
+    assert [result["name"] for result in results] == [FakeSkill.name]

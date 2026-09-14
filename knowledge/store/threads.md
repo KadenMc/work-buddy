@@ -47,7 +47,8 @@ FSM-resolution subtype of WorkItem."
 
 ## Where this lives in the code
 
-- ``work_buddy/threads/enums.py`` — FSMState, InferenceTarget, ReasoningTier, InvocationContext, ActionKind, Authorship, SurfaceUrgency.
+- ``work_buddy/workflows/context.py`` — canonical transport-neutral ``InvocationContext`` plus ``WorkflowInvocationContext`` policy facts: channel, entry surface, attendance, executor facilities, preferences, and authorization.
+- ``work_buddy/threads/enums.py`` — Thread FSM enums and a compatibility re-export of the canonical ``InvocationContext``.
 - ``work_buddy/threads/workitem.py`` — the thin **WorkItem** base (id, lineage, attached context, risk profile, lifecycle timestamps; **NO FSM**) that both subtypes share.
 - ``work_buddy/threads/models.py`` — Thread(WorkItem), Task(WorkItem), ContextItem, AutonomyPolicy, ResolutionRequest, Proposal.
 - ``work_buddy/threads/work_item_events.py`` — the WorkItem base provenance log (durable audit of lifecycle events across subtypes).
@@ -61,8 +62,8 @@ FSM-resolution subtype of WorkItem."
 ## Module-boundary rules (load-bearing)
 
 - The LLM-call **priority queue** lives in ``work_buddy/llm/`` and is OWNED by that subsystem, not by Threads. Threads enqueue into it; they do not own queue state. **Do NOT add a queue table or worker to the threads/ package.** See DESIGN.md §9.2.
-- The skill/workflow registry lives in ``work_buddy/mcp_server``. Threads dispatch into it via the Action Catalog (a typed lens, not a new registry).
-- The conductor lives in ``work_buddy/sidecar``. v5 dispatches workflow-backed actions into it; the conductor itself is unchanged by v5.
+- The Skill/Workflow registry lives in ``work_buddy/mcp_server``; transport-neutral Workflow admission and lifecycle routing live in ``work_buddy/workflows``. Threads expose registered behavior through the Action Catalog (a typed lens, not a second registry).
+- Any adapter that starts a Workflow crosses ``WorkflowService``. The execution engine remains ``work_buddy/mcp_server/conductor.py``; it is not owned by Threads or the sidecar.
 
 ## Current architecture
 

@@ -122,21 +122,23 @@ def test_skill_cannot_replace_its_transport_owned_form_agent_identity():
 
 
 def test_wb_run_accepts_deprecated_capability_argument(registered_gateway):
-    """Cached pre-migration tool schemas remain usable at the MCP boundary."""
+    """Clients with the deprecated tool schema remain usable at the boundary."""
     session = _FakeSession()
     context = _FakeContext(session)
 
     result = asyncio.run(registered_gateway.tools["wb_run"](
         capability="wb_init",
-        params={"session_id": "legacy-schema-client"},
+        params={"session_id": "deprecated-schema-client"},
         ctx=context,
     ))
 
     assert result["status"] == "initialized"
-    assert result["session_id"] == "legacy-schema-client"
+    assert result["session_id"] == "deprecated-schema-client"
 
 
-def test_wb_run_rejects_conflicting_skill_and_legacy_alias(registered_gateway):
+def test_wb_run_rejects_conflicting_skill_and_deprecated_alias(
+    registered_gateway,
+):
     result = asyncio.run(registered_gateway.tools["wb_run"](
         skill="task_read",
         capability="task_toggle",
@@ -146,7 +148,7 @@ def test_wb_run_rejects_conflicting_skill_and_legacy_alias(registered_gateway):
     assert "conflicting values" in result["error"]
 
 
-def test_wb_run_does_not_replace_explicit_empty_skill_with_legacy_alias(
+def test_wb_run_does_not_replace_explicit_empty_skill_with_deprecated_alias(
     registered_gateway,
 ):
     result = asyncio.run(registered_gateway.tools["wb_run"](
@@ -161,11 +163,11 @@ def test_wb_run_does_not_replace_explicit_empty_skill_with_legacy_alias(
 @pytest.mark.parametrize(
     ("params", "expected"),
     [
-        ({"capability_name": "legacy"}, "legacy"),
+        ({"capability_name": "alias-value"}, "alias-value"),
         (
             {
                 "skill_name": "canonical",
-                "capability_name": "legacy_should_not_override",
+                "capability_name": "deprecated-value-must-not-override",
             },
             "canonical",
         ),
@@ -280,7 +282,7 @@ def test_cached_user_job_create_schema_writes_only_canonical_job_fields(
         encoding="utf-8"
     )
     assert "type: skill" in text
-    assert "skill: task_read" in text
+    assert 'skill: "task_read"' in text
     assert "capability" not in text
 
 

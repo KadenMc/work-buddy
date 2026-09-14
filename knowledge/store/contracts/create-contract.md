@@ -3,6 +3,7 @@ name: Create Contract
 kind: workflow
 description: Guide the user through defining a new contract for a bounded deliverable.
 workflow_name: create-contract
+workflow_id: wfd_1534d464b7194b01b47b553dd52a494a
 execution: main
 allow_override: false
 steps:

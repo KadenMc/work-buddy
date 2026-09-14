@@ -1,8 +1,8 @@
 ---
 name: Workflow Run Lifecycle
 kind: concept
-description: 'How in-flight workflow runs are bounded and recovered: cancel, the idle-timeout sweep, and restart recovery of the conductor''s in-memory active-runs map.'
-summary: 'The conductor''s in-memory _ACTIVE_RUNS map is kept bounded and recoverable by three mechanisms: cancel_workflow (manual), an idle-timeout sweep thread, and recover_active_runs at gateway startup.'
+description: 'WorkflowService lifecycle operations, persisted definition/run identity, cancellation, idle expiry, and gateway restart recovery.'
+summary: 'WorkflowService exposes run lifecycle operations while the conductor owns the persisted DAG and in-memory active-run map. Each run records stable workflow_id, recorded workflow_revision, canonical workflow_name, and unique workflow_run_id; cancel, idle sweep, and startup recovery keep in-flight state bounded and recoverable.'
 tags:
 - workflows
 - conductor
@@ -20,9 +20,23 @@ aliases:
 - workflow run TTL
 parents:
 - architecture/workflows
+dev_notes: Direct conductor lifecycle calls are engine-internal or maintenance seams. Driving adapters use WorkflowService for invoke, advance, cancel, status, and Step-result retrieval; sweep_idle_runs and recover_active_runs remain conductor-owned because they maintain the in-process active-run map.
 ---
 
-The conductor holds in-flight runs in an in-memory map — `_ACTIVE_RUNS` in `work_buddy/mcp_server/conductor.py`, keyed by `workflow_run_id`. A run is added at `start_workflow` and removed on any **terminal state**: successful completion, blocked-by-failure, or explicit cancel. Three mechanisms keep that map bounded and recoverable.
+Driving adapters use `WorkflowService` for Workflow lifecycle operations. After admission, `WorkflowService.invoke` delegates run creation to the conductor, which stores the in-flight `WorkflowDAG` in `_ACTIVE_RUNS` in `work_buddy/mcp_server/conductor.py`, keyed by `workflow_run_id`. `WorkflowService.advance`, `cancel`, `status`, and `get_step_result` delegate to the corresponding conductor engine operations. A run leaves the active map on successful completion, blocked-by-failure, or explicit cancellation.
+
+## Definition, revision, and run identity
+
+A persisted run keeps four fields separate:
+
+- `workflow_id` — stable logical definition identity;
+- `workflow_revision` — deterministic hash marker for the authored definition, directly bound Directions snapshot, and compiled child-Workflow target identities used to start this run (not an archived copy of that content);
+- `workflow_run_id` — identity of this individual execution;
+- `workflow_name` — canonical agent-invocable address captured for display and compatibility.
+
+Lifecycle responses, active-run listings, cancellation responses, and Step-result retrieval include these identity fields when present. Current persistence writes them explicitly. Older files that contain only the composite `name: "<workflow>:<run_id>"` shape still load by deriving the canonical name and run ID from that value.
+
+When the conductor needs current definition metadata for a persisted DAG, it resolves the saved stable ID first and falls back to the saved canonical name if that ID no longer resolves. This preserves readability of prior runs without conflating their definition, revision, and execution identities.
 
 ## Terminal states
 
@@ -39,7 +53,7 @@ When `fail_task` marks a step FAILED, it re-runs `_update_availability` so pendi
 
 ## Cancel
 
-`cancel_workflow(run_id, reason)` — skill `workflow_cancel`, slash command `/wb-workflow-cancel` — drops a run from `_ACTIVE_RUNS`, marks its on-disk DAG cancelled (the file is kept, not deleted, for audit), and revokes the workflow consent blanket. It is idempotent: cancelling an already-cancelled run is a no-op, and a run that has already completed is left untouched. A run not in `_ACTIVE_RUNS` is still cancellable — the lookup falls back to the on-disk DAG.
+`WorkflowService.cancel(run_id, reason)` is the public lifecycle boundary. Its conductor implementation drops an active run from `_ACTIVE_RUNS`, marks the on-disk DAG cancelled (the file is kept for audit), and revokes the Workflow consent grant. The `workflow_cancel` Skill and `/wb-workflow-cancel` surface route through this service method. Cancellation is idempotent: cancelling an already-cancelled run is a no-op, and a completed run is left untouched. A run absent from `_ACTIVE_RUNS` is still cancellable through the on-disk DAG.
 
 ## Idle sweep
 

@@ -29,7 +29,7 @@ dev_notes: |-
 
   `validate_signature` introspects with `follow_wrapped=True`; a callable that accepts `**kwargs` is treated as accepting any declared parameter name, and a callable whose signature cannot be introspected is treated as matching.
 
-  A new **declaration** (including a changed `parameters` schema) or a new **workflow** goes live via `reload_skill_data`, which rebuilds the registry from fresh store data WITHOUT a `sys.modules` purge — no restart, and no stale-schema problem. (That stale-schema bug belonged to the retired `mcp_registry_reload`: its purge spawned a second class generation that the long-lived FastMCP gateway never actually read, so a running gateway kept a stale editor-skill schema, e.g. `docs_delete`, until a restart.) A new **Op** — new Python code or a brand-new module — still needs a process restart (Ctrl+R) to be importable.
+  A new or edited **declaration**, Workflow definition, Workflow executable alias/reference, or parameter schema goes live via `reload_skill_data`. The rebuild refreshes Workflow identity indexes and compiled revisions from fresh store data WITHOUT a `sys.modules` purge. New or edited **Op** Python code still needs a gateway process restart (Ctrl+R) to be importable.
 ---
 
 ## What
@@ -39,7 +39,7 @@ A skill has two halves that work-buddy keeps separate:
 - An **Op** — the executable callable. Python code, registered under a stable `op.<namespace>.<name>` ID in the Op registry (`work_buddy/mcp_server/op_registry.py`). Built-in ops use the `op.wb.*` namespace and are organized by category under `work_buddy/mcp_server/ops/` — one module per category, registering its ops as an import side effect.
 - A **skill declaration** — inert data. A `kind: "skill"` knowledge-store unit carrying prose (name, description, aliases), the parameter schema, runtime metadata (`mutates_state`, `retry_policy`, `requires`, `consent_operations`, `invokes`, `is_action`, `intrinsic_amplifiers`, `param_aliases`, `auto_retry`, `slash_command`), and an `op` field naming the Op it wraps.
 
-This mirrors how workflows work: a workflow is inert data that references skills by name; a skill declaration is inert data that references an Op by ID. Executable code (Ops) is held apart from the editable, shareable, agent-authorable data (declarations).
+The Workflow side uses the same broad data/code separation through a different compiler seam. A `kind: workflow` unit is inert authored data; registry compilation produces a `WorkflowDefinition`, resolves executable aliases and Workflow references to stable definition IDs, computes a revision, and exposes invocation through `WorkflowService`. A Skill declaration resolves to an Op-backed callable `Skill`; the shared registry currently holds these as distinct entry types.
 
 ## Registration
 

@@ -360,6 +360,9 @@ def _save_operation(
     *,
     op_type: str = "skill",
     lease_seconds: int = 90,
+    workflow_id: str | None = None,
+    workflow_revision: str | None = None,
+    originating_session_id: str | None = None,
 ) -> str:
     """Persist an operation record before dispatch. Returns the operation ID."""
     op_id = f"op_{uuid.uuid4().hex[:8]}"
@@ -379,6 +382,12 @@ def _save_operation(
         "created_at": now.isoformat(),
         "completed_at": None,
     }
+    if workflow_id:
+        record["workflow_id"] = workflow_id
+    if workflow_revision:
+        record["workflow_revision"] = workflow_revision
+    if originating_session_id:
+        record["originating_session_id"] = originating_session_id
     if name in _TASK_MUTATION_SKILL_NAMES:
         from work_buddy.tasks.runtime import authority_epoch
 
@@ -458,6 +467,149 @@ def _complete_operation(
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record, default=_json_default, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _workflow_authorization_context(
+    session_id: str | None,
+    workflow_name: str,
+):
+    """Translate the session ACL into transport-neutral authorization facts."""
+
+    from work_buddy.mcp_server.session_acl import (
+        get_session_acl,
+        is_skill_allowed,
+    )
+    from work_buddy.workflows.context import AuthorizationContext
+
+    if is_skill_allowed(session_id, workflow_name):
+        return AuthorizationContext()
+    acl = get_session_acl(session_id)
+    if acl is not None:
+        return AuthorizationContext(
+            allowed=False,
+            denied_by="session_acl",
+            message=(
+                f"Workflow address {workflow_name!r} is not permitted for this session. "
+                "The caller restricted this session to a named preset."
+            ),
+            allowed_sample=tuple(sorted(acl)[:12]),
+            hint=(
+                "Use wb_search to discover the Skill or canonical Workflow "
+                "addresses this session may invoke; results are ACL-filtered."
+            ),
+        )
+    return AuthorizationContext(
+        allowed=False,
+        denied_by="session_acl_unresolved",
+        message=(
+            f"Workflow address {workflow_name!r} refused: session could not be resolved "
+            "while an ACL-scoped run is active in this process. This is a "
+            "fail-closed guard against session-resolution races."
+        ),
+        hint=(
+            "If you are a normal agent, call wb_init(session_id) explicitly or "
+            "ensure the X-Work-Buddy-Session header is present on your MCP "
+            "connection. If you are a local model invoked through llm_with_tools, "
+            "its MCP transport must forward the session header on tool calls."
+        ),
+    )
+
+
+def _mcp_workflow_invocation_context(
+    session_id: str | None,
+    workflow_name: str,
+    *,
+    user_initiated: bool,
+):
+    """Build the explicit Workflow policy context for an MCP invocation."""
+
+    from work_buddy.workflows.context import (
+        ExecutorFacility,
+        InteractionAttendance,
+        InvocationChannel,
+        InvocationContext,
+        WorkflowEntrySurface,
+        WorkflowInvocationContext,
+    )
+
+    try:
+        from work_buddy.agent_session import get_active_modes
+
+        active_modes = frozenset(get_active_modes(session_id))
+    except Exception:
+        active_modes = frozenset()
+    return WorkflowInvocationContext(
+        channel=InvocationChannel.MCP,
+        entry_surface=WorkflowEntrySurface.SKILL_GATEWAY,
+        invocation_context=(
+            InvocationContext.USER_INVOCATION
+            if user_initiated
+            else InvocationContext.AGENT_CONVERSATION
+        ),
+        principal=f"human_agent:{session_id}" if session_id else None,
+        session_id=session_id,
+        active_modes=active_modes,
+        attendance=InteractionAttendance.ATTENDED,
+        executor_facilities=frozenset({
+            ExecutorFacility.PROGRAM,
+            ExecutorFacility.CALLING_AGENT,
+            ExecutorFacility.SUBAGENT,
+        }),
+        authorization=_workflow_authorization_context(session_id, workflow_name),
+        # Every current Workflow is published through wb_run, so this adapter
+        # marks the Skill-facing surface eligible.
+        skill_surface_eligible=True,
+    )
+
+
+def _direct_skill_admission_denial(
+    entry: Any,
+    skill_name: str,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """Preserve direct-Skill preference/mode policy outside WorkflowService."""
+
+    from work_buddy.mcp_server import registry as _registry
+    from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
+
+    admission = evaluate_runtime_admission(entry)
+    if not admission.preference_available:
+        return {
+            "error": (
+                f"Skill {skill_name!r} is unavailable because its feature "
+                "preferences could not be verified."
+            ),
+            "disabled": True,
+            "error_code": "feature_preference_unavailable",
+            "requires": list(getattr(entry, "requires", ()) or ()),
+        }
+    if admission.opted_out:
+        return {
+            "error": (
+                f"Skill {skill_name!r} is unavailable because you opted out "
+                f"of: {', '.join(admission.opted_out)}. To re-enable, run: "
+                "/wb-setup preferences"
+            ),
+            "disabled": True,
+            "error_code": "feature_opted_out",
+            "opted_out": list(admission.opted_out),
+            "requires": list(getattr(entry, "requires", ()) or ()),
+        }
+    if getattr(entry, "available_when", None) is not None:
+        try:
+            from work_buddy.agent_session import get_active_modes
+
+            active_modes = get_active_modes(session_id)
+        except Exception:
+            active_modes = set()
+        denial = _registry.mode_gate_denial(entry, active_modes)
+        if denial is not None:
+            denial["error"] = (
+                f"Skill {skill_name!r} requires mode(s) "
+                f"{denial['required_modes']} that are not active. Enable with mode_toggle."
+            )
+            return denial
+    return None
 
 
 def _update_operation(record: dict[str, Any]) -> None:
@@ -1948,56 +2100,25 @@ def register_tools(mcp: FastMCP) -> None:
             return gate
         _agent_sid = _resolve_session(ctx)
 
-        # Per-session skill ACL — applied when ``llm_with_tools``
-        # has registered a whitelist for this session. Sessions without
-        # an ACL (every normal agent) pass through unchanged, EXCEPT
-        # when the session id couldn't be resolved at all AND at least
-        # one ACL is active in the process: that's the session-None
-        # bypass vector and we fail closed on it.
-        from work_buddy.mcp_server.session_acl import (
-            any_acl_registered, get_session_acl, is_skill_allowed,
-        )
-        if not is_skill_allowed(_agent_sid, skill):
-            acl = get_session_acl(_agent_sid)
-            if acl is not None:
-                # Resolved session, explicit ACL — normal preset denial.
-                allowed_preview = sorted(acl)[:12]
-                return _prepare({
-                    "error": (
-                        f"Skill {skill!r} is not permitted for this "
-                        f"session. The caller restricted this session to a "
-                        f"named preset."
-                    ),
-                    "denied_by": "session_acl",
-                    "allowed_sample": allowed_preview,
-                    "hint": (
-                        "Use wb_search to discover the skills this "
-                        "session is allowed to invoke — search results are "
-                        "filtered to the ACL automatically."
-                    ),
-                })
-            # Unresolved session + an ACL exists somewhere in-process:
-            # fail-closed path. This is almost always the ACL-scoped
-            # caller whose session we failed to tie back via the MCP
-            # request context. Treating it as default-open would let
-            # a local model invoke anything in the registry.
-            return _prepare({
-                "error": (
-                    f"Skill {skill!r} refused: session could not "
-                    f"be resolved while an ACL-scoped run is active in "
-                    f"this process. This is a fail-closed guard against "
-                    f"session-resolution races."
-                ),
-                "denied_by": "session_acl_unresolved",
-                "hint": (
-                    "If you are a normal agent, call wb_init(session_id) "
-                    "explicitly or ensure the X-Work-Buddy-Session header "
-                    "is present on your MCP connection. If you are a "
-                    "local model invoked through llm_with_tools, this "
-                    "means your MCP transport is not forwarding the "
-                    "session header on tool-call requests."
-                ),
-            })
+        # Authorization is evaluated before registry resolution so a
+        # constrained caller cannot probe entry existence through different
+        # error shapes. WorkflowAdmission owns the decision; this address-only
+        # pass is also safe for direct Skills because it does not claim the
+        # target is a Workflow or touch the registry.
+        _workflow_auth = _workflow_authorization_context(_agent_sid, skill)
+        if not _workflow_auth.allowed:
+            from work_buddy.workflows.service import get_workflow_service
+
+            _preflight_context = _mcp_workflow_invocation_context(
+                _agent_sid,
+                skill,
+                user_initiated=False,
+            )
+            return _prepare(get_workflow_service().invoke(
+                skill,
+                invocation_context=_preflight_context,
+                params=parsed_params,
+            ))
 
         # CP-A3: track whether this dispatch hit the lazy auto-recovery
         # path so the success response can advertise it. Initialised to
@@ -2076,53 +2197,14 @@ def register_tools(mcp: FastMCP) -> None:
             else:
                 return _prepare({"error": f"Unknown skill: {skill!r}. Use wb_search to find available skills."})
 
-        from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
-
-        admission = evaluate_runtime_admission(entry)
-        if not admission.preference_available:
-            return _prepare({
-                "error": (
-                    f"Skill {skill!r} is unavailable because its "
-                    "feature preferences could not be verified."
-                ),
-                "disabled": True,
-                "error_code": "feature_preference_unavailable",
-                "requires": list(getattr(entry, "requires", ()) or ()),
-            })
-        if admission.opted_out:
-            return _prepare({
-                "error": (
-                    f"Skill {skill!r} is unavailable because you "
-                    f"opted out of: {', '.join(admission.opted_out)}. "
-                    "To re-enable, run: /wb-setup preferences"
-                ),
-                "disabled": True,
-                "error_code": "feature_opted_out",
-                "opted_out": list(admission.opted_out),
-                "requires": list(getattr(entry, "requires", ()) or ()),
-            })
-
-        # Mode gate: reject when the skill/workflow declares an
-        # ``available_when`` the session's active modes don't satisfy. The
-        # session's modes are resolved only when a gate is actually present
-        # (the common, ungated case stays a no-op), and a manifest/session
-        # read error fails open. Distinct from the session ACL (which runs
-        # earlier, so an ACL denial still wins); a mode denial is recoverable
-        # agent-side by toggling the required mode on.
-        if getattr(entry, "available_when", None) is not None:
-            try:
-                from work_buddy.agent_session import get_active_modes
-                _active_modes = get_active_modes(_agent_sid)
-            except Exception:
-                _active_modes = set()
-            _denial = registry.mode_gate_denial(entry, _active_modes)
-            if _denial is not None:
-                _denial["error"] = (
-                    f"Skill {skill!r} requires mode(s) "
-                    f"{_denial['required_modes']} that are not active. "
-                    f"Enable with mode_toggle."
-                )
-                return _prepare(_denial)
+        if isinstance(entry, registry.Skill):
+            direct_skill_denial = _direct_skill_admission_denial(
+                entry,
+                skill,
+                _agent_sid,
+            )
+            if direct_skill_denial is not None:
+                return _prepare(direct_skill_denial)
 
         # Param aliases are a public-boundary compatibility shim. Normalize
         # them before any downstream processing or durable operation write;
@@ -2158,8 +2240,14 @@ def register_tools(mcp: FastMCP) -> None:
         # a response-loss failure.
         parsed_params = _prepare_task_mutation_params(skill, parsed_params)
 
-        # Save operation record before dispatch
-        op_id = _save_operation(skill, parsed_params, retry_policy, op_type=op_type)
+        # Direct Skills create their operation record here. Workflows create
+        # it from WorkflowService's post-admission hook so denied invocations
+        # never produce operation or consent side effects.
+        op_id = (
+            None
+            if isinstance(entry, registry.WorkflowDefinition)
+            else _save_operation(skill, parsed_params, retry_policy, op_type=op_type)
+        )
 
         if isinstance(entry, registry.WorkflowDefinition):
             _t0 = _time.monotonic()
@@ -2184,53 +2272,93 @@ def register_tools(mcp: FastMCP) -> None:
             except Exception:
                 _is_user_initiated = False
 
-            if not _is_user_initiated and not _is_workflow_class_authorized(
-                skill, session_id=_wf_session_id,
-            ):
-                wf_consent_result = await asyncio.to_thread(
-                    _auto_workflow_consent_request,
-                    skill, entry, op_id, _wf_session_id,
+            from work_buddy.workflows.service import get_workflow_service
+
+            invocation_context = _mcp_workflow_invocation_context(
+                _wf_session_id,
+                skill,
+                user_initiated=_is_user_initiated,
+            )
+            workflow_state: dict[str, Any] = {}
+
+            def _record_admitted_workflow(resolved_entry, _invocation_context):
+                canonical_name = resolved_entry.name
+                admitted_op_id = _save_operation(
+                    canonical_name,
+                    parsed_params,
+                    "manual",
+                    op_type="workflow",
+                    workflow_id=resolved_entry.workflow_id,
+                    workflow_revision=resolved_entry.workflow_revision,
+                    originating_session_id=_wf_session_id,
                 )
-                status = wf_consent_result.get("status")
-                if status in ("denied", "timeout"):
-                    _complete_operation(
-                        op_id,
-                        error=f"Workflow consent {status}: {skill}",
-                    )
-                    wf_consent_result["operation_id"] = op_id
-                    return _prepare(wf_consent_result)
-                # On 'granted' / 'auto_bypass_low_weight' / unexpected
-                # status, fall through to start_workflow. The grant
-                # minting has already happened inside the helper for
-                # 'temporary' / 'always' modes; 'once' and the
-                # auto-bypass leave class grants alone — only the run
-                # grant minted inside start_workflow covers the
-                # invocation.
+                workflow_state["operation_id"] = admitted_op_id
+                workflow_state["entry"] = resolved_entry
+                return None
+
+            def _coordinate_workflow_consent(resolved_entry, _invocation_context):
+                canonical_name = resolved_entry.name
+                if _is_user_initiated or _is_workflow_class_authorized(
+                    canonical_name,
+                    session_id=_wf_session_id,
+                ):
+                    return None
+                consent_result = _auto_workflow_consent_request(
+                    canonical_name,
+                    resolved_entry,
+                    workflow_state["operation_id"],
+                    _wf_session_id,
+                )
+                if consent_result.get("status") in ("denied", "timeout"):
+                    return consent_result
+                return None
 
             try:
                 result = await asyncio.to_thread(
-                    _conductor().start_workflow,
+                    get_workflow_service().invoke,
                     skill,
-                    parsed_params,
-                    _wf_session_id,
+                    invocation_context=invocation_context,
+                    params=parsed_params,
+                    on_admitted=_record_admitted_workflow,
+                    consent=_coordinate_workflow_consent,
                 )
             except Exception as exc:
-                _complete_operation(op_id, error=f"{type(exc).__name__}: {exc}")
-                return _prepare({"error": f"Workflow start failed: {exc}", "operation_id": op_id})
-            _complete_operation(
-                op_id, result=result,
-                error=_result_error(result),
-            )
-            # Activity ledger: record workflow start
-            from work_buddy.mcp_server.activity_ledger import record_workflow_started
-            record_workflow_started(
-                skill,
-                result.get("workflow_run_id"),
-                op_id,
-                len(entry.steps),
-                entry.steps[0].id if entry.steps else None,
-                agent_session_id=_agent_sid,
-            )
+                admitted_op_id = workflow_state.get("operation_id")
+                if admitted_op_id:
+                    _complete_operation(
+                        admitted_op_id,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                payload = {"error": f"Workflow start failed: {exc}"}
+                if admitted_op_id:
+                    payload["operation_id"] = admitted_op_id
+                return _prepare(payload)
+
+            op_id = workflow_state.get("operation_id")
+            if op_id is None:
+                # Resolution or admission denied before any operation/consent
+                # side effect. The service payload already carries details.
+                return _prepare(result)
+
+            result_error = _result_error(result)
+            if result.get("status") in ("denied", "timeout"):
+                result_error = f"Workflow consent {result['status']}: {skill}"
+            _complete_operation(op_id, result=result, error=result_error)
+
+            resolved_entry = workflow_state["entry"]
+            if result.get("workflow_run_id"):
+                from work_buddy.mcp_server.activity_ledger import record_workflow_started
+
+                record_workflow_started(
+                    resolved_entry.name,
+                    result.get("workflow_run_id"),
+                    op_id,
+                    len(resolved_entry.steps),
+                    resolved_entry.steps[0].id if resolved_entry.steps else None,
+                    workflow_id=resolved_entry.workflow_id,
+                    workflow_revision=resolved_entry.workflow_revision,
+                    agent_session_id=_agent_sid,
+                )
             result["operation_id"] = op_id
             return _prepare(result)
 
@@ -2968,11 +3096,13 @@ def register_tools(mcp: FastMCP) -> None:
             return denied
         parsed_result = _parse_params(step_result)
         _t0 = _time.monotonic()
+        from work_buddy.workflows.service import get_workflow_service
+
         result = await asyncio.to_thread(
-            _conductor().advance_workflow,
+            get_workflow_service().advance,
             workflow_run_id,
             parsed_result,
-            _resolve_session(ctx),
+            agent_session_id=_resolve_session(ctx),
         )
         # Activity ledger: record workflow step
         from work_buddy.mcp_server.activity_ledger import record_workflow_step
@@ -3010,8 +3140,10 @@ def register_tools(mcp: FastMCP) -> None:
             return _prepare(record)
 
         if workflow_run_id:
+            from work_buddy.workflows.service import get_workflow_service
+
             result = await asyncio.to_thread(
-                _conductor().get_workflow_status, workflow_run_id,
+                get_workflow_service().status, workflow_run_id,
             )
             return _prepare(result)
 
@@ -3045,8 +3177,13 @@ def register_tools(mcp: FastMCP) -> None:
         denied = _reject_constrained_top_level(ctx, "wb_step_result")
         if denied:
             return denied
+        from work_buddy.workflows.service import get_workflow_service
+
         result = await asyncio.to_thread(
-            _conductor().get_step_result, workflow_run_id, step_id, key,
+            get_workflow_service().get_step_result,
+            workflow_run_id,
+            step_id,
+            key,
         )
         return _prepare(result)
 
@@ -3320,36 +3457,58 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
     record["error"] = None
     _update_operation(record)
 
-    entry = registry.get_entry(record["name"])
+    entry_address = record.get("workflow_id") or record["name"]
+    entry = registry.get_entry(entry_address)
     if entry is None:
         _complete_operation(operation_id, error=f"Skill {record['name']!r} no longer exists")
         return {"error": f"Skill {record['name']!r} no longer exists"}
+    if record["type"] == "workflow":
+        recorded_revision = record.get("workflow_revision")
+        current_revision = getattr(entry, "workflow_revision", None)
+        if recorded_revision and current_revision != recorded_revision:
+            error = (
+                f"Workflow {record['name']!r} changed since this operation "
+                "was recorded; invoke it again as a fresh operation."
+            )
+            _complete_operation(operation_id, error=error)
+            return {
+                "error": error,
+                "error_code": "workflow_revision_changed",
+                "operation_id": operation_id,
+                "workflow_id": record.get("workflow_id"),
+                "workflow_name": getattr(entry, "name", record["name"]),
+                "expected_workflow_revision": recorded_revision,
+                "workflow_revision": current_revision,
+            }
 
     # ``retry`` itself has no integration requirements, so the outer wb_run
-    # admission cannot speak for the cached inner entry being replayed.
-    from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
+    # admission cannot speak for the cached inner Skill being replayed.
+    # Workflows are re-admitted by WorkflowService below; evaluating only a
+    # subset of its rules here would split policy across adapters.
+    if record["type"] != "workflow":
+        from work_buddy.mcp_server.runtime_admission import evaluate_runtime_admission
 
-    admission = evaluate_runtime_admission(entry)
-    if not admission.preference_available:
-        error = "Feature preferences could not be verified for replay."
-        _complete_operation(operation_id, error=error)
-        return {
-            "error": error,
-            "error_code": "feature_preference_unavailable",
-            "suppressed": True,
-        }
-    if admission.opted_out:
-        error = (
-            "Skill replay is disabled by current feature preferences: "
-            + ", ".join(admission.opted_out)
-        )
-        _complete_operation(operation_id, error=error)
-        return {
-            "error": error,
-            "error_code": "feature_opted_out",
-            "suppressed": True,
-            "opted_out": list(admission.opted_out),
-        }
+        admission = evaluate_runtime_admission(entry)
+        if not admission.preference_available:
+            error = "Feature preferences could not be verified for replay."
+            _complete_operation(operation_id, error=error)
+            return {
+                "error": error,
+                "error_code": "feature_preference_unavailable",
+                "suppressed": True,
+            }
+        if admission.opted_out:
+            error = (
+                "Skill replay is disabled by current feature preferences: "
+                + ", ".join(admission.opted_out)
+            )
+            _complete_operation(operation_id, error=error)
+            return {
+                "error": error,
+                "error_code": "feature_opted_out",
+                "suppressed": True,
+                "opted_out": list(admission.opted_out),
+            }
 
     # Pre-flight consent for skills with declared operations
     skill_name = record["name"]
@@ -3382,10 +3541,38 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             invocation_authorization = pending_per_invocation_authorization
             pending_per_invocation_authorization = None
             if record["type"] == "workflow":
-                result = _conductor().start_workflow(
-                    record["name"],
-                    record["params"],
-                    record.get("originating_session_id"),
+                from work_buddy.workflows.service import get_workflow_service
+
+                canonical_workflow_name = entry.name
+
+                def _coordinate_replay_workflow_consent(
+                    resolved_entry,
+                    _invocation_context,
+                ):
+                    if _is_workflow_class_authorized(
+                        resolved_entry.name,
+                        session_id=_retry_session_id,
+                    ):
+                        return None
+                    consent_result = _auto_workflow_consent_request(
+                        resolved_entry.name,
+                        resolved_entry,
+                        operation_id,
+                        _retry_session_id,
+                    )
+                    if consent_result.get("status") in ("denied", "timeout"):
+                        return consent_result
+                    return None
+
+                result = get_workflow_service().invoke(
+                    entry_address,
+                    invocation_context=_mcp_workflow_invocation_context(
+                        _retry_session_id,
+                        canonical_workflow_name,
+                        user_initiated=False,
+                    ),
+                    params=record["params"],
+                    consent=_coordinate_replay_workflow_consent,
                 )
             else:
                 # Keep an idempotency-bearing replay (e.g. task_create) on
@@ -3602,6 +3789,15 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             if error_kind is not None:
                 response["error_kind"] = error_kind
             return response
+
+    if (
+        record["type"] == "workflow"
+        and isinstance(result, dict)
+        and result.get("status") in ("denied", "timeout")
+    ):
+        consent_error = f"Workflow consent {result['status']}: {entry.name}"
+        _complete_operation(operation_id, result=result, error=consent_error)
+        return {**result, "operation_id": operation_id}
 
     # Check for soft transient failures in the result
     result_err = _result_error(result)

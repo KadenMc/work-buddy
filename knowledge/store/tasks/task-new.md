@@ -3,6 +3,7 @@ name: Task New
 kind: workflow
 description: Interactive task creation with independent registered project associations and namespace choices. Plans the task, enriches with registry and namespace context, resolves uncertain new organization, then applies via task_create.
 workflow_name: task-new
+workflow_id: wfd_05e2d6e2bbc1456fb2ec85430175490a
 execution: main
 allow_override: false
 steps:

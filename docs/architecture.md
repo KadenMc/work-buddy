@@ -11,11 +11,16 @@ graph TB
 
     subgraph "MCP Gateway (localhost:5126)"
         GW[Gateway Tools]
-        REG[Skill Registry]
+        REG[Skill and Workflow Registry]
+    end
+
+    subgraph "Workflow Application"
+        WFS[Workflow Service]
         COND[Workflow Conductor]
     end
 
     subgraph "Core Services"
+        SIDE[Sidecar Supervisor and Dispatch]
         MSG[Messaging Service<br/>Port 5123]
         EMB[Embedding Service<br/>Port 5124]
         TG[Telegram Bot<br/>Port 5125]
@@ -40,9 +45,13 @@ graph TB
     CC --> GW
     SC --> GW
     GW --> REG
-    GW --> COND
+    GW --> WFS
+    SIDE --> WFS
+    WFS --> REG
+    WFS --> COND
     REG --> MSG & EMB & OBS & MEM & CAL & CHR
     COND --> REG
+    SIDE -. supervises .-> MSG & EMB & TG & DASH
     OBS --> VAULT & TASKS & CAL
     TG --> MSG
     DASH --> MSG & TASKS & CONTRACTS & SESSIONS
@@ -55,17 +64,23 @@ graph TB
 Every session talks to work-buddy through one MCP server, the gateway, running on `localhost:5126`. Instead of exposing hundreds of tools to the agent, the gateway offers a small, fixed set of `wb_*` tools and lets the agent discover everything else at runtime:
 
 - `wb_init` registers the session, and is the required first call.
-- `wb_search` finds a skill or workflow from a natural-language query and returns its parameters.
-- `wb_run` executes a skill or starts a workflow.
-- `wb_advance` moves a running workflow to its next step.
+- `wb_search` ranks the unified knowledge store, including agent-invocable Skills and Workflows plus compatibility knowledge hits; an exact Skill name, Workflow canonical name, executable alias, or stable Workflow ID short-circuits to registry metadata and returns its parameters.
+- `wb_run` executes a Skill or starts a Workflow by one of those addresses.
+- `wb_advance` moves a running Workflow to its next step, taking the completed step output in `step_result`.
 - `wb_status` reports workflow progress or overall system health.
 - `wb_step_result` and `wb_skill_result` fetch a full result when a large response was elided to keep the conversation small.
 
-Behind the gateway, the skill registry is the catalog of everything work-buddy can do, and `wb_search` ranks it. See [the gateway](handbook/operations_mcp-gateway.md) and [the skill registry](handbook/architecture_skill-registry.md).
+`wb_skill_result` is the primary Skill-result retrieval tool; `wb_capability_result` remains only as a deprecated compatibility alias. Behind the gateway, the registry is the catalog of everything work-buddy can do. Its Workflow side owns definition discovery and compilation, while exact `wb_search` addresses resolve through that registry and natural-language search retains the unified-store compatibility path. See [the gateway](handbook/operations_mcp-gateway.md) and [the skill registry](handbook/architecture_skill-registry.md).
+
+## The Workflow application boundary
+
+A Workflow definition has an immutable stable ID (`wfd_<32 lowercase hex>`), a canonical name, zero or more executable aliases, and a deterministic `sha256:<64 lowercase hex>` revision. Those fields identify and address the definition; every invocation receives a distinct `wf_<8 lowercase hex>` run ID.
+
+`WorkflowService` is the transport-neutral invocation and admission boundary. It resolves a definition through the registry, checks whether the caller has the required executor facilities, validates parameters, coordinates consent where applicable, and only then starts the conductor. Both the MCP gateway and sidecar dispatch use the same admission rules, evaluated against each adapter's own context and available facilities.
 
 ## The conductor
 
-Multi-step work is expressed as a workflow, a small dependency graph of steps. The workflow conductor runs it: ordering steps, resuming cleanly after an interruption, and deciding which steps need the model and which are plain code. Steps that only load or shape data run deterministically, so the agent is invoked only where judgment is actually required. See [workflows](handbook/architecture_workflows.md).
+Multi-step work is expressed as a Workflow, a small dependency graph of steps. After `WorkflowService` admits an invocation, the Workflow conductor runs it: ordering steps, persisting the stable definition identity and revision with the run, resuming cleanly after an interruption, and deciding which steps need the model and which are plain code. Steps that only load or shape data run deterministically, so the agent is invoked only where judgment is actually required. See [workflows](handbook/architecture_workflows.md).
 
 ## Core services
 
@@ -94,7 +109,7 @@ Your actual work stays on your machine: the Obsidian vault, the task store, cont
 
 ## The sidecar supervisor
 
-The services above do not run themselves. A sidecar supervisor starts them on demand, restarts them on failure, and health-checks them on a schedule, so the gateway can assume its dependencies are up. You control it from any shell with `wbuddy start`, `wbuddy stop`, and `wbuddy status`. See [the sidecar](handbook/services_sidecar.md).
+The services above do not run themselves. A sidecar supervisor starts them on demand, restarts them on failure, and health-checks them on a schedule, so the gateway can assume its dependencies are up. Its scheduled Workflow dispatch also enters through `WorkflowService`. You control it from any shell with `wbuddy start`, `wbuddy stop`, and `wbuddy status`. See [the sidecar](handbook/services_sidecar.md).
 
 ---
 

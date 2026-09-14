@@ -156,7 +156,7 @@ def _execute_skill(name: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Execute a registered workflow by name.
+    """Execute a registered Workflow by canonical name, alias, or stable ID.
 
     Auto-advances ``step_type="code"`` steps by calling the matching
     direct skill. ``step_type="reasoning"`` steps require an agent and
@@ -164,43 +164,63 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
 
     Steps that are neither code nor reasoning are skipped with a note.
 
-    ``params`` are forwarded to ``start_workflow``; the conductor
-    validates them against the workflow's declared ``params_schema`` and
-    exposes them to ``auto_run`` steps via the ``__params__`` source key.
+    ``params`` pass through ``WorkflowService`` validation before the
+    conductor starts the run, then remain available to ``auto_run`` Steps
+    through the ``__params__`` source key.
     """
     if not name:
-        return {"status": "error", "error": "No workflow name specified."}
+        return {"status": "error", "error": "No Workflow address specified."}
 
     try:
-        from work_buddy.mcp_server.registry import get_registry, WorkflowDefinition
-        from work_buddy.mcp_server.conductor import start_workflow, advance_workflow
+        from work_buddy.workflows.context import (
+            AuthorizationContext,
+            ExecutorFacility,
+            InteractionAttendance,
+            InvocationChannel,
+            InvocationContext,
+            WorkflowEntrySurface,
+            WorkflowInvocationContext,
+        )
+        from work_buddy.workflows.service import get_workflow_service
 
-        registry = get_registry()
-        entry = registry.get(name)
-
-        if entry is None:
-            return {"status": "error", "error": f"Workflow '{name}' not found in registry."}
-
-        if not isinstance(entry, WorkflowDefinition):
-            return {"status": "error", "error": f"'{name}' is a direct skill, not a workflow. Use job_type='skill'."}
-
-        denied = _runtime_admission_error(entry)
-        if denied is not None:
-            return denied
-
-        if not entry.steps:
-            return {"status": "error", "error": f"Workflow '{name}' has no steps defined."}
+        service = get_workflow_service()
+        invocation_context = WorkflowInvocationContext(
+            channel=InvocationChannel.SIDECAR,
+            entry_surface=WorkflowEntrySurface.SCHEDULER,
+            invocation_context=InvocationContext.AGENT_AUTONOMOUS,
+            principal="sidecar:scheduler",
+            attendance=InteractionAttendance.UNATTENDED,
+            executor_facilities=frozenset({
+                ExecutorFacility.PROGRAM,
+                ExecutorFacility.SUBAGENT,
+            }),
+            authorization=AuthorizationContext(),
+        )
 
         # Start the workflow DAG. headless=True: this is a sidecar-scheduled
         # run with no interactive agent, so it gets an isolated per-run
         # consent session + TTL-bounded run grant (no orphan, no cross-op
         # carry into the sidecar's standing grants).
-        response = start_workflow(name, params=params or None, headless=True)
+        response = service.invoke(
+            name,
+            invocation_context=invocation_context,
+            params=params or None,
+            headless=True,
+        )
         if "error" in response:
-            return {"status": "error", "error": response["error"]}
+            return {
+                "status": "error",
+                **response,
+            }
 
         run_id = response["workflow_run_id"]
-        logger.info("Started workflow '%s' (run_id=%s, steps=%d)", name, run_id, len(entry.steps))
+        canonical_name = response.get("workflow_name", name)
+        logger.info(
+            "Started workflow '%s' (workflow_id=%s, run_id=%s)",
+            canonical_name,
+            response.get("workflow_id"),
+            run_id,
+        )
 
         completed_steps = 0
         skipped_steps = 0
@@ -209,13 +229,19 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
 
         # Walk the DAG, auto-advancing what we can
         while True:
+            if "error" in response or response.get("type") == "workflow_blocked":
+                return {
+                    "status": "error",
+                    "steps": step_results,
+                    "run_id": run_id,
+                    "workflow_run_id": run_id,
+                    "workflow_id": response.get("workflow_id"),
+                    "workflow_revision": response.get("workflow_revision"),
+                    "workflow_name": canonical_name,
+                    **response,
+                }
             current = response.get("current_step")
-            # Exit on either terminal state: ``workflow_complete`` (all
-            # steps succeeded) or ``workflow_blocked`` (a step failed and
-            # downstream is unreachable). Both mean no more work to drive.
-            if current is None or response.get("type") in (
-                "workflow_complete", "workflow_blocked",
-            ):
+            if current is None or response.get("type") == "workflow_complete":
                 break
 
             step_id = current["id"]
@@ -227,14 +253,14 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
                 result = _execute_code_step(step_id, step_name)
                 step_results.append({"step": step_id, "type": "code", "result": result})
                 completed_steps += 1
-                response = advance_workflow(run_id, step_result=result)
+                response = service.advance(run_id, step_result=result)
 
             elif step_type == "reasoning":
                 # Reasoning steps: need an agent session (Tier 3)
                 instruction = current.get("instruction", "")
-                prompt = _build_reasoning_prompt(name, step_name, instruction, step_results)
+                prompt = _build_reasoning_prompt(canonical_name, step_name, instruction, step_results)
                 agent_result = _spawn_agent(
-                    name=f"wf:{name}:{step_id}",
+                    name=f"wf:{canonical_name}:{step_id}",
                     prompt=prompt,
                 )
 
@@ -243,7 +269,7 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
                     logger.info(
                         "Workflow '%s' paused at reasoning step '%s' "
                         "(agent spawn requires consent). Completed %d code steps.",
-                        name, step_id, completed_steps,
+                        canonical_name, step_id, completed_steps,
                     )
                     step_results.append({
                         "step": step_id,
@@ -252,7 +278,7 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
                     })
                     agent_steps += 1
                     # Advance with a note so the DAG records the deferral
-                    response = advance_workflow(
+                    response = service.advance(
                         run_id,
                         step_result="Deferred: agent spawn requires consent.",
                     )
@@ -263,7 +289,10 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
                         "result": agent_result.get("result", ""),
                     })
                     completed_steps += 1
-                    response = advance_workflow(run_id, step_result=agent_result.get("result"))
+                    response = service.advance(
+                        run_id,
+                        step_result=agent_result.get("result"),
+                    )
                 else:
                     # Error — advance with error note
                     step_results.append({
@@ -272,7 +301,7 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
                         "result": f"Error: {agent_result.get('error', 'unknown')}",
                     })
                     skipped_steps += 1
-                    response = advance_workflow(
+                    response = service.advance(
                         run_id,
                         step_result=f"Error: {agent_result.get('error', 'unknown')}",
                     )
@@ -280,10 +309,13 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
                 # Unknown step type — skip
                 logger.warning("Unknown step_type '%s' for step '%s' — skipping.", step_type, step_id)
                 skipped_steps += 1
-                response = advance_workflow(run_id, step_result="Skipped: unknown step type.")
+                response = service.advance(
+                    run_id,
+                    step_result="Skipped: unknown step type.",
+                )
 
         summary = (
-            f"Workflow '{name}' finished: "
+            f"Workflow '{canonical_name}' finished: "
             f"{completed_steps} completed, {skipped_steps} skipped, "
             f"{agent_steps} deferred (consent)."
         )
@@ -293,6 +325,10 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
             "result": summary,
             "steps": step_results,
             "run_id": run_id,
+            "workflow_run_id": run_id,
+            "workflow_id": response.get("workflow_id"),
+            "workflow_revision": response.get("workflow_revision"),
+            "workflow_name": canonical_name,
         }
 
     except Exception as exc:

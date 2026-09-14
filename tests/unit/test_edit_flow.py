@@ -18,6 +18,7 @@ from work_buddy.knowledge import editor as editor_mod
 from work_buddy.knowledge import file_store
 from work_buddy.knowledge import store as store_mod
 from work_buddy.knowledge.edit_flow import commit_edit, resolve_for_edit
+from work_buddy.workflows.identity import is_valid_workflow_id
 
 
 @pytest.fixture
@@ -59,6 +60,21 @@ class TestResolveForEdit:
         assert r["file"].endswith("foo.md")
         assert r["kind"] == "directions"
 
+    def test_existing_workflow_returns_identity_guard(self, tmp_store):
+        workflow_id = "wfd_" + "1" * 32
+        _seed(tmp_store, "x/wf", {
+            "kind": "workflow",
+            "name": "W",
+            "description": "d",
+            "workflow_id": workflow_id,
+            "workflow_name": "w",
+            "steps": [{"id": "a", "step_type": "code", "depends_on": []}],
+        })
+
+        result = resolve_for_edit(params={"path": "x/wf"})
+
+        assert result["workflow_id"] == workflow_id
+
     def test_missing_path_errors(self, tmp_store):
         r = resolve_for_edit(params={})
         assert r["ok"] is False
@@ -91,6 +107,34 @@ class TestResolveForEdit:
         assert data["kind"] == "skill"
         assert data["skill_name"] == "sample_skill"
         assert "capability_name" not in data
+
+    def test_create_workflow_scaffold_assigns_stable_identity(self, tmp_store):
+        result = resolve_for_edit(params={
+            "path": "x/sample-flow",
+            "create": True,
+            "kind": "workflow",
+        })
+
+        assert result["ok"] is True
+        data = file_store.read_unit(tmp_store, "x/sample-flow")
+        assert data is not None
+        assert data["workflow_name"] == "sample-flow"
+        assert is_valid_workflow_id(data["workflow_id"])
+
+    def test_create_workflow_scaffold_rejects_invalid_explicit_identity(
+        self,
+        tmp_store,
+    ):
+        result = resolve_for_edit(params={
+            "path": "x/sample-flow",
+            "create": True,
+            "kind": "workflow",
+            "workflow_id": "wf_not-a-definition-id",
+        })
+
+        assert result["ok"] is False
+        assert "workflow_id must match" in result["error"]
+        assert file_store.read_unit(tmp_store, "x/sample-flow") is None
 
     def test_create_without_kind_errors(self, tmp_store):
         r = resolve_for_edit(params={"path": "x/new", "create": True})
@@ -149,6 +193,7 @@ class TestCommitEdit:
     def test_workflow_cycle_blocks_commit(self, tmp_store):
         wf = {
             "kind": "workflow", "name": "W", "description": "d",
+            "workflow_id": "wfd_11111111111111111111111111111111",
             "workflow_name": "w",
             "steps": [
                 {"id": "a", "step_type": "code", "depends_on": ["b"]},
@@ -159,3 +204,87 @@ class TestCommitEdit:
         r = commit_edit(resolve={"path": "x/wf"})
         assert r["ok"] is False
         assert any(e["check"] == "workflow_step_dag" for e in r["unit_errors"])
+
+    def test_workflow_missing_stable_identity_blocks_commit(self, tmp_store):
+        wf = {
+            "kind": "workflow", "name": "W", "description": "d",
+            "workflow_name": "w",
+            "steps": [
+                {"id": "a", "step_type": "code", "depends_on": []},
+            ],
+        }
+        _seed(tmp_store, "x/wf", wf)
+
+        r = commit_edit(resolve={"path": "x/wf"})
+
+        assert r["ok"] is False
+        assert any(e["check"] == "workflow_identity" for e in r["unit_errors"])
+
+    def test_workflow_identity_replacement_is_blocked_with_resolve_guard(
+        self,
+        tmp_store,
+    ):
+        original_id = "wfd_" + "1" * 32
+        replacement_id = "wfd_" + "2" * 32
+        workflow = {
+            "kind": "workflow",
+            "name": "W",
+            "description": "d",
+            "workflow_id": original_id,
+            "workflow_name": "w",
+            "steps": [{"id": "a", "step_type": "code", "depends_on": []}],
+        }
+        _seed(tmp_store, "x/wf", workflow)
+        resolve = resolve_for_edit(params={"path": "x/wf"})
+        file_store.write_unit(
+            tmp_store,
+            "x/wf",
+            {**workflow, "workflow_id": replacement_id},
+        )
+
+        result = commit_edit(resolve=resolve)
+
+        assert result["ok"] is False
+        assert any(
+            issue["check"] == "workflow_identity"
+            and "immutable within docs_edit" in issue["message"]
+            for issue in result["unit_errors"]
+        )
+
+    def test_workflow_address_collision_blocks_the_edited_first_owner(
+        self,
+        tmp_store,
+    ):
+        first = {
+            "kind": "workflow",
+            "name": "First",
+            "description": "d",
+            "workflow_id": "wfd_" + "1" * 32,
+            "workflow_name": "first",
+            "steps": [{"id": "a", "step_type": "code", "depends_on": []}],
+        }
+        second = {
+            "kind": "workflow",
+            "name": "Second",
+            "description": "d",
+            "workflow_id": "wfd_" + "2" * 32,
+            "workflow_name": "second",
+            "steps": [{"id": "a", "step_type": "code", "depends_on": []}],
+        }
+        _seed(tmp_store, "a-first", first)
+        _seed(tmp_store, "z-second", second)
+        resolve = resolve_for_edit(params={"path": "a-first"})
+        file_store.write_unit(
+            tmp_store,
+            "a-first",
+            {**first, "workflow_name": "second"},
+        )
+
+        result = commit_edit(resolve=resolve)
+
+        assert result["ok"] is False
+        assert any(
+            issue["check"] == "workflow_identity"
+            and "duplicate workflow address 'second'" in issue["message"]
+            for issue in result["unit_errors"]
+        )

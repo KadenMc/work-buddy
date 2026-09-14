@@ -135,9 +135,19 @@ mcp__work-buddy__wb_run("docs-edit", {"path": "domain/my-directions"})
 mcp__work-buddy__wb_run("docs-edit", {"path": "domain/my-unit", "create": true, "kind": "directions"})
 ```
 
-A unit file is YAML frontmatter (structured fields: `name`, `kind`, `description`, `parents`, `tags`, `aliases`, kind-specific fields, optional `dev_notes`) followed by the Markdown body (`content.full`). A **workflow** unit carries its `steps` DAG in frontmatter with per-step prose under `## <step-id>` sections. A **skill** unit is a declaration (`kind: skill` with `op`, `skill_name`, `category`, `parameters`) whose Op is registered in `work_buddy/mcp_server/ops/`.
+A unit file is YAML frontmatter (structured fields: `name`, `kind`, `description`, `parents`, `tags`, `aliases`, kind-specific fields, optional `dev_notes`) followed by the Markdown body (`content.full`). A **Workflow** unit carries identity/address fields and its `steps` DAG in frontmatter, with per-step prose under `## <step-id>` sections. A **Skill** unit is a declaration (`kind: skill` with `op`, `skill_name`, `category`, `parameters`) whose Op is registered in `work_buddy/mcp_server/ops/`.
 
-A direct `Edit` of a unit's `.md` works too; follow it with `agent_docs_rebuild` so the store cache and search index pick up the change. Removing or relocating a unit (not a content edit) uses the `docs_delete` / `docs_move` skills.
+### Workflow definition identity
+
+- `workflow_id` is an opaque, immutable definition identity (`wfd_...`).
+- `workflow_name` is the mutable primary invocation address.
+- `workflow_aliases` are prior or alternate executable addresses. Generic `aliases` remain search-only phrases.
+- `workflow_revision` is a computed content hash, never an authored field.
+- `workflow_run_id` identifies one execution and is distinct from the definition ID.
+
+The `docs_edit` Workflow scaffold mints a new definition ID. Preserve it exactly on updates; a raw rename must keep the former `workflow_name` in `workflow_aliases`, and a move should use `docs_move` so path-based Directions bindings are rewritten without changing identity. A local overlay cannot replace a tracked Workflow's ID. The compiled registry resolves exact Workflow requests by canonical name, executable alias, or stable ID.
+
+A direct `Edit` of a unit's `.md` works too; follow it with `agent_docs_rebuild` so the store cache and search index pick up the change. If the edit changed a Skill declaration or Workflow definition/address/schema, also run `reload_skill_data` after the active editing Workflow finishes so the live gateway registry is rebuilt. Removing or relocating a unit (not a content edit) uses the `docs_delete` / `docs_move` skills.
 
 ## Search index
 
@@ -197,5 +207,5 @@ work_buddy/knowledge/
 
 The knowledge system integrates with the MCP registry:
 - `search_registry()` delegates to the store for richer results
-- Exact skill/workflow lookups fall through to the store when registry filtering removes them
+- Exact Skill lookup uses the canonical Skill name; exact Workflow lookup accepts canonical name, executable alias, or stable definition ID
 - `knowledge` is the unified query interface; `agent_docs` for system docs only; legacy `docs_query`/`docs_get` still work

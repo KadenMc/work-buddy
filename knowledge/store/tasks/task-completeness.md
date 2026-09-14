@@ -4,6 +4,7 @@ kind: workflow
 description: Investigate whether a task was already completed (fully/partially/differently), judge the spirit not the letter, then optionally mark it complete with the correct prior date.
 summary: 'Investigate-and-retro-complete a task: auto-gather task + session commit/write evidence, judge completeness against a spirit-over-letter rubric (done/done-differently/partial/consciously-descoped/not-done), then on confirmation mark it done with the landing-commit date via task_toggle''s done_date.'
 workflow_name: task-completeness
+workflow_id: wfd_250cd146afe34bcfac39a33c0009c1da
 execution: main
 allow_override: false
 steps:

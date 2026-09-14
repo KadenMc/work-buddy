@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from enum import Enum
 
+from work_buddy.workflows.context import InvocationContext
+
 
 class FSMState(str, Enum):
     """The 14 resolution-phase FSM states.
@@ -146,20 +148,6 @@ class ReasoningTier(str, Enum):
     FRONTIER_BEST = "frontier_best"
     AGENT_HEADLESS = "agent_headless"  # multi-turn agent w/ tools
     USER = "user"                       # human-in-the-loop
-
-
-class InvocationContext(str, Enum):
-    """Where a skill/workflow may be discovered or invoked.
-
-    See DESIGN.md §10.3. The gateway derives the caller's context
-    server-side from session metadata; callers do NOT pass it.
-    """
-
-    AGENT_CONVERSATION = "agent_conversation"   # agent + user attending
-    AGENT_AUTONOMOUS = "agent_autonomous"       # sidecar worker, no user
-    FSM_INTERNAL = "fsm_internal"               # FSM engine state ops
-    ACTION_PROPOSAL = "action_proposal"         # inferred action candidate
-    USER_INVOCATION = "user_invocation"         # user-initiated
 
 
 class ActionKind(str, Enum):

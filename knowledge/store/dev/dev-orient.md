@@ -3,6 +3,7 @@ name: Dev-Mode Orientation
 kind: workflow
 description: Forced orientation before dev work — activate dev mode, search the knowledge store for the subsystem being modified, read the code, then declare the prior art found. Only after advancing the step with a non-trivial declaration may the agent proceed with the actual task.
 workflow_name: dev-orient
+workflow_id: wfd_c99d10fc215d4a79942c6c812d95bb9b
 execution: main
 allow_override: false
 steps:
