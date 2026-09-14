@@ -638,7 +638,7 @@ def test_create_user_job_file_skill_with_params(tmp_path, monkeypatch):
     assert job.params == {"same_day": True}
     text = (tmp_path / "briefing.md").read_text(encoding="utf-8")
     assert "type: skill" in text
-    assert "skill: task_briefing" in text
+    assert 'skill: "task_briefing"' in text
     assert "capability" not in text
 
 
