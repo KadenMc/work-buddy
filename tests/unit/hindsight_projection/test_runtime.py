@@ -104,7 +104,7 @@ def test_runtime_entrypoint_reconciles_and_drains_bounded_work(monkeypatch) -> N
     ]
 
 
-def test_capability_op_is_registered_without_importing_optional_hindsight_client() -> None:
+def test_skill_op_is_registered_without_importing_optional_hindsight_client() -> None:
     import work_buddy.mcp_server.ops.hindsight_projection_ops  # noqa: F401
 
     assert get_op("op.wb.truth_hindsight_projection_tick") is not None

@@ -347,7 +347,7 @@ def email_record_into_task(
     # Resolve target task + its linked note path.
     try:
         if native_tasks:
-            from work_buddy.tasks.capabilities import task_read
+            from work_buddy.tasks.skills import task_read
 
             task_payload = task_read(target_task_id)
         else:
@@ -448,7 +448,7 @@ def email_record_into_task(
         }
 
     # Append through the authority-aware task-note adapter. The call site is
-    # consent-gated at the capability level
+    # consent-gated at the skill level
     # (email_record_into_task has mutates_state=True + requires obsidian)
     # so going through the consent-wrapped append_to_note here would
     # double-prompt for the same user-initiated click.

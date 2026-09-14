@@ -17,7 +17,7 @@ function renderChrome(access: JobAuthoringInput["access"]) {
   });
   const snapshot: ViewSnapshot = {
     viewId: JOBS_VIEW_ID, observedAt: "2026-08-26T12:00:00Z", status: access.mode === "read_only" ? "read-only" : "ready",
-    quality: { kind: "complete" }, model: { access, timeZone: "America/New_York", capabilities: [], workflows: [] },
+    quality: { kind: "complete" }, model: { access, timeZone: "America/New_York", skills: [], workflows: [] },
     bindings: {}, widgetInputs: {},
   };
   render(runtime.renderChrome(snapshot));

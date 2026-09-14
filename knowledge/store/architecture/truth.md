@@ -43,11 +43,11 @@ dev_notes: |-
 
 Truth is work-buddy's durable kernel for recording what a claim says, which evidence supports it, who or what produced it, what a human decided, and how that state changed over time. The canonical implementation namespace is `work_buddy.truth`. The phrase **truth layer** remains a design and discovery alias rather than a separate canonical subsystem name.
 
-Truth ships as a Python library kernel, twelve MCP capabilities, and a direct CLI surface. Both transports delegate to `work_buddy.truth` rather than reproduce its authority, lifecycle, or integrity rules.
+Truth ships as a Python library kernel, twelve MCP skills, and a direct CLI surface. Both transports delegate to `work_buddy.truth` rather than reproduce its authority, lifecycle, or integrity rules.
 
 ## Transport surfaces
 
-The MCP surface provides the following capabilities:
+The MCP surface provides the following skills:
 
 - Store inventory: `truth_store_create`, `truth_store_list`.
 - Evidence: `truth_evidence_capture`, `truth_span_mark`.
@@ -56,7 +56,7 @@ The MCP surface provides the following capabilities:
 
 The direct shell surface is `wbuddy truth`. It has exactly five verbs: `capture`, `propose`, `query`, `confirm`, and `migrate`. The CLI opens the nearest canonical Co-work `.wbuddy/cowork/` sidecar, or an explicitly selected canonical store, without requiring the MCP gateway to be running. Interactive confirmation is a local-human surface only. A detected agent context cannot mint the human gesture even when it allocates a TTY, and must use MCP per-invocation consent or a still-valid gesture minted by a human. As with direct SQLite access, a local process that deliberately strips its agent identity remains inside the documented owning-machine trust boundary.
 
-Portable store import is library-only through `work_buddy.truth.export.import_store`. No `truth_store_import` MCP capability or sixth CLI verb is registered. Portable recovery consumers call the kernel import seam explicitly.
+Portable store import is library-only through `work_buddy.truth.export.import_store`. No `truth_store_import` MCP skill or sixth CLI verb is registered. Portable recovery consumers call the kernel import seam explicitly.
 
 ## Store topology
 

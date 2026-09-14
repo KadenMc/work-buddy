@@ -56,7 +56,7 @@ mcp__work-buddy__wb_run("request_send", {
 })
 ```
 
-**Consent for `wb_run` operations is handled by the gateway automatically** — when a `@requires_consent` gate fires inside a capability you invoke, the gateway delivers the notification and polls for the user's response. Ordinary approval writes a session-scoped grant. Per-invocation exact-review approval writes no grant; it creates a single ephemeral authorization bound to the matching immediate execution. You receive `{status: "granted"}`, `{status: "denied"}`, or `{status: "timeout"}` from your original `wb_run` call. No manual orchestration. See <<wb:notifications/consent>>.
+**Consent for `wb_run` operations is handled by the gateway automatically** — when a `@requires_consent` gate fires inside a skill you invoke, the gateway delivers the notification and polls for the user's response. Ordinary approval writes a session-scoped grant. Per-invocation exact-review approval writes no grant; it creates a single ephemeral authorization bound to the matching immediate execution. You receive `{status: "granted"}`, `{status: "denied"}`, or `{status: "timeout"}` from your original `wb_run` call. No manual orchestration. See <<wb:notifications/consent>>.
 
 ## TTL and expiry
 
@@ -68,9 +68,9 @@ Notifications expire after **1 hour**, requests after **2 hours**. Expired notif
 - `callback` set → dispatched as messaging payload for sidecar executor
 - Neither → just update the record; requester polls on next check
 
-## MCP capabilities
+## MCP skills
 
-| Capability | Purpose |
+| Skill | Purpose |
 |---|---|
 | `notification_send` | Fire-and-forget notification. Optional `surfaces` param |
 | `request_send` | Create + deliver a request. Optional `timeout_seconds` for blocking poll, `surfaces` for targeting |

@@ -1,6 +1,6 @@
 """Knowledge-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field).
 """
 
@@ -26,7 +26,7 @@ def _register() -> None:
     # Structural edits only. Content authoring/creation (every unit kind,
     # including workflow units) goes through the docs_edit workflow — the agent
     # edits the unit's .md file directly and the commit step validates +
-    # reconciles. There is no docs_create / docs_update / workflow_* capability.
+    # reconciles. There is no docs_create / docs_update / workflow_* skill.
     register_op("op.wb.docs_delete", editor.docs_delete)
     register_op("op.wb.docs_move", editor.docs_move)
     register_op("op.wb.knowledge_mint", mint_personal_unit)

@@ -1,11 +1,10 @@
 ---
 name: Session Commits
-kind: capability
+kind: skill
 description: Extract git commits made during Claude Code sessions. Parses raw JSONL for Bash tool calls containing 'git commit' and their results. Scope to one session or scan all recent sessions.
-capability_name: session_commits
 category: context
 op: op.wb.session_commits
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: int
     description: Lookback window when scanning all sessions (default 7)
     required: false
+skill_name: session_commits
 tags:
 - context
 - session

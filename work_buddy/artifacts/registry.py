@@ -4,11 +4,11 @@ Each consumer module registers exactly one ``Artifact`` describing its
 storage, lifecycle, and provenance. The registry is the single source
 of truth for cross-backend operations:
 
-* ``sweep_all(dry_run)`` is what ``artifact_cleanup`` MCP capability
+* ``sweep_all(dry_run)`` is what the ``artifact_cleanup`` MCP skill
   drives off of — iterates every registered artifact and calls
   ``.prune()``.
 * ``artifact_registry_dump()`` powers the ``artifact_registry`` MCP
-  capability — returns each artifact's introspection record.
+  skill — returns each artifact's introspection record.
 
 Registration is idempotent by name: re-registering the same name
 overwrites the previous entry. (This is useful for tests and for
@@ -124,7 +124,7 @@ def artifact_registry_dump() -> dict[str, dict[str, Any]]:
 
     Triggers consumer-module imports first so all 11 artifacts appear.
 
-    Used by ``artifact_registry()`` MCP capability so agents and
+    Used by the ``artifact_registry()`` MCP skill so agents and
     operators can see at a glance what's registered, what each
     artifact's storage/lifecycle shape is, what capabilities each
     declares, and which operations are exposed via MCP.

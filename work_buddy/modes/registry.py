@@ -1,13 +1,13 @@
 """Declared agent modes and the lookups that resolve them.
 
 A *mode* is a named, per-session toggle (``dev``, ``knowledge``, …) that gates
-capability and workflow availability. Each mode is an inert YAML declaration
+skill and workflow availability. Each mode is an inert YAML declaration
 under ``declarations/``; this module loads them into :class:`ModeDef` records
 and exposes the lookups used by:
 
-- the capability loader and workflow builder, to validate that an
+- the skill loader and workflow builder, to validate that an
   ``available_when`` gate string references only known mode ids;
-- the ``mode_toggle`` capability, to enforce a mode's ``activatable_when``
+- the ``mode_toggle`` skill, to enforce a mode's ``activatable_when``
   constraint before activating it;
 - the gateway, to resolve a session's active modes for search/dispatch gating.
 

@@ -1,8 +1,8 @@
-"""Action Catalog — typed filtered lens over the capability + workflow registries.
+"""Action Catalog — typed filtered lens over the skill + workflow registries.
 
 DESIGN.md §10.2 is explicit: the Action Catalog
 is **NOT a separate registry.** It is a filtered view over the existing
-capability and workflow registries:
+skill and workflow registries:
 
 - ``is_action=True``  →  the entry is in the catalog at all.
 - ``available_in`` matches the caller's :class:`InvocationContext` →
@@ -22,7 +22,7 @@ Action; this module ships:
 - ``find_action(name, *, context, registry=None)`` — single lookup
   with availability check.
 - ``ActionTemplate`` — frozen view object combining
-  capability/workflow data with the Action Catalog fields.
+  skill/workflow data with the Action Catalog fields.
 
 The catalog is recomputed on every call (cheap — a filter walk over
 ~150 entries). Stage 2.x can add caching if profiling shows it's
@@ -60,7 +60,7 @@ class ActionTemplate:
     parameter_schema_for_action: dict[str, Any]
     requires_post_review: bool
 
-    # Discriminator: 'capability' | 'workflow'
+    # Discriminator: 'skill' | 'workflow'
     kind: str
 
     # For workflows that originated as improvised actions promoted
@@ -87,15 +87,15 @@ def _registry_entries(registry: Optional[dict] = None) -> Iterable:
 
 
 def _entry_to_template(entry: Any) -> Optional[ActionTemplate]:
-    """Convert a Capability or WorkflowDefinition to an ActionTemplate.
+    """Convert a Skill or WorkflowDefinition to an ActionTemplate.
 
     Returns None if the entry shape isn't recognized (defensive: the
     registry could in principle store other types in the future).
     """
     # Lazy imports to avoid cycles
-    from work_buddy.mcp_server.registry import Capability, WorkflowDefinition
+    from work_buddy.mcp_server.registry import Skill, WorkflowDefinition
 
-    if isinstance(entry, Capability):
+    if isinstance(entry, Skill):
         return ActionTemplate(
             name=entry.name,
             description=entry.description,
@@ -105,7 +105,7 @@ def _entry_to_template(entry: Any) -> Optional[ActionTemplate]:
             intrinsic_amplifiers=dict(entry.intrinsic_amplifiers),
             parameter_schema_for_action=dict(entry.parameter_schema_for_action),
             requires_post_review=entry.requires_post_review,
-            kind="capability",
+            kind="skill",
         )
     if isinstance(entry, WorkflowDefinition):
         # WorkflowDefinition has .name; .description; no .category

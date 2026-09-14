@@ -25,7 +25,7 @@ Depth = Literal["index", "summary", "full"]
 
 class DrillError(Exception):
     """Raised by a `TreeDrillable` when an input is malformed or the
-    requested node does not exist. The dispatch capability catches this
+    requested node does not exist. The dispatch skill catches this
     and returns a structured error to the agent."""
 
 
@@ -67,7 +67,7 @@ class TreeDrillable(Protocol):
     domain owns the format; consumers treat it as opaque.
 
     Implementations should raise `DrillError` for malformed input or
-    missing nodes; the dispatch capability turns it into a structured
+    missing nodes; the dispatch skill turns it into a structured
     error response.
     """
 

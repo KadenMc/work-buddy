@@ -1,11 +1,10 @@
 ---
 name: Journal Route To Considerations
-kind: capability
+kind: skill
 description: Explicit legacy compatibility action that routes an archived journal-group thread into vault consideration notes. Disabled when Obsidian is opted out; not part of native Journal.
-capability_name: journal_route_to_considerations
 category: journal
 op: op.wb.journal_route_to_considerations
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -33,6 +32,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: journal_route_to_considerations
 tags:
 - journal
 - route

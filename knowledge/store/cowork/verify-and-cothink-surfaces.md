@@ -75,7 +75,7 @@ separate non-executing human affirmation request. The server persists its
 ActionSnapshot and returns a receipt whose character-range identity and
 target-text hash must match the fresh Run capture.
 
-There is intentionally no general agent-facing capability that starts Verify,
+There is intentionally no general agent-facing skill that starts Verify,
 admits executable code, toggles a criterion, invokes Co-think, or decides a
 proposal. A human may create a declarative personal check through the
 dashboard; the server binds it to a statically admitted system evaluator. User

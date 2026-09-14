@@ -1,11 +1,11 @@
 ---
 name: Datacore Status
-kind: capability
+kind: skill
 description: Check if Datacore plugin is installed, initialized, and queryable. Returns version, index revision, and object type counts.
-capability_name: datacore_status
 category: context
 op: op.wb.datacore_status
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: datacore_status
 tags:
 - context
 - datacore

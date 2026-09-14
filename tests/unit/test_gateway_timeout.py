@@ -1,10 +1,10 @@
-"""Tests for the gateway's per-capability dispatch timeout.
+"""Tests for the gateway's per-skill dispatch timeout.
 
 The dispatch budget is owned by the operation and the gateway timeout is
 opt-in: a ``timeout_seconds`` policy callable derives the budget from the
 actual params, a scalar is a fixed ceiling, and an unset field is unbounded
 (no gateway cap). A bounded budget composes a ``TimeoutStrategy``; an unbounded
-one composes none, so a capability is never capped unless it asks to be.
+one composes none, so a skill is never capped unless it asks to be.
 """
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ import math
 from pathlib import Path
 
 from work_buddy.mcp_server import dispatch_resilience as dr
-from work_buddy.mcp_server.registry import Capability
+from work_buddy.mcp_server.registry import Skill
 from work_buddy.resilience import OutcomeKind, guarded_call
 
 
-def _cap(**kw) -> Capability:
-    return Capability(
+def _cap(**kw) -> Skill:
+    return Skill(
         name="c", description="d", category="tasks", parameters={},
         callable=lambda **k: None, **kw,
     )
@@ -29,7 +29,7 @@ class TestBudgetResolution:
     def test_unset_is_unbounded_opt_in(self):
         # The gateway timeout is opt-in: an undeclared budget imposes no cap.
         # A flat default is not auto-applied (it would silently break the
-        # deliberately-long-running capabilities — see TestOptInProtectsBlockers).
+        # deliberately-long-running skills — see TestOptInProtectsBlockers).
         assert dr.resolve_timeout_budget(_cap(), {}) == math.inf
 
     def test_unset_obsidian_is_unbounded(self):
@@ -61,14 +61,14 @@ class TestBudgetResolution:
 
 
 class TestOptInProtectsBlockers:
-    """Regression guard: capabilities that deliberately block or run long must
+    """Regression guard: skills that deliberately block or run long must
     NOT get a gateway wall-time cap unless they explicitly declare one. These
     declare ``requires=[]`` (they don't directly need a tool), so a flat
     non-bridge default would wrongly cap them — human-in-the-loop prompts would
     time out before the user answers, retries before the bridge recovers, LLM
     calls before the model returns."""
 
-    def test_long_running_capabilities_are_unbounded(self):
+    def test_long_running_skills_are_unbounded(self):
         from unittest.mock import patch
         from work_buddy.mcp_server import registry as reg_mod
 
@@ -76,18 +76,18 @@ class TestOptInProtectsBlockers:
         try:
             with patch("work_buddy.tools.is_tool_available", return_value=True):
                 reg = reg_mod.get_registry()
-            disabled = reg_mod.get_disabled_registry()
+            disabled = reg_mod.get_disabled_skill_registry()
             for name in (
                 "request_send", "request_poll", "conversation_poll",
                 "obsidian_retry", "retry", "llm_submit",
             ):
                 entry = reg.get(name) or disabled.get(name)
                 if entry is None:
-                    continue  # capability may not be registered in this build
+                    continue  # skill may not be registered in this build
                 budget = dr.resolve_timeout_budget(entry, {})
                 assert budget == math.inf, (
                     f"{name} resolved to a {budget}s gateway cap; deliberately-"
-                    f"long-running capabilities must be unbounded (opt-in timeout)"
+                    f"long-running skills must be unbounded (opt-in timeout)"
                 )
         finally:
             reg_mod._REGISTRY = None
@@ -99,7 +99,7 @@ class TestStrategyComposition:
         assert [type(s).__name__ for s in strategies] == ["TimeoutStrategy"]
 
     def test_unbounded_budget_adds_no_timeout_strategy(self):
-        # A self-managing capability is wrapped for telemetry but carries NO
+        # A self-managing skill is wrapped for telemetry but carries NO
         # TimeoutStrategy, so the gateway cannot falsely kill it. (Use a
         # non-obsidian cap forced unbounded to isolate the timeout behaviour
         # from the obsidian circuit breaker, which is covered separately in
@@ -154,7 +154,7 @@ class TestGatewayWiringSmoke:
             / "work_buddy" / "mcp_server" / "tools" / "gateway.py"
         ).read_text(encoding="utf-8")
         assert "resolve_timeout_budget" in source, (
-            "gateway.py no longer resolves a per-capability dispatch budget."
+            "gateway.py no longer resolves a per-skill dispatch budget."
         )
         assert 'OutcomeKind.TIMEOUT' in source, (
             "gateway.py no longer handles the TIMEOUT outcome."

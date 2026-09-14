@@ -1,16 +1,16 @@
 ---
 name: Remote Session List
-kind: capability
+kind: skill
 description: List resumable Claude Code sessions from ~/.claude/sessions/. Shows session ID, name, cwd, and start time.
-capability_name: remote_session_list
 category: sidecar
 op: op.wb.remote_session_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   cwd:
     type: str
     description: Filter to sessions started in this directory. Defaults to repo root.
     required: false
+skill_name: remote_session_list
 tags:
 - sidecar
 - remote

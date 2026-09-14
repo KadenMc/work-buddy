@@ -8,7 +8,7 @@ The Obsidian plugin's modal "respond" path does two things:
 
 The sidecar's ``MessagePoller`` must route that message through
 ``resolve_consent_request`` (which honors the notification's
-``callback_session_id``) and NOT through the generic capability
+``callback_session_id``) and NOT through the generic skill
 dispatch (which would write the grant to the sidecar process's own
 session DB via the singleton consent cache, leaving the agent's DB
 empty and any subsequent ``@requires_consent`` check raising).
@@ -92,13 +92,13 @@ def test_modal_consent_grant_lands_in_agent_session_db(
     # Create the consent notification (as the gateway would).
     from work_buddy.consent import create_consent_request
     record = create_consent_request(
-        operation="bundle:test_capability",
+        operation="bundle:test_skill",
         reason="test bundle",
         risk="moderate",
         default_ttl=30,
-        requester="gateway:test_capability",
+        requester="gateway:test_skill",
         context={
-            "capability": "test_capability",
+            "skill": "test_skill",
             "operations": ["test.op_a", "test.op_b"],
             "operation_id": "op_test123",
         },
@@ -111,7 +111,7 @@ def test_modal_consent_grant_lands_in_agent_session_db(
     #   subject="consent_grant"
     #   body=JSON of {operation, mode, ttl_minutes, notification_id}
     body = json.dumps({
-        "operation": "bundle:test_capability",
+        "operation": "bundle:test_skill",
         "mode": "temporary",
         "ttl_minutes": 30,
         "notification_id": notification_id,

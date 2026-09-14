@@ -1,11 +1,10 @@
 ---
 name: Summarization Worker Tick
-kind: capability
-description: 'Drain the active summarization queue once. Runs by default, respects the Session Summaries preference, remains dormant without a plausible backend, rotates failures for fairness, and excludes visible dead letters.'
-capability_name: summarization_worker_tick
+kind: skill
+description: Drain the active summarization queue once. Runs by default, respects the Session Summaries preference, remains dormant without a plausible backend, rotates failures for fairness, and excludes visible dead letters.
 category: summarization
 op: op.wb.summarization_worker_tick
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   bypass_cooldown:
     type: bool
@@ -25,6 +24,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: summarization_worker_tick
 tags:
 - summarization
 - worker

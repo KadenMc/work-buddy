@@ -1,16 +1,16 @@
 ---
 name: Get Thread
-kind: capability
+kind: skill
 description: Get all messages in a conversation thread
-capability_name: get_thread
 category: messaging
 op: op.wb.get_thread
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
     description: Thread ID
     required: true
+skill_name: get_thread
 tags:
 - messaging
 - get

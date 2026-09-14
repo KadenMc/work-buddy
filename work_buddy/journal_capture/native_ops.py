@@ -1,6 +1,6 @@
-"""Authority-aware Journal capability adapters.
+"""Authority-aware Journal skill adapters.
 
-The retained MCP capability names call these functions.  Database authority
+The retained MCP skill names call these functions.  Database authority
 uses only the Journal store; compatibility mode can still delegate to the
 frozen Markdown implementation while Obsidian remains explicitly wanted.
 """
@@ -90,7 +90,7 @@ def _composition(
     local_date: str,
     *,
     persist: bool,
-    created_by: str = "work-buddy-journal-capability",
+    created_by: str = "work-buddy-journal-skill",
 ) -> JournalDayComposition:
     day = current_day(local_date)
     if persist:

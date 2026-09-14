@@ -6,7 +6,7 @@ summary: 'Present tasks in batches of 5. Actions: mit, focus, snooze, done, kill
 trigger: user wants to triage or review pending inbox tasks
 command: wb-task-triage
 workflow: tasks/task-triage
-capabilities:
+skills:
 - tasks/task_review_inbox
 - tasks/task_stale_check
 - tasks/task_change_state

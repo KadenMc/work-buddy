@@ -4,7 +4,7 @@ Four layers:
     1. ComponentRegistry (components.py) — catalog of all monitored components
     2. HealthEngine (engine.py) — merges tool probes + sidecar state
     3. DiagnosticRunner (diagnostics.py) — troubleshooting check sequences
-    4. Surfaces — MCP capability (setup_help), slash command, dashboard API
+    4. Surfaces — MCP skill (setup_help), slash command, dashboard API
 
 Usage::
 

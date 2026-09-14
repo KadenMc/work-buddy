@@ -88,7 +88,7 @@ work-buddy runs a local [MCP server](https://modelcontextprotocol.io/) that exte
 
 ```
 wb_search  → discover what's available (natural language)
-wb_run     → execute a capability or start a workflow
+wb_run     → execute a direct skill or start a workflow skill
 wb_advance → step through a multi-step workflow
 wb_status  → check progress or system health
 ```
@@ -126,18 +126,18 @@ Your agents work autonomously when they can, and check in when they should. You 
 | **Real work commitments** | Contracts with claims, evidence plans, and stop rules keep projects honest; metacognition checks catch your documented failure patterns. |
 | **Agents that coordinate** | Sessions message each other, hand off tasks, and hold persistent dashboard threads, so multi-session work doesn't need you as the relay. |
 
-The full catalog of capabilities, workflows, and 50+ slash commands lives in the [handbook](https://docs.work-buddy.ai).
+The full catalog of direct skills, workflow skills, and 50+ slash commands lives in the [handbook](https://docs.work-buddy.ai).
 
 ## Extend It
 
-work-buddy builds work-buddy. The documentation your agent reads covers not just how to *operate* the framework but how to *develop* it, so you can tell your agent what you want (a new workflow, a new capability, a new integration) and it creates the pieces in the knowledge store, wires up a slash command, and ships the change through the built-in dev workflow (`/wb-dev` to orient, `/wb-dev-pr` to test, document, and open the PR). **What gets built is yours to read, edit, share, or remove.** The agent drafts; you curate.
+work-buddy builds work-buddy. The documentation your agent reads covers not just how to *operate* the framework but how to *develop* it, so you can tell your agent what you want (a new workflow skill, a new direct skill, a new integration) and it creates the pieces in the knowledge store, wires up a slash command, and ships the change through the built-in dev workflow (`/wb-dev` to orient, `/wb-dev-pr` to test, document, and open the PR). **What gets built is yours to read, edit, share, or remove.** The agent drafts; you curate.
 
 ## Documentation
 
 | | |
 |---|---|
 | [Docs home](https://docs.work-buddy.ai) | Overview, install, and the entry point to everything below |
-| [Handbook](https://docs.work-buddy.ai) | Every capability, workflow, and slash command, generated from the same knowledge store your agent reads |
+| [Handbook](https://docs.work-buddy.ai) | Every direct skill, workflow skill, and slash command, generated from the same knowledge store your agent reads |
 | [Architecture](https://docs.work-buddy.ai) | How the gateway, conductor, sidecar services, and integrations fit together |
 | [Contributing](CONTRIBUTING.md) | Dev setup (uv), the fork-and-pull workflow, and how to extend work-buddy |
 | [License](LICENSE) | GPL-3.0-only, and why |
@@ -159,7 +159,7 @@ This is a framework designed to be extended. If you use Claude Code and want str
 
 ## Contributing
 
-We welcome contributions: bug fixes, new capabilities, workflows, integrations, and documentation. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full guide.
+We welcome contributions: bug fixes, new direct skills, workflow skills, integrations, and documentation. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full guide.
 
 The fastest way to get started: clone the repo, install, and run `/wb-dev`. Your agent will orient itself.
 

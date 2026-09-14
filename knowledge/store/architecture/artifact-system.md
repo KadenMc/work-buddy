@@ -1,7 +1,7 @@
 ---
 name: Artifact System
 kind: reference
-description: Shared lifecycle infrastructure for any persisted resource — pluggable Storage × Lifecycle × Provenance composition with capability declarations.
+description: Shared lifecycle infrastructure for any persisted resource — pluggable Storage × Lifecycle × Provenance composition with skill declarations.
 summary: 'Shared lifecycle infrastructure for every persisted resource. Composition-based: Storage × Lifecycle (Trigger + ExpiryAction + retention_predicate?) × Provenance, with construction-time coherence validation. 15 registered artifacts (filesystem, messaging, llm-queue, llm-cache, segmentation-cache, chrome-ledger, escalations-log, claude-code-usage, agent-sessions, notifications, logs-global, conversation-observability, summarization, service-logs, agents-logs). Single cleanup tick drives off the registry; paths.PRUNERS deprecated. MCP: artifact_save/list/get/delete/cleanup (filesystem-typed) + artifact_cleanup(name?) (cross-backend) + artifact_registry (cross-backend introspection).'
 entry_points:
 - work_buddy.artifacts
@@ -135,7 +135,7 @@ Each consumer registers one `Artifact` from its own module at import time (or in
 
 ## Cleanup orchestration
 
-`sidecar_jobs/artifact-cleanup.md` runs the `artifact_cleanup` MCP capability twice daily (03:00 and 15:00 in the configured timezone) via the sidecar scheduler. The capability calls `FilesystemStorage.cleanup()` which delegates to `registry.sweep_all()`. Every registered Artifact's `.prune()` runs; results aggregate into the legacy result-dict shape so existing callers see no breaking change.
+`sidecar_jobs/artifact-cleanup.md` runs the `artifact_cleanup` MCP skill twice daily (03:00 and 15:00 in the configured timezone) via the sidecar scheduler. The skill calls `FilesystemStorage.cleanup()` which delegates to `registry.sweep_all()`. Every registered Artifact's `.prune()` runs; results aggregate into the legacy result-dict shape so existing callers see no breaking change.
 
 One tick now does everything in a single uniform pass:
 * per-type TTL on filesystem blobs (via the registered `filesystem` Artifact)
@@ -155,7 +155,7 @@ One tick now does everything in a single uniform pass:
 
 Metadata captures: creating session id, tags, description, expiry, original artifact id. Per-type TTL: `context` 7d, `export` 90d, `report` 30d, `snapshot` 14d, `scratch` 3d, `commit` 90d. Unregistered types get the 14-day default.
 
-## MCP capabilities
+## MCP skills
 
 * `artifact_save(content, type, slug, ext?, tags?, description?, ttl_days?)` — filesystem-typed save. Returns the new ArtifactRecord.
 * `artifact_list(type?, since?, tags?, session?, include_expired?, limit?)` — filesystem-typed list with filters.
@@ -217,7 +217,7 @@ Consumer modules where Artifacts are registered at import time:
 
 Other entry points:
 * `work_buddy/paths.py` — `RESOURCES` (path registry) + `PRUNERS` (now empty, deprecated)
-* `work_buddy/mcp_server/registry.py` — artifact_* + artifact_registry MCP capability declarations
-* `sidecar_jobs/artifact-cleanup.md` — scheduled cleanup job (no change needed; calls artifact_cleanup MCP capability)
+* `work_buddy/mcp_server/registry.py` — artifact_* + artifact_registry MCP skill declarations
+* `sidecar_jobs/artifact-cleanup.md` — scheduled cleanup job (no change needed; calls artifact_cleanup MCP skill)
 * `tests/unit/test_artifact_protocol.py` — end-to-end Lifecycle smoke tests
 * `tests/unit/test_artifact_backends.py` — per-backend Storage protocol tests

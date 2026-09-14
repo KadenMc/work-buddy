@@ -4,7 +4,7 @@ kind: directions
 description: How to update a native task description safely with revision checking and idempotent replay.
 summary: Use task_update_description with the current revision; a stale write returns structured conflict state rather than overwriting newer work.
 trigger: agent or user wants to change an existing task description
-capabilities:
+skills:
 - tasks/task_update_description
 tags:
 - tasks
@@ -56,6 +56,6 @@ Co-work document binding remain unchanged.
 
 ## Conflicts
 
-Never edit frozen task Markdown. If the capability returns a revision conflict,
+Never edit frozen task Markdown. If the skill returns a revision conflict,
 surface the live task/revision, reconcile the user's change, and submit a new
 semantic mutation. Do not blindly retry a stale request.

@@ -5,7 +5,7 @@ description: What makes a good observation, slug disambiguation, and existence p
 summary: 'Use project_observe for things that wouldn''t appear in code or task lists: supervisor feedback, strategic pivots, abandoned approaches, scope changes, deadlines, risk signals. If slug is ambiguous, call project_list first. Project must already exist — use /wb-project-new first if needed.'
 trigger: user wants to log a decision, pivot, blocker, feedback, or insight about a project
 command: wb-project-observe
-capabilities:
+skills:
 - projects/project_observe
 tags:
 - projects

@@ -16,8 +16,8 @@ work-buddy's conventions differ from a stand-alone tool:
 * ``print()`` is replaced with the standard work-buddy logger.
 
 This data is exposed through ``/api/costs?source=claude_code`` (the
-dashboard) and via the ``claude_code_usage_scan`` MCP capability. The
-unified ``llm_costs_query`` capability also reads from this source.
+dashboard) and via the ``claude_code_usage_scan`` MCP skill. The
+unified ``llm_costs_query`` skill also reads from this source.
 
 The cost rate table at :mod:`work_buddy.llm.claude_code_usage.pricing`
 is now the **canonical** rate source for the whole repo; the

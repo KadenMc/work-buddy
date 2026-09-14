@@ -11,7 +11,7 @@ The handler returns immediately; the LLM call happens in a daemon
 thread so the Obsidian plugin's POST doesn't block on model latency.
 
 Phase 2 of the clarify -> Threads migration replaced the legacy
-``inline_triage_scan`` capability path (which dropped pool entries
+``inline_triage_scan`` skill path (which dropped pool entries
 for the dead Review tab) with the native ``pipelines.inline_capture``
 path that writes directly to the Threads table.
 """

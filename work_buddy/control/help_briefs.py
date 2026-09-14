@@ -50,8 +50,8 @@ def build_help_brief(node_id: str) -> str:
         return _component_brief(node)
     if node.kind in ("subsystem", "domain"):
         return _grouping_brief(node, nodes)
-    if node.kind == "capability":
-        return _capability_brief(node)
+    if node.kind == "skill":
+        return _skill_brief(node)
     return _generic_brief(node)
 
 
@@ -204,7 +204,7 @@ def _requirement_brief(node) -> str:
 
 
 def _component_context_lines(node) -> list[str]:
-    """State + diagnostic + linked-requirements + affected-capabilities
+    """State + diagnostic + linked-requirements + affected-skills
     lines for a component node.
 
     Shared by ``_component_brief`` (the ? help button) and
@@ -243,16 +243,16 @@ def _component_context_lines(node) -> list[str]:
         parts.append("  (none)")
     parts.append("")
     parts.append(
-        f"## Capabilities affected by this component "
-        f"({len(node.affects_capabilities)})"
+        f"## Skills affected by this component "
+        f"({len(node.affects_skills)})"
     )
-    if node.affects_capabilities:
-        sample = node.affects_capabilities[:8]
+    if node.affects_skills:
+        sample = node.affects_skills[:8]
         parts.append("  " + ", ".join(f"`{c}`" for c in sample))
-        if len(node.affects_capabilities) > 8:
-            parts.append(f"  …and {len(node.affects_capabilities) - 8} more.")
+        if len(node.affects_skills) > 8:
+            parts.append(f"  …and {len(node.affects_skills) - 8} more.")
     else:
-        parts.append("  (none — no capabilities currently list this as a `requires`)")
+        parts.append("  (none — no skills currently list this as a `requires`)")
     return parts
 
 
@@ -357,13 +357,13 @@ def _grouping_brief(node, nodes) -> str:
     return "\n".join(parts)
 
 
-def _capability_brief(node) -> str:
-    """Brief for a capability — explain its dep chain."""
+def _skill_brief(node) -> str:
+    """Brief for a skill — explain its dependency chain."""
     if node.effective_state == "disabled":
         return "\n".join([
-            "This work-buddy capability is disabled by feature preference.",
+            "This work-buddy skill is disabled by feature preference.",
             "",
-            f"## Capability: `{node.id}`",
+            f"## Skill: `{node.id}`",
             f"**Description:** {node.description}",
             "",
             "Do not probe its dependencies, retry it, or recommend setup while "
@@ -371,10 +371,10 @@ def _capability_brief(node) -> str:
         ])
 
     parts = [
-        "You are helping the user investigate a work-buddy capability that "
+        "You are helping the user investigate a work-buddy skill that "
         "isn't fully usable.",
         "",
-        f"## Capability: `{node.id}`",
+        f"## Skill: `{node.id}`",
         f"**Description:** {node.description}",
         f"**Current state:** `{node.effective_state}`",
         "",
@@ -384,11 +384,11 @@ def _capability_brief(node) -> str:
         for e in node.dependencies:
             parts.append(f"  - `{e.target_id}` ({e.hardness})")
     else:
-        parts.append("## Dependencies\n  (none — capability is a leaf)")
+        parts.append("## Dependencies\n  (none — skill is a leaf)")
     parts.append("")
     parts.append(
         "## What you can do\n"
-        "If this capability is degraded/blocked, follow its dependency chain "
+        "If this skill is degraded/blocked, follow its dependency chain "
         "until you find the underlying problem. Use the Settings tab's "
         "drill-down on the failing dependency."
     )

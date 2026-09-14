@@ -1,11 +1,10 @@
 ---
 name: Event Publish
-kind: capability
+kind: skill
 description: Publish one event onto the work-buddy Events backbone — a fire-and-forget fact ("X happened") delivered to 0..N consumers. For manual or agent-initiated emits. The type is reverse-DNS (ai.workbuddy.<domain>.<thing>.<verb>).
-capability_name: event_publish
 category: events
 op: op.wb.event_publish
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   type:
     type: str
@@ -33,6 +32,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: event_publish
 tags:
 - events
 - event

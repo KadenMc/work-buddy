@@ -21,7 +21,7 @@ from work_buddy.knowledge.docs_gen import (
     generate_docs,
 )
 from work_buddy.knowledge.model import (
-    CapabilityUnit,
+    SkillUnit,
     ConceptUnit,
     DirectionsUnit,
     IntegrationUnit,
@@ -54,17 +54,17 @@ class TestRenderEachKind:
             trigger="when X happens",
             command="wb-test",
             workflow="test/wf",
-            capabilities=["cap_a"],
+            skills=["skill_a"],
         )
         out = _render_unit(u)
         assert out.startswith("# Test DirectionsUnit")
         assert "when X happens" in out
         assert "wb-test" in out
 
-    def test_capability_renders(self):
+    def test_skill_renders(self):
         u = _minimal(
-            CapabilityUnit,
-            capability_name="task_create",
+            SkillUnit,
+            skill_name="task_create",
             category="tasks",
             parameters={"name": {"type": "str", "required": True, "description": "Task name"}},
         )
@@ -205,7 +205,7 @@ class TestRendererRegistry:
         """The dangerous _render_system fallback was retired. Registry
         should hold renderers only for kinds with structured templates."""
         assert "system" not in _RENDERERS
-        assert set(_RENDERERS.keys()) == {"directions", "capability", "workflow"}
+        assert set(_RENDERERS.keys()) == {"directions", "skill", "workflow"}
 
 
 class TestLiveStoreSmoke:

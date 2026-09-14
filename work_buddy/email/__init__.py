@@ -11,7 +11,7 @@ Public surface
 - :func:`get_email_provider` — config-driven factory.
 
 The triage glue lives in :mod:`work_buddy.email.triage_adapter`; the MCP
-capabilities and `ToolProbe` registration live in
+skills and `ToolProbe` registration live in
 :mod:`work_buddy.mcp_server.registry` and :mod:`work_buddy.tools` respectively.
 """
 

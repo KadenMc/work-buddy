@@ -463,7 +463,7 @@ def test_cacheable_consent_uses_persisted_winner(cache, monkeypatch):
 
     result = gateway._auto_consent_request(
         [operation],
-        "cacheable_capability",
+        "cacheable_skill",
         "operation-cacheable-race",
         timeout=0,
         session_id="agent-session-cacheable-race",

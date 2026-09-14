@@ -1,4 +1,4 @@
-"""Unit tests for ``registry.reload_capability_data`` — the data-only reload.
+"""Unit tests for ``registry.reload_skill_data`` — the data-only reload.
 
 The whole reason this function exists is that ``invalidate_registry`` (the old
 ``mcp_registry_reload`` op) purges ``work_buddy.*`` from ``sys.modules``, which
@@ -40,7 +40,7 @@ def _install_sentinel() -> str:
     return name
 
 
-def test_reload_capability_data_does_not_purge_sys_modules(monkeypatch):
+def test_reload_skill_data_does_not_purge_sys_modules(monkeypatch):
     """The defining invariant: the data-only reload rebuilds in place and leaves
     ``work_buddy.*`` modules in ``sys.modules`` untouched. ``_build_registry`` is
     faked so the assertion is fast and isolated from real store/tool state."""
@@ -54,10 +54,10 @@ def test_reload_capability_data_does_not_purge_sys_modules(monkeypatch):
 
     sentinel = _install_sentinel()
     try:
-        result = registry.reload_capability_data()
+        result = registry.reload_skill_data()
 
         # The point of the whole feature: no purge.
-        assert sentinel in sys.modules, "reload_capability_data purged a work_buddy.* module"
+        assert sentinel in sys.modules, "reload_skill_data purged a work_buddy.* module"
 
         # A rebuild was actually triggered (cache was dropped, not just read).
         assert calls["build"] == 1
@@ -69,7 +69,7 @@ def test_reload_capability_data_does_not_purge_sys_modules(monkeypatch):
         sys.modules.pop(sentinel, None)
 
 
-def test_reload_capability_data_rereads_store(monkeypatch):
+def test_reload_skill_data_rereads_store(monkeypatch):
     """It resets the store cache so the next load re-reads disk (this is how
     edited declarations / new workflows are picked up)."""
     invalidated = {"store": False}
@@ -84,15 +84,15 @@ def test_reload_capability_data_rereads_store(monkeypatch):
 
     # Prime the store cache so we can observe it being cleared.
     store._STORE = {"stale": object()}
-    registry.reload_capability_data()
+    registry.reload_skill_data()
 
     assert invalidated["store"] is True
     assert store._STORE is None
 
 
 # NOTE: end-to-end coverage (a real _build_registry against the on-disk store,
-# and that the ``reload_capability_data`` declaration itself resolves) lives in
-# tests/unit/test_capability_declarations_invariant.py + test_registry_invariants.py,
+# and that the ``reload_skill_data`` declaration itself resolves) lives in
+# tests/unit/test_skill_declarations_invariant.py + test_registry_invariants.py,
 # which build the real registry over ALL declarations. The authoritative
 # no-restart behaviour is proven by the live-gateway validation (see
 # dev/mcp-reload + .data/designs/mcp-registry-reload). Keeping this file pure-unit

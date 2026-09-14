@@ -28,8 +28,8 @@ Jobs authoring uses `/app/jobs`. `dashboard_interact` rejects every `jobs-add-jo
 
 ## Three load-bearing pieces
 
-* **`FormSchema`** (``work_buddy/dashboard/forms.py``) — single source of truth. Each form declares its ``form_id``, fields (name/type/ui_id/required/regex/enum), and submit_label. Schemas live in ``forms_<consumer>.py`` modules auto-imported by ``work_buddy/dashboard/__init__.py``. The schema is read by the brief renderer, the capability validator, the frontend bridge, and the contract test.
-* **`dashboard_interact` MCP capability** (``work_buddy/dashboard/interact.py`` + ``mcp_server/registry.py``) — actions: ``form_field_set``, ``form_open``, ``form_cancel``, ``form_submit``, ``form_get_state``. The capability is a thin HTTP wrapper that POSTs to ``/api/dashboard/interact``; the actual logic runs in the dashboard process where the rendezvous map shares memory with the result-postback endpoint.
+* **`FormSchema`** (``work_buddy/dashboard/forms.py``) — single source of truth. Each form declares its ``form_id``, fields (name/type/ui_id/required/regex/enum), and submit_label. Schemas live in ``forms_<consumer>.py`` modules auto-imported by ``work_buddy/dashboard/__init__.py``. The schema is read by the brief renderer, the skill validator, the frontend bridge, and the contract test.
+* **`dashboard_interact` MCP skill** (``work_buddy/dashboard/interact.py`` + ``mcp_server/registry.py``) — actions: ``form_field_set``, ``form_open``, ``form_cancel``, ``form_submit``, ``form_get_state``. The skill is a thin HTTP wrapper that POSTs to ``/api/dashboard/interact``; the actual logic runs in the dashboard process where the rendezvous map shares memory with the result-postback endpoint.
 * **`window.wbFormBridge`** (``work_buddy/dashboard/frontend/scripts/core/form_bridge.py``) — frontend half. Each form calls ``register(form_id, {fieldHandlers, openHandler, cancelHandler, submitHandler, getStateHandler})`` once; the bridge subscribes to ``dashboard.form.*`` events and dispatches to the matching handler.
 
 ## Action semantics
@@ -37,7 +37,7 @@ Jobs authoring uses `/app/jobs`. `dashboard_interact` rejects every `jobs-add-jo
 * **`form_field_set`** — fire-and-forget. Validates the field name against the schema, validates the value against the field's declared type/regex/enum, publishes ``dashboard.form.field_set`` on the event bus. Returns ``{ok: true}`` on success or a typed error.
 * **`form_open`** — fire-and-forget. Publishes ``dashboard.form.open``; the registered ``openHandler`` is responsible for whatever "open the form" means for that consumer (typically un-collapsing a hidden ``<form>``).
 * **`form_cancel`** — fire-and-forget. Publishes ``dashboard.form.cancel``; the registered ``cancelHandler`` clears + hides the form. Used by the chat agent only when the user explicitly opts out.
-* **`form_submit`** — synchronous **rendezvous**. The capability publishes ``dashboard.form.submit {form_id, request_id}`` and blocks on a queue keyed by ``request_id`` for up to ``timeout_seconds``. The frontend bridge invokes the registered ``submitHandler`` (which runs the form's existing submit code path), then POSTs the result to ``/api/dashboard/interact/result/<request_id>``. The endpoint hands the payload back to the queue; the capability returns ``{ok: bool, error?: str, errors_by_field?: dict, suggestions?: [str]}``.
+* **`form_submit`** — synchronous **rendezvous**. The skill publishes ``dashboard.form.submit {form_id, request_id}`` and blocks on a queue keyed by ``request_id`` for up to ``timeout_seconds``. The frontend bridge invokes the registered ``submitHandler`` (which runs the form's existing submit code path), then POSTs the result to ``/api/dashboard/interact/result/<request_id>``. The endpoint hands the payload back to the queue; the skill returns ``{ok: bool, error?: str, errors_by_field?: dict, suggestions?: [str]}``.
 * **`form_get_state`** — synchronous rendezvous. Same shape as ``form_submit`` but the registered ``getStateHandler`` returns the form's current field values. Used when an agent resumes a conversation and wants to know what's already filled in.
 
 ## Typed error shape
@@ -67,11 +67,11 @@ Users and agents often remember the slash-command name (``/wb-morning``, ``wb-mo
 
 ## Why the rendezvous lives in the dashboard process
 
-The MCP gateway runs capabilities in the gateway process. ``publish_auto`` is cross-process (events from the gateway are bridged into the dashboard's bus via the messaging service). But the **result-postback** is an HTTP call from the user's browser to the dashboard process — it lands in the dashboard's memory, not the gateway's.
+The MCP gateway runs skills in the gateway process. ``publish_auto`` is cross-process (events from the gateway are bridged into the dashboard's bus via the messaging service). But the **result-postback** is an HTTP call from the user's browser to the dashboard process — it lands in the dashboard's memory, not the gateway's.
 
-If the rendezvous map (``_pending``) lived in the capability's calling process, the dashboard's ``deliver_result`` would never find the matching queue entry. Routing the capability through the dashboard endpoint puts both halves of the transaction in the same process.
+If the rendezvous map (``_pending``) lived in the skill's calling process, the dashboard's ``deliver_result`` would never find the matching queue entry. Routing the skill through the dashboard endpoint puts both halves of the transaction in the same process.
 
-The MCP capability is therefore a thin HTTP forwarder. The dashboard's ``api_dashboard_interact`` endpoint owns the transaction; the capability is a typed surface for agents.
+The MCP skill is therefore a thin HTTP forwarder. The dashboard's ``api_dashboard_interact`` endpoint owns the transaction; the skill is a typed surface for agents.
 
 ## Programmatic brief injection
 
@@ -98,7 +98,7 @@ Approx. 30-50 lines per consumer total, almost all of it the schema declaration 
 
 ## Endpoints
 
-* ``POST /api/dashboard/interact`` — the typed entry point used by the MCP capability and any other process. Body ``{action, form_id, field?, value?, timeout_seconds?}``. Read-only-mode-gated.
+* ``POST /api/dashboard/interact`` — the typed entry point used by the MCP skill and any other process. Body ``{action, form_id, field?, value?, timeout_seconds?}``. Read-only-mode-gated.
 * ``POST /api/dashboard/interact/result/<request_id>`` — the frontend's postback for rendezvous-backed actions. Body ``{ok, error?, errors_by_field?, fields?}``. Returns 404 if no rendezvous is pending for that request_id (the timeout already fired).
 
 ## First consumer

@@ -4,7 +4,7 @@ Jobs are ``.md`` files in ``sidecar_jobs/`` with YAML frontmatter
 defining schedule, type, and execution parameters.
 
 Three job types:
-  - **capability**: Execute a registered MCP gateway capability.
+  - **skill**: Execute a registered direct work-buddy skill.
   - **workflow**: Execute a registered workflow by name.
   - **prompt**: Freeform prompt text (future: agent execution).
 
@@ -37,10 +37,10 @@ class Job:
     source: str = "system"
 
     # Job type determines execution path
-    job_type: str = "prompt"  # capability | workflow | prompt
+    job_type: str = "prompt"  # skill | workflow | prompt
 
-    # For type=capability
-    capability: str = ""
+    # For type=skill
+    skill: str = ""
     params: dict[str, Any] = field(default_factory=dict)
 
     # For type=workflow
@@ -155,10 +155,27 @@ def _parse_job_file(file_path: Path, source: str = "system") -> Job | None:
     name = file_path.stem
 
     # Determine job type
-    job_type = fm.get("type", "prompt")
-    if job_type not in ("capability", "workflow", "prompt"):
-        logger.warning("Unknown job type '%s' in %s — defaulting to prompt.", job_type, name)
+    stored_job_type = fm.get("type", "prompt")
+    if stored_job_type == "capability":
+        # Persisted user jobs can outlive a checkout. Accept the retired
+        # discriminator and field only here, then normalize immediately so no
+        # runtime/API consumer needs two representations.
+        job_type = "skill"
+        skill = fm.get("capability", "")
+    elif stored_job_type == "skill":
+        job_type = "skill"
+        skill = fm.get("skill", "")
+    elif stored_job_type in ("workflow", "prompt"):
+        job_type = stored_job_type
+        skill = ""
+    else:
+        logger.warning(
+            "Unknown job type '%s' in %s — defaulting to prompt.",
+            stored_job_type,
+            name,
+        )
         job_type = "prompt"
+        skill = ""
 
     # Recurring: default True, supports legacy "daily" alias
     recurring = _parse_bool(fm.get("recurring", fm.get("daily", True)))
@@ -202,7 +219,7 @@ def _parse_job_file(file_path: Path, source: str = "system") -> Job | None:
         recurring=recurring,
         source=source,
         job_type=job_type,
-        capability=fm.get("capability", ""),
+        skill=skill,
         params=fm.get("params", {}) or {},
         workflow=fm.get("workflow", ""),
         prompt=body.strip(),
@@ -244,7 +261,7 @@ def job_fingerprint(job: Job) -> str:
     """
     return (
         f"{job.name}:{job.schedule}:{job.job_type}:"
-        f"{job.capability}:{job.workflow}:{job.source}:"
+        f"{job.skill}:{job.workflow}:{job.source}:"
         f"enabled={job.enabled}:recurring={job.recurring}:"
         f"jitter={job.jitter_seconds}"
     )
@@ -254,7 +271,7 @@ _NAME_PATTERN = __import__("re").compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
 def _registry_names(kind: str) -> list[str]:
-    """Return registered names for ``kind`` ('capability' or 'workflow').
+    """Return registered names for ``kind`` ('skill' or 'workflow').
 
     Lazy import — avoids a hard sidecar→mcp_server dependency at module
     load. Returns an empty list on any registry-fetch failure rather
@@ -263,11 +280,11 @@ def _registry_names(kind: str) -> list[str]:
     """
     try:
         from work_buddy.mcp_server.registry import (
-            get_registry, Capability, WorkflowDefinition,
+            get_registry, Skill, WorkflowDefinition,
         )
         reg = get_registry()
-        if kind == "capability":
-            return [n for n, e in reg.items() if isinstance(e, Capability)]
+        if kind == "skill":
+            return [n for n, e in reg.items() if isinstance(e, Skill)]
         return [n for n, e in reg.items() if isinstance(e, WorkflowDefinition)]
     except Exception:
         return []
@@ -280,14 +297,14 @@ def _slash_command_to_registry(provided: str, kind: str) -> str | None:
     """
     try:
         from work_buddy.mcp_server.registry import (
-            get_registry, Capability, WorkflowDefinition,
+            get_registry, Skill, WorkflowDefinition,
         )
         reg = get_registry()
         # The "stem" we're looking for: try with and without the wb- prefix.
         stems = [provided, f"wb-{provided}"]
         if provided.startswith("wb-"):
             stems.append(provided[3:])
-        type_filter = (Capability if kind == "capability"
+        type_filter = (Skill if kind == "skill"
                        else WorkflowDefinition)
         for stem in stems:
             for name, entry in reg.items():
@@ -405,7 +422,7 @@ def create_user_job_file(
     name: str,
     schedule: str,
     job_type: str = "prompt",
-    capability: str = "",
+    skill: str = "",
     params: dict | None = None,
     workflow: str = "",
     prompt: str = "",
@@ -454,21 +471,21 @@ def create_user_job_file(
                 "error": f"schedule field #{i+1} ({field!r}) is invalid.",
             }
 
-    if job_type not in ("capability", "workflow", "prompt"):
+    if job_type not in ("skill", "workflow", "prompt"):
         return {
             "success": False,
-            "error": f"job_type must be capability|workflow|prompt, got {job_type!r}.",
+            "error": f"job_type must be skill|workflow|prompt, got {job_type!r}.",
         }
     # Normalize a leading slash and surrounding whitespace from the
-    # capability/workflow names. Users and agents often paste the
+    # skill/workflow names. Users and agents often paste the
     # slash-command form they remember (``/wb-morning``); without
     # this strip, the validator sees "/wb-morning" and rejects it
     # without recognizing the slash-command stem behind it.
-    capability = (capability or "").strip().lstrip("/")
+    skill = (skill or "").strip().lstrip("/")
     workflow = (workflow or "").strip().lstrip("/")
 
-    if job_type == "capability" and not capability:
-        return {"success": False, "error": "type=capability requires 'capability'."}
+    if job_type == "skill" and not skill:
+        return {"success": False, "error": "type=skill requires 'skill'."}
     if job_type == "workflow" and not workflow:
         return {"success": False, "error": "type=workflow requires 'workflow'."}
     if job_type == "prompt" and not (prompt or "").strip():
@@ -481,14 +498,14 @@ def create_user_job_file(
     # fire time — possibly days later for a weekly cron. Validate now;
     # surface a typed error with the closest match so the caller (form
     # or chat agent) can correct the input immediately.
-    if job_type in ("capability", "workflow"):
-        provided = capability if job_type == "capability" else workflow
+    if job_type in ("skill", "workflow"):
+        provided = skill if job_type == "skill" else workflow
         registry_err = _validate_registry_name(job_type, provided)
         if registry_err is not None:
             return registry_err
         # For workflows, also pre-validate params against any declared
         # params_schema so a typo'd param key isn't caught only at fire
-        # time. Capabilities don't have an introspection-time schema we
+        # time. Direct skills don't have an introspection-time schema we
         # can validate against here without dragging in heavy imports;
         # the executor will surface those at fire time.
         if job_type == "workflow" and params is not None:
@@ -521,11 +538,11 @@ def create_user_job_file(
         f"recurring: {str(bool(recurring)).lower()}",
         f"enabled: {str(bool(enabled)).lower()}",
     ]
-    if job_type == "capability":
-        fm_lines.append(f"capability: {capability.strip()}")
+    if job_type == "skill":
+        fm_lines.append(f"skill: {skill.strip()}")
     elif job_type == "workflow":
         fm_lines.append(f"workflow: {workflow.strip()}")
-    if job_type in ("capability", "workflow") and params:
+    if job_type in ("skill", "workflow") and params:
         fm_lines.append(f"params: {_json.dumps(params)}")
     if jitter_int > 0:
         fm_lines.append(f"jitter_seconds: {jitter_int}")

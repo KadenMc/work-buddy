@@ -1,6 +1,6 @@
 """Conversation-observability ops — refresh + query the derived-activity DB.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field).
 
 Import-deadlock note: these callables run via ``asyncio.to_thread()`` in the
@@ -210,7 +210,7 @@ def _register() -> None:
                 summarization_backfill, replace=True)
     # Both op IDs bind the same callable so existing
     # `conversation_observability_summary_get` callers keep working;
-    # the capability declaration for the long-namespace name is marked
+    # the skill declaration for the long-namespace name is marked
     # as an alias. ``replace=True`` is set so a registry reload (the
     # `importlib.reload` path in `load_builtin_ops`) re-binds cleanly
     # rather than crashing on the already-registered names — important

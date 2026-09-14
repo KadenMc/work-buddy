@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from work_buddy.knowledge.capability_loader import load_declared_capabilities
+from work_buddy.knowledge.skill_loader import load_declared_skills
 from work_buddy.mcp_server.op_registry import clear_ops
 
 
@@ -36,8 +36,8 @@ def _frontmatter(path: Path) -> dict:
 
 def test_all_truth_declarations_resolve_without_signature_issues() -> None:
     clear_ops()
-    capabilities, issues = load_declared_capabilities()
-    found = {item.name for item in capabilities if item.name.startswith("truth_")}
+    skills, issues = load_declared_skills()
+    found = {item.name for item in skills if item.name.startswith("truth_")}
     truth_issues = [
         issue
         for issue in issues
@@ -50,11 +50,11 @@ def test_all_truth_declarations_resolve_without_signature_issues() -> None:
 def test_truth_declarations_are_manual_for_writes_and_searchable() -> None:
     root = Path("knowledge/store/truth")
     declarations = [_frontmatter(path) for path in root.glob("*.md")]
-    assert {item["capability_name"] for item in declarations} == EXPECTED
+    assert {item["skill_name"] for item in declarations} == EXPECTED
     for item in declarations:
         assert item["parents"] == ["truth"]
         assert len(item["aliases"]) >= 4
-        if item["capability_name"] in {"truth_store_list", "truth_query"}:
+        if item["skill_name"] in {"truth_store_list", "truth_query"}:
             assert item.get("mutates_state", False) is False
         else:
             assert item["mutates_state"] is True
@@ -65,7 +65,7 @@ def test_truth_declarations_are_manual_for_writes_and_searchable() -> None:
 def test_exact_decisions_declare_only_per_claim_consent_operations() -> None:
     root = Path("knowledge/store/truth")
     by_name = {
-        item["capability_name"]: item
+        item["skill_name"]: item
         for item in (_frontmatter(path) for path in root.glob("*.md"))
     }
     assert by_name["truth_claim_confirm"]["consent_operations"] == [

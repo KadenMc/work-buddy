@@ -98,7 +98,7 @@ def test_legacy_today_endpoint_exposes_only_read_projection_fields(
     assert body["errors"] == ["calendar source unavailable"]
 
     # Aggregate Today data is not a native Journal model. The adapter must keep these
-    # capabilities unavailable rather than fabricating them from nearby-looking fields.
+    # skills unavailable rather than fabricating them from nearby-looking fields.
     forbidden_native_fields = {
         "capture",
         "capture_persistence",

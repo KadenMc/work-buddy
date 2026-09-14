@@ -137,7 +137,7 @@ def agent_docs(
         query: Natural language search.
         path: Exact unit path for direct lookup.
         scope: Path prefix to filter to a subtree.
-        kind: Filter: "directions", "system", "capability", "workflow".
+        kind: Filter: "directions", "system", "skill", "workflow".
         depth: Content depth: "index" (navigation), "summary" (default), "full".
         top_n: Max results for search mode.
         dev: Include dev_notes in full-depth results.

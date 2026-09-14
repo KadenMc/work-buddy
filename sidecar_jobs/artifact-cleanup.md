@@ -1,8 +1,8 @@
 ---
 schedule: "0 3,15 * * *"  # 3 AM and 3 PM
 recurring: true
-type: capability
-capability: artifact_cleanup
+type: skill
+skill: artifact_cleanup
 params:
   dry_run: false
 ---

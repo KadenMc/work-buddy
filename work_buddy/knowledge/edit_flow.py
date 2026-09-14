@@ -56,8 +56,8 @@ def _scaffold(path: str, kind: str, params: dict[str, Any]) -> dict[str, Any]:
         unit["execution"] = "main"
         unit["steps"] = []
         unit["content"] = {"full": "TODO: author the workflow narrative."}
-    elif kind == "capability":
-        unit["capability_name"] = params.get("capability_name") or leaf
+    elif kind == "skill":
+        unit["skill_name"] = params.get("skill_name") or leaf
     else:
         unit["content"] = {"full": "TODO: author this unit's body."}
 
@@ -200,7 +200,7 @@ def commit_edit(
         "kind_specific_fields",
         "placeholder_duplicate",
         "parent_child_symmetry",
-        "capability_op_resolution",
+        "skill_op_resolution",
         "workflow_step_dag",
         "workflow_step_consistency",
         "directions_workflow_resolution",

@@ -475,7 +475,7 @@ from appearing after retirement.
 
 ## Human and agent authority
 
-The agent-facing capabilities are `cowork_doc_list`, `cowork_doc_get`,
+The agent-facing skills are `cowork_doc_list`, `cowork_doc_get`,
 `cowork_doc_serialize`, `cowork_doc_propose_edit`, `cowork_doc_comment`, and
 `cowork_doc_expression_mark`.
 An agent reads a document and proposes work on it. Every agent contribution is an

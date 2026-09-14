@@ -85,7 +85,7 @@ def test_tasks_context_queries_native_store_and_cowork_reader_only(
     monkeypatch,
 ) -> None:
     from work_buddy.context.sources import tasks as tasks_source
-    from work_buddy.tasks import capabilities as native_capabilities
+    from work_buddy.tasks import skills as native_skills
 
     _route_default_store_to_native(monkeypatch, task_store)
     task_service.create(
@@ -117,7 +117,7 @@ def test_tasks_context_queries_native_store_and_cowork_reader_only(
     ]
 
     monkeypatch.setattr(
-        native_capabilities,
+        native_skills,
         "task_read",
         lambda task_id: {
             "success": True,
@@ -136,12 +136,12 @@ def test_completeness_native_path_does_not_load_legacy_task_facade(
     monkeypatch,
 ) -> None:
     from work_buddy import task_completeness
-    from work_buddy.tasks import capabilities as native_capabilities
+    from work_buddy.tasks import skills as native_skills
     from work_buddy.threads.models import Task as TransitionalTask
 
     monkeypatch.setattr(runtime, "native_authority_active", lambda: True)
     monkeypatch.setattr(
-        native_capabilities,
+        native_skills,
         "task_read",
         lambda task_id: {
             "success": True,
@@ -152,7 +152,7 @@ def test_completeness_native_path_does_not_load_legacy_task_facade(
         },
     )
     monkeypatch.setattr(
-        native_capabilities,
+        native_skills,
         "task_provenance",
         lambda task_id: {
             "task_id": task_id,
@@ -171,7 +171,7 @@ def test_completeness_native_path_does_not_load_legacy_task_facade(
         )
         return []
 
-    monkeypatch.setattr(native_capabilities, "task_note_readers", native_readers)
+    monkeypatch.setattr(native_skills, "task_note_readers", native_readers)
     legacy_facade = Mock(side_effect=AssertionError("legacy facade read"))
     monkeypatch.setattr(TransitionalTask, "load", legacy_facade)
 
@@ -194,11 +194,11 @@ def test_task_me_native_briefing_and_pure_planner_need_no_obsidian_task_read(
     from work_buddy.dashboard import service as dashboard_service
     from work_buddy.obsidian import bridge
     from work_buddy.obsidian.tasks import manager as legacy_manager
-    from work_buddy.tasks import capabilities as native_capabilities
+    from work_buddy.tasks import skills as native_skills
 
     monkeypatch.setattr(runtime, "native_authority_active", lambda: True)
     monkeypatch.setattr(
-        native_capabilities,
+        native_skills,
         "daily_briefing",
         lambda: {"focused": [], "authority": "native"},
     )

@@ -5,7 +5,7 @@ description: How to write a structured session handoff prompt and package it as 
 summary: 'Write from what you already know. Use the exact section structure: Task, Context, What I Already Know, Key Files, System Notes, Suggested Approach. Create via task_create, asking for the task note explicitly with requested_note_role and passing the prompt as initial_note.'
 trigger: user wants to hand off in-progress work to a new agent session via a task
 command: wb-task-handoff
-capabilities:
+skills:
 - tasks/task_create
 tags:
 - tasks

@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { DashboardAnnouncer } from "../../dashboard/accessibility/DashboardAnnouncer";
 import { DashboardHelpProvider } from "../../dashboard/help";
-import type { IntentResult, WidgetIntent, WidgetPresentationContext } from "../../dashboard/contributions/contracts";
+import type { IntentResult, JsonValue, WidgetIntent, WidgetPresentationContext } from "../../dashboard/contributions/contracts";
+import { InMemoryWidgetDraftRepository, WidgetDraftRuntimeProvider, WidgetDraftScopeProvider, type WidgetDraftIdentity } from "../../dashboard/drafts";
+import { InteractionSurfaceProvider } from "../../dashboard/interactions";
 import { WidgetDraftTestScope } from "../../test/DashboardTestRuntime";
 import { JOB_AUTHORING_WIDGET, JOBS_INSTANCE_ID, JOBS_VIEW_ID } from "./contribution";
 import { JOB_INTENTS, type JobAuthoringInput } from "./contracts";
@@ -20,7 +22,13 @@ const presentation: WidgetPresentationContext = {
 };
 const input: JobAuthoringInput = {
   access: { mode: "read_write" }, timeZone: "America/New_York",
-  capabilities: [{ name: "journal_state", description: "Read Journal state", parameters: {} }], workflows: [],
+  skills: [{ name: "journal_state", description: "Read Journal state", parameters: {} }], workflows: [],
+};
+const legacyDraftIdentity: WidgetDraftIdentity = {
+  profileId: "legacy-profile", workspaceId: "legacy-workspace",
+  appId: JOB_AUTHORING_WIDGET.publisherAppId, viewId: JOBS_VIEW_ID,
+  instanceId: JOBS_INSTANCE_ID, widgetTypeId: JOB_AUTHORING_WIDGET.typeId,
+  draftName: "job-create", scopeKey: "view",
 };
 const renderForm = (emit: (intent: WidgetIntent) => Promise<IntentResult>, overrides: Partial<JobAuthoringInput> = {}, mode: WidgetPresentationContext["interactionMode"] = "operate", help = false) => {
   const widgetInput = { ...input, ...overrides };
@@ -44,7 +52,9 @@ describe("JobComposer", () => {
     expect(jitter).not.toHaveAttribute("aria-describedby");
     await user.hover(schedule);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Job type" }), "capability");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Job type" }), "skill");
+    expect(screen.getByRole("combobox", { name: "Job type" })).toHaveValue("skill");
+    expect(screen.getByRole("combobox", { name: "Skill" })).toBeVisible();
     expect(screen.queryByText(/Choose a registered name; creation validates it/)).not.toBeInTheDocument();
     expect(screen.getByText("Creates an enabled, recurring job in America/New_York.")).toBeVisible();
   });
@@ -132,8 +142,8 @@ describe("JobComposer", () => {
     renderForm(emit);
     await user.type(await screen.findByRole("textbox", { name: "Job name" }), "read-journal");
     await user.type(screen.getByRole("textbox", { name: "Schedule" }), "0 9 * * 1");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Job type" }), "capability");
-    await user.type(screen.getByRole("combobox", { name: "Capability" }), "journal_state");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Job type" }), "skill");
+    await user.type(screen.getByRole("combobox", { name: "Skill" }), "journal_state");
     const params = screen.getByRole("textbox", { name: "Parameters (JSON)" });
     await user.clear(params);
     await user.type(params, "true");
@@ -143,6 +153,21 @@ describe("JobComposer", () => {
     expect(params).toHaveValue("true");
     expect(screen.getByRole("textbox", { name: "Job name" })).toHaveValue("read-journal");
     expect(emit.mock.calls.filter(([intent]) => intent.intent_type === JOB_INTENTS.create)).toHaveLength(0);
+  });
+
+  it("submits a canonical direct skill payload", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent) => accepted(intent));
+    renderForm(emit);
+    await user.type(await screen.findByRole("textbox", { name: "Job name" }), "read-journal");
+    await user.type(screen.getByRole("textbox", { name: "Schedule" }), "0 9 * * 1");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Job type" }), "skill");
+    await user.type(screen.getByRole("combobox", { name: "Skill" }), "journal_state");
+    await user.click(screen.getByRole("button", { name: "Create job" }));
+    await waitFor(() => expect(emit.mock.calls.some(([intent]) => intent.intent_type === JOB_INTENTS.create)).toBe(true));
+    const create = emit.mock.calls.find(([intent]) => intent.intent_type === JOB_INTENTS.create)?.[0];
+    expect(create?.payload).toMatchObject({ job_type: "skill", skill: "journal_state", params: {} });
+    expect(create?.payload).not.toHaveProperty("capability");
   });
 
   it("keeps the draft and server field errors when creation is refused", async () => {
@@ -159,6 +184,35 @@ describe("JobComposer", () => {
     expect(screen.getByRole("textbox", { name: "Job name" })).toHaveValue("existing-job");
     expect(screen.getByRole("textbox", { name: "Job name" })).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByRole("textbox", { name: "What should the job do?" })).toHaveValue("Keep this draft");
+  });
+
+  it("restores a persisted capability draft as a canonical skill draft", async () => {
+    const repository = new InMemoryWidgetDraftRepository();
+    await repository.save({
+      ...legacyDraftIdentity,
+      draftSchema: JOB_AUTHORING_WIDGET.drafts![0]!.schema,
+      value: {
+        name: "read-journal", schedule: "0 9 * * 1", job_type: "capability",
+        capability: "journal_state", workflow: "", prompt: "", params: "{}", jitter_seconds: 0,
+      } as unknown as JsonValue,
+      retentionDays: 30,
+    });
+    const emit = vi.fn(async (intent: WidgetIntent) => accepted(intent));
+    render(<DashboardHelpProvider enabled={false}><DashboardAnnouncer><InteractionSurfaceProvider>
+      <WidgetDraftRuntimeProvider repository={repository} profileId={legacyDraftIdentity.profileId} workspaceId={legacyDraftIdentity.workspaceId}>
+        <WidgetDraftScopeProvider definition={JOB_AUTHORING_WIDGET} viewId={JOBS_VIEW_ID} instanceId={JOBS_INSTANCE_ID} input={input}>
+          <JobComposer input={input} emit={emit} presentation={presentation} />
+        </WidgetDraftScopeProvider>
+      </WidgetDraftRuntimeProvider>
+    </InteractionSurfaceProvider></DashboardAnnouncer></DashboardHelpProvider>);
+
+    expect(await screen.findByRole("combobox", { name: "Job type" })).toHaveValue("skill");
+    expect(screen.getByRole("combobox", { name: "Skill" })).toHaveValue("journal_state");
+    await waitFor(async () => {
+      const stored = (await repository.load(legacyDraftIdentity))?.value as unknown as Record<string, unknown>;
+      expect(stored).toMatchObject({ job_type: "skill", skill: "journal_state" });
+      expect(stored).not.toHaveProperty("capability");
+    });
   });
 
   it("cannot edit, submit, or start assistance in Arrange mode", async () => {

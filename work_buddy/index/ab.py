@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-# Representative knowledge queries: subsystem/capability terms, dev-doc-scan vocabulary,
+# Representative knowledge queries: subsystem/skill terms, dev-doc-scan vocabulary,
 # alias-shaped phrasings, and how/why questions.
 QUERIES = [
     "task triage",

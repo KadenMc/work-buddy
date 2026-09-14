@@ -1,4 +1,4 @@
-"""MCP-registered conversation_observability capabilities."""
+"""MCP-registered conversation_observability skills."""
 
 from __future__ import annotations
 
@@ -13,19 +13,19 @@ from tests.unit.conversation_observability_fixtures import (
 )
 
 
-def _co_capabilities() -> dict:
-    """Resolve the conversation_observability capabilities from declarations.
+def _co_skills() -> dict:
+    """Resolve the conversation_observability skills from declarations.
 
-    The capabilities are declaration units (``kind: capability`` with an
+    The skills are declaration units (``kind: skill`` with an
     ``op``); the loader resolves each against the Op registry. Returns a
-    ``{name: Capability}`` map.
+    ``{name: Skill}`` map.
     """
-    from work_buddy.knowledge.capability_loader import load_declared_capabilities
+    from work_buddy.knowledge.skill_loader import load_declared_skills
     from work_buddy.mcp_server import op_registry
 
     op_registry.clear_ops()
     op_registry.load_builtin_ops()
-    caps, _issues = load_declared_capabilities()
+    caps, _issues = load_declared_skills()
     return {
         c.name: c
         for c in caps
@@ -68,8 +68,8 @@ def co_env(tmp_path, monkeypatch):
     return {"projects": projects, "db": db_file, "repos_root": repos_root, "repo": repo}
 
 
-def test_all_capabilities_register_under_observability_category() -> None:
-    caps = _co_capabilities()
+def test_all_skills_register_under_observability_category() -> None:
+    caps = _co_skills()
     assert set(caps) == {
         "conversation_observability_refresh",
         "conversation_observability_uncommitted",
@@ -77,7 +77,7 @@ def test_all_capabilities_register_under_observability_category() -> None:
         "conversation_observability_list",
         "conversation_observability_summarize",
         "conversation_observability_summary_get",
-        # `session_summary_get` is the canonical short-name capability for
+        # `session_summary_get` is the canonical short-name skill for
         # the legacy-row read. Same callable as the deprecated alias
         # `conversation_observability_summary_get`; lives in the same
         # category so the invariant holds.
@@ -90,7 +90,7 @@ def test_all_capabilities_register_under_observability_category() -> None:
         assert cap.category == "conversation_observability"
 
 
-def test_refresh_capability_runs_all_three_refreshers(co_env) -> None:
+def test_refresh_skill_runs_all_three_refreshers(co_env) -> None:
     sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     write_session(
         co_env["projects"] / "alpha",
@@ -98,7 +98,7 @@ def test_refresh_capability_runs_all_three_refreshers(co_env) -> None:
         entries=commit_scenario(sid, commit_hash="aaa1234"),
     )
 
-    refresh_cap = _co_capabilities()["conversation_observability_refresh"]
+    refresh_cap = _co_skills()["conversation_observability_refresh"]
     result = refresh_cap.callable(days=30)
 
     # Three keys in the result summary, each non-empty.
@@ -109,7 +109,7 @@ def test_refresh_capability_runs_all_three_refreshers(co_env) -> None:
     assert result["session_commits"]["commit_count"] >= 1
 
 
-def test_get_capability_returns_session_record(co_env) -> None:
+def test_get_skill_returns_session_record(co_env) -> None:
     sid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     write_session(
         co_env["projects"] / "alpha",
@@ -117,7 +117,7 @@ def test_get_capability_returns_session_record(co_env) -> None:
         entries=commit_scenario(sid, commit_hash="bbb1234"),
     )
 
-    caps = _co_capabilities()
+    caps = _co_skills()
     caps["conversation_observability_refresh"].callable(days=30)
 
     rec = caps["conversation_observability_get"].callable(session_id=sid)
@@ -126,16 +126,16 @@ def test_get_capability_returns_session_record(co_env) -> None:
     assert rec["status"] == "ok"
 
 
-def test_get_capability_returns_none_for_unknown_session(co_env) -> None:
-    caps = _co_capabilities()
-    # No refresh, no sessions — but capability must still return cleanly.
+def test_get_skill_returns_none_for_unknown_session(co_env) -> None:
+    caps = _co_skills()
+    # No refresh, no sessions — but skill must still return cleanly.
     result = caps["conversation_observability_get"].callable(
         session_id="00000000-0000-0000-0000-000000000000",
     )
     assert result is None
 
 
-def test_list_capability_filters_by_project(co_env) -> None:
+def test_list_skill_filters_by_project(co_env) -> None:
     sid_alpha = "11111111-1111-1111-1111-111111111111"
     sid_beta = "22222222-2222-2222-2222-222222222222"
 
@@ -150,7 +150,7 @@ def test_list_capability_filters_by_project(co_env) -> None:
         entries=commit_scenario(sid_beta, commit_hash="bbb0002"),
     )
 
-    caps = _co_capabilities()
+    caps = _co_skills()
     caps["conversation_observability_refresh"].callable(days=30)
 
     alpha_only = caps["conversation_observability_list"].callable(project="alpha")
@@ -158,7 +158,7 @@ def test_list_capability_filters_by_project(co_env) -> None:
     assert alpha_only[0]["project_name"] == "alpha"
 
 
-def test_uncommitted_capability_returns_report(co_env, monkeypatch) -> None:
+def test_uncommitted_skill_returns_report(co_env, monkeypatch) -> None:
     sid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
     file_a = co_env["repo"] / "dirty.py"
     write_session(
@@ -171,7 +171,7 @@ def test_uncommitted_capability_returns_report(co_env, monkeypatch) -> None:
         lambda repo_path: " M dirty.py\n" if repo_path.name == "alpha" else "",
     )
 
-    cap = _co_capabilities()["conversation_observability_uncommitted"]
+    cap = _co_skills()["conversation_observability_uncommitted"]
     report = cap.callable(days=30)
     assert report["uncommitted_count"] == 1
     assert report["uncommitted"][0]["session_id"] == sid

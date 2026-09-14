@@ -1,8 +1,8 @@
 ---
 name: Artifacts
 kind: system
-description: Artifacts capabilities and workflows
-summary: Container for 7 capabilities and workflows.
+description: Artifacts skills and workflows
+summary: Container for 7 skills and workflows.
 tags:
 - artifacts
 ---

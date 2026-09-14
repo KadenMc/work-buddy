@@ -20,7 +20,7 @@ distinguish:
 If H2 is correct, then the function is fine but the historical pattern
 of writes landing in the bootstrap session DB (invisible to the
 agent's subsequent ``consent_list`` and ``@requires_consent`` checks)
-explains why those 28 calls accomplished nothing. The capability
+explains why those 28 calls accomplished nothing. The skill
 deletion in commit 4ca9f9f9 already removed the broken dispatch — but
 confirming H2 vs H1 matters because H1 would mean the underlying
 function ALSO needs fixing (internal callers like the sidecar router

@@ -81,7 +81,7 @@ def truth_hindsight_projection_authorization(
             eligible_claim_kinds=eligible_claim_kinds,
             projection_method=projection_method,
             granted_by_ref=f"work-buddy-consent:{agent_session_id or 'local-session'}",
-            basis="high_consent_capability",
+            basis="high_consent_skill",
             expires_at=str(expires_at),
             authorization_ref=authorization_ref,
         )

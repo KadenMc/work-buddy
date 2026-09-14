@@ -4,6 +4,10 @@ import json
 import sqlite3
 import tarfile
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("_preserve_native_cutover_authorities")
+
 
 def test_contracts_database_is_registered_as_vital_data():
     from work_buddy.backups.local import VITAL_DBS

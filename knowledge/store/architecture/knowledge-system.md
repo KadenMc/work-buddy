@@ -22,7 +22,7 @@ parents:
 
 Two authority providers share a common `KnowledgeUnit` read model:
 
-- **System docs** — one Markdown file per unit under `knowledge/store/**/*.md` (YAML frontmatter + body). Behavioral directions, system docs, capability declarations, workflow structure. Queried via `agent_docs`. Editing a unit is editing its file.
+- **System docs** — one Markdown file per unit under `knowledge/store/**/*.md` (YAML frontmatter + body). Behavioral directions, system docs, skill declarations, workflow structure. Queried via `agent_docs`. Editing a unit is editing its file.
 - **Personal knowledge** — versioned records in the personal-knowledge SQLite authority. User-authored patterns, feedback, preferences, calibration, aliases, relationships, lifecycle, and provenance are queried via `knowledge_personal` and mutated through `knowledge_mint` or the revisioned service. A one-time importer retains legacy files as Sources and aliases; they are not a live writable surface after the authority seal.
 
 ## Unit types
@@ -30,7 +30,7 @@ Two authority providers share a common `KnowledgeUnit` read model:
 Nine kinds, each positively anchored to a clear functional or structural definition:
 
 - `directions` — behavioral guide loaded by a slash command ("how to do X")
-- `capability` — callable from MCP via `wb_run`; an inert declaration that names an `op` the loader resolves against the Op registry (see `architecture/data-first-capabilities`)
+- `skill` — callable from MCP via `wb_run`; an inert declaration that names an `op` the loader resolves against the Op registry (see `architecture/data-first-skills`)
 - `workflow` — DAG of steps the conductor advances; hand-authored
 - `personal` — user-authored knowledge backed by the personal-knowledge domain store
 - `system` — coherent functional domain whose persistent state work-buddy owns (e.g. `tasks`, `triage`, `journal`)
@@ -118,7 +118,7 @@ Units can carry a `dev_notes` string — development-facing guidance that only s
 
 A persistent BM25 + dense vector index over full unit content is warmed eagerly on MCP server startup. Inline placeholders are resolved for system units before indexing so searching for content inside a referenced unit also surfaces the referencing unit. Personal records are projected from their current SQLite revisions. The index is derived and rebuildable; exact personal reads hydrate from the authority provider. See `architecture/embedding-service` for the model registry behind dense retrieval.
 
-## MCP capabilities
+## MCP skills
 
 - `knowledge` — unified search across both system docs and personal knowledge
 - `knowledge_personal` — personal database knowledge only (supports `category` and `severity` filters)
@@ -129,4 +129,4 @@ A persistent BM25 + dense vector index over full unit content is warmed eagerly 
 - `knowledge_index_status` — check index health
 - `docs_edit` — the workflow for editing or creating **any** unit kind: it returns the unit's `.md` path, the agent edits it natively, and the commit step validates (kind-aware) and reconciles the store cache + index.
 - `docs_delete` / `docs_move` — structural operations (remove / relocate a unit and reconcile parent references).
-- `docs_validate` covers kind-aware structural validation over the store: DAG, placeholder duplicates, harness fallback children, capability op-resolution, and workflow step-DAG.
+- `docs_validate` covers kind-aware structural validation over the store: DAG, placeholder duplicates, harness fallback children, skill op-resolution, and workflow step-DAG.

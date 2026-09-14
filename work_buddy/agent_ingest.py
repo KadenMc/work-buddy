@@ -28,7 +28,7 @@ Whether a surfaced event blocks the Stop hook is decided by its
 sender-declared ``disposition`` (``actionable`` vs ``acknowledgement``) plus
 read state and priority — see the ``messaging/block-semantics`` knowledge
 unit. An agent clears a still-blocking event by resolving it
-(``/tmp/wb/resolve`` or the ``update_message_status`` capability); reading it
+(``/tmp/wb/resolve`` or the ``update_message_status`` skill); reading it
 is enough to release a normal-priority one on the next Stop.
 
 Future: Channels

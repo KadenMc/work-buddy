@@ -81,7 +81,7 @@ def test_journal_prompt_worker_has_non_overridable_builtin_acl() -> None:
         "cowork_doc_get",
         "wb_init",
     ):
-        assert not session_acl.is_capability_allowed(session_id, forbidden)
+        assert not session_acl.is_skill_allowed(session_id, forbidden)
 
     session_acl.set_session_acl(
         session_id,
@@ -96,7 +96,7 @@ def test_journal_prompt_worker_has_non_overridable_builtin_acl() -> None:
     assert session_acl.get_session_acl(session_id) == _ALLOWED
 
 
-def test_gateway_search_filters_and_run_rejects_other_capabilities(
+def test_gateway_search_filters_and_run_rejects_other_skills(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(gateway, "_SESSION_REGISTRY", weakref.WeakKeyDictionary())
@@ -131,9 +131,9 @@ def test_gateway_search_filters_and_run_rejects_other_capabilities(
     assert {item["name"] for item in found["results"]} == _ALLOWED
     assert found["_acl_hidden_count"] == 2
 
-    for capability in ("task_create", "agent_docs", "conversation_send"):
+    for skill in ("task_create", "agent_docs", "conversation_send"):
         denied = asyncio.run(
-            mcp.tools["wb_run"](capability, params={}, ctx=context)
+            mcp.tools["wb_run"](skill=skill, params={}, ctx=context)
         )
         assert denied["denied_by"] == "session_acl"
         assert denied["allowed_sample"] == sorted(_ALLOWED)

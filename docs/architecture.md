@@ -11,7 +11,7 @@ graph TB
 
     subgraph "MCP Gateway (localhost:5126)"
         GW[Gateway Tools]
-        REG[Capability Registry]
+        REG[Skill Registry]
         COND[Workflow Conductor]
     end
 
@@ -55,13 +55,13 @@ graph TB
 Every session talks to work-buddy through one MCP server, the gateway, running on `localhost:5126`. Instead of exposing hundreds of tools to the agent, the gateway offers a small, fixed set of `wb_*` tools and lets the agent discover everything else at runtime:
 
 - `wb_init` registers the session, and is the required first call.
-- `wb_search` finds a capability or workflow from a natural-language query and returns its parameters.
-- `wb_run` executes a capability or starts a workflow.
+- `wb_search` finds a skill or workflow from a natural-language query and returns its parameters.
+- `wb_run` executes a skill or starts a workflow.
 - `wb_advance` moves a running workflow to its next step.
 - `wb_status` reports workflow progress or overall system health.
-- `wb_step_result` and `wb_capability_result` fetch a full result when a large response was elided to keep the conversation small.
+- `wb_step_result` and `wb_skill_result` fetch a full result when a large response was elided to keep the conversation small.
 
-Behind the gateway, the capability registry is the catalog of everything work-buddy can do, and `wb_search` ranks it. See [the gateway](handbook/operations_mcp-gateway.md) and [the capability registry](handbook/architecture_capability-registry.md).
+Behind the gateway, the skill registry is the catalog of everything work-buddy can do, and `wb_search` ranks it. See [the gateway](handbook/operations_mcp-gateway.md) and [the skill registry](handbook/architecture_skill-registry.md).
 
 ## The conductor
 
@@ -86,7 +86,7 @@ work-buddy reaches into the tools your work already lives in:
 
 ## The knowledge store
 
-The knowledge store is where work-buddy keeps what it knows about itself: every capability, workflow, and behavioral direction, held as interlinked units the agent reads at runtime through `wb_search` and `agent_docs`. It is also the source these documentation pages are generated from, so the handbook and the agent's own knowledge never drift apart. See [the knowledge system](handbook/architecture_knowledge-system.md).
+The knowledge store is where work-buddy keeps what it knows about itself: every skill, workflow, and behavioral direction, held as interlinked units the agent reads at runtime through `wb_search` and `agent_docs`. It is also the source these documentation pages are generated from, so the handbook and the agent's own knowledge never drift apart. See [the knowledge system](handbook/architecture_knowledge-system.md).
 
 ## Local data
 

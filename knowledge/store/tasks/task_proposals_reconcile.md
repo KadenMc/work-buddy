@@ -1,11 +1,10 @@
 ---
 name: Task Proposals Reconcile
-kind: capability
+kind: skill
 description: Resume already-approved task proposal executions and synchronize durable Journal proposal follow-ups after an interrupted process.
-capability_name: task_proposals_reconcile
 category: tasks
 op: op.wb.task_proposals_reconcile
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   limit:
     type: int
@@ -14,6 +13,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: task_proposals_reconcile
 tags:
 - tasks
 - threads

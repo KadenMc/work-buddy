@@ -1,11 +1,10 @@
 ---
 name: Datacore Query
-kind: capability
-description: Explicit legacy-only Datacore query against an opted-in Obsidian vault. Native domain queries and search do not require this capability; never suggest enabling Obsidian when it is opted out.
-capability_name: datacore_query
+kind: skill
+description: Explicit legacy-only Datacore query against an opted-in Obsidian vault. Native domain queries and search do not require this skill; never suggest enabling Obsidian when it is opted out.
 category: context
 op: op.wb.datacore_query
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Max results (default 50)
     required: false
+skill_name: datacore_query
 tags:
 - context
 - datacore

@@ -518,7 +518,7 @@ def _refresh_idempotent_create_ids(key: str) -> bool:
 
 
 def refresh_idempotency_on_replay(
-    capability_name: str,
+    skill_name: str,
     params: dict[str, Any],
 ) -> None:
     """Retry-path hook: keep a ``task_create`` replay on one note identity.
@@ -533,9 +533,9 @@ def refresh_idempotency_on_replay(
     right before each replay keeps the active chain on one UUID. The TTL is
     preserved for the distinct-create case (only an active retry re-stamps).
 
-    No-op for non-idempotent capabilities and when no entry exists.
+    No-op for non-idempotent skills and when no entry exists.
     """
-    if capability_name != "task_create":
+    if skill_name != "task_create":
         return
     try:
         namespace_tags = _normalize_tags(
@@ -1688,7 +1688,7 @@ def create_task(
     ``user_involvement``.
 
     This function is idempotent on retry: it checks for existing note files
-    and task lines before writing, so the retry capability can safely replay it.
+    and task lines before writing, so the retry skill can safely replay it.
     """
     task_text = _validate_task_text(task_text)
     if urgency not in store.VALID_URGENCIES:
@@ -2359,7 +2359,7 @@ def update_task_description(
     first, store second (same ordering as ``update_task``). If the file
     write fails, the store is not touched.
 
-    This capability exists to give agents a safe way to rewrite task
+    This skill exists to give agents a safe way to rewrite task
     text without filesystem-direct ``Edit`` on master-task-list.md, which
     is the read-modify-write race that Slice C addresses. Once Slice C
     ships, this routes through the atomic ``app.vault.process()`` path
@@ -2554,7 +2554,7 @@ def _load_task_payload(task_id: str) -> dict[str, Any]:
 
     # Provenance roles (created-by / assigned / developed-by). Computed
     # WITHOUT the awareness JSONL scan to keep this read path fast — the
-    # dedicated ``task_provenance`` capability computes the full version
+    # dedicated ``task_provenance`` skill computes the full version
     # (with note-read awareness). Degrade gracefully: a provenance failure
     # must never fail a task read.
     prov = None

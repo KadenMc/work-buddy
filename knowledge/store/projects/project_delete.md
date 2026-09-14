@@ -1,11 +1,10 @@
 ---
 name: Project Delete
-kind: capability
+kind: skill
 description: Soft-delete a project (set status='deleted'). Row + folders + aliases + revision history are preserved. Consent-gated.
-capability_name: project_delete
 category: projects
 op: op.wb.project_delete
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   slug:
     type: str
@@ -17,6 +16,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: project_delete
 tags:
 - projects
 - project

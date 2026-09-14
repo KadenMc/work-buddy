@@ -238,7 +238,7 @@ class TestPrepareReturnTypes:
         """The result of a typical wb_run response should be a dict, not JSON."""
         result = _prepare({
             "type": "result",
-            "capability": "task_briefing",
+            "skill": "task_briefing",
             "result": {
                 "tasks": [{"id": "t-abc", "text": "Do thing", "path": Path("vault/tasks.md")}],
                 "count": 1,
@@ -260,9 +260,9 @@ class TestPrepareGatewayPatterns:
 
     def test_error_response(self):
         result = _prepare({
-            "error": "Unknown capability: 'foo'. Use wb_search to find.",
+            "error": "Unknown skill: 'foo'. Use wb_search to find.",
         })
-        assert result == {"error": "Unknown capability: 'foo'. Use wb_search to find."}
+        assert result == {"error": "Unknown skill: 'foo'. Use wb_search to find."}
 
     def test_init_response(self):
         result = _prepare({
@@ -274,10 +274,10 @@ class TestPrepareGatewayPatterns:
         assert isinstance(result, dict)
         assert result["status"] == "initialized"
 
-    def test_capability_result_with_paths(self):
+    def test_skill_result_with_paths(self):
         result = _prepare({
             "type": "result",
-            "capability": "context_git",
+            "skill": "context_git",
             "result": {
                 "repo_root": Path("home/user/repos/my-project"),
                 "files_changed": [

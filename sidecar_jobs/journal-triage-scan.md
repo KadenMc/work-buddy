@@ -1,8 +1,8 @@
 ---
 schedule: "7 * * * *"  # hourly at :07, off the top-of-hour pile-up
 recurring: true
-type: capability
-capability: run_source_pipeline
+type: skill
+skill: run_source_pipeline
 params:
   source: journal_backlog
 enabled: false

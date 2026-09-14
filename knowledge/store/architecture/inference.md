@@ -36,7 +36,7 @@ Local-inference subsystems — everything that decides **when**, **where**, and 
 Today these are flat siblings under ``architecture/``; a follow-up PR (``docs_move`` pass) will re-home them under ``architecture/inference/`` alongside the broker:
 
 - ``architecture/llm-runner`` — unified LLM entry point + tier dispatch.
-- ``architecture/llm-with-tools`` — legacy tool-call loop (kept for MCP-exposed capability).
+- ``architecture/llm-with-tools`` — legacy tool-call loop (kept for an MCP-exposed skill).
 - ``architecture/embedding-service`` — the Flask service on port 5124 + asymmetric / symmetric model registry.
 
 Until that restructure lands, follow the flat-path links in ``architecture`` parent for those three.

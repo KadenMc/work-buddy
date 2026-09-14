@@ -1,11 +1,10 @@
 ---
 name: Remote Session Begin
-kind: capability
+kind: skill
 description: Launch or resume a visible Claude Code session in a real terminal window. If session_id or session_name is provided, resumes that session; otherwise starts a new one. Designed for Remote Control (phone app) connection.
-capability_name: remote_session_begin
 category: sidecar
 op: op.wb.remote_session_begin
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   cwd:
     type: str
@@ -29,6 +28,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: remote_session_begin
 tags:
 - sidecar
 - remote

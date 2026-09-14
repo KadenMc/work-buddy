@@ -1,16 +1,15 @@
 ---
 name: Obsidian Retry
-kind: capability
-description: Synchronous bridge-aware retry for Obsidian-dependent capabilities. Checks bridge health before each attempt, waits between retries, and returns a structured result. Use when you need the result before proceeding (e.g., step 1 of a multi-step task). For fire-and-forget retries, the gateway's automatic background retry handles it.
-capability_name: obsidian_retry
+kind: skill
+description: Synchronous bridge-aware retry for Obsidian-dependent skills. Checks bridge health before each attempt, waits between retries, and returns a structured result. Use when you need the result before proceeding (e.g., step 1 of a multi-step task). For fire-and-forget retries, the gateway's automatic background retry handles it.
 category: obsidian
 op: op.wb.obsidian_retry
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   operation_id:
     type: str
     required: true
-    description: Operation ID from a previously failed or timed-out call (included in wb_run/consent_request timeout returns; visible via wb_status). Capability name and params are loaded from the record, so the agent does not re-supply them. If you don't have an operation_id you don't need retry — just call the capability directly; the gateway's automatic background retry handles transient bridge hiccups.
+    description: Operation ID from a previously failed or timed-out call (included in wb_run/consent_request timeout returns; visible via wb_status). Skill name and params are loaded from the record, so the agent does not re-supply them. If you don't have an operation_id you don't need retry — just call the skill directly; the gateway's automatic background retry handles transient bridge hiccups.
   max_retries:
     type: int
     required: false
@@ -19,6 +18,7 @@ parameters:
     type: int
     required: false
     description: 'Seconds to wait between attempts (default: 60)'
+skill_name: obsidian_retry
 tags:
 - obsidian
 - retry

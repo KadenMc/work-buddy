@@ -2,8 +2,8 @@
 schedule: "*/15 * * * *"  # task-note cadence: small, low-volume corpus
 recurring: true
 jitter_seconds: 90  # distinct offset across consolidated-index refresh jobs
-type: capability
-capability: index_rebuild
+type: skill
+skill: index_rebuild
 params:
   partition: task_note
   force: false

@@ -1,11 +1,10 @@
 ---
 name: Conversation Observability Refresh
-kind: capability
+kind: skill
 description: 'Refresh the conversation_observability DB: observed sessions metadata, session-attributed commits, session-attributed file writes (with dirty-state snapshot), and session-attributed GitHub PR activity. Stale-only by default; pass stale_only=false to force every recent session to re-load.'
-capability_name: conversation_observability_refresh
 category: conversation_observability
 op: op.wb.conversation_observability_refresh
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -21,6 +20,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: conversation_observability_refresh
 tags:
 - conversation_observability
 - conversation

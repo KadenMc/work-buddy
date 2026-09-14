@@ -29,9 +29,9 @@ Live testing exists because some changes only manifest correctly in a running mu
 work-buddy spans two long-running processes that load Python code at different times:
 
 - **Sidecar** — restarts when the user does a sidecar-only reset. Re-reads code at startup. Hosts cron jobs, the retry queue, the dashboard, the messaging service, the sidecar MCP gateway.
-- **Claude Code Desktop's MCP server** — restarts only on **Ctrl+R** in the Desktop app. This is the process that handles `wb_run` calls from the agent. Its `wb_run` and `wb_search` tool functions are frozen function references held by FastMCP at startup. `reload_capability_data` refreshes the registry those functions *read* — so declaration / workflow / param-schema changes go live without a restart — but it cannot replace the frozen function objects themselves, so changing their code needs a Ctrl+R.
+- **Claude Code Desktop's MCP server** — restarts only on **Ctrl+R** in the Desktop app. This is the process that handles `wb_run` calls from the agent. Its `wb_run` and `wb_search` tool functions are frozen function references held by FastMCP at startup. `reload_skill_data` refreshes the registry those functions *read* — so declaration / workflow / param-schema changes go live without a restart — but it cannot replace the frozen function objects themselves, so changing their code needs a Ctrl+R.
 
-If you change code inside `wb_run` / `wb_search` directly (e.g. the gateway's workflow pre-flight branch), only a Ctrl+R picks it up. If you change code that's *lazy-imported* by those functions (e.g. the conductor, the consent layer, capability callables), that's still code — a Ctrl+R (or a sidecar reset for sidecar-hosted code) is the reliable way to load it. `reload_capability_data` only refreshes *data* (declarations, workflows, param schemas), not Python.
+If you change code inside `wb_run` / `wb_search` directly (e.g. the gateway's workflow pre-flight branch), only a Ctrl+R picks it up. If you change code that's *lazy-imported* by those functions (e.g. the conductor, the consent layer, skill callables), that's still code — a Ctrl+R (or a sidecar reset for sidecar-hosted code) is the reliable way to load it. `reload_skill_data` only refreshes *data* (declarations, workflows, param schemas), not Python.
 
 Before driving any live test: confirm with the user that they have restarted whichever process owns the changed code. The user prompt 'I reset the sidecar/MCP!' typically means a sidecar reset; ask whether they also did Ctrl+R if the change touches gateway entry-point functions.
 
@@ -81,7 +81,7 @@ If the broken state is not easily reproducible, lean harder on the delta asserti
 ## The standard four-phase live test
 
 Phase 1. **Pre-check (agent)**
-- Call any state-inspection capability relevant to the change (e.g. `consent_list`, `wb_status`, `agent_docs`). Verify the starting state is what the test assumes.
+- Call any state-inspection skill relevant to the change (e.g. `consent_list`, `wb_status`, `agent_docs`). Verify the starting state is what the test assumes.
 
 Phase 2. **Trigger (agent)**
 - Invoke the operation under test. If it blocks waiting for a user response (consent prompt, request_send), the agent's call blocks too — make this explicit to the user: 'I'm going to call X. It will block for up to 90 seconds waiting for you. Either approve / answer on a surface, OR deliberately wait > 90 seconds so we can verify the timeout path.'
@@ -91,7 +91,7 @@ Phase 3. **User action (user)**
 - For consent flows, the choice of mode matters: 'Allow once' tests the run-grant-only path; 'Allow for 15 min' tests the class-grant carry; 'Allow always' tests the long-TTL class grant; 'Deny' tests the rejection path.
 
 Phase 4. **Verify (agent)**
-- Re-check state (re-call the same inspection capability from Phase 1) AND check the audit log for the expected events. Relay the exact JSON / line content back to the user — never paraphrase: 'the grant landed' is not as useful as 'consent_list returned `{workflow_class:task-new: {mode: temporary, expires_at: ...}}`'.
+- Re-check state (re-call the same inspection skill from Phase 1) AND check the audit log for the expected events. Relay the exact JSON / line content back to the user — never paraphrase: 'the grant landed' is not as useful as 'consent_list returned `{workflow_class:task-new: {mode: temporary, expires_at: ...}}`'.
 - If the test had a follow-up assertion (e.g. 're-running the operation should now skip the prompt'), execute that too.
 
 ## Reporting

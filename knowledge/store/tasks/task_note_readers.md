@@ -1,11 +1,10 @@
 ---
 name: Task Note Readers
-kind: capability
+kind: skill
 description: Sessions whose transcripts show they read a task through native task/document calls, with legacy Markdown reads retained only as historical evidence.
-capability_name: task_note_readers
 category: tasks
 op: op.wb.task_note_readers
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_id:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: bool
     description: When true, also return sessions that merely mention the task id without an explicit read (weak signal). Default false — only explicit-read sessions are returned.
     required: false
+skill_name: task_note_readers
 tags:
 - tasks
 - task
@@ -35,7 +35,6 @@ aliases:
 - did anyone read this task
 parents:
 - tasks
-requires: []
 ---
 
 Returns sessions whose transcripts demonstrate they read a task or its current

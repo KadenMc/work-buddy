@@ -727,7 +727,7 @@ def _format_log_entry(time: str, description: str) -> str:
 
 
 # Mutex serialising concurrent read-modify-write cycles on journal files.
-# The MCP gateway dispatches capability calls via asyncio.to_thread, so
+# The MCP gateway dispatches skill calls via asyncio.to_thread, so
 # concurrent sessions invoking append_to_journal run in separate threads.
 _journal_write_lock = threading.Lock()
 
@@ -938,7 +938,7 @@ def _append_to_journal_locked(
     # itself, the Tasks plugin, Datacore, and the Linter, all of which can
     # mutate unrelated regions of the file between the bridge write and the
     # verifier's read-back. Full-file sha256 mismatches in that case and the
-    # PWU recovery path needlessly re-runs this capability, which without the
+    # PWU recovery path needlessly re-runs this skill, which without the
     # already_present guard above used to land duplicate entries. See the
     # explicit guidance in obsidian/bridge.py write_file docstring (the master
     # task list, archives, journals).

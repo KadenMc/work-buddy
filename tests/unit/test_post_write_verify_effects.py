@@ -1,13 +1,13 @@
 """Fix (b) regression tests: effect-graph-aware post-write verification.
 
-Background — `t-e2f1a8c4`: when a multi-effect capability (e.g.
+Background — `t-e2f1a8c4`: when a multi-effect skill (e.g.
 `task_create` writes a note file AND a master-list line) hits PWU on
 the first effect, the single-effect verifier reads the path on the
 PWU exception, sees the first effect landed, and declares "verified".
 But the second effect was never attempted. The verifier didn't know
 about it.
 
-Fix: capabilities can declare an `effects` manifest. The new
+Fix: skills can declare an `effects` manifest. The new
 `verify_post_write_effects(effects, params)` walks all declared
 effects and returns a verdict:
 

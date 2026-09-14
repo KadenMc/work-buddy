@@ -1,11 +1,10 @@
 ---
 name: Chrome Tab Group
-kind: capability
+kind: skill
 description: Create a Chrome tab group or add tabs to an existing group. Returns the group ID.
-capability_name: chrome_tab_group
 category: context
 op: op.wb.chrome_tab_group
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   tab_ids:
     type: list
@@ -29,6 +28,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: chrome_tab_group
 tags:
 - context
 - chrome

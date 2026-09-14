@@ -1,13 +1,13 @@
 """Setup Wizard — orchestrates preferences, requirements, health, and diagnostics.
 
-The wizard capability supports four modes:
+The wizard skill supports four modes:
 
     status    — Quick health + requirements summary for wanted components.
     guided    — Interactive first-time setup (returns structured steps).
     diagnose  — Deep diagnostic for a specific component.
     preferences — View/edit feature preferences.
 
-The wizard is an MCP capability, not a workflow.  It returns structured data
+The wizard is an MCP skill, not a workflow.  It returns structured data
 for the agent to present interactively — the agent drives the conversation.
 
 Phase G (2026-04): ``guided()`` and ``preferences()`` now consume the

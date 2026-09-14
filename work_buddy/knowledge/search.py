@@ -124,7 +124,7 @@ def search(
         query: Natural language search. Empty for browse mode.
         path: Exact unit path for direct lookup.
         scope: Path prefix to filter results to a subtree.
-        kind: Filter by unit kind (directions, system, capability, workflow, personal).
+        kind: Filter by unit kind (directions, system, skill, workflow, personal).
         depth: Content depth: "index", "summary", or "full".
         top_n: Maximum results for search mode.
         knowledge_scope: Which store(s) to search: "system", "personal", or "all".

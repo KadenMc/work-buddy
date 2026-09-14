@@ -1,7 +1,7 @@
 """Typed failure model for email providers.
 
 Mirrors the Obsidian bridge's exception design — providers raise these from
-their methods so capability wrappers can `isinstance`-classify rather than
+their methods so skill wrappers can `isinstance`-classify rather than
 substring-match error strings.
 """
 

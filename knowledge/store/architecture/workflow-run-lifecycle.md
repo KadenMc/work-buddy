@@ -39,11 +39,11 @@ When `fail_task` marks a step FAILED, it re-runs `_update_availability` so pendi
 
 ## Cancel
 
-`cancel_workflow(run_id, reason)` — capability `workflow_cancel`, slash command `/wb-workflow-cancel` — drops a run from `_ACTIVE_RUNS`, marks its on-disk DAG cancelled (the file is kept, not deleted, for audit), and revokes the workflow consent blanket. It is idempotent: cancelling an already-cancelled run is a no-op, and a run that has already completed is left untouched. A run not in `_ACTIVE_RUNS` is still cancellable — the lookup falls back to the on-disk DAG.
+`cancel_workflow(run_id, reason)` — skill `workflow_cancel`, slash command `/wb-workflow-cancel` — drops a run from `_ACTIVE_RUNS`, marks its on-disk DAG cancelled (the file is kept, not deleted, for audit), and revokes the workflow consent blanket. It is idempotent: cancelling an already-cancelled run is a no-op, and a run that has already completed is left untouched. A run not in `_ACTIVE_RUNS` is still cancellable — the lookup falls back to the on-disk DAG.
 
 ## Idle sweep
 
-`sweep_idle_runs()` — capability `workflow_sweep_idle` — cancels runs with no step progress past the idle threshold (`workflows.run_lifecycle.idle_timeout_hours`, default 24h), with reason `idle_timeout`. An orphaned run — one whose agent stopped calling `wb_advance` — never leaves `_ACTIVE_RUNS` on its own; the sweep reclaims it.
+`sweep_idle_runs()` — skill `workflow_sweep_idle` — cancels runs with no step progress past the idle threshold (`workflows.run_lifecycle.idle_timeout_hours`, default 24h), with reason `idle_timeout`. An orphaned run — one whose agent stopped calling `wb_advance` — never leaves `_ACTIVE_RUNS` on its own; the sweep reclaims it.
 
 The sweep runs on an interval (`sweep_interval_minutes`, default 60) in a daemon thread inside the MCP gateway process. It must run there, not as a sidecar cron job: `_ACTIVE_RUNS` is in-process state and the sidecar is a separate process that cannot mutate it.
 

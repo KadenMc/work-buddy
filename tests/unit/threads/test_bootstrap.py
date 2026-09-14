@@ -202,11 +202,11 @@ class TestActionCatalogInjection:
         from work_buddy.threads.enums import InferenceTarget
         from work_buddy.threads.inference import TARGETS
         from work_buddy.threads import actions as _actions
-        from work_buddy.mcp_server.registry import Capability
+        from work_buddy.mcp_server.registry import Skill
         from work_buddy.threads.enums import InvocationContext
 
         fake = {
-            "task_create": Capability(
+            "task_create": Skill(
                 name="task_create",
                 description="Create a new task in the master task list.",
                 category="tasks",

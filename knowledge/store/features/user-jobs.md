@@ -3,7 +3,7 @@ name: User-authored Scheduled Jobs
 kind: directions
 description: How a user authors a personal scheduled cron job — file location, frontmatter schema, collision behavior, hot-reload.
 trigger: user wants to schedule a personal cron task that should not be tracked in the work-buddy repo
-capabilities:
+skills:
 - sidecar_jobs
 - sidecar_status
 tags:
@@ -29,24 +29,24 @@ Drop a markdown file with cron frontmatter into `<paths.data_root>/user_jobs/` (
 ## Three ways to author a job
 
 1. **Drop a file directly** — author the markdown with frontmatter (schema below) under `<paths.data_root>/user_jobs/`. Power-user path; assumes you know cron syntax and the registry.
-2. **Dashboard job form** — `/app/jobs` (legacy Jobs tab → `+ Add job` redirects here). The native widget exposes live cron preview, registry parameter guidance, and schedule-aware Jitter validation. Its human-authorized `POST /api/jobs/authoring` delegates the existing `user_job_create` capability with `overwrite: false`.
+2. **Dashboard job form** — `/app/jobs` (legacy Jobs tab → `+ Add job` redirects here). The native widget exposes live cron preview, registry parameter guidance, and schedule-aware Jitter validation. Its human-authorized `POST /api/jobs/authoring` delegates the existing `user_job_create` skill with `overwrite: false`.
 3. **Dashboard assisted form** — choose **AI help** in that same widget. After opt-in and provider/model disclosure, the shared conversation component suggests typed patches that fill the visible fields. User edits win conflicts; changes have receipts and conditional Undo. Only the user's **Create job** click submits. Chat, including a message saying "yes", cannot schedule or overwrite a job. See `services/dashboard/react/assisted-drafts`.
 
-Jobs assistance can search the same registered capability/workflow authoring
+Jobs assistance can search the same registered skill/workflow authoring
 catalog shown by the form: exact names, slash aliases, one-line descriptions and
 reduced parameter schemas. This lets it recommend `web_search` or another exact
 operation without guessing. The lookup is metadata-only and disclosure-accounted;
 it cannot run the result, search the web, start a workflow or create the job.
 
-The capability/manual/assisted paths converge on `work_buddy.sidecar.scheduler.jobs.create_user_job_file`. Non-overwriting creation uses exclusive file creation, so concurrent requests cannot replace each other. React's assistable fields are declared once in `work_buddy/dashboard/assistance/form_schemas.json`, consumed by Python and TypeScript; there is no new form bridge, scheduler store, or duplicate chat implementation. The normal domain validation remains authoritative. Direct file authoring still relies on scheduler load-time parsing.
+The skill/manual/assisted paths converge on `work_buddy.sidecar.scheduler.jobs.create_user_job_file`. Non-overwriting creation uses exclusive file creation, so concurrent requests cannot replace each other. React's assistable fields are declared once in `work_buddy/dashboard/assistance/form_schemas.json`, consumed by Python and TypeScript; there is no new form bridge, scheduler store, or duplicate chat implementation. The normal domain validation remains authoritative. Direct file authoring still relies on scheduler load-time parsing.
 
 ## Validation at create time
 
-``create_user_job_file`` validates capability and dashboard submissions before writing the file. Directly authored files instead pass through scheduler load-time parsing. Specifically:
+``create_user_job_file`` validates skill and dashboard submissions before writing the file. Directly authored files instead pass through scheduler load-time parsing. Specifically:
 
 * **Name** — must match ``[A-Za-z0-9][A-Za-z0-9_-]{0,63}`` (no spaces, no leading dash/underscore). Returns ``{success: false, error: '...'}``.
 * **Schedule** — exactly 5 cron fields, each parseable by ``parse_cron_field`` (range-checked).
-* **Capability / workflow names** — must exist in the MCP registry. The validator strips a leading ``/`` (so ``/morning-routine`` works), then prioritizes a slash-command-to-registry resolution: if the user typed ``wb-morning`` (or just ``morning`` for a slash command stem), the error names the underlying registry entry explicitly: *"`wb-morning` is the slash-command name; the underlying workflow is `morning-routine`"*. Falls back to a ``difflib`` close-match suggestion if no slash-command match.
+* **Skill / workflow names** — must exist in the MCP registry. The validator strips a leading ``/`` (so ``/morning-routine`` works), then prioritizes a slash-command-to-registry resolution: if the user typed ``wb-morning`` (or just ``morning`` for a slash command stem), the error names the underlying registry entry explicitly: *"`wb-morning` is the slash-command name; the underlying workflow is `morning-routine`"*. Falls back to a ``difflib`` close-match suggestion if no slash-command match.
 * **Workflow params** — when ``job_type=workflow`` and the workflow declares a ``params_schema``, params are pre-validated for unknown keys and missing required keys. Mismatches surface immediately at create time instead of on first cron fire.
 * **Jitter** — ``jitter_seconds`` must be a non-negative integer. Bad input (negative, non-numeric) returns ``{success: false, error: 'jitter_seconds must be a non-negative integer, ...'}`` from the create path; jobs already on disk with bad input log a WARN and fall back to ``0``. The React form and its authorized API both enforce the schedule-aware ceiling; the underlying file authoring function accepts any non-negative integer.
 
@@ -65,10 +65,10 @@ Same as system jobs. Required: `schedule`. Optional fields shown with defaults:
 ```
 ---
 schedule: "*/15 * * * *"      # 5-field cron, evaluated in config.timezone
-type: capability                # capability | workflow | prompt
-capability: noop                # for type=capability
+type: skill                # skill | workflow | prompt
+skill: noop                # for type=skill
 workflow: ""                    # for type=workflow
-params: {}                      # for type=capability or type=workflow
+params: {}                      # for type=skill or type=workflow
 recurring: true                 # false = one-shot, schedule cleared after firing
 enabled: true
 spawn_mode: ""                  # for type=prompt: headless_ephemeral | headless_persistent | interactive_persistent
@@ -100,7 +100,7 @@ The Add-job form caps the value per schedule. Worked examples:
 
 The form pulls these from ``/api/cron/describe``, which returns ``interval_seconds`` + ``max_jitter_seconds`` alongside the human description. Out-of-range assistant suggestions remain visible and fail the same submit validation as manual input; they are not silently clamped or submitted.
 
-The ceiling applies to both the React form and its API. `create_user_job_file` still accepts any non-negative integer, so users hand-editing a `.md` file or using the existing capability can deliberately exceed that UI policy.
+The ceiling applies to both the React form and its API. `create_user_job_file` still accepts any non-negative integer, so users hand-editing a `.md` file or using the existing skill can deliberately exceed that UI policy.
 
 ### Tick-quantization caveat
 
@@ -118,7 +118,7 @@ Observability under each job in ``sidecar_state.json``:
 * ``effective_at`` — the actual planned fire time. Equals ``next_at + offset`` for not-yet-queued jobs, or the pending due timestamp once a fire has been queued.
 * ``jitter_seconds`` — mirror of the configured value.
 
-Jitter does not substitute for concurrency control or misfire policy — those are separate, and a long-running capability still blocks subsequent ticks.
+Jitter does not substitute for concurrency control or misfire policy — those are separate, and a long-running skill still blocks subsequent ticks.
 
 ## Edit and delete via the dashboard
 
@@ -178,4 +178,4 @@ Look for your stem in the returned `jobs` list. Each job carries a `source` fiel
 ## What NOT to put in user_jobs/
 
 - Anything you would want every other work-buddy install to run — those belong in `sidecar_jobs/` (system) and get committed to the repo.
-- Secrets in plaintext params — the file lives under `<data_root>` which is gitignored, but the cron-triggered execution still runs through normal capability dispatch; pass secrets through the same env-var/keyring path you would use anywhere else.
+- Secrets in plaintext params — the file lives under `<data_root>` which is gitignored, but the cron-triggered execution still runs through normal skill dispatch; pass secrets through the same env-var/keyring path you would use anywhere else.

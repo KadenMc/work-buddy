@@ -1,6 +1,6 @@
 """Configurable section-aware vault writing.
 
-General-purpose capability for inserting content at a specific location
+General-purpose skill for inserting content at a specific location
 in a vault note, identified by note path (or resolver) + section header +
 position (top/bottom of section).
 

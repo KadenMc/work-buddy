@@ -23,6 +23,8 @@ from work_buddy.projects.authority import (
 from work_buddy.projects.partition import ProjectsPartition
 from work_buddy.sources import ActorRef, SourceStore, TrustedIngressContext
 
+pytestmark = pytest.mark.usefixtures("_preserve_native_cutover_authorities")
+
 
 def _note(
     slug: str,

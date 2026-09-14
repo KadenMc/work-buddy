@@ -1,11 +1,10 @@
 ---
 name: Co-work Truth Analysis Job Submit
-kind: capability
+kind: skill
 description: Submit one immutable typed candidate set for the exact Co-work Truth-analysis run without writing to the Truth ledger.
-capability_name: cowork_truth_analysis_job_submit
 category: cowork
 op: op.wb.cowork_truth_analysis_job_submit
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   run_id:
     type: str
@@ -18,6 +17,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_truth_analysis_job_submit
 tags:
 - cowork
 - truth

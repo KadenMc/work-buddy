@@ -1,11 +1,11 @@
 ---
 name: Service Health
-kind: capability
+kind: skill
 description: Check if the messaging service is running
-capability_name: service_health
 category: status
 op: op.wb.service_health
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: service_health
 tags:
 - status
 - service

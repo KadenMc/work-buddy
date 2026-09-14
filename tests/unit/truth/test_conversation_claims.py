@@ -337,7 +337,7 @@ def test_hindsight_becomes_eligible_only_after_separate_human_confirmation(
     assert confirmed_status.actor_ref == local.canonical_id
 
 
-def test_public_capability_has_no_caller_controlled_actor_fields() -> None:
+def test_public_skill_has_no_caller_controlled_actor_fields() -> None:
     load_builtin_ops()
     assert get_op("op.wb.truth_claim_propose_from_conversation") is not None
     parameters = inspect.signature(truth_claim_propose_from_conversation).parameters
@@ -427,7 +427,7 @@ def test_public_op_composes_default_authorities_and_registry(
         SourceRef.parse(response["source_ref"])
     ) is not None
     # The serialized actor is derived from the enrolled authority and the
-    # gateway-owned session manifest, never from capability actor parameters.
+    # gateway-owned session manifest, never from skill actor parameters.
     enrolled = LocalIdentityAuthority(identity_path).enrolled_actor()
     semantic = response["semantic_producer"]
     assert semantic["issuer_authority_id"] == enrolled.issuer_authority_id

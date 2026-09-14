@@ -17,7 +17,7 @@ from work_buddy.journal_capture.models import (
     JournalCaptureValidationError,
 )
 from work_buddy.journal_capture.prompt_worker import (
-    JournalPromptGenerationCapabilityService,
+    JournalPromptGenerationSkillService,
 )
 from work_buddy.journal_capture.service import JournalCaptureService
 from work_buddy.journal_capture.store import JournalCaptureStore
@@ -312,7 +312,7 @@ def test_prompt_generation_is_durable_source_backed_and_explicitly_reviewed(tmp_
             )
 
     disclosure = FakeDisclosure()
-    worker = JournalPromptGenerationCapabilityService(
+    worker = JournalPromptGenerationSkillService(
         journal,
         sources,
         disclosure=disclosure,  # type: ignore[arg-type]

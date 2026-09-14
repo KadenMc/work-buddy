@@ -5,7 +5,7 @@ description: How to invoke and present uncommitted session results — per-entry
 summary: 'Run session_uncommitted (optional days param, default 7). For each result: show 8-char session ID prefix, repo name, dirty files with git status codes. If other sessions have uncommitted changes, suggest resuming them.'
 trigger: user asks which sessions left uncommitted changes, or wants to audit agent writes
 command: wb-session-find-uncommitted
-capabilities:
+skills:
 - context/session_uncommitted
 tags:
 - context

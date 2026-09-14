@@ -83,7 +83,7 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
 
         native_tasks = native_authority_active()
         if native_tasks:
-            from work_buddy.tasks.capabilities import task_read
+            from work_buddy.tasks.skills import task_read
 
             payload = task_read(task_id)
         else:
@@ -120,7 +120,7 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
     prov: dict[str, Any] | None = None
     try:
         if native_tasks:
-            from work_buddy.tasks.capabilities import task_provenance
+            from work_buddy.tasks.skills import task_provenance
 
             prov = task_provenance(task_id)
         else:
@@ -162,7 +162,7 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
     # no-structural-link early return — its readers get full evidence.
     try:
         if native_tasks:
-            from work_buddy.tasks.capabilities import (
+            from work_buddy.tasks.skills import (
                 task_note_readers as sessions_who_read_task,
             )
             note_uuid = (
@@ -259,7 +259,7 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
         # scan every recent session's JSONL + run git, which risks the
         # auto_run timeout — flag staleness instead and let the
         # investigate step force a refresh via the
-        # conversation_observability_refresh capability if it matters).
+        # conversation_observability_refresh skill if it matters).
         try:
             entry["writes"] = writes_mod.query_session_writes(session_id=sid)
         except Exception as exc:  # pragma: no cover — best-effort

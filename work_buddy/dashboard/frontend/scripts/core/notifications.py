@@ -96,8 +96,8 @@ function _ensureTabAndSwitch(viewId, view, tabName, isRequest, isCustom) {
     switchTab(tabName);
 }
 
-// --- Capability consent renderer ---
-registerViewRenderer('capability_consent', async function(container, viewId, payload) {
+// --- Skill consent renderer ---
+const renderSkillConsent = async function(container, viewId, payload) {
     const data = await fetchJSON('/api/workflow-views/' + viewId);
     const title = (data && data.title) || 'Consent required';
     const body = (data && data.body) || '';
@@ -137,17 +137,20 @@ registerViewRenderer('capability_consent', async function(container, viewId, pay
 
     // Buttons
     html += '<div id="cc-btns-'+viewId+'" class="nb-btn-group">';
-    html += '<button class="nb-btn nb-btn-request" ' + wbActAttrs('capConsentAlways', {viewId: viewId}) + '>Allow always</button>';
-    html += '<button class="nb-btn nb-btn-neutral" ' + wbActAttrs('capConsentTemporary', {viewId: viewId, ttl: ttl}) + '>Allow for '+ttl+' min</button>';
-    html += '<button class="nb-btn nb-btn-ghost" ' + wbActAttrs('capConsentOnce', {viewId: viewId}) + '>Allow once</button>';
-    html += '<button class="nb-btn nb-btn-deny" ' + wbActAttrs('capConsentDeny', {viewId: viewId}) + '>Deny</button>';
+    html += '<button class="nb-btn nb-btn-request" ' + wbActAttrs('skillConsentAlways', {viewId: viewId}) + '>Allow always</button>';
+    html += '<button class="nb-btn nb-btn-neutral" ' + wbActAttrs('skillConsentTemporary', {viewId: viewId, ttl: ttl}) + '>Allow for '+ttl+' min</button>';
+    html += '<button class="nb-btn nb-btn-ghost" ' + wbActAttrs('skillConsentOnce', {viewId: viewId}) + '>Allow once</button>';
+    html += '<button class="nb-btn nb-btn-deny" ' + wbActAttrs('skillConsentDeny', {viewId: viewId}) + '>Deny</button>';
     html += '</div>';
 
     html += '</div></div></div>';
     container.innerHTML = html;
-});
+};
+registerViewRenderer('skill_consent', renderSkillConsent);
+// LEGACY_READ: persisted active workflow views may retain the former type.
+registerViewRenderer('capability_consent', renderSkillConsent);
 
-window.capConsentRespond = async function(viewId, value) {
+window.skillConsentRespond = async function(viewId, value) {
     const btns = document.getElementById('cc-btns-' + viewId);
     if (btns) {
         if (value === 'deny') {
@@ -167,17 +170,17 @@ window.capConsentRespond = async function(viewId, value) {
     } catch(e) { console.error('Consent response failed:', e); }
 };
 
-window.wbAction('capConsentAlways', function(el) {
-    capConsentRespond(el.dataset.viewId, 'always');
+window.wbAction('skillConsentAlways', function(el) {
+    skillConsentRespond(el.dataset.viewId, 'always');
 });
-window.wbAction('capConsentTemporary', function(el) {
-    capConsentRespond(el.dataset.viewId, 'temporary');
+window.wbAction('skillConsentTemporary', function(el) {
+    skillConsentRespond(el.dataset.viewId, 'temporary');
 });
-window.wbAction('capConsentOnce', function(el) {
-    capConsentRespond(el.dataset.viewId, 'once');
+window.wbAction('skillConsentOnce', function(el) {
+    skillConsentRespond(el.dataset.viewId, 'once');
 });
-window.wbAction('capConsentDeny', function(el) {
-    capConsentRespond(el.dataset.viewId, 'deny');
+window.wbAction('skillConsentDeny', function(el) {
+    skillConsentRespond(el.dataset.viewId, 'deny');
 });
 
 // --- Workflow consent renderer ---

@@ -1,6 +1,6 @@
 """Remote-session ops — launch and resume visible Claude Code sessions.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). These callables wrap
 ``work_buddy.session_launcher`` for the Remote Control (phone app) flow.
 """

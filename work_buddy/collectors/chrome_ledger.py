@@ -878,7 +878,7 @@ def ledger_status() -> dict[str, Any]:
 #
 # Registers a JsonRecordsStorage(LIST shape) + TimeWindow trigger +
 # Delete action artifact under the name "chrome-ledger". The
-# unified-cleanup tick (artifact_cleanup MCP capability or sweep_all
+# unified-cleanup tick (artifact_cleanup MCP skill or sweep_all
 # from the registry) will drive this artifact's prune as part of the
 # cross-backend sweep. The standalone prune_chrome_ledger function in
 # work_buddy.artifacts.meta_pruners remains for ad-hoc / test usage

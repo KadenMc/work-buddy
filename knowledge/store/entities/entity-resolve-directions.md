@@ -4,7 +4,7 @@ kind: directions
 description: When and how to call entity_resolve — the pull-based lookup an agent uses on an unfamiliar proper noun before asking the user.
 trigger: An agent encounters an unfamiliar proper noun (a person, place, or organization name) and needs to know what it refers to; or the user runs /wb-entity-resolve.
 command: wb-entity-resolve
-capabilities:
+skills:
 - entities/entity_resolve
 tags:
 - entities

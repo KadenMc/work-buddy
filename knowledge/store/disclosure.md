@@ -1,7 +1,7 @@
 ---
 name: Progressive Disclosure
 kind: system
-description: Unified navigation contract for tree-shaped drillable resources. One MCP capability (drill_tree) walks any registered TreeDrillable at three depths (index/summary/full).
+description: Unified navigation contract for tree-shaped drillable resources. One MCP skill (drill_tree) walks any registered TreeDrillable at three depths (index/summary/full).
 tags:
 - allow-transient-labels
 - disclosure
@@ -17,7 +17,7 @@ aliases:
 - depth navigation
 ---
 
-Cross-cutting navigation contract for resources that have a tree shape, **plus the agent-facing decision rule** for which verb to reach for when. A `TreeDrillable` Protocol exposes one method (`get(node_id, depth)`) returning a `TreeView`; the registry maps domain names to `TreeDrillable` instances; the dispatch capability `drill_tree(domain, node_id, depth)` routes the call.
+Cross-cutting navigation contract for resources that have a tree shape, **plus the agent-facing decision rule** for which verb to reach for when. A `TreeDrillable` Protocol exposes one method (`get(node_id, depth)`) returning a `TreeView`; the registry maps domain names to `TreeDrillable` instances; the dispatch skill `drill_tree(domain, node_id, depth)` routes the call.
 
 ## Three depths
 
@@ -86,9 +86,9 @@ Wraps the knowledge store via `agent_docs`. node_id is the unit path (`tasks/tri
 
 ## Out of scope (today)
 
-Sequence-shaped resources (session transcripts, workflow step logs) and field-keyed resources (`context_drill_down`'s task notes / git diffs / project descriptions) keep their existing per-domain capabilities. `TreeDrillable` is deliberately tree-shaped — forcing those into the same Protocol would shape the abstraction around accidents of which one was tested first. They wrap opportunistically when their owners next touch them.
+Sequence-shaped resources (session transcripts, workflow step logs) and field-keyed resources (`context_drill_down`'s task notes / git diffs / project descriptions) keep their existing per-domain skills. `TreeDrillable` is deliberately tree-shaped — forcing those into the same Protocol would shape the abstraction around accidents of which one was tested first. They wrap opportunistically when their owners next touch them.
 
-The deferred follow-up (task `t-bbefceef`) consolidates these into universal `find` / `walk` verbs across the whole search/navigate surface; until then, the per-domain capabilities listed above are the canonical entries.
+Universal `find` / `walk` verbs do not yet cover the whole search/navigation surface; the per-domain skills listed above are the canonical entries.
 
 ## Adding a new domain
 

@@ -522,7 +522,7 @@ def api_settings_reset_alias():
 
 @app.get("/api/registry/list")
 def api_registry_list():
-    """Return registered capabilities and workflows for the Add-job picker.
+    """Return registered skills and workflows for the Add-job picker.
 
     Powers a ``<datalist>`` autocomplete so the user picks a real name
     instead of typing one from memory. Each entry carries a short
@@ -573,8 +573,8 @@ def api_cron_describe():
 def api_user_job_create():
     """Create a user-authored scheduled job from the dashboard form.
 
-    Thin wrapper around the user_job_create capability so the form does
-    not need to know capability internals. Read-only mode blocks writes.
+    Thin wrapper around the user_job_create skill so the form does
+    not need to know skill internals. Read-only mode blocks writes.
     """
     blocked = _reject_read_only()
     if blocked is not None:
@@ -616,7 +616,7 @@ def api_user_job_get(name: str):
         "name": job.name,
         "schedule": job.schedule,
         "job_type": job.job_type,
-        "capability": job.capability,
+        "skill": job.skill,
         "workflow": job.workflow,
         "params": job.params,
         "prompt": job.prompt,
@@ -686,7 +686,7 @@ def api_user_jobs_help():
 def api_dashboard_interact():
     """Drive a dashboard form on behalf of an agent.
 
-    The MCP capability ``dashboard_interact`` is a thin HTTP forwarder
+    The MCP skill ``dashboard_interact`` is a thin HTTP forwarder
     that POSTs here. The actual logic — schema validation, event
     publishing, and (for ``form_submit`` / ``form_get_state``) the
     rendezvous wait for the frontend's postback — lives in this
@@ -729,13 +729,13 @@ def api_dashboard_interact():
 
 @app.post("/api/dashboard/interact/result/<request_id>")
 def api_dashboard_interact_result(request_id: str):
-    """Frontend → capability postback for rendezvous-backed actions.
+    """Frontend → skill postback for rendezvous-backed actions.
 
-    The ``dashboard_interact`` capability publishes ``form_submit`` /
+    The ``dashboard_interact`` skill publishes ``form_submit`` /
     ``form_get_state`` events with a request_id and blocks on a queue
     keyed by it. The frontend bridge runs the registered handler, then
     POSTs the result here; this endpoint hands the payload to the
-    capability via :func:`work_buddy.dashboard.interact.deliver_result`.
+    skill via :func:`work_buddy.dashboard.interact.deliver_result`.
 
     Body: ``{"ok": bool, "error": str?, "errors_by_field": dict?, "fields": dict?, ...}``.
     """
@@ -791,7 +791,7 @@ def api_control_preference():
     Body: ``{"updates": {"<component_id>": {"wanted": bool|null, "reason": str?}, ...}}``
 
     Gated by read-only mode. Writes to config.local.yaml via
-    ``apply_preference_updates`` (consent-gated at the capability level,
+    ``apply_preference_updates`` (consent-gated at the skill level,
     but we auto-grant here — the user clicking the toggle IS the consent,
     same pattern as ``_launch_workflow_session``).
 
@@ -937,7 +937,7 @@ def api_control_help(node_id: str):
 
 @app.get("/api/control/graph")
 def api_control_graph():
-    """Unified control graph — domains, subsystems, components, requirements, capabilities.
+    """Unified control graph — domains, subsystems, components, requirements, skills.
 
     Read-only view-model fused from preferences, health, requirements,
     and the MCP registry. Frontend Settings tab consumes this.
@@ -1086,7 +1086,7 @@ def api_task_sync():
     """Run legacy task sync only while legacy authority is provable.
 
     The user's click is the consent boundary — wrap the underlying
-    capability invocation in ``user_initiated('dashboard.task_sync')``
+    skill invocation in ``user_initiated('dashboard.task_sync')``
     so any nested ``@requires_consent`` gates inside ``task_sync`` /
     its mutations pass through without re-prompting.
     """
@@ -1543,7 +1543,7 @@ def api_chat_tasks(session_id: str):
     list when the session touched no tasks. Bridge-independent.
     """
     try:
-        from work_buddy.tasks.capabilities import session_task_roles
+        from work_buddy.tasks.skills import session_task_roles
 
         return jsonify(session_task_roles(session_id))
     except Exception as exc:
@@ -1794,7 +1794,7 @@ def api_fleet():
 def api_fleet_roster():
     """Add/update or clear a machine's inference.fleet roster entry (Settings › Inference).
 
-    Thin wrapper around the ``fleet_roster`` capability (mirrors ``/api/embeddings/vault``).
+    Thin wrapper around the ``fleet_roster`` skill (mirrors ``/api/embeddings/vault``).
     The user clicking Save IS the consent; read-only mode blocks the write. On success
     the fleet snapshot is busted and ``fleet.changed`` is published so the cards update
     immediately.
@@ -1806,12 +1806,12 @@ def api_fleet_roster():
     payload = request.get_json(silent=True) or {}
     from work_buddy.mcp_server.registry import get_registry
 
-    cap = get_registry().get("fleet_roster")
-    if cap is None:
-        return jsonify({"success": False, "error": "fleet_roster capability not registered "
+    skill_entry = get_registry().get("fleet_roster")
+    if skill_entry is None:
+        return jsonify({"success": False, "error": "fleet_roster skill not registered "
                         "(reload MCP / rebuild the knowledge store)."}), 500
     try:
-        result = cap.callable(**payload)
+        result = skill_entry.callable(**payload)
     except TypeError as exc:
         return jsonify({"success": False, "error": f"Invalid arguments: {exc}"}), 400
 
@@ -1828,7 +1828,7 @@ def api_fleet_roster():
 def api_embeddings_vault():
     """Add/update or remove a vault config (Settings › Embeddings editor).
 
-    Thin wrapper around the ``vault_config`` capability (mirrors ``/api/user_jobs``).
+    Thin wrapper around the ``vault_config`` skill (mirrors ``/api/user_jobs``).
     The user clicking Save IS the consent; read-only mode blocks the write. On
     success the embeddings snapshot is busted so the new row shows immediately
     (counts won't change until the next build).
@@ -1840,12 +1840,12 @@ def api_embeddings_vault():
     payload = request.get_json(silent=True) or {}
     from work_buddy.mcp_server.registry import get_registry
 
-    cap = get_registry().get("vault_config")
-    if cap is None:
-        return jsonify({"success": False, "error": "vault_config capability not registered "
+    skill_entry = get_registry().get("vault_config")
+    if skill_entry is None:
+        return jsonify({"success": False, "error": "vault_config skill not registered "
                         "(reload MCP / rebuild the knowledge store)."}), 500
     try:
-        result = cap.callable(**payload)
+        result = skill_entry.callable(**payload)
     except TypeError as exc:
         return jsonify({"success": False, "error": f"Invalid arguments: {exc}"}), 400
 
@@ -3307,7 +3307,7 @@ def api_workflow_view_respond(view_id: str):
                     logger.error("Deferred workflow launch failed (%s): %s", wf_name, exc)
             threading.Thread(target=_do_launch, daemon=True).start()
 
-    elif view_type == "capability_consent" and response_value != "deny":
+    elif view_type in {"skill_consent", "capability_consent"} and response_value != "deny":
         operation = payload.get("operation", "")
         cmd_name = payload.get("command_name", "")
         cmd_params = payload.get("params", {})
@@ -3534,12 +3534,12 @@ def api_threads_list():
         }), 500
 
 
-# A small allowlist of dashboard-triggerable capabilities. We
+# A small allowlist of dashboard-triggerable skills. We
 # intentionally don't expose the full registry — the user's
 # workflow is "MCP from agent for power", "dashboard buttons for
-# common nudges." Adding a capability here is a deliberate UX
+# common nudges." Adding a skill here is a deliberate UX
 # decision (each appears as a button somewhere in the UI).
-_DASHBOARD_RUNNABLE_CAPABILITIES: dict[str, dict] = {
+_DASHBOARD_RUNNABLE_SKILLS: dict[str, dict] = {
     "run_source_pipeline": {
         "description": (
             "Run a source pipeline end-to-end (Chrome triage / "
@@ -3552,49 +3552,49 @@ _DASHBOARD_RUNNABLE_CAPABILITIES: dict[str, dict] = {
 }
 
 
-@app.post("/api/run/<capability_name>")
-def api_run_capability(capability_name: str):
+@app.post("/api/run/<skill_name>")
+def api_run_skill(skill_name: str):
     """Bridge endpoint that lets the dashboard trigger a small
-    allowlist of capabilities directly.
+    allowlist of skills directly.
 
-    The MCP gateway is the canonical way to invoke capabilities
+    The MCP gateway is the canonical way to invoke skills
     from agents; this endpoint lets the *user* trigger a known
-    set of "common nudge" capabilities from dashboard buttons
+    set of "common nudge" skills from dashboard buttons
     (e.g. the empty-state "Scan today's journal" CTA).
 
-    Why an allowlist: we don't want a generic "call any capability"
+    Why an allowlist: we don't want a generic "call any skill"
     surface from the unauthenticated dashboard. Each entry is a
     deliberate UX choice.
     """
     blocked = _reject_read_only()
     if blocked:
         return blocked
-    if capability_name not in _DASHBOARD_RUNNABLE_CAPABILITIES:
+    if skill_name not in _DASHBOARD_RUNNABLE_SKILLS:
         return jsonify({
-            "error": f"Capability {capability_name!r} is not exposed to the "
+            "error": f"Skill {skill_name!r} is not exposed to the "
                      "dashboard. Use the MCP gateway (wb_run) for full "
                      "registry access, or add it to "
-                     "_DASHBOARD_RUNNABLE_CAPABILITIES if it should be a "
+                     "_DASHBOARD_RUNNABLE_SKILLS if it should be a "
                      "user-triggerable button.",
         }), 403
     body = request.get_json(silent=True) or {}
     try:
         from work_buddy.mcp_server.registry import get_registry
         reg = get_registry()
-        cap = reg.get(capability_name)
-        if cap is None:
+        skill_entry = reg.get(skill_name)
+        if skill_entry is None:
             return jsonify({
-                "error": f"Capability {capability_name!r} not in registry "
+                "error": f"Skill {skill_name!r} not in registry "
                          "(probably a dependency probe is failing). Try "
                          "the MCP gateway for diagnostics.",
             }), 503
-        # Capabilities are callables in the registry — invoke
+        # Skills are callables in the registry — invoke
         # directly. The argument shape mirrors wb_run's params dict.
-        result = cap.callable(**body)
+        result = skill_entry.callable(**body)
         return jsonify({"ok": True, "result": result})
     except Exception as exc:
         logger.exception("dashboard /api/run/%s failed: %s",
-                         capability_name, exc)
+                         skill_name, exc)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -3660,9 +3660,9 @@ def api_thread_events(thread_id: str):
 _THREAD_USER_INITIATED_TRIGGERS = {
     # User clicked Approve on a thread's action chip / confirmation
     # card → fires the consent gate's "execute" trigger which calls
-    # the action capability synchronously via the EXECUTING side-effect
+    # the action skill synchronously via the EXECUTING side-effect
     # handler. The click IS the consent boundary; without wrapping in
-    # ``user_initiated``, capabilities re-prompt for moderate-risk
+    # ``user_initiated``, skills re-prompt for moderate-risk
     # consent the user already gave by clicking Approve, dumping the
     # thread into AWAITING_REDIRECT with a ConsentRequired error. See
     # ``notifications/consent`` (UI-click bypass) for policy.
@@ -3685,7 +3685,7 @@ def _post_thread_action(
 
     Wraps the transition in ``consent.user_initiated`` when the trigger
     is a user-click action (Approve, Confirm, Review-accept, etc.) so
-    capabilities invoked via state-entry side effects don't re-prompt
+    skills invoked via state-entry side effects don't re-prompt
     for consent the user already gave by clicking. The trigger
     allowlist lives in ``_THREAD_USER_INITIATED_TRIGGERS``; see
     ``notifications/consent`` (UI-click bypass) for policy.
@@ -3797,7 +3797,7 @@ def _apply_action_edits_for_execute(thread_id: str, thread) -> None:
     dispatches the action the user actually approved.
 
     Honors two body shapes:
-      - ``action``: ``{capability_name, parameters}`` — the resolved
+      - ``action``: ``{skill_name, parameters}`` — the resolved
         action to run (a switch, or the current action with filled
         params). The canonical shape the resolution UI sends.
       - ``action_overrides``: ``{action_id: {param: value}}`` — per-field
@@ -3815,8 +3815,18 @@ def _apply_action_edits_for_execute(thread_id: str, thread) -> None:
     current = _current_action_payload(thread_id)
 
     payload: dict | None = None
-    if override and override.get("capability_name"):
-        name = str(override["capability_name"])
+    override_name = None
+    if override:
+        override_name = (
+            override.get("skill_name")
+            if "skill_name" in override
+            else override.get("capability_name")
+        )
+    if override and override_name:
+        # LEGACY_READ: an already-open dashboard bundle may still post the
+        # former field. Normalize it at the HTTP boundary; an explicitly
+        # present canonical field always wins, including when it is empty.
+        name = str(override_name)
         params = dict(override.get("parameters") or {})
         if current and current.get("name") == name:
             payload = {**current, "name": name, "parameters": params}
@@ -3954,7 +3964,7 @@ def api_thread_redirect_action(thread_id: str):
         {
           "feedback": "<free-text steering note>",
           "params": {...},              # seeds: fields the user filled
-          "target_action": "<capability_name>"   # the switched-to action
+          "target_action": "<skill_name>"   # the switched-to action
         }
 
     Re-infers JUST the action layer, without rerunning intent / context
@@ -3997,7 +4007,7 @@ def api_thread_redirect_action(thread_id: str):
         # Record the user redirect BEFORE the transition, so it's in the
         # log when the inference worker builds the prompt. Seeds (the
         # params the user filled) + target_action (the switched-to
-        # capability) let re-inference keep what the user provided and
+        # skill) let re-inference keep what the user provided and
         # fill only the missing required fields.
         redirect_data = {
             "feedback": feedback,
@@ -4210,7 +4220,7 @@ def api_thread_set_action_proposal(thread_id: str):
 
     Driven by the dashboard's column-header action chip dropdown:
     when the user picks a different action than the LLM proposed,
-    the frontend POSTs here with the new ``capability_name`` (or
+    the frontend POSTs here with the new ``skill_name`` (or
     null to clear). We append a fresh ``action_inferred`` event
     flagged ``synthetic=True, from_user_override=True``; the
     standard FSM dispatch picks it up at approval time.
@@ -4218,7 +4228,7 @@ def api_thread_set_action_proposal(thread_id: str):
     Body::
 
         {
-          "capability_name": "<name>",        # null to clear
+          "skill_name": "<name>",        # null to clear
           "parameters": {...},                # optional, default {}
           "rationale": "<text>",              # optional
           "confidence": 1.0                   # default 1.0 for user overrides
@@ -4228,7 +4238,13 @@ def api_thread_set_action_proposal(thread_id: str):
     if blocked:
         return blocked
     body = request.get_json(silent=True) or {}
-    capability_name = body.get("capability_name")
+    # LEGACY_READ: accept the former request field from an already-open
+    # dashboard bundle, but emit only ``skill_name`` below.
+    skill_name = (
+        body.get("skill_name")
+        if "skill_name" in body
+        else body.get("capability_name")
+    )
     try:
         from work_buddy.threads import store
         from work_buddy.threads.events import ThreadEvent
@@ -4236,7 +4252,7 @@ def api_thread_set_action_proposal(thread_id: str):
         if thread is None:
             return jsonify({"error": "thread not found"}), 404
 
-        if capability_name is None:
+        if skill_name is None:
             # Clear: record an event with payload.name = "" and
             # synthetic.cleared = True. The card renderer treats
             # empty name as "no proposed action" without needing a
@@ -4251,7 +4267,7 @@ def api_thread_set_action_proposal(thread_id: str):
                 thread_id, thread,
                 payload={
                     "kind": "standard",
-                    "name": str(capability_name),
+                    "name": str(skill_name),
                     "parameters": dict(body.get("parameters") or {}),
                     "rationale": body.get("rationale"),
                     "irreversibility": "low",
@@ -4272,7 +4288,7 @@ def api_thread_set_action_proposal(thread_id: str):
             ACTOR_FSM_ENGINE, KIND_STATE_TRANSITION,
         )
         promote = (
-            capability_name is not None
+            skill_name is not None
             and thread.fsm_state == _FSMState.AWAITING_INFERENCE
         )
         if promote:
@@ -4298,7 +4314,7 @@ def api_thread_set_action_proposal(thread_id: str):
         )
         return jsonify({
             "thread_id": thread_id,
-            "capability_name": capability_name,
+            "skill_name": skill_name,
         })
     except Exception as exc:
         logger.exception(
@@ -4459,7 +4475,7 @@ def api_thread_groups(umbrella_id: str):
             ...
           ],
           "action_options": [
-            {capability_name, label, description, cardinality, icon},
+            {skill_name, label, description, cardinality, icon},
             ...
           ]
         }
@@ -4519,7 +4535,7 @@ def _project_param_schema(raw) -> list[dict[str, Any]]:
 def _attach_param_schemas(descriptors: list[dict]) -> list[dict]:
     """Add each action descriptor's parameter schema (from the registry)
     so the resolution UI can render blank required fields and gate Approve
-    on the required ones. Unknown capabilities get an empty schema.
+    on the required ones. Unknown skills get an empty schema.
 
     Runtime-bound params (``thread_id``, ``tab_ids``) are excluded — the
     executor injects them, so the user must not see them as fields.
@@ -4528,7 +4544,7 @@ def _attach_param_schemas(descriptors: list[dict]) -> list[dict]:
     from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
     reg = get_registry()
     for d in descriptors:
-        entry = reg.get(d.get("capability_name"))
+        entry = reg.get(d.get("skill_name"))
         schema = _project_param_schema(
             getattr(entry, "parameters", None) if entry is not None else None
         )
@@ -4556,7 +4572,7 @@ def _resolve_action_library_for_thread(thread) -> tuple[list[dict], str | None]:
         or inciting.get("source")
     )
     try:
-        from work_buddy.pipelines.capability import PIPELINES
+        from work_buddy.pipelines.source_registry import PIPELINES
         from work_buddy.pipelines.universal_actions import (
             UNIVERSAL_ACTION_LIBRARY,
         )
@@ -5353,11 +5369,11 @@ def _execute_obsidian(raw_id: str):
 
 
 def _execute_workbuddy(name: str, params: dict):
-    """Execute a work-buddy capability or launch a workflow agent session."""
+    """Execute a work-buddy skill or launch a workflow agent session."""
     try:
         from work_buddy.consent import ConsentRequired
         from work_buddy.mcp_server.registry import (
-            Capability,
+            Skill,
             WorkflowDefinition,
             get_registry,
         )
@@ -5366,7 +5382,7 @@ def _execute_workbuddy(name: str, params: dict):
         registry = get_registry()
         entry = registry.get(name)
         if entry is None:
-            return jsonify({"success": False, "error": f"Unknown capability: {name}"}), 404
+            return jsonify({"success": False, "error": f"Unknown skill: {name}"}), 404
 
         admission = evaluate_runtime_admission(entry)
         if not admission.preference_available:
@@ -5390,11 +5406,11 @@ def _execute_workbuddy(name: str, params: dict):
         if isinstance(entry, WorkflowDefinition):
             return _request_workflow_consent(name, entry)
 
-        assert isinstance(entry, Capability)
+        assert isinstance(entry, Skill)
         try:
             result = entry.callable(**params)
         except ConsentRequired as exc:
-            return _request_capability_consent(name, params, exc)
+            return _request_skill_consent(name, params, exc)
 
         # Serialize result to a displayable string
         if result is None:
@@ -5435,8 +5451,8 @@ def _execute_workbuddy(name: str, params: dict):
         return jsonify({"success": False, "error": str(exc)[:500], "provider": "work-buddy"}), 500
 
 
-def _request_capability_consent(name: str, params: dict, exc) -> Response:
-    """Create a consent view for a consent-gated capability, with auto-retry on grant."""
+def _request_skill_consent(name: str, params: dict, exc) -> Response:
+    """Create a consent view for a consent-gated skill, with auto-retry on grant."""
     import time as _time
     from work_buddy.dashboard.views import create_view
 
@@ -5445,9 +5461,9 @@ def _request_capability_consent(name: str, params: dict, exc) -> Response:
         view_id=view_id,
         title=f"Consent: {name}",
         body=exc.reason,
-        view_type="capability_consent",
+        view_type="skill_consent",
         payload={
-            "type": "capability_consent",
+            "type": "skill_consent",
             "command_name": name,
             "command_id": f"work-buddy::{name}",
             "params": params,
@@ -5533,7 +5549,7 @@ def _launch_workflow_session(name: str, entry, user_prompt: str = "") -> dict:
         # Grant consent for remote launch (same pattern as Telegram /remote)
         grant_consent("sidecar:remote_session_launch", mode="always")
 
-        # Build prompt: slash command invocation (agent picks up the skill)
+        # Build prompt: slash command invocation (agent picks up the harness launcher)
         # + optional user context
         slash_stem = getattr(entry, "slash_command", None)
         if slash_stem:

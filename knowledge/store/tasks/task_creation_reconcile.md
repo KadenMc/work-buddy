@@ -1,11 +1,10 @@
 ---
 name: Task Creation Reconcile
-kind: capability
+kind: skill
 description: Bounded maintenance owner that rolls hidden task-plus-document creation intents forward after process crashes or response loss.
-capability_name: task_creation_reconcile
 category: tasks
 op: op.wb.task_creation_reconcile
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   limit:
     type: int
@@ -13,6 +12,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: verify_first
+skill_name: task_creation_reconcile
 tags:
 - tasks
 - recovery
@@ -22,7 +22,6 @@ aliases:
 - reconcile task document creation
 parents:
 - tasks
-requires: []
 ---
 
 This is the production crash-recovery owner for aggregate task creation and

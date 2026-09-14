@@ -8,7 +8,7 @@ first response from any surface wins.
 
 Callers can optionally target specific surfaces via the ``surfaces``
 field on the Notification model or the ``surfaces`` parameter on
-MCP capabilities like ``notification_send`` and ``request_send``.
+MCP skills like ``notification_send`` and ``request_send``.
 """
 
 from __future__ import annotations

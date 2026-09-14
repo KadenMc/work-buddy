@@ -1,8 +1,8 @@
 ---
 schedule: "0 * * * *"
 recurring: true
-type: capability
-capability: data_backup
+type: skill
+skill: data_backup
 params: {}
 ---
 Hourly snapshot of work-buddy's vital SQLite databases.
@@ -20,7 +20,7 @@ Pipeline:
 4. Write `<data_root>/backups/last_run.json` so the Component health
    check can surface freshness without hitting the GitHub API.
 
-The capability handles "stay local unless explicitly opted in" internally.
+The skill handles "stay local unless explicitly opted in" internally.
 Running this job before remote-private-content authorization just produces
 local snapshots, which is the safe default.
 

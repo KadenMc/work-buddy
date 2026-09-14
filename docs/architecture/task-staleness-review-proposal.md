@@ -42,7 +42,7 @@ Build on `wb-task-completeness` and `wb-task-completeness-sweep`: their intent-f
 rubric already distinguishes done, done differently, partial, consciously
 descoped, and not done. These investigation outcomes are independent of the
 workspace's lifecycle Status and Attention filters. The existing `task_stale_check`
-capability only checks age, due dates, and lifecycle heuristics; it is not a
+skill only checks age, due dates, and lifecycle heuristics; it is not a
 semantic investigation.
 
 Reuse the completeness evidence collector, agent-execution model selection and
@@ -77,7 +77,7 @@ an explicit completion decision using an isolated task store.
 
 ## Namespace suggestion review
 
-A separate namespace suggestion capability shares durable task-review execution
+A separate namespace suggestion skill shares durable task-review execution
 and Dashboard AI model selection. It proposes additions only; it never rewrites
 namespaces, project links, or lifecycle state without a user's decision.
 

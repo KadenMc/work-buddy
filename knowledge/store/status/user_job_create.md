@@ -1,11 +1,10 @@
 ---
 name: User Job Create
-kind: capability
+kind: skill
 description: Author a personal scheduled cron job by writing a .md file under <data_root>/user_jobs/. Validates the cron expression and refuses to overwrite an existing job. The scheduler hot-reloads (~30s) and starts firing the job. See features/user-jobs for the schema.
-capability_name: user_job_create
 category: status
 op: op.wb.user_job_create
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   name:
     type: str
@@ -17,15 +16,15 @@ parameters:
     required: true
   job_type:
     type: str
-    description: 'One of: capability, workflow, prompt.'
+    description: 'One of: skill, workflow, prompt.'
     required: false
-  capability:
+  skill:
     type: str
-    description: (type=capability) Registered capability name to invoke.
+    description: (type=skill) Registered skill name to invoke.
     required: false
   params:
     type: dict
-    description: (type=capability) Parameters dict for the capability.
+    description: (type=skill) Parameters dict for the skill.
     required: false
   workflow:
     type: str
@@ -51,8 +50,11 @@ parameters:
     type: int
     description: Optional stable jitter applied on top of cron eligibility. Non-negative integer; jobs fire at scheduled_at + a deterministic offset in [0, jitter_seconds]. Default 0 (no jitter — fire inline on cron match). Tick cadence quantizes values < ~30s away in practice; recommended floor is 60. See features/user-jobs.
     required: false
+param_aliases:
+  capability: skill
 mutates_state: true
 retry_policy: manual
+skill_name: user_job_create
 tags:
 - status
 - user

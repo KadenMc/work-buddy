@@ -1,11 +1,10 @@
 ---
 name: Thread Defer
-kind: capability
+kind: skill
 description: Defer a thread so it resurfaces at a future time. Sets the cached resurface_at field; the existing Later mechanic re-surfaces the thread when the time arrives.
-capability_name: thread_defer
 category: threads
 op: op.wb.thread_defer
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -25,6 +24,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: thread_defer
 tags:
 - threads
 - thread

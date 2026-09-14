@@ -1,11 +1,10 @@
 ---
 name: Project List
-kind: capability
+kind: skill
 description: List projects with folders + aliases, ordered by lifecycle status. Soft-deleted rows are filtered by default; pass include_deleted=True to see them.
-capability_name: project_list
 category: projects
 op: op.wb.project_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   status:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: bool
     description: Include rows with status='deleted' (default False)
     required: false
+skill_name: project_list
 tags:
 - projects
 - project

@@ -1,8 +1,7 @@
 ---
 name: Summary Search
-kind: capability
+kind: skill
 description: Coarse-to-fine retrieval funnel over framework summaries. Stage 1 ranks query against summary nodes; stage 2 (optional) drills into raw spans of top items. Each hit carries a `drill_node_id` ready to hand to `drill_tree`.
-capability_name: summary_search
 category: summarization
 parameters:
   query:
@@ -34,7 +33,8 @@ parameters:
     description: 'Search method: ''keyword'', ''semantic'', or ''keyword,semantic'' (default).'
     required: false
 op: op.wb.summary_search
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: summary_search
 tags:
 - allow-transient-labels
 - summarization

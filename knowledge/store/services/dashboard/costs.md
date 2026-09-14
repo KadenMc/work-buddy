@@ -1,7 +1,7 @@
 ---
 name: Dashboard — Costs tab
 kind: concept
-description: LLM cost / usage view with two complementary sources (per-call internal log + Claude Code transcripts), row-level backend filters, and the Anthropic rate-limit observation chip. The unified ``llm_costs_query`` capability reads both sources.
+description: LLM cost / usage view with two complementary sources (per-call internal log + Claude Code transcripts), row-level backend filters, and the Anthropic rate-limit observation chip. The unified ``llm_costs_query`` skill reads both sources.
 tags:
 - dashboard
 - costs
@@ -88,9 +88,9 @@ The two sources are **complementary, not overlapping** — work-buddy's runner c
 * ``GET /api/costs/projects`` — list of canonical project names for the toolbar dropdown.
 * ``GET /api/costs/rate-limits`` — most-recent per-model rate-limit observations (RPM / ITPM / OTPM headroom) for the toolbar chip.
 * ``POST /api/costs/rescan`` — refresh the Claude Code cache (gated by read-only mode).
-* Capability ``llm_costs_query`` — the **primary programmatic surface**. One call covers most cost questions: time windows (named or ISO range), grouping (project / model / session / day / tool), source filter, comparison-to-previous-window. See its parameter schema for details.
-* Capability ``claude_code_usage_scan`` — trigger an incremental rescan (mutates state).
-* Capability ``escalation_recent`` — per-tier LLM escalation observability records (logged separately at ``<data_root>/logs/escalations.log``; pruned via ``logs/escalations`` registered in ``paths.PRUNERS``).
+* Skill ``llm_costs_query`` — the **primary programmatic surface**. One call covers most cost questions: time windows (named or ISO range), grouping (project / model / session / day / tool), source filter, comparison-to-previous-window. See its parameter schema for details.
+* Skill ``claude_code_usage_scan`` — trigger an incremental rescan (mutates state).
+* Skill ``escalation_recent`` — per-tier LLM escalation observability records (logged separately at ``<data_root>/logs/escalations.log``; pruned via ``logs/escalations`` registered in ``paths.PRUNERS``).
 
 ## /api/costs query params
 
@@ -104,7 +104,7 @@ All filters apply at row level in *both* aggregators so totals / by_day / by_mod
   * ``models=`` (present, empty value) → match nothing (zero rows)
   * ``models=a,b`` → narrow to those models
   
-  The empty-vs-missing distinction is part of the contract: it's how the chip rail expresses "user de-selected every model" without silently falling back to all-time. Capability and operational callers must emit `models=` (with no value) when the intent is "return zero rows," not omit the param.
+  The empty-vs-missing distinction is part of the contract: it's how the chip rail expresses "user de-selected every model" without silently falling back to all-time. Skill and operational callers must emit `models=` (with no value) when the intent is "return zero rows," not omit the param.
 
 ## Reading the numbers
 

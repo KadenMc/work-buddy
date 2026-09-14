@@ -116,7 +116,7 @@ RETENTION = {
 def run_backup(*, manual: bool = False) -> dict[str, Any]:
     """Take a snapshot of every vital DB, bundle into a tarball, prune.
 
-    Returns a result dict suitable for capability output:
+    Returns a result dict suitable for skill output:
 
     .. code-block::
 

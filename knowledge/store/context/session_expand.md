@@ -1,11 +1,10 @@
 ---
 name: Session Expand
-kind: capability
+kind: skill
 description: Full context around a specific message in a session. Returns untruncated text for the target and surrounding messages.
-capability_name: session_expand
 category: context
 op: op.wb.session_expand
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Messages before+after to include (default 5)
     required: false
+skill_name: session_expand
 tags:
 - context
 - session

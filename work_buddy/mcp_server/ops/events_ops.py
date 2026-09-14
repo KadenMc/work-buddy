@@ -1,6 +1,6 @@
-"""Events-backbone ops (agent-facing capabilities).
+"""Events-backbone ops (agent-facing skills).
 
-Each op here is referenced by a ``kind: capability`` knowledge-store unit
+Each op here is referenced by a ``kind: skill`` knowledge-store unit
 carrying a matching ``op`` field (``knowledge/store/events/``).
 """
 

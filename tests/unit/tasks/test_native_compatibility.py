@@ -244,10 +244,10 @@ def test_registry_built_before_cutover_routes_reads_native_after_cutover(
 ):
     """A stale registry callable must not retain a legacy reader."""
     from work_buddy.mcp_server.ops import tasks_ops
-    from work_buddy.tasks import capabilities
+    from work_buddy.tasks import skills
 
     expected = {"task_id": "t-native", "source": "native"}
-    monkeypatch.setattr(capabilities, "task_read", lambda task_id: expected)
+    monkeypatch.setattr(skills, "task_read", lambda task_id: expected)
     monkeypatch.setattr(
         tasks_ops,
         "import_module",
@@ -296,7 +296,7 @@ def test_proposal_maintenance_obeys_the_existing_native_replay_authority_guard(
     from work_buddy.sidecar.retry_sweep import _assert_task_replay_boundary
     from work_buddy.tasks.errors import TaskReplayAuthorityMismatch
 
-    assert runtime.is_task_mutation_capability("task_proposals_reconcile")
+    assert runtime.is_task_mutation_skill("task_proposals_reconcile")
     with pytest.raises(TaskReplayAuthorityMismatch):
         _assert_task_replay_boundary({"name": "task_proposals_reconcile"})
     _assert_task_replay_boundary(

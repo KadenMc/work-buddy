@@ -1,11 +1,11 @@
 ---
 name: List Sessions
-kind: capability
+kind: skill
 description: List all known agent sessions with metadata
-capability_name: list_sessions
 category: status
 op: op.wb.list_sessions
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: list_sessions
 tags:
 - status
 - list

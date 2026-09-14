@@ -1,7 +1,7 @@
-"""Tests for the mode-aware capability registry.
+"""Tests for the mode-aware skill registry.
 
 Covers: the mode registry (declarations + lookups + load-time validation),
-``available_when`` gate resolution on capability/workflow declarations, the
+``available_when`` gate resolution on skill/workflow declarations, the
 session ``active_modes`` plumbing, the ``mode_toggle`` op, and the
 ``wb_search`` / ``wb_run`` mode-gating behavior.
 """
@@ -75,24 +75,24 @@ class TestModeRegistry:
 
 
 # ---------------------------------------------------------------------------
-# CapabilityUnit / WorkflowUnit serialization of available_when
+# SkillUnit / WorkflowUnit serialization of available_when
 # ---------------------------------------------------------------------------
 
 class TestUnitSerialization:
-    def test_capability_available_when_round_trips(self):
-        from work_buddy.knowledge.model import CapabilityUnit
-        unit = CapabilityUnit(
+    def test_skill_available_when_round_trips(self):
+        from work_buddy.knowledge.model import SkillUnit
+        unit = SkillUnit(
             path="x", name="n", description="d",
-            capability_name="c", category="cat",
+            skill_name="c", category="cat",
             available_when="dev & knowledge",
         )
         assert unit._kind_fields()["available_when"] == "dev & knowledge"
 
-    def test_ungated_capability_omits_available_when(self):
-        from work_buddy.knowledge.model import CapabilityUnit
-        unit = CapabilityUnit(
+    def test_ungated_skill_omits_available_when(self):
+        from work_buddy.knowledge.model import SkillUnit
+        unit = SkillUnit(
             path="x", name="n", description="d",
-            capability_name="c", category="cat",
+            skill_name="c", category="cat",
         )
         assert "available_when" not in unit._kind_fields()
 
@@ -106,12 +106,12 @@ class TestUnitSerialization:
 
     # Regression: available_when must survive the real store load path
     # (frontmatter dict -> unit_from_dict), not just direct construction.
-    def test_capability_available_when_survives_deserialization(self):
-        from work_buddy.knowledge.model import CapabilityUnit, unit_from_dict
-        unit = CapabilityUnit(
+    def test_skill_available_when_survives_deserialization(self):
+        from work_buddy.knowledge.model import SkillUnit, unit_from_dict
+        unit = SkillUnit(
             path="modes/x", name="X", description="d",
-            capability_name="x", category="c", op="op.wb.x",
-            schema_version="wb-capability/v1", available_when="dev & knowledge",
+            skill_name="x", category="c", op="op.wb.x",
+            schema_version="wb-skill/v1", available_when="dev & knowledge",
         )
         restored = unit_from_dict("modes/x", unit.to_dict())
         assert restored.available_when == "dev & knowledge"
@@ -125,26 +125,26 @@ class TestUnitSerialization:
         restored = unit_from_dict("modes/w", unit.to_dict())
         assert restored.available_when == "knowledge"
 
-    def test_capability_frontmatter_dict_reads_available_when(self):
+    def test_skill_frontmatter_dict_reads_available_when(self):
         from work_buddy.knowledge.model import unit_from_dict
         data = {
-            "kind": "capability", "name": "X", "capability_name": "x",
+            "kind": "skill", "name": "X", "skill_name": "x",
             "category": "c", "op": "op.wb.x",
-            "schema_version": "wb-capability/v1", "available_when": "dev",
+            "schema_version": "wb-skill/v1", "available_when": "dev",
         }
         assert unit_from_dict("context/x", data).available_when == "dev"
 
     def test_ungated_frontmatter_deserializes_to_none(self):
         from work_buddy.knowledge.model import unit_from_dict
         data = {
-            "kind": "capability", "name": "X", "capability_name": "x",
-            "category": "c", "op": "op.wb.x", "schema_version": "wb-capability/v1",
+            "kind": "skill", "name": "X", "skill_name": "x",
+            "category": "c", "op": "op.wb.x", "schema_version": "wb-skill/v1",
         }
         assert unit_from_dict("context/x", data).available_when is None
 
 
 # ---------------------------------------------------------------------------
-# available_when resolution in the capability loader
+# available_when resolution in the skill loader
 # ---------------------------------------------------------------------------
 
 def _modes_fixture_op(**kwargs):
@@ -162,52 +162,52 @@ def _register_fixture_op():
     yield
 
 
-def _cap_store(available_when):
-    from work_buddy.knowledge.model import CapabilityUnit
-    unit = CapabilityUnit(
-        path="test/test_cap_modes",
-        name="Test Cap Modes",
-        description="fixture capability for mode-gate tests",
-        capability_name="test_cap_modes",
+def _skill_store(available_when):
+    from work_buddy.knowledge.model import SkillUnit
+    unit = SkillUnit(
+        path="test/test_skill_modes",
+        name="Test Skill Modes",
+        description="fixture skill for mode-gate tests",
+        skill_name="test_skill_modes",
         category="test",
         op="op.test.modes_fixture",
-        schema_version="wb-capability/v1",
+        schema_version="wb-skill/v1",
         parameters={},
         available_when=available_when,
     )
-    return {"test/test_cap_modes": unit}
+    return {"test/test_skill_modes": unit}
 
 
 class TestAvailableWhenResolution:
-    def test_gated_capability_resolves_gate(self):
-        from work_buddy.knowledge.capability_loader import load_declared_capabilities
-        caps, issues = load_declared_capabilities(_cap_store("dev"))
-        cap = next(c for c in caps if c.name == "test_cap_modes")
+    def test_gated_skill_resolves_gate(self):
+        from work_buddy.knowledge.skill_loader import load_declared_skills
+        skills, issues = load_declared_skills(_skill_store("dev"))
+        skill = next(item for item in skills if item.name == "test_skill_modes")
         # The validated raw DSL string is stored (not a parsed AST) so the gate
         # survives an mcp_registry_reload without class-identity skew.
-        assert cap.available_when == "dev"
-        assert not any(i["path"] == "test/test_cap_modes" for i in issues)
+        assert skill.available_when == "dev"
+        assert not any(i["path"] == "test/test_skill_modes" for i in issues)
 
-    def test_ungated_capability_has_none(self):
-        from work_buddy.knowledge.capability_loader import load_declared_capabilities
-        caps, _ = load_declared_capabilities(_cap_store(None))
-        cap = next(c for c in caps if c.name == "test_cap_modes")
-        assert cap.available_when is None
+    def test_ungated_skill_has_none(self):
+        from work_buddy.knowledge.skill_loader import load_declared_skills
+        skills, _ = load_declared_skills(_skill_store(None))
+        skill = next(item for item in skills if item.name == "test_skill_modes")
+        assert skill.available_when is None
 
     def test_unknown_mode_gate_omitted_with_issue(self):
-        from work_buddy.knowledge.capability_loader import load_declared_capabilities
-        caps, issues = load_declared_capabilities(_cap_store("totally_unknown_mode"))
-        assert not any(c.name == "test_cap_modes" for c in caps)
+        from work_buddy.knowledge.skill_loader import load_declared_skills
+        skills, issues = load_declared_skills(_skill_store("totally_unknown_mode"))
+        assert not any(item.name == "test_skill_modes" for item in skills)
         assert any(
-            i["path"] == "test/test_cap_modes" and "available_when" in i["message"]
+            i["path"] == "test/test_skill_modes" and "available_when" in i["message"]
             for i in issues
         )
 
     def test_bad_dsl_gate_omitted_with_issue(self):
-        from work_buddy.knowledge.capability_loader import load_declared_capabilities
-        caps, issues = load_declared_capabilities(_cap_store("a & & b"))
-        assert not any(c.name == "test_cap_modes" for c in caps)
-        assert any(i["path"] == "test/test_cap_modes" for i in issues)
+        from work_buddy.knowledge.skill_loader import load_declared_skills
+        skills, issues = load_declared_skills(_skill_store("a & & b"))
+        assert not any(item.name == "test_skill_modes" for item in skills)
+        assert any(i["path"] == "test/test_skill_modes" for i in issues)
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +413,7 @@ class TestWorkflowGateResolution:
         assert _resolve_mode_gate("", "store:x") is None
 
     def test_unknown_mode_ungates(self):
-        # Workflows log + leave ungated (vs capabilities, which omit + issue).
+        # Workflows log + leave ungated (vs skills, which omit + issue).
         from work_buddy.mcp_server.registry import _resolve_mode_gate
         assert _resolve_mode_gate("totally_unknown_mode", "store:x") is None
 

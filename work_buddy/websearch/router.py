@@ -1,7 +1,7 @@
 """The system layer — routing, fallback, cache, across backends.
 
 This is what makes websearch a *system* rather than two tools: every consumer
-(the ``web_search`` capability, a future Events Processor, an agent) gets
+(the ``web_search`` skill, a future Events Processor, an agent) gets
 backend routing, transparent fallback, and an opt-in cache for free.
 
 ``search()`` resolves ``websearch.routing`` (default ``[jina, ddgs]``) in order:

@@ -4,7 +4,7 @@ kind: directions
 description: Locate a prior Claude Code conversation by topic, then drill into it for the specific turns that matter
 trigger: user wants to find a past conversation they vaguely remember (topic, decision, agent persona, time window) and re-surface its contents for re-indexing or re-reading
 command: wb-session-identify
-capabilities:
+skills:
 - context_search
 - session_search
 - session_expand

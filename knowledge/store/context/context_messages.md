@@ -1,11 +1,11 @@
 ---
 name: Context Messages
-kind: capability
+kind: skill
 description: 'Inter-agent messaging state: pending, recent, unread messages'
-capability_name: context_messages
 category: context
 op: op.wb.context_messages
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: context_messages
 tags:
 - context
 - messages

@@ -1,11 +1,10 @@
 ---
 name: Vault Recon Collect
-kind: capability
+kind: skill
 description: Legacy, explicit-only Datacore vault reconnaissance entry point. Its system schedule and automatic investigation escalation are retired; never suggest it when Obsidian is opted out.
-capability_name: vault_recon_collect
 category: context
 op: op.wb.vault_recon_collect
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   window_days:
     type: int
@@ -15,6 +14,7 @@ parameters:
     type: bool
     description: If true, evaluate rules but do not spawn investigation jobs. Useful for dry runs.
     required: false
+skill_name: vault_recon_collect
 tags:
 - context
 - vault

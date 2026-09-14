@@ -1,4 +1,4 @@
-"""Tests for the unified ``llm_costs_query`` capability."""
+"""Tests for the unified ``llm_costs_query`` skill."""
 
 from __future__ import annotations
 
@@ -262,11 +262,11 @@ def test_query_filters_applied_echoed_in_response(
 
 
 # ---------------------------------------------------------------------------
-# Capability dispatch
+# Skill dispatch
 # ---------------------------------------------------------------------------
 
 
-def test_capability_dispatches_to_query(fake_internal, empty_claude_code):
+def test_skill_dispatches_to_query(fake_internal, empty_claude_code):
     from work_buddy.mcp_server.registry import _llm_costs_query
     r = _llm_costs_query(window="7d", source="internal",
                           compare_to_previous=False)
@@ -274,13 +274,13 @@ def test_capability_dispatches_to_query(fake_internal, empty_claude_code):
     assert r["totals"]["calls"] == 3
 
 
-def test_capability_registered_in_registry():
-    """Sanity: llm_costs_query resolves as a declared llm capability."""
-    from work_buddy.knowledge.capability_loader import load_declared_capabilities
+def test_skill_registered_in_registry():
+    """Sanity: llm_costs_query resolves as a declared llm skill."""
+    from work_buddy.knowledge.skill_loader import load_declared_skills
     from work_buddy.mcp_server import op_registry
     op_registry.clear_ops()
     op_registry.load_builtin_ops()
-    caps, _issues = load_declared_capabilities()
+    caps, _issues = load_declared_skills()
     names = {c.name for c in caps if c.category == "llm"}
     assert "llm_costs_query" in names
     assert "claude_code_usage_summary" not in names  # removed

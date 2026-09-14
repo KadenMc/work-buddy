@@ -256,7 +256,7 @@ heading breadcrumb, so it ranks body content above it. `max_per_source` caps how
 hits may share one source document so a chunk-heavy file can't flood results; it is
 score-guarded, so a genuinely dominant document with no competitive alternative keeps its slots.
 
-## Capabilities, crons, endpoints
+## Skills, crons, endpoints
 
 - **`index_rebuild`** (`context/index-rebuild`) — incremental per-partition build; self-skips
   while any index build is running.

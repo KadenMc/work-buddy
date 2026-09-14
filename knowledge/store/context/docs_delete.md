@@ -1,11 +1,10 @@
 ---
 name: Docs Delete
-kind: capability
+kind: skill
 description: Delete a unit from the knowledge store. Cleans up parent/child references.
-capability_name: docs_delete
 category: context
 op: op.wb.docs_delete
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   path:
     type: str
@@ -13,6 +12,7 @@ parameters:
     required: true
 mutates_state: true
 retry_policy: manual
+skill_name: docs_delete
 tags:
 - context
 - docs

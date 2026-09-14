@@ -2,8 +2,8 @@
 schedule: "*/15 * * * *"  # knowledge cadence — matches the docs corpus refresh
 recurring: true
 jitter_seconds: 60  # spread 15-minute pile-ups
-type: capability
-capability: index_rebuild
+type: skill
+skill: index_rebuild
 params:
   partition: knowledge
   force: false

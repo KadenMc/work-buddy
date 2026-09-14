@@ -7,7 +7,7 @@ entry_points:
 - work_buddy.email.provider
 - work_buddy.email.providers.thunderbird
 - work_buddy.email.triage_adapter
-- work_buddy.email.capabilities
+- work_buddy.email.skills
 tags:
 - email
 - thunderbird
@@ -20,7 +20,7 @@ aliases:
 - mail triage
 - email bridge
 - work-buddy email
-dev_notes: '**Don''t reuse the `tools.obsidian.bridge_port` strategy here.** The Thunderbird bridge dynamically picks a port and writes a connection file at `<tmpdir>/thunderbird-work-buddy/connection.json`; the Python client discovers it. A fixed port collides badly when users run multiple Thunderbird profiles. **Don''t add mutating routes to the extension without consent gates.** The v1 read-only surface is asserted by `tests/routes.test.cjs` in the extension repo. Any compose / move / delete capability needs `@requires_consent` on the Python side AND an explicit feature flag in the extension''s options page. **The `thunderbird` tool probe is intentionally cheap.** It does a TCP probe + one authenticated `/health` round-trip; do not extend it to walk folders or fetch messages. **Verdict pass body-cap interaction with local models.** `_DEFAULT_VERDICT_BODY_CHARS=800` was tuned empirically against Qwen 14B''s 4096-token window plus the system prompt + active-tasks context block. Bumping the cap requires either a larger-context model or trimming the prompt. The classifier fix (work_buddy/llm/runner_v2.py + backends/_errors.py 2026-04) means context-exceeded errors auto-escalate now, but you''ll burn cycles on a wasted local call before the escalation fires.'
+dev_notes: '**Don''t reuse the `tools.obsidian.bridge_port` strategy here.** The Thunderbird bridge dynamically picks a port and writes a connection file at `<tmpdir>/thunderbird-work-buddy/connection.json`; the Python client discovers it. A fixed port collides badly when users run multiple Thunderbird profiles. **Don''t add mutating routes to the extension without consent gates.** The v1 read-only surface is asserted by `tests/routes.test.cjs` in the extension repo. Any compose / move / delete skill needs `@requires_consent` on the Python side AND an explicit feature flag in the extension''s options page. **The `thunderbird` tool probe is intentionally cheap.** It does a TCP probe + one authenticated `/health` round-trip; do not extend it to walk folders or fetch messages. **Verdict pass body-cap interaction with local models.** `_DEFAULT_VERDICT_BODY_CHARS=800` was tuned empirically against Qwen 14B''s 4096-token window plus the system prompt + active-tasks context block. Bumping the cap requires either a larger-context model or trimming the prompt. The classifier fix (work_buddy/llm/runner_v2.py + backends/_errors.py 2026-04) means context-exceeded errors auto-escalate now, but you''ll burn cycles on a wasted local call before the escalation fires.'
 ---
 
 ## Architecture
@@ -29,7 +29,7 @@ dev_notes: '**Don''t reuse the `tools.obsidian.bridge_port` strategy here.** The
 work-buddy agents
    │  MCP
    ▼
-work-buddy capabilities (email_*)
+work-buddy skills (email_*)
    │  EmailProvider protocol
    ▼
 ThunderbirdEmailProvider (HTTP client)
@@ -41,7 +41,7 @@ thunderbird-work-buddy companion extension (separate repo)
 Thunderbird Mail API
 ```
 
-The companion extension is **vendored separately** at `KadenMc/thunderbird-work-buddy`. It does nothing on its own — it exposes a narrow, authenticated, read-only HTTP bridge so work-buddy Python can read mail data. The agent-facing surface lives entirely inside this repo as MCP capabilities.
+The companion extension is **vendored separately** at `KadenMc/thunderbird-work-buddy`. It does nothing on its own — it exposes a narrow, authenticated, read-only HTTP bridge so work-buddy Python can read mail data. The agent-facing surface lives entirely inside this repo as MCP skills.
 
 ## Bridge surface (read-only v1)
 
@@ -58,11 +58,11 @@ The extension exposes a small REST API on a localhost port discovered via a conn
 | POST   | `/messages/display` | open a message in Thunderbird UI |
 | POST   | `/messages/exists`  | quarantine probe — "is this still at this folder URI?" |
 
-No compose / send / move / delete / contacts / calendar in v1. Adding any of those requires extension-side trust changes plus capability-side `@requires_consent` gating.
+No compose / send / move / delete / contacts / calendar in v1. Adding any of those requires extension-side trust changes plus skill-side `@requires_consent` gating.
 
 ## Provider abstraction
 
-`work_buddy.email.provider.EmailProvider` is a Protocol; backends live under `work_buddy.email.providers.*`. The factory `get_email_provider()` reads `email.provider` from config (default: `"thunderbird"`). `"fake"` selects an in-memory provider used by tests and dry runs. This abstraction keeps the door open for Gmail API / Microsoft Graph / IMAP backends without touching capabilities or the triage pipeline.
+`work_buddy.email.provider.EmailProvider` is a Protocol; backends live under `work_buddy.email.providers.*`. The factory `get_email_provider()` reads `email.provider` from config (default: `"thunderbird"`). `"fake"` selects an in-memory provider used by tests and dry runs. This abstraction keeps the door open for Gmail API / Microsoft Graph / IMAP backends without touching skills or the triage pipeline.
 
 Key provider methods:
 - `recent_messages` / `search_messages` — header summaries
@@ -79,11 +79,11 @@ Gmail's labels-as-folders model surfaces the same RFC Message-ID under multiple 
 
 ## Default-deny account access
 
-The extension's options page presents a checkbox per account; an empty allow-list means **no accounts exposed** (intentionally different from upstream `TKasperczyk/thunderbird-mcp`'s "empty = all"). The `email_accounts` capability shows the user which accounts are currently visible.
+The extension's options page presents a checkbox per account; an empty allow-list means **no accounts exposed** (intentionally different from upstream `TKasperczyk/thunderbird-mcp`'s "empty = all"). The `email_accounts` skill shows the user which accounts are currently visible.
 
 ## Triage integration
 
-Email triage runs through the unified source pipeline at `work_buddy.pipelines.email.EmailTriagePipeline`, dispatched via the `run_source_pipeline` capability with `source='email_triage'`. The pipeline:
+Email triage runs through the unified source pipeline at `work_buddy.pipelines.email.EmailTriagePipeline`, dispatched via the `run_source_pipeline` skill with `source='email_triage'`. The pipeline:
 
 1. **Collects** recent unread mail via `collect_email_candidates` (the existing email_triage_adapter).
 2. **Annotates** each item with synthesised tags (sender domain, folder type, flagged/read, message tags). No per-message LLM call — emails carry rich metadata already.
@@ -99,7 +99,7 @@ Email action library (`pipelines/email.py:EMAIL_ACTIONS`):
 
 The universal action library (`thread_dismiss`, `thread_defer`, `thread_rename`) layers on top.
 
-Why advisory-only? The Thunderbird bridge is read-first in v1. Mutating actions (archive, move, delete, send) require extension-side permission changes plus capability-side `@requires_consent` gating; until then `email_close` is the closest defensible thing — the Thread is dismissed so the cluster stops appearing as work, but the mail is left alone.
+Why advisory-only? The Thunderbird bridge is read-first in v1. Mutating actions (archive, move, delete, send) require extension-side permission changes plus skill-side `@requires_consent` gating; until then `email_close` is the closest defensible thing — the Thread is dismissed so the cluster stops appearing as work, but the mail is left alone.
 
 ## Trigger surfaces
 
@@ -151,16 +151,16 @@ Once the extension is running:
      thunderbird:
        enabled: true
    ```
-2. Restart the work-buddy MCP gateway so the `thunderbird` tool probe picks up the now-reachable bridge and unhides the `email_*` capabilities.
+2. Restart the work-buddy MCP gateway so the `thunderbird` tool probe picks up the now-reachable bridge and unhides the `email_*` skills.
 3. Verify:
    - `wb_run('email_health')` → expect `ok: true`.
    - `wb_run('email_accounts')` → confirms the accounts you ticked are visible.
    - `wb_run('run_source_pipeline', {source: 'email_triage', dry_run: True})` is NOT supported (the unified pipeline doesn't take dry_run); use a small `max_messages` for first verification instead.
 4. (Optional) To enable the hourly cron, flip `enabled: true` in `sidecar_jobs/email-triage-scan.md`.
 
-When Thunderbird is closed or the bridge is unreachable, the `thunderbird` tool probe fails and the `email_*` capabilities are filtered out of the live registry — `wb_run('feature_status')` shows them under disabled-capabilities with the bridge as the missing dependency.
+When Thunderbird is closed or the bridge is unreachable, the `thunderbird` tool probe fails and the `email_*` skills are filtered out of the live registry — `wb_run('feature_status')` shows them under disabled-skills with the bridge as the missing dependency.
 
-## Capabilities
+## Skills
 
 - `email_health` — bridge liveness probe.
 - `email_accounts` — list bridge-visible accounts.
@@ -171,7 +171,7 @@ When Thunderbird is closed or the bridge is unreachable, the `thunderbird` tool 
 - `email_create_umbrella_task` — per-cluster: one task representing the cluster.
 - `email_record_into_task` — per-cluster: file emails as a context section on an existing task's note.
 
-Email triage flows through the unified source pipeline; there is no separate `email_triage_run` capability. Triage execution goes through `run_source_pipeline(source='email_triage', ...)` (or the `email/email-triage` workflow).
+Email triage flows through the unified source pipeline; there is no separate `email_triage_run` skill. Triage execution goes through `run_source_pipeline(source='email_triage', ...)` (or the `email/email-triage` workflow).
 
 ## Related
 

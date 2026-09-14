@@ -235,7 +235,7 @@ def _build_full_library(
     """Layer the pipeline's source-specific actions on top of the
     universal action set.
 
-    Per-source descriptors win on capability_name collision (so a
+    Per-source descriptors win on skill_name collision (so a
     pipeline can re-skin a universal action for its domain if it
     really wants to).
     """
@@ -432,7 +432,7 @@ def _initialize_group_child_state(
     if proposal is not None:
         action_payload = {
             "kind": "standard",
-            "name": proposal.capability_name,
+            "name": proposal.skill_name,
             "parameters": dict(proposal.parameters),
             "rationale": proposal.rationale,
             "irreversibility": "low",

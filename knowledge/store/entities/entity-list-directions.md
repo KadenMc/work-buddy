@@ -4,7 +4,7 @@ kind: directions
 description: How to browse the entity registry — hierarchical tag filter, presentation, drill-down via entity_get.
 trigger: The user wants to see the entities they've registered, or browse by tag; or the user runs /wb-entity-list.
 command: wb-entity-list
-capabilities:
+skills:
 - entities/entity_list
 - entities/entity_get
 tags:

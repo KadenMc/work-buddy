@@ -199,7 +199,7 @@ def _mark_expression_locked(
     if span is None:
         raise InvariantViolation(f"document span does not exist: {span_ref}")
     # An expression is the document-local edge into the Truth ledger. Enforce
-    # policy in the exact transaction that inserts it so capability callers
+    # policy in the exact transaction that inserts it so skill callers
     # cannot bypass the Co-work HTTP/analysis admission checks.
     from work_buddy.cowork.truth_activation import require_truth_access
 

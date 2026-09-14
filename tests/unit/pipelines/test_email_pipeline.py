@@ -69,7 +69,7 @@ def _triage_item(
 
 class TestActionLibrary:
     def test_contains_email_specific(self):
-        names = {d.capability_name for d in EMAIL_ACTIONS}
+        names = {d.skill_name for d in EMAIL_ACTIONS}
         assert names == {
             "email_close",
             "email_create_tasks",
@@ -378,7 +378,7 @@ class TestUmbrellaSummary:
 
 class TestRegistration:
     def test_email_triage_registered(self):
-        from work_buddy.pipelines.capability import PIPELINES
+        from work_buddy.pipelines.source_registry import PIPELINES
 
         assert "email_triage" in PIPELINES
         assert PIPELINES["email_triage"] is EmailTriagePipeline

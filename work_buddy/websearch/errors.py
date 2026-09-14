@@ -1,7 +1,7 @@
 """Typed failure model for websearch providers.
 
 Mirrors the email/calendar provider exception design — backends raise these
-from their methods so the router and capability wrappers can
+from their methods so the router and skill wrappers can
 ``isinstance``-classify rather than substring-match error strings. ``error_kind``
 is a stable string consumers can key off without importing this module.
 

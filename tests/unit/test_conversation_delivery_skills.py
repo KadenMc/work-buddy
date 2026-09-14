@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import pytest
 
-from work_buddy.knowledge.capability_loader import load_declared_capabilities
+from work_buddy.knowledge.skill_loader import load_declared_skills
 from work_buddy.mcp_server import op_registry
 
 
 @pytest.fixture
-def declared_capabilities():
+def declared_skills():
     op_registry.clear_ops()
     op_registry.load_builtin_ops()
-    capabilities, issues = load_declared_capabilities()
-    yield {item.name: item for item in capabilities}, issues
+    skills, issues = load_declared_skills()
+    yield {item.name: item for item in skills}, issues
     op_registry.clear_ops()
 
 
 def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
-    declared_capabilities,
+    declared_skills,
 ) -> None:
-    capabilities, issues = declared_capabilities
+    skills, issues = declared_skills
     relevant_issues = [
         issue
         for issue in issues
@@ -37,7 +37,7 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
     ]
     assert relevant_issues == []
 
-    send = capabilities["conversation_send"]
+    send = skills["conversation_send"]
     assert set(send.parameters) == {
         "conversation_id",
         "message",
@@ -56,14 +56,14 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
         )
     )
 
-    ask = capabilities["conversation_ask"]
+    ask = skills["conversation_ask"]
     assert {"consumer", "generation", "message_id"} <= set(ask.parameters)
     assert all(
         ask.parameters[name].get("required", False) is False
         for name in ("consumer", "generation", "message_id")
     )
 
-    poll = capabilities["conversation_poll"]
+    poll = skills["conversation_poll"]
     assert set(poll.parameters) == {
         "conversation_id", "timeout_seconds", "consumer", "generation",
         "message_id",
@@ -73,7 +73,7 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
         for name in ("timeout_seconds", "consumer", "generation", "message_id")
     )
 
-    receive = capabilities["conversation_receive"]
+    receive = skills["conversation_receive"]
     assert set(receive.parameters) == {
         "conversation_id",
         "consumer",
@@ -82,7 +82,7 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
     }
     assert receive.parameters["timeout_seconds"].get("required", False) is False
 
-    acknowledge = capabilities["conversation_ack"]
+    acknowledge = skills["conversation_ack"]
     assert set(acknowledge.parameters) == {
         "conversation_id",
         "consumer",
@@ -114,11 +114,11 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
         "cowork_doc_comment",
         "cowork_doc_expression_mark",
     ):
-        capability = capabilities[name]
+        skill = skills[name]
         assert {"conversation_id", "consumer", "generation"} <= set(
-            capability.parameters
+            skill.parameters
         )
         assert all(
-            capability.parameters[field].get("required", False) is False
+            skill.parameters[field].get("required", False) is False
             for field in ("conversation_id", "consumer", "generation")
         )

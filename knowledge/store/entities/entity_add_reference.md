@@ -1,8 +1,7 @@
 ---
 name: Entity Add Reference
-kind: capability
+kind: skill
 description: Explicitly append a reference row for an entity. The standard recording path is the side-effect of entity_resolve/create/update; this exists for scripts and dashboard-driven recording.
-capability_name: entity_add_reference
 category: entities
 parameters:
   entity_id:
@@ -24,7 +23,8 @@ parameters:
 mutates_state: true
 retry_policy: manual
 op: op.wb.entity_add_reference
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_add_reference
 tags:
 - entities
 - entity

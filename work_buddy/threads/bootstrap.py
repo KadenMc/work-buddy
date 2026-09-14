@@ -96,7 +96,7 @@ def bootstrap_threads(*, clear_first: bool = False) -> None:
     cleanup_runner.register_cleanup_runner()
 
     # 5b. EXECUTING state-entry handler — dispatches the chosen action
-    # capability, records execution_started/finished, fires the result
+    # skill, records execution_started/finished, fires the result
     # trigger to advance the FSM.
     from work_buddy.threads import execution_runner
     execution_runner.register_execution_runner()
@@ -397,15 +397,15 @@ def _build_redirect_feedback_block(thread) -> str:
         return ""
 
 
-def _required_params_for(capability_name: str) -> list[str]:
-    """Required parameter names for a capability, or ``[]`` if the name
+def _required_params_for(skill_name: str) -> list[str]:
+    """Required parameter names for a skill, or ``[]`` if the name
     is unknown or the registry can't be read."""
-    if not capability_name:
+    if not skill_name:
         return []
     try:
         from work_buddy.mcp_server.registry import get_registry
         from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
-        entry = get_registry().get(capability_name)
+        entry = get_registry().get(skill_name)
         params = getattr(entry, "parameters", None) or {}
         return [
             n for n, info in params.items()

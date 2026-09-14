@@ -24,7 +24,7 @@ async function pollWorkflowViews() {
                 _knownViews.add(view.view_id);
                 const isCustom = (view.view_type || 'generic') !== 'generic';
                 const vt = view.view_type || '';
-                const isPalette = vt.startsWith('palette_') || vt === 'workflow_consent' || vt === 'capability_consent';
+                const isPalette = vt.startsWith('palette_') || vt === 'workflow_consent' || vt === 'skill_consent' || vt === 'capability_consent';
                 // Views that existed before page load: create tab but skip toast
                 const isPreExisting = view.created_at && view.created_at < (_pageLoadTime - 5);
                 // Custom views auto-open tabs. Palette-originated views

@@ -1554,7 +1554,7 @@ def resolve_action_snapshot_consumption(
     """Finalize the first exact frozen-context fetch outcome for a receipt.
 
     ``pending`` is never returned to an agent. The receipt and its outcome are
-    committed by the same generation-fenced transaction as the capability
+    committed by the same generation-fenced transaction as the skill
     response. Replays retain the first terminal outcome so the audit record
     cannot be rewritten after an unavailable explanation or successful use.
     """

@@ -1,11 +1,10 @@
 ---
 name: Sensitive Data Checkpoint
-kind: capability
+kind: skill
 description: Seal a local-only SQLite Journal hot snapshot beside an already authorized, content-aware Sources export and verify both by digest. The checkpoint is never eligible for the unencrypted remote backup.
-capability_name: data_sensitive_checkpoint
 category: backups
 op: op.wb.data_sensitive_checkpoint
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   source_export_path:
     type: str
@@ -37,6 +36,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: data_sensitive_checkpoint
 tags:
 - backups
 - journal
@@ -51,7 +51,7 @@ parents:
 - backups
 ---
 
-This capability is the second step of a sensitive backup. First create a
+This skill is the second step of a sensitive backup. First create a
 content-carrying Sources archive through `source_maintenance_operator`; that
 operator records every issued offline copy behind its own high-consent gate.
 Then pass its exact receipt here. This operation does not copy or rename the

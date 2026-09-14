@@ -1,4 +1,4 @@
-"""Unit tests for the cowork_doc_* capabilities.
+"""Unit tests for the cowork_doc_* skills.
 
 The ops call the real document engine against a real registered v2 store, so
 these tests exercise parameter validation, the producer-identity refusal paths,
@@ -219,7 +219,7 @@ def test_register_ops_binds_all_five_idempotently() -> None:
 
 
 # --------------------------------------------------------------------------
-# Read capabilities.
+# Read skills.
 # --------------------------------------------------------------------------
 
 

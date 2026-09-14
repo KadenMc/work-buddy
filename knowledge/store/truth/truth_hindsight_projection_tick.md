@@ -1,11 +1,10 @@
 ---
 name: Truth Hindsight Projection Tick
-kind: capability
+kind: skill
 description: Reconcile authoritative current Truth claims with the replaceable Hindsight memory projection, then drain a bounded durable outbox batch.
-capability_name: truth_hindsight_projection_tick
 category: truth
 op: op.wb.truth_hindsight_projection_tick
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: string
@@ -22,6 +21,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_hindsight_projection_tick
 tags:
 - truth
 - hindsight
@@ -37,7 +37,7 @@ parents:
 - truth
 ---
 
-This capability never reads Hindsight as Truth authority. It projects only
+This skill never reads Hindsight as Truth authority. It projects only
 current confirmed claims admitted by the configured rollout and claim-support
 policy. Exact proposition bytes cross the possibly LLM-backed Hindsight retain
 boundary through a run-owned Agent Execution disclosure manifest. Challenge,

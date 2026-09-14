@@ -27,7 +27,7 @@ _cached_session_dir: Path | None = None
 # ---------------------------------------------------------------------------
 # Originating-session context var
 # ---------------------------------------------------------------------------
-# When a capability is executed asynchronously by the sidecar (e.g. the
+# When a skill is executed asynchronously by the sidecar (e.g. the
 # retry sweep replaying a queued llm_submit job), the thread running the
 # callable is not the originating agent's thread. To route per-session
 # artifacts like the LLM cost log back to the agent who requested the
@@ -201,7 +201,7 @@ def get_active_modes(session_id: str | None = None) -> set[str]:
 
     Reads the ``active_modes`` list from the session manifest (defaulting to
     this process's own session). Returns an empty set when the manifest is
-    missing, unreadable, or declares no modes. Modes gate capability and
+    missing, unreadable, or declares no modes. Modes gate skill and
     workflow availability — see ``work_buddy/modes/`` and ``available_when``.
     """
     session_dir = get_session_dir(session_id)

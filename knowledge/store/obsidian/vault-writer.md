@@ -39,7 +39,7 @@ writer, but their retired Markdown tree is not one of this guard's four domain
 roots. Callers must not use this generic writer for task state; frozen task
 compatibility has its own native task authority boundary.
 
-The Obsidian-gated `vault_write_at_location` capability is omitted when
+The Obsidian-gated `vault_write_at_location` skill is omitted when
 Obsidian is opted out. Even when an explicit compatibility profile exposes it,
 the writer may operate only outside sealed native-domain roots. It is never a
 fallback for native domain writes.

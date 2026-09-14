@@ -12,8 +12,8 @@ Three jobs live here:
 
 * ``ensure_document_conversation`` finds or lazily creates the single
   conversation for a document. It uses ``create_conversation`` directly, never
-  the ``conversation_create`` capability, so the surface does not double mount
-  (the capability fires a chat toast and a workflow tab, per the chat-sidebar
+  the ``conversation_create`` skill, so the surface does not double mount
+  (the skill fires a chat toast and a workflow tab, per the chat-sidebar
   consumer pattern).
 * ``feedback_poster`` returns a hook that posts the human's verbatim feedback as
   the user's message and reports the conversation and message references. The

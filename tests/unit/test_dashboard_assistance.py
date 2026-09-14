@@ -217,7 +217,7 @@ def prepared_job_snapshot(message_id="initial-1", **values):
         "name": "anthropic-ipo-date",
         "schedule": "",
         "job_type": "prompt",
-        "capability": "",
+        "skill": "",
         "workflow": "",
         "prompt": "",
         "params": "{}",
@@ -527,7 +527,7 @@ def test_job_reference_search_reuses_the_visible_catalog_without_dispatch(
     )
     context = initial_context(surface, session)
     assert context["form"]["referenceScopes"] == [
-        "job_capability",
+        "job_skill",
         "job_workflow",
     ]
 
@@ -536,7 +536,7 @@ def test_job_reference_search_reuses_the_visible_catalog_without_dispatch(
         message_id=context["message_id"],
         consumption_receipt_id=context["consumption_receipt_id"],
         request_id="reference-web-search-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="  web   search  ",
         **scope(surface),
     )
@@ -544,7 +544,7 @@ def test_job_reference_search_reuses_the_visible_catalog_without_dispatch(
     assert result["protocol"] == "wb.assisted-draft.reference/v1"
     assert result["results"][0]["name"] == "web_search"
     assert result["results"][0]["parameters"][0]["name"] == "query"
-    assert searches == [("job_capability", "web search", 8)]
+    assert searches == [("job_skill", "web search", 8)]
     assert surface["runner"].starts and surface["runner"].terminations == []
 
     ambiguous_replay = assisted_draft_reference_search(
@@ -552,15 +552,15 @@ def test_job_reference_search_reuses_the_visible_catalog_without_dispatch(
         message_id=context["message_id"],
         consumption_receipt_id=context["consumption_receipt_id"],
         request_id="reference-web-search-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="web search",
         **scope(surface),
     )
     assert ambiguous_replay["status"] == "assistance_disclosure_ambiguous"
-    assert searches == [("job_capability", "web search", 8)]
+    assert searches == [("job_skill", "web search", 8)]
     sent = tool(
         "conversation_send",
-        message="The registered Work Buddy capability is web_search.",
+        message="The registered Work Buddy skill is web_search.",
         message_id="assist-reference-web-search-1",
         **scope(surface),
     )
@@ -570,22 +570,106 @@ def test_job_reference_search_reuses_the_visible_catalog_without_dispatch(
         message_id=context["message_id"],
         consumption_receipt_id=context["consumption_receipt_id"],
         request_id="reference-web-search-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="web search",
         **scope(surface),
     )
     assert replay == result
-    assert searches == [("job_capability", "web search", 8)]
+    assert searches == [("job_skill", "web search", 8)]
     conflict = assisted_draft_reference_search(
         assistant_session_id=session["assistantSessionId"],
         message_id=context["message_id"],
         consumption_receipt_id=context["consumption_receipt_id"],
         request_id="reference-web-search-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="different operation",
         **scope(surface),
     )
     assert conflict["status"] == "assistance_reference_request_conflict"
+
+
+def test_job_reference_search_normalizes_persisted_capability_scope_alias(
+    surface, monkeypatch
+):
+    searches = []
+    monkeypatch.setattr(
+        "work_buddy.dashboard.job_registry.search_job_registry",
+        lambda **kwargs: searches.append(kwargs) or [],
+    )
+    prepared = prepare_session(
+        surface,
+        identity=JOB_IDENTITY,
+        schema=form_schema("job-create")["schema"],
+    )
+    session = start(surface, prepared, initialSnapshot=prepared_job_snapshot())
+    context = initial_context(surface, session)
+
+    result = assisted_draft_reference_search(
+        assistant_session_id=session["assistantSessionId"],
+        message_id=context["message_id"],
+        consumption_receipt_id=context["consumption_receipt_id"],
+        request_id="reference-legacy-capability-1",
+        reference_kind="job_capability",
+        query="web search",
+        **scope(surface),
+    )
+
+    assert searches == [{"reference_kind": "job_skill", "query": "web search"}]
+    assert result["reference_kind"] == "job_skill"
+    sent = tool(
+        "conversation_send",
+        message="The registered Work Buddy skill search completed.",
+        message_id="assist-reference-legacy-capability-1",
+        **scope(surface),
+    )
+    assert sent["created"] is True
+
+    # Simulate a receipt persisted by the pre-migration process, including
+    # both its old request hash and its old response payload vocabulary.
+    legacy_payload = {**result, "reference_kind": "job_capability"}
+    legacy_hash = digest(
+        {
+            "message_id": context["message_id"],
+            "consumption_receipt_id": context["consumption_receipt_id"],
+            "reference_kind": "job_capability",
+            "query": "web search",
+        }
+    )
+    with surface["broker"]._transaction() as conn:
+        conn.execute(
+            "UPDATE assisted_draft_reference_receipts SET request_hash=?, payload_json=? WHERE request_id=?",
+            (
+                legacy_hash,
+                assistance_service.canonical(legacy_payload),
+                "reference-legacy-capability-1",
+            ),
+        )
+
+    canonical_replay = assisted_draft_reference_search(
+        assistant_session_id=session["assistantSessionId"],
+        message_id=context["message_id"],
+        consumption_receipt_id=context["consumption_receipt_id"],
+        request_id="reference-legacy-capability-1",
+        reference_kind="job_skill",
+        query="web search",
+        **scope(surface),
+    )
+    assert canonical_replay == result
+    with surface["broker"]._transaction() as conn:
+        stored = conn.execute(
+            "SELECT request_hash, payload_json FROM assisted_draft_reference_receipts WHERE request_id=?",
+            ("reference-legacy-capability-1",),
+        ).fetchone()
+    assert stored["request_hash"] == digest(
+        {
+            "message_id": context["message_id"],
+            "consumption_receipt_id": context["consumption_receipt_id"],
+            "reference_kind": "job_skill",
+            "query": "web search",
+        }
+    )
+    assert json.loads(stored["payload_json"])["reference_kind"] == "job_skill"
+    assert searches == [{"reference_kind": "job_skill", "query": "web search"}]
 
 
 def test_reference_search_is_bound_to_form_turn_receipt_and_request(
@@ -602,7 +686,7 @@ def test_reference_search_is_bound_to_form_turn_receipt_and_request(
         message_id=context["message_id"],
         consumption_receipt_id=context["consumption_receipt_id"],
         request_id="reference-not-allowed-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="web search",
         **scope(surface),
     )
@@ -626,7 +710,7 @@ def test_reference_search_is_bound_to_form_turn_receipt_and_request(
         message_id=job_context["message_id"],
         consumption_receipt_id="acr-wrong",
         request_id="reference-mismatch-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="web search",
         **scope(surface),
     )
@@ -637,14 +721,14 @@ def test_reference_search_is_bound_to_form_turn_receipt_and_request(
         message_id=job_context["message_id"],
         consumption_receipt_id=job_context["consumption_receipt_id"],
         request_id="reference-exact-turn-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="web search",
         **scope(surface),
     )
     assert first["results"] == []
     sent = tool(
         "conversation_send",
-        message="I checked the registered capability metadata.",
+        message="I checked the registered skill metadata.",
         message_id="assist-reference-exact-turn-1",
         **scope(surface),
     )
@@ -659,7 +743,7 @@ def test_reference_search_is_bound_to_form_turn_receipt_and_request(
     assert response.status_code == 200, response.json
     response = surface["client"].post(
         f"/api/assistance/{job['assistantSessionId']}/conversations/{job['conversationId']}/respond",
-        json={"message_id": "job-turn-2", "value": "Check that capability again."},
+        json={"message_id": "job-turn-2", "value": "Check that skill again."},
     )
     assert response.status_code == 200, response.json
     next_context = receive_context(surface, job, "job-turn-2")
@@ -668,7 +752,7 @@ def test_reference_search_is_bound_to_form_turn_receipt_and_request(
         message_id=next_context["message_id"],
         consumption_receipt_id=next_context["consumption_receipt_id"],
         request_id="reference-exact-turn-1",
-        reference_kind="job_capability",
+        reference_kind="job_skill",
         query="web search",
         **scope(surface),
     )

@@ -46,7 +46,7 @@ In-memory: window.__wb_vault_ledger. Persistent: localStorage["wb-vault-ledger"]
 
 ## Integration
 
-infer_activity(deep=True) uses vault event ledger when available, falling back to mtime scanning. Hot files capability fuses vault events with KTR writing intensity.
+infer_activity(deep=True) uses vault event ledger when available, falling back to mtime scanning. Hot files skill fuses vault events with KTR writing intensity.
 
 ## Caveats
 

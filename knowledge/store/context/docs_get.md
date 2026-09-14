@@ -1,11 +1,10 @@
 ---
 name: Docs Get
-kind: capability
+kind: skill
 description: '[Legacy] Get a knowledge unit by name. Use agent_docs instead.'
-capability_name: docs_get
 category: context
 op: op.wb.docs_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   name:
     type: str
@@ -15,6 +14,7 @@ parameters:
     required: false
 invokes:
 - agent_docs
+skill_name: docs_get
 tags:
 - context
 - docs

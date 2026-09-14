@@ -1,11 +1,10 @@
 ---
 name: Memory Read
-kind: capability
+kind: skill
 description: 'Read from personal memory (Hindsight). No LLM cost. Modes: ''search'' (default) — semantic + keyword recall, use descriptive topic phrases with specific entity names for best results; ''model'' — fetch a mental model by ID; ''recent'' — list latest memories.'
-capability_name: memory_read
 category: memory
 op: op.wb.memory_read
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -27,6 +26,7 @@ parameters:
     type: str
     description: 'Retrieval depth for mode=search: low (fast, default), mid, high'
     required: false
+skill_name: memory_read
 tags:
 - memory
 - read

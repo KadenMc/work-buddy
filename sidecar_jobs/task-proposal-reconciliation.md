@@ -3,8 +3,8 @@ schedule: "3-59/5 * * * *"
 recurring: true
 enabled: true
 jitter_seconds: 45
-type: capability
-capability: task_proposals_reconcile
+type: skill
+skill: task_proposals_reconcile
 params:
   limit: 50
 ---

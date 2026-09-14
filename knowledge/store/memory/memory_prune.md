@@ -1,11 +1,10 @@
 ---
 name: Memory Prune
-kind: capability
+kind: skill
 description: Delete memories from the bank. CONSENT-GATED, IRREVERSIBLE. Call with no args to list documents for review. Then provide document_id to delete a specific document's memories, or memory_type to bulk-delete a category (world/experience/observation).
-capability_name: memory_prune
 category: memory
 op: op.wb.memory_prune
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   document_id:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: str
     description: 'Bulk delete by type: world, experience, or observation'
     required: false
+skill_name: memory_prune
 tags:
 - memory
 - prune

@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 EMAIL_ACTIONS: list[ActionDescriptor] = [
     ActionDescriptor(
-        capability_name="email_close",
+        skill_name="email_close",
         label="Close cluster",
         description=(
             "Mark this email cluster as not actionable — newsletters, "
@@ -74,7 +74,7 @@ EMAIL_ACTIONS: list[ActionDescriptor] = [
         icon="x-square",
     ),
     ActionDescriptor(
-        capability_name="email_create_tasks",
+        skill_name="email_create_tasks",
         label="Create one task per email",
         description=(
             "Walk each email in this cluster and create a task in the "
@@ -86,7 +86,7 @@ EMAIL_ACTIONS: list[ActionDescriptor] = [
         icon="check-square",
     ),
     ActionDescriptor(
-        capability_name="email_create_umbrella_task",
+        skill_name="email_create_umbrella_task",
         label="Create umbrella task",
         description=(
             "Create a single task representing the whole cluster. "
@@ -100,7 +100,7 @@ EMAIL_ACTIONS: list[ActionDescriptor] = [
         icon="package",
     ),
     ActionDescriptor(
-        capability_name="email_record_into_task",
+        skill_name="email_record_into_task",
         label="Record into existing task",
         description=(
             "File the cluster's emails as a context section on an "

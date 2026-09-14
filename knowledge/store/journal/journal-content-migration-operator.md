@@ -23,14 +23,14 @@ high-weight, zero-TTL consent boundary, so selection, source capture, cutover,
 rollback, recovery, and exit certification cannot inherit a workflow grant or
 silently reuse a prior approval.
 
-The public capability is no longer registered in the MCP capability registry.
+The public skill is no longer registered in the MCP skill registry.
 This concept remains in the knowledge store only as historical and recovery
 documentation. Its code is retained to interpret or recover older per-section
 migration receipts; do not use it for the database-only Journal cohort.
 
 Historically, the deployment gates `journal.content_migration.enabled` and
 `journal.content_migration.cutover_enabled` both default to false and cannot be
-changed through this capability. Shadow import records exact file/section
+changed through this skill. Shadow import records exact file/section
 digests, unknown file-origin authorship, a source-backed document binding, and
 separate byte, newline/BOM-normalized, and narrowly structural Markdown parity
 facts. Structural parity covers only the representation-neutral list-marker

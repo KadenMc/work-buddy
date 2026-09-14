@@ -4,7 +4,7 @@ kind: directions
 description: How to check feature preferences before recommending or using a component, and how the requirements system differs from runtime health checks.
 summary: Check features.<name>.wanted in config.local.yaml before recommending or diagnosing a feature. wanted:false means don't probe; point at /wb-setup preferences.
 trigger: Before recommending, probing, or diagnosing a feature; whenever a user asks 'why isn't X working?'
-capabilities:
+skills:
 - setup_wizard
 - feature_status
 tags:
@@ -55,7 +55,7 @@ Rule of thumb: "is it configured?" → requirements. "is it running?" → health
 
 The Settings tab renders a unified **control graph** (see ``architecture/control-graph``) that fuses preferences + requirements + health + registry into one domain → subsystem → component → requirement hierarchy. Preference toggles, requirement fixes, and per-component reprobes all live there. When an agent needs to understand "is this feature usable right now, and if not, what would unblock it," ``GET /api/control/graph`` answers in one call.
 
-## Capabilities
+## Skills
 
 - ``setup_wizard`` — modes: ``status`` (overview), ``guided`` (interactive setup; step 2 now iterates control-graph domains), ``diagnose`` (deep diagnostic), ``preferences`` (view/edit; returns domain info per component).
 - ``feature_status`` — includes ``preferences`` and ``bootstrap_requirements`` sections alongside tool-probe results.

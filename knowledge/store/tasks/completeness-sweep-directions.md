@@ -4,7 +4,7 @@ kind: directions
 description: How to run a full-list completeness sweep — audit every open task for whether it is already done, warn about cost upfront, fan out the per-task task-completeness investigator over the whole list, defer all mutations to a reviewable AUDIT.md, and apply backdated toggles only on user sign-off.
 trigger: user runs /wb-task-completeness-sweep or asks to audit/sweep the whole task list for tasks that are already done
 command: wb-task-completeness-sweep
-capabilities:
+skills:
 - tasks/task_list
 - tasks/task-completeness
 - tasks/task_toggle
@@ -98,7 +98,7 @@ Setup (once): register the SHARED session FIRST:
 Consent is pre-authorized for this session (a workflow_class:task-completeness grant is live), so the workflow runs without prompting you. If a call ever blocks on consent or times out, do NOT hang: record that task with disposition "error" and move on.
 
 Per task (repeat for each task id in your shard):
-1. Start the investigator:  mcp__work-buddy__wb_run("task-completeness", {"task_id": "<TID>"})  (param key is "capability"/positional as your gateway expects; it is a workflow). Capture workflow_run_id. The gather-evidence step auto-runs as an ELIDED manifest.
+1. Start the investigator:  mcp__work-buddy__wb_run("task-completeness", {"task_id": "<TID>"})  (param key is "skill"/positional as your gateway expects; it is a workflow). Capture workflow_run_id. The gather-evidence step auto-runs as an ELIDED manifest.
 2. Pull evidence (cheapest first, do NOT pull everything):
      mcp__work-buddy__wb_step_result(workflow_run_id="<wf>", step_id="gather-evidence", key="task")        # intent: task text + note_content
      mcp__work-buddy__wb_step_result(workflow_run_id="<wf>", step_id="gather-evidence", key="provenance")  # created_by / assigned / developed_by (small)
@@ -122,7 +122,7 @@ Per task (repeat for each task id in your shard):
 Disposition rubric: done (intent met as written, or a blessed v1 shipped — surface any deferred follow-up) / done-differently (intent met by a different design; set divergence better|lateral|worse and justify from rationale + code) / partial (some shipped, some remains — delineate which) / consciously-descoped (a sub-part deliberately dropped) / not-done (no satisfying implementation; inactivity lands here).
 Confidence: high = structural developed_by link AND you read the code; medium = Rung-3 intent-only inference backed by code reading; low = weak/ambiguous. Be honest.
 
-HARD RULES: read-only except appending to YOUR OUT_JSONL. Never task_toggle/task_create/edit repo files/edit other shards. If you query the store raw, liveness = deleted_at IS NULL (prefer capabilities). NO fan-out — do not spawn sub-agents. Return ONLY a brief recap (one line per task: <TID> <disposition>/<confidence> — <=10-word gist; plus uncertainties and blockers). Evidence lives in the JSONL.
+HARD RULES: read-only except appending to YOUR OUT_JSONL. Never task_toggle/task_create/edit repo files/edit other shards. If you query the store raw, liveness = deleted_at IS NULL (prefer skills). NO fan-out — do not spawn sub-agents. Return ONLY a brief recap (one line per task: <TID> <disposition>/<confidence> — <=10-word gist; plus uncertainties and blockers). Evidence lives in the JSONL.
 ```
 
 Note for non-fan-out harnesses: if you have no sub-agent tool, skip the fan-out and run the per-task loop above yourself, sequentially, appending to a single JSONL. Slower and more context, same correctness.

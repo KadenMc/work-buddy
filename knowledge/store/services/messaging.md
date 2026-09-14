@@ -34,7 +34,7 @@ Stop-hook block semantics: the Stop hook blocks only on messages that still need
 attention — unread ones (which surface once, then release once auto-marked read) and
 high/urgent ones not yet resolved. Notifications created with a terminal status (e.g.
 the retry sweep's retry_success) never block. Clear a handled message with `bash
-/tmp/wb/resolve --id <id>` or the update_message_status capability — read/reply do not
+/tmp/wb/resolve --id <id>` or the update_message_status skill — read/reply do not
 change a message's status. Full detail: the messaging/block-semantics unit.
 
 Sending and replying: Agents in other repos send via curl POST localhost:5123/messages. Replies default to broadcast (recipient_session=NULL), visible to any session in the target project. Pass recipient_session explicitly only when targeting a specific session.

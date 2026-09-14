@@ -84,7 +84,7 @@ def _selection(run: TruthAnalysisRuntimeRun) -> tuple[str, str]:
 
 
 class TruthAnalysisDisclosureBoundary:
-    """Run-aware disclosure operations used by the four worker capabilities."""
+    """Run-aware disclosure operations used by the four worker skills."""
 
     def __init__(
         self,
@@ -204,7 +204,7 @@ class TruthAnalysisDisclosureBoundary:
         idempotency_key: str,
         derivation_ref: str | None = None,
     ) -> DisclosureEntry:
-        """Account a worker-facing value as it leaves the capability kernel."""
+        """Account a worker-facing value as it leaves the skill kernel."""
 
         exact_content = canonical_json(payload).encode("utf-8")
         execution_provider_id, _model_id = _selection(run)
@@ -248,7 +248,7 @@ class TruthAnalysisDisclosureBoundary:
                 "the prior worker response has an ambiguous delivery outcome"
             )
         self.gateway.mark_possibly_sent(entry.id)
-        # The local capability return is only a handoff attempt. A later
+        # The local skill return is only a handoff attempt. A later
         # worker output call supplies causal evidence that the model received
         # this exact response; until then replay remains blocked as ambiguous.
         return self.gateway.store.get_entry(entry.id)

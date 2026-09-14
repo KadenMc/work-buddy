@@ -5,7 +5,7 @@ description: Pre-flight steps before deleting a project — confirm slug, explai
 summary: 'Before calling project_delete: (1) confirm the slug with the user, (2) explain that registry identity is removed but Hindsight memories are preserved. Then call — the consent system handles approval. If user wants to clear memories too, use memory_prune separately afterward.'
 trigger: user wants to remove a project from the registry
 command: wb-project-delete
-capabilities:
+skills:
 - projects/project_delete
 tags:
 - projects

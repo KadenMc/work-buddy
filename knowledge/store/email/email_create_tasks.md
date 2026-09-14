@@ -1,11 +1,10 @@
 ---
 name: Email Create Tasks
-kind: capability
+kind: skill
 description: Walk an email-cluster thread and create one native task per email. Sender and date land in each task's Co-work knowledge document.
-capability_name: email_create_tasks
 category: email
 op: op.wb.email_create_tasks
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -25,6 +24,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: email_create_tasks
 tags:
 - email
 - create
@@ -35,5 +35,4 @@ aliases:
 - spin out emails as tasks
 parents:
 - email
-requires: []
 ---

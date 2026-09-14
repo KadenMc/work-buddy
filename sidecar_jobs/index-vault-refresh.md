@@ -2,8 +2,8 @@
 schedule: "23 */6 * * *"  # every 6h, at :23 — OFF the top-of-hour pileup (see body); very large corpus, multi-hour first build
 recurring: true
 jitter_seconds: 200  # distinct offset; spread the 6-hourly fire
-type: capability
-capability: index_rebuild
+type: skill
+skill: index_rebuild
 params:
   partition: vault
   force: false

@@ -1,16 +1,16 @@
 ---
 name: Stale Contracts
-kind: capability
+kind: skill
 description: List Contracts SQLite records not reviewed in N days (default 7), without requiring Obsidian.
-capability_name: stale_contracts
 category: contracts
 op: op.wb.stale_contracts
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   stale_days:
     type: int
     description: Days since last review (default 7)
     required: false
+skill_name: stale_contracts
 tags:
 - contracts
 - stale

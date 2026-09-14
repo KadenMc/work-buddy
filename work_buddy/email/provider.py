@@ -1,6 +1,6 @@
 """Provider protocol + factory.
 
-Consumers (capabilities, triage adapter) depend on the protocol; the concrete
+Consumers (skills, triage adapter) depend on the protocol; the concrete
 backend is selected via ``email.provider`` in config. Test code can register
 :class:`work_buddy.email.providers.fake.FakeEmailProvider` and exercise the
 full pipeline without Thunderbird.
@@ -23,7 +23,7 @@ class EmailProvider(Protocol):
     """Stable interface every email backend must implement.
 
     Methods raise typed :class:`work_buddy.email.errors.EmailError` subclasses
-    on failure so capability wrappers can ``isinstance``-classify and pick
+    on failure so skill wrappers can ``isinstance``-classify and pick
     appropriate retry / display behavior.
     """
 

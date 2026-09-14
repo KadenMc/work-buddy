@@ -1,11 +1,10 @@
 ---
 name: Project Confirm Description
-kind: capability
+kind: skill
 description: Mark the latest revision as user-confirmed. Use this when a human reviews an LLM-authored description (or other agent edit) and signs off.
-capability_name: project_confirm_description
 category: projects
 op: op.wb.project_confirm_description
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   slug:
     type: str
@@ -13,6 +12,7 @@ parameters:
     required: true
 mutates_state: true
 retry_policy: manual
+skill_name: project_confirm_description
 tags:
 - projects
 - project

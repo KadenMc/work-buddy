@@ -1,10 +1,10 @@
-"""Thin MCP-facing capability callables for the websearch subsystem.
+"""Thin MCP-facing skill callables for the websearch subsystem.
 
-Each mirrors the ``email/capabilities.py`` shape: instantiate nothing heavy,
+Each mirrors the ``email/skills.py`` shape: instantiate nothing heavy,
 do one round-trip through the router/extractor, and return a JSON-serialisable
 ``{ok, …, error_kind}`` dict (never raise across the gateway boundary). These
 are registered as ops in ``work_buddy/mcp_server/ops/websearch_ops.py`` and
-declared as ``kind: capability`` units under ``knowledge/store/websearch/``.
+declared as ``kind: skill`` units under ``knowledge/store/websearch/``.
 
 Storage policy: ``web_search`` is **ephemeral by default** — it does not cache
 (the opt-in cache is for in-process reuse consumers like a watcher, via

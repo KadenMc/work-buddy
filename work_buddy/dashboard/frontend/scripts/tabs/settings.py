@@ -2,8 +2,7 @@
 
 Renders the control graph produced by ``GET /api/control/graph`` as a
 hierarchy of domains → subsystems/components → requirements + affected
-capabilities. Phase E is read-only; Phase F will wire preference
-toggles into a ``POST /api/control/preference`` endpoint.
+skills. Preference controls write through ``POST /api/control/preference``.
 
 The renderer reuses ``statusBadge()`` from ``core/page.py`` but
 extends the mapping for ``unconfigured`` and preference labels.
@@ -205,17 +204,17 @@ function _computeMatchedSet() {
             (n.id || '').toLowerCase().includes(f)) {
             directHits.add(n.id);
         }
-        // affects_capabilities entries are capability names (strings,
+        // affects_skills entries are skill names (strings,
         // not node ids). If the filter matches one of them, surface
         // THIS node (usually a component) so the user can find the
-        // affected component when searching by capability.
-        const affects = n.affects_capabilities || [];
-        if (affects.some(capName => capName.toLowerCase().includes(f))) {
+        // affected component when searching by skill.
+        const affects = n.affects_skills || [];
+        if (affects.some(skillName => skillName.toLowerCase().includes(f))) {
             directHits.add(n.id);
-            // Also surface the capability node itself so its details
+            // Also surface the skill node itself so its details
             // chip becomes part of the visible tree if we ever render it.
-            const capNode = nodes[`cap:${affects.find(c => c.toLowerCase().includes(f))}`];
-            if (capNode) directHits.add(capNode.id);
+            const skillNode = nodes[`skill:${affects.find(s => s.toLowerCase().includes(f))}`];
+            if (skillNode) directHits.add(skillNode.id);
         }
     }
     if (directHits.size === 0) return new Set();
@@ -519,7 +518,7 @@ function renderSettingsSummary() {
 
     // Identify user-facing worst offenders: domain/subsystem/component
     // nodes in a non-ok, non-disabled state, ranked by severity. We
-    // skip requirement + capability nodes here — they're noise at this
+    // skip requirement + skill nodes here — they're noise at this
     // level; users see them by expanding the parent.
     const severity = {blocked: 0, unconfigured: 1, degraded: 2, unknown: 3};
     const topLevel = nodes.filter(n =>
@@ -543,7 +542,7 @@ function renderSettingsSummary() {
     // Always-present: totals + cache freshness. Small, unobtrusive.
     const totals = {ok: 0, degraded: 0, blocked: 0, unconfigured: 0, disabled: 0, unknown: 0};
     for (const n of nodes) {
-        if (n.kind === 'capability') continue;  // exclude capability noise
+        if (n.kind === 'skill') continue;  // exclude skill noise
         totals[n.effective_state] = (totals[n.effective_state] || 0) + 1;
     }
     // Chip behaviors:
@@ -594,7 +593,7 @@ function renderSettingsSummary() {
     if (WB_SHOW_DISABLED_LIST && totals.disabled > 0) {
         const kindRank = {component: 0, subsystem: 1, domain: 2, requirement: 3};
         const disabledNodes = nodes
-            .filter(n => n.effective_state === 'disabled' && n.kind !== 'capability')
+            .filter(n => n.effective_state === 'disabled' && n.kind !== 'skill')
             .sort((a, b) => (kindRank[a.kind] ?? 99) - (kindRank[b.kind] ?? 99));
         const rows = disabledNodes.map(n => {
             // What made it disabled? Walk: if this is a component with
@@ -997,10 +996,10 @@ function onStateChipClick(state) {
     if (!WB_CONTROL_GRAPH) return;
     const nodes = WB_CONTROL_GRAPH.nodes;
     // Prefer the most actionable node: requirement > component > subsystem > domain.
-    // Capabilities excluded — they're rarely where the fix lives.
+    // Skills are excluded — they're rarely where the fix lives.
     const kindRank = {requirement: 0, component: 1, subsystem: 2, domain: 3};
     const candidates = Object.values(nodes)
-        .filter(n => n.effective_state === state && n.kind !== 'capability')
+        .filter(n => n.effective_state === state && n.kind !== 'skill')
         .sort((a, b) => (kindRank[a.kind] ?? 99) - (kindRank[b.kind] ?? 99));
     if (candidates.length === 0) {
         settingsToast(`No ${state} nodes visible.`, 'info');
@@ -1065,22 +1064,22 @@ function _renderRequirementList(nodes, reqIds) {
     `;
 }
 
-function _renderCapabilityList(capNames) {
-    if (!capNames || capNames.length === 0) return '';
-    const detailKey = 'cap:' + capNames.slice().sort().join(',');
-    // Auto-open when filter matches one of the listed capability names.
-    const autoOpen = WB_CONTROL_FILTER && capNames.some(
+function _renderSkillList(skillNames) {
+    if (!skillNames || skillNames.length === 0) return '';
+    const detailKey = 'skill:' + skillNames.slice().sort().join(',');
+    // Auto-open when filter matches one of the listed skill names.
+    const autoOpen = WB_CONTROL_FILTER && skillNames.some(
         c => c.toLowerCase().includes(WB_CONTROL_FILTER)
     );
     return `
-        <details class="settings-cap-details" data-wb-detail-key="${escapeHtml(detailKey)}"${autoOpen ? ' open' : ''}>
-            <summary>Affects ${capNames.length} capabilities</summary>
-            <div class="settings-cap-chips">
-                ${capNames.map(n => {
+        <details class="settings-skill-details" data-wb-detail-key="${escapeHtml(detailKey)}"${autoOpen ? ' open' : ''}>
+            <summary>Affects ${skillNames.length} skills</summary>
+            <div class="settings-skill-chips">
+                ${skillNames.map(n => {
                     const hl = WB_CONTROL_FILTER && n.toLowerCase().includes(WB_CONTROL_FILTER)
-                        ? ' settings-cap-chip-match'
+                        ? ' settings-skill-chip-match'
                         : '';
-                    return `<span class="settings-cap-chip${hl}">${escapeHtml(n)}</span>`;
+                    return `<span class="settings-skill-chip${hl}">${escapeHtml(n)}</span>`;
                 }).join('')}
             </div>
         </details>
@@ -1175,7 +1174,7 @@ function _renderComponentNode(nodes, node, underParent) {
             ${preferenceToggleControls(node.component_id, node.preference)}
             ${_renderDependencyChips(nodes, node.dependencies)}
             ${_renderRequirementList(nodes, node.requirement_ids)}
-            ${_renderCapabilityList(node.affects_capabilities)}
+            ${_renderSkillList(node.affects_skills)}
             ${evtPanel}
         </div>
     `;

@@ -1,11 +1,10 @@
 ---
 name: Data Backup
-kind: capability
+kind: skill
 description: Take a local snapshot of work-buddy's vital SQLite DBs and portable Truth exports. Remote GitHub upload requires an explicit persistent private-content opt-in or exact one-shot high consent.
-capability_name: data_backup
 category: backups
 op: op.wb.data_backup
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   manual:
     type: bool
@@ -17,6 +16,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: data_backup
 tags:
 - backups
 - data

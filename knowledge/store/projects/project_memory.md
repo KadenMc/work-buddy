@@ -1,11 +1,10 @@
 ---
 name: Project Memory
-kind: capability
+kind: skill
 description: 'Read from the project memory bank (Hindsight-backed). Modes: ''search'' (semantic recall, optionally scoped to one project), ''model'' (fetch a mental model: project-landscape, active-risks, recent-decisions, inter-project-deps), ''recent'' (latest project memories)'
-capability_name: project_memory
 category: projects
 op: op.wb.project_memory
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -27,6 +26,7 @@ parameters:
     type: str
     description: 'Retrieval depth: low, mid (default), high'
     required: false
+skill_name: project_memory
 tags:
 - projects
 - project

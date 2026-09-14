@@ -47,6 +47,8 @@ from work_buddy.settings import get_journal_day_window
 from work_buddy.sources import SourceStore, TrustedIngressContext
 from work_buddy.sources.dispatch import SourceOutbox
 
+pytestmark = pytest.mark.usefixtures("_preserve_native_cutover_authorities")
+
 
 def _day_id(local_date: str = "2026-08-21") -> str:
     window = get_journal_day_window(local_date)

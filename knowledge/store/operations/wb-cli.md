@@ -89,4 +89,4 @@ cannot be confirmed.
 - Sidecar lifecycle from the shell instead of `python -m work_buddy.sidecar`: `wbuddy start` / `stop` / `restart` / `status`.
 - Terminal launch of the complete local app: `wbuddy launch`. Installed Windows Start/Desktop shortcuts, Linux application entries, and the macOS app bundle use the console-less wrapper around the same operation.
 - Interactive, domain-by-domain feature selection stays in the generated `wb-setup` command/skill inside the selected harness because that walk needs an agent. `wbuddy setup` is its pre-MCP shell-side complement.
-- Local Truth capture, proposal, query, human review, and schema migration: `wbuddy truth ...`. Agents should use the corresponding `truth_*` MCP capabilities for lifecycle operations and per-invocation confirmation authority.
+- Local Truth capture, proposal, query, human review, and schema migration: `wbuddy truth ...`. Agents should use the corresponding `truth_*` MCP skills for lifecycle operations and per-invocation confirmation authority.

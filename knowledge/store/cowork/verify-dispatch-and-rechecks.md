@@ -28,7 +28,7 @@ dev_notes: |-
   The Truth ledger is the domain authority. `cowork_verify_jobs.db` stores only
   operational worker bindings and state. Internal launch records live in the
   existing operations directory and are resolved through a closed allowlist,
-  not the MCP capability registry.
+  not the MCP skill registry.
 
   The safety rule is asymmetric: a missing handoff for a `prepared` job is safe
   to recreate, while an expired `launching` lease has an unknown launch outcome

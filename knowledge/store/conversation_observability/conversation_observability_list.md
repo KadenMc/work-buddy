@@ -1,11 +1,10 @@
 ---
 name: Conversation Observability List
-kind: capability
+kind: skill
 description: 'List observed agent sessions (Claude Code, Codex, …) by conversation time, newest first. Recency is measured by when the conversation happened, not when the row was last refreshed, so a resumed old session does not resurface as recent. Filters: since/until (explicit window, ISO or relative shorthand) or days (recency), and project.'
-capability_name: conversation_observability_list
 category: conversation_observability
 op: op.wb.conversation_observability_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -23,6 +22,7 @@ parameters:
     type: str
     description: 'Explicit window end: ISO datetime or relative shorthand. Defaults to now.'
     required: false
+skill_name: conversation_observability_list
 tags:
 - conversation_observability
 - conversation

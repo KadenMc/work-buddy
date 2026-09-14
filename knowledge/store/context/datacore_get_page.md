@@ -1,11 +1,10 @@
 ---
 name: Datacore Get Page
-kind: capability
+kind: skill
 description: 'Get a single vault page by path with Datacore metadata: frontmatter, sections, tags, links, timestamps.'
-capability_name: datacore_get_page
 category: context
 op: op.wb.datacore_get_page
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   path:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: str
     description: 'Comma-separated fields. Default: all.'
     required: false
+skill_name: datacore_get_page
 tags:
 - context
 - datacore

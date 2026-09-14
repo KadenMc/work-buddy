@@ -1,11 +1,10 @@
 ---
 name: Conversation Acknowledge
-kind: capability
+kind: skill
 description: Acknowledge exactly the oldest delivered user turn for a generation-leased conversation consumer.
-capability_name: conversation_ack
 category: conversations
 op: op.wb.conversation_ack
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   conversation_id:
     type: string
@@ -31,6 +30,7 @@ parameters:
     description: Exact receipt returned by cowork_action_snapshot_get; required for a targeted turn and omitted otherwise
 mutates_state: true
 retry_policy: replay
+skill_name: conversation_ack
 tags:
 - conversations
 - conversation

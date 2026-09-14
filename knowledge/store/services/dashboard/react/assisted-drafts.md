@@ -162,10 +162,10 @@ non-overridable tool set contains `assisted_draft_context_get`,
 `assisted_draft_reference_search`, `assisted_draft_propose_patch`, and the
 existing send, ask, poll, receive and acknowledge conversation tools. A form
 manifest decides which reference scopes exist. Jobs may search the same
-registered capability/workflow names, slash aliases, one-line descriptions and
+registered skill/workflow names, slash aliases, one-line descriptions and
 reduced parameter schemas shown by its picker; Tasks exposes no such scope.
 Reference results are untrusted data, never instructions, and grant no authority
-to execute a capability, start a workflow, browse, read generic documentation,
+to execute a skill, start a workflow, browse, read generic documentation,
 submit the form, or create/schedule a job. Every call checks the exact session,
 conversation, consumer, generation, pinned model and applicable policy gates.
 Initial context consumption precedes conversation access; each user turn must

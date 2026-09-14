@@ -1,8 +1,7 @@
 ---
 name: Task Provenance
-kind: capability
+kind: skill
 description: The three session↔task provenance roles for one task — created-by (who minted it), assigned (who claimed it), and developed-by (whose commits satisfied it, with note-read awareness + informed/convergent classification). Read-only; developed-by is derived at read time, never stored.
-capability_name: task_provenance
 category: tasks
 parameters:
   task_id:
@@ -10,7 +9,8 @@ parameters:
     description: Task ID (e.g., 't-xxxxxxxx')
     required: true
 op: op.wb.task_provenance
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: task_provenance
 tags:
 - tasks
 - task
@@ -28,7 +28,6 @@ aliases:
 - developed by which session
 parents:
 - tasks
-requires: []
 ---
 
 Returns the three structurally-distinct session roles for a task:

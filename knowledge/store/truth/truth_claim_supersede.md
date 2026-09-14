@@ -1,11 +1,10 @@
 ---
 name: Truth Claim Supersede
-kind: capability
+kind: skill
 description: Create or select a successor claim and atomically attach its support, derivation, and typed supersession link.
-capability_name: truth_claim_supersede
 category: truth
 op: op.wb.truth_claim_supersede
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -78,6 +77,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: truth_claim_supersede
 tags:
 - truth
 - claim

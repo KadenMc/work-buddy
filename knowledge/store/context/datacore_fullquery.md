@@ -1,11 +1,10 @@
 ---
 name: Datacore Fullquery
-kind: capability
+kind: skill
 description: Execute a Datacore query with timing and revision metadata. Same as datacore_query but includes duration_s and revision.
-capability_name: datacore_fullquery
 category: context
 op: op.wb.datacore_fullquery
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Max results (default 50)
     required: false
+skill_name: datacore_fullquery
 tags:
 - context
 - datacore

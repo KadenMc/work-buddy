@@ -390,7 +390,7 @@ If `entry_count > 0`, return `{"generated": false, "skipped_reason": "user alrea
 
 - **Calendar events:** Build from `step_results["calendar-today"]`. The raw `context_calendar` result is a pre-formatted markdown string, not a structured list — you must extract events from it and pass them in one of the accepted shapes below. If calendar was skipped/unavailable, use `[]`.
 
-  Accepted shapes (see `day_planner` capability docstring for full spec):
+  Accepted shapes (see `day_planner` skill docstring for full spec):
   - Flat (easier when constructing by hand):
     ```
     [{"start": "13:00", "end": "13:30", "summary": "Team sync"}]

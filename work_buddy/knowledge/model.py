@@ -4,7 +4,7 @@ Two parallel hierarchies share a common base:
 
 * **KnowledgeUnit** — abstract base with shared fields and methods
   * **PromptUnit** — system documentation (JSON-backed, ``knowledge/store/``)
-    * DirectionsUnit, CapabilityUnit, WorkflowUnit
+    * DirectionsUnit, SkillUnit, WorkflowUnit
     * SystemUnit — coherent functional domain whose persistent state work-buddy owns
     * ServiceUnit — internal work-buddy component with a network surface
     * IntegrationUnit — connection to an external system
@@ -327,7 +327,7 @@ class KnowledgeUnit:
     """Base for all units in the knowledge system (system docs + personal)."""
 
     path: str                          # unique ID: "tasks/triage", "personal/metacognition/branch-explosion"
-    kind: str                          # "directions" | "system" | "capability" | "workflow" | "personal"
+    kind: str                          # "directions" | "system" | "skill" | "workflow" | "personal"
     name: str                          # human label
     description: str                   # primary one-line summary
     aliases: list[str] = field(default_factory=list)   # alternative phrasings for search
@@ -565,7 +565,7 @@ class DirectionsUnit(PromptUnit):
     trigger: str = ""                  # when to use: "user wants to triage tasks"
     command: str | None = None         # slash command: "wb-task-triage"
     workflow: str | None = None        # linked workflow path: "tasks/task-triage"
-    capabilities: list[str] = field(default_factory=list)  # MCP capability paths used
+    skills: list[str] = field(default_factory=list)  # related skill references
     schema_version: str = ""           # declaration format version, e.g. "wb-direction/v1"
 
     def _kind_fields(self) -> dict[str, Any]:
@@ -576,8 +576,8 @@ class DirectionsUnit(PromptUnit):
             d["command"] = self.command
         if self.workflow:
             d["workflow"] = self.workflow
-        if self.capabilities:
-            d["capabilities"] = self.capabilities
+        if self.skills:
+            d["skills"] = self.skills
         if self.schema_version:
             d["schema_version"] = self.schema_version
         return d
@@ -600,7 +600,7 @@ class SystemUnit(PromptUnit):
     """System — coherent functional domain whose persistent state work-buddy owns.
 
     A ``SystemUnit`` is a domain anchor (e.g., ``tasks``, ``triage``, ``inline``)
-    whose operational details — capabilities, schemas, lifecycle — live on its
+    whose operational details — skills, schemas, lifecycle — live on its
     children. The unit itself is prose-first; structured fields (ports,
     entry_points) belong on more specific kinds (``ServiceUnit``,
     ``IntegrationUnit``, ``ReferenceUnit``).
@@ -724,39 +724,37 @@ class ConceptUnit(PromptUnit):
 
 
 # ---------------------------------------------------------------------------
-# Capability — MCP callable metadata
+# Skill — work-buddy direct-skill metadata
 # ---------------------------------------------------------------------------
 
 @dataclass
-class CapabilityUnit(PromptUnit):
-    """MCP capability — callable function metadata.
+class SkillUnit(PromptUnit):
+    """Direct work-buddy skill — callable operation metadata.
 
-    A capability unit is an inert *declaration*: it carries the prose,
+    A skill unit is an inert *declaration*: it carries the prose,
     parameter schema, and runtime metadata, and names an Op via its ``op``
-    field. The capability loader resolves the op against the Op registry at
-    registry-build time and emits a dispatchable ``Capability``. See
-    ``work_buddy/knowledge/capability_loader.py`` and the
-    ``architecture/data-first-capabilities`` knowledge unit.
+    field. The skill loader resolves the op against the Op registry at
+    registry-build time and emits a dispatchable ``Skill``. See
+    ``work_buddy/knowledge/skill_loader.py``.
     """
 
-    kind: str = field(default="capability", init=False)
-    capability_name: str = ""          # MCP name: "task_create"
+    kind: str = field(default="skill", init=False)
+    skill_name: str = ""               # invocable name: "task_create"
     category: str = ""                 # registry category: "tasks"
     parameters: dict[str, Any] = field(default_factory=dict)  # param schema
     mutates_state: bool = False
     retry_policy: str = "manual"
     consent_required: bool = False
-    # Consent operation IDs the capability gates on (mirrors the live
-    # ``Capability.consent_operations`` field). A declaration carries these so a
-    # consent-gated capability migrates faithfully; ``consent_required`` remains
+    # Consent operation IDs the skill gates on (mirrors the live
+    # ``Skill.consent_operations`` field). A declaration carries these so a
+    # consent-gated skill is represented faithfully; ``consent_required`` remains
     # the coarse boolean flag.
     consent_operations: list[str] = field(default_factory=list)
-    # Runtime metadata mirroring the live ``Capability`` dataclass so a
-    # declaration migrates a capability faithfully. ``invokes`` — capability
+    # Runtime metadata mirroring the live ``Skill`` dataclass. ``invokes`` — skill
     # names this one calls (control-graph dependency resolution).
     # ``param_aliases`` — {alias: canonical} parameter-name aliases.
     # ``auto_retry`` — whether the gateway auto-enqueues transient failures.
-    # ``slash_command`` — the wb-* command that surfaces this capability.
+    # ``slash_command`` — the wb-* command that surfaces this skill.
     # ``is_action`` / ``intrinsic_amplifiers`` — Action Catalog opt-in and
     # intrinsic risk amplifiers. (``effects`` is code, not data — it lives on
     # the Op side via ``op_registry.register_op_effects``.)
@@ -766,19 +764,19 @@ class CapabilityUnit(PromptUnit):
     slash_command: str = ""
     is_action: bool = False
     intrinsic_amplifiers: dict[str, str] = field(default_factory=dict)
-    # The ``op.<namespace>.<name>`` ID of the Op this capability wraps, and
-    # the version of the declaration format itself (e.g. "wb-capability/v1").
+    # The ``op.<namespace>.<name>`` ID of the Op this skill wraps, and
+    # the version of the declaration format itself (e.g. "wb-skill/v1").
     op: str = ""
     schema_version: str = ""
     # Optional mode-availability gate — a gate-DSL string over mode ids
     # (e.g. "knowledge" or "dev & knowledge"). When set, ``wb_search`` hides
-    # and ``wb_run`` rejects this capability unless the gate is satisfied by
+    # and ``wb_run`` rejects this skill unless the gate is satisfied by
     # the session's active modes. None = always available (ungated).
     available_when: str | None = None
 
     def _kind_fields(self) -> dict[str, Any]:
         d: dict[str, Any] = {
-            "capability_name": self.capability_name,
+            "skill_name": self.skill_name,
             "category": self.category,
         }
         if self.parameters:
@@ -829,7 +827,7 @@ class WorkflowUnit(PromptUnit):
     step_instructions: dict[str, str] = field(default_factory=dict)  # {step_id: text}
     command: str | None = None         # slash command: "wb-task-triage"
     # Optional caller-provided initial params schema; mirrors
-    # ``Capability.parameters`` shape ``{name: {type, description, required}}``.
+    # ``Skill.parameters`` shape ``{name: {type, description, required}}``.
     # Workflows that omit this field reject any non-empty params at start.
     params_schema: dict[str, dict[str, Any]] = field(default_factory=dict)
     schema_version: str = ""           # declaration format version, e.g. "wb-workflow/v1"
@@ -950,14 +948,14 @@ _KIND_MAP: dict[str, type[KnowledgeUnit]] = {
     "integration": IntegrationUnit,
     "reference": ReferenceUnit,
     "concept": ConceptUnit,
-    "capability": CapabilityUnit,
+    "skill": SkillUnit,
     "workflow": WorkflowUnit,
     "personal": VaultUnit,
 }
 
 
 def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
-    """Deserialize a JSON dict into the appropriate KnowledgeUnit subclass."""
+    """Deserialize a persisted dict into the appropriate unit subclass."""
     kind = data.get("kind", "system")
     cls = _KIND_MAP.get(kind, PromptUnit)
 
@@ -983,7 +981,7 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["trigger"] = data.get("trigger", "")
         base_kwargs["command"] = data.get("command")
         base_kwargs["workflow"] = data.get("workflow")
-        base_kwargs["capabilities"] = data.get("capabilities", [])
+        base_kwargs["skills"] = data.get("skills", [])
         base_kwargs["schema_version"] = data.get("schema_version", "")
     elif cls is SystemUnit or cls is ConceptUnit:
         # Both are prose-first with no kind-specific fields beyond the base.
@@ -999,8 +997,8 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["entry_points"] = data.get("entry_points", [])
     elif cls is ReferenceUnit:
         base_kwargs["entry_points"] = data.get("entry_points", [])
-    elif cls is CapabilityUnit:
-        base_kwargs["capability_name"] = data.get("capability_name", "")
+    elif cls is SkillUnit:
+        base_kwargs["skill_name"] = data.get("skill_name", "")
         base_kwargs["category"] = data.get("category", "")
         base_kwargs["parameters"] = data.get("parameters", {})
         base_kwargs["mutates_state"] = data.get("mutates_state", False)

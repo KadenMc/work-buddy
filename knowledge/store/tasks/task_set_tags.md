@@ -1,11 +1,10 @@
 ---
 name: Task Set Tags
-kind: capability
+kind: skill
 description: Replace a native task's complete structured tag and namespace set. Namespace spelling is independent of registered project associations; this operation does not change project links.
-capability_name: task_set_tags
 category: tasks
 op: op.wb.task_set_tags
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_id:
     type: str
@@ -27,6 +26,7 @@ mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.update_task
+skill_name: task_set_tags
 tags:
 - tasks
 - task
@@ -40,5 +40,4 @@ aliases:
 - set task namespace
 parents:
 - tasks
-requires: []
 ---

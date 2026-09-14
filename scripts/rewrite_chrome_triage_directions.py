@@ -49,7 +49,7 @@ column grid on the Threads tab — drag-drops items between groups
 action chip dropdown, and clicks Approve all to dispatch every
 non-terminal child's chosen action through the standard FSM.
 
-Capabilities the per-group action chip can dispatch:
+Skills the per-group action chip can dispatch:
 
 - ``chrome_tab_close`` — close every tab in the group
 - ``chrome_tab_group`` — create a Chrome tab group named after

@@ -1,11 +1,10 @@
 ---
 name: Conversation Observability Get
-kind: capability
+kind: skill
 description: 'One session''s full picture, composed. Returns the observed-session row (metadata: start/end, message_count, span/tool counts) and, via opt-in flags, its LLM summary, commits, file writes, and PR activity — one call instead of four. All flags default off, so a bare call returns just the observed row. Complements session_summary_get (the LLM summary alone, with its own generation status). Returns None when the session has not been observed yet.'
-capability_name: conversation_observability_get
 category: conversation_observability
 op: op.wb.conversation_observability_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
@@ -31,6 +30,7 @@ parameters:
     type: bool
     description: Keep the summary's per-topic timeline (implies include_summary); omitted otherwise to stay compact.
     required: false
+skill_name: conversation_observability_get
 tags:
 - conversation_observability
 - conversation

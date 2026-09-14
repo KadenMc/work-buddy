@@ -1,10 +1,10 @@
-"""Unit tests — thin capability callables + op registration. Router/extract are
+"""Unit tests — thin skill callables + op registration. Router/extract are
 patched; no network.
 """
 
 from __future__ import annotations
 
-import work_buddy.websearch.capabilities as caps
+import work_buddy.websearch.skills as caps
 from work_buddy.websearch.errors import WebSearchUnavailable
 from work_buddy.websearch.models import FetchResult, SearchHit
 

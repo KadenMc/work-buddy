@@ -1,11 +1,10 @@
 ---
 name: Truth Claim Confirm
-kind: capability
+kind: skill
 description: Ask the human to review one server-composed claim and its active receipts, then confirm only that exact content.
-capability_name: truth_claim_confirm
 category: truth
 op: op.wb.truth_claim_confirm
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -24,6 +23,7 @@ retry_policy: manual
 auto_retry: false
 consent_operations:
 - truth.claim_confirm
+skill_name: truth_claim_confirm
 tags:
 - truth
 - claim

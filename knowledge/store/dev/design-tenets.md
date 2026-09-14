@@ -1,20 +1,20 @@
 ---
 name: MCP Gateway Design Tenets
 kind: directions
-description: Five architectural principles for designing capabilities, plus the priming hazard and agentic stub patterns for workflow authoring
-summary: Five design principles for capabilities (Progressive Disclosure, JIT Retrieval, Programmatic Offloading, One Capability per Concept, Slash Command Coverage), plus the priming hazard concept and the agentic stub pattern for writing workflow step instructions.
-trigger: When adding new capabilities or workflows, or when deciding how to structure MCP gateway interactions
+description: Five architectural principles for designing skills, plus the priming hazard and agentic stub patterns for workflow authoring
+summary: Five design principles for skills (Progressive Disclosure, JIT Retrieval, Programmatic Offloading, One Skill per Concept, Slash Command Coverage), plus the priming hazard concept and the agentic stub pattern for writing workflow step instructions.
+trigger: When adding new skills or workflows, or when deciding how to structure MCP gateway interactions
 tags:
 - dev
 - developmental
 - mcp
 - gateway
 - design-tenets
-- capabilities
+- skills
 - workflows
 aliases:
 - design tenets
-- capability design principles
+- skill design principles
 - gateway design
 - priming hazard
 - agentic stub pattern
@@ -25,22 +25,22 @@ parents:
 dev_notes: Gateway tool functions (wb_run, wb_init, wb_search, etc.) must return dicts via _prepare(), never JSON strings via json.dumps(). The MCP SDK serializes automatically via pydantic_core.to_json(result, fallback=str, indent=2) — see func_metadata.py line 531. Using json.dumps() in a return path causes double-serialization (the string gets re-serialized by the transport). _prepare() recursively converts Path→posix, date/datetime→isoformat, sets→sorted lists, returning native Python types. See tests/unit/test_gateway_prepare.py for the regression suite.
 ---
 
-## Capability Design Principles
+## Skill Design Principles
 
 ### 1. Progressive Disclosure
-Register many small capabilities rather than few large ones. Each collector is its own capability (`context_git`, `context_chat`, etc.); the full bundle (`context_bundle`) exists for agents that want everything.
+Register many small skills rather than few large ones. Each collector is its own skill (`context_git`, `context_chat`, etc.); the full bundle (`context_bundle`) exists for agents that want everything.
 
 ### 2. Just-in-Time Retrieval
-Capabilities return data directly as strings or dicts, not file paths. An agent should get the answer from `wb_run("context_chat")`, not be told "go read this file."
+Skills return data directly as strings or dicts, not file paths. An agent should get the answer from `wb_run("context_chat")`, not be told "go read this file."
 
 ### 3. Programmatic Offloading
-If a task is deterministic and unit-testable, it's a capability, not a workflow step. The `collect-and-orient` workflow's step 1 (run all collectors) is pure code — it became the `context_bundle` capability. Steps 2-5 require LLM reasoning and stay as workflow steps.
+If a task is deterministic and unit-testable, it's a skill, not a workflow step. The `collect-and-orient` workflow's step 1 (run all collectors) is pure code — it became the `context_bundle` skill. Steps 2-5 require LLM reasoning and stay as workflow steps.
 
-### 4. One Capability per Concept
-Prefer a single capability with optional parameters over multiple near-identical capabilities. Only split when parameter schemas are genuinely different or operations serve distinct intents. Example: `day_planner` handles status/read/generate/write via its `action` param rather than registering 5 separate capabilities.
+### 4. One Skill per Concept
+Prefer a single skill with optional parameters over multiple near-identical skills. Only split when parameter schemas are genuinely different or operations serve distinct intents. Example: `day_planner` handles status/read/generate/write via its `action` param rather than registering 5 separate skills.
 
 ### 5. Slash Command Coverage
-Every user-facing capability must have a corresponding slash command in `.claude/commands/`. When adding a new capability, add the slash command and update the table in `CLAUDE.md` in the same commit.
+Every user-facing skill must have a corresponding slash command in `.claude/commands/`. When adding a new skill, add the slash command and update the table in `CLAUDE.md` in the same commit.
 
 ## The Priming Hazard
 
@@ -50,7 +50,7 @@ The gateway-first rule is about how we **instruct** operational agents, not abou
 
 The only acceptable Python in workflow step instructions is:
 - **Pure formatting** (e.g., `format_briefing()`) — transforms data already in memory, could become auto_run
-- **Operations with no gateway capability yet** — annotated with a note explaining why
+- **Operations with no gateway skill yet** — annotated with a note explaining why
 
 Everything else goes through `wb_run()`.
 

@@ -1,7 +1,7 @@
 ---
 name: Backups
 kind: concept
-description: Data-backup capabilities — snapshot, restore, and remote sync of work-buddy's databases
+description: Data-backup skills — snapshot, restore, and remote sync of work-buddy's databases
 tags:
 - backups
 - backup

@@ -34,14 +34,14 @@ def test_calendar_ops_registered(loaded_ops):
 
 
 def test_calendar_ops_resolve_via_loader(loaded_ops):
-    """Each calendar capability declaration's op resolves to a registered
-    callable (the registry pairs the kind:capability unit's `op` with an Op)."""
+    """Each calendar skill declaration's op resolves to a registered
+    callable (the registry pairs the kind:skill unit's `op` with an Op)."""
     try:
-        from work_buddy.knowledge.capability_loader import load_declared_capabilities
+        from work_buddy.knowledge.skill_loader import load_declared_skills
     except Exception:
-        pytest.skip("capability_loader unavailable in this environment")
+        pytest.skip("skill_loader unavailable in this environment")
 
-    declared, _issues = load_declared_capabilities()
+    declared, _issues = load_declared_skills()
     by_name = {c.name: c for c in declared}
     for cap_name in ("calendar_health", "calendar_list_events",
                      "calendar_get_event", "calendar_coverage"):
@@ -49,15 +49,15 @@ def test_calendar_ops_resolve_via_loader(loaded_ops):
         assert loaded_ops.get_op(f"op.wb.{cap_name}") is not None
 
 
-def test_calendar_capabilities_require_provider_aware_probe(loaded_ops):
-    """Capabilities gate on the provider-aware ``calendar`` probe, not the
+def test_calendar_skills_require_provider_aware_probe(loaded_ops):
+    """Skills gate on the provider-aware ``calendar`` probe, not the
     Obsidian-bound ``google_calendar`` one — so they stay available under any
     configured provider (e.g. google_native with Obsidian closed)."""
     try:
-        from work_buddy.knowledge.capability_loader import load_declared_capabilities
+        from work_buddy.knowledge.skill_loader import load_declared_skills
     except Exception:
-        pytest.skip("capability_loader unavailable in this environment")
-    declared, _ = load_declared_capabilities()
+        pytest.skip("skill_loader unavailable in this environment")
+    declared, _ = load_declared_skills()
     by_name = {c.name: c for c in declared}
     for cap_name in ("calendar_list_events", "calendar_coverage",
                      "create_calendar_event", "delete_calendar_event"):

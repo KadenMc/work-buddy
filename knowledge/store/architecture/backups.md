@@ -169,7 +169,7 @@ Fresh-repo gotcha: the first push to an empty repo errors with `Repository is em
 
 ## Restore pipeline (`work_buddy/backups/restore.py`)
 
-`data_restore(snapshot_id, from_remote=False)` (capability) executes:
+`data_restore(snapshot_id, from_remote=False)` (skill) executes:
 
 1. Resolve a local snapshot ID or absolute snapshot-directory path by default. When `from_remote=true`, download the GitHub Release tarball into a temporary local snapshot directory first.
 2. Read `MANIFEST.json` and validate: `manifest_version` is recognized; for each DB, snapshot's `schema_versions[db]` <= code's max migration (forward-time-travel guard).
@@ -211,7 +211,7 @@ recovery. A local restore instead keeps its live copy aligned with the retained
 conversation database, which lives outside the machine `db/` swap; cohort
 reconciliation verifies every dependency against that retained history.
 
-The snapshot tarball retains its `truth_stores/` members for explicit scoped recovery. `data_restore` does not place those payloads automatically because the destination scope and duplicate store identity policy require a deliberate choice. Scoped import is available only through `work_buddy.truth.export.import_store`, which accepts the optional causality companion and digest as one staged import. No `truth_store_import` MCP capability or `wbuddy truth import` verb is registered.
+The snapshot tarball retains its `truth_stores/` members for explicit scoped recovery. `data_restore` does not place those payloads automatically because the destination scope and duplicate store identity policy require a deliberate choice. Scoped import is available only through `work_buddy.truth.export.import_store`, which accepts the optional causality companion and digest as one staged import. No `truth_store_import` MCP skill or `wbuddy truth import` verb is registered.
 
 ## Health system integration
 
@@ -230,13 +230,13 @@ A `domain:backups` entry in `work_buddy/control/graph_static.py` makes the Compo
 
 ## Cron + slash commands
 
-- `sidecar_jobs/data-backup.md` -- hourly cron, calls `data_backup` capability. Local hot snapshots always run; remote push occurs only with the explicit persistent private-content opt-in.
+- `sidecar_jobs/data-backup.md` -- hourly cron, calls `data_backup` skill. Local hot snapshots always run; remote push occurs only with the explicit persistent private-content opt-in.
 - `/wb-backup-now` -- manual one-off snapshot. Used as an anchor point before a risky operation.
 - `/wb-backup-restore [snapshot-id]` -- list remote snapshots or restore a specified one.
 
 There are no `/wb-backup-setup`, `/wb-backup-status`, or `/wb-backup-config` slash commands by design -- those surface via the Settings tab's auto-rendered card. The slash-command surface is reserved for the two recurring user-initiated operations (snapshot now, restore).
 
-## Capabilities (registered in `work_buddy/mcp_server/registry.py`)
+## Skills (registered in `work_buddy/mcp_server/registry.py`)
 
 - `data_backup(manual: bool = False, push_remote: bool | None = None)` -- take a snapshot. Default/scheduled calls are local-only unless the persistent opt-in is true; an exceptional explicit remote request uses exact per-invocation consent.
 - `data_backup_list(include_remote: bool = False)` -- list local snapshots, optionally including the configured remote releases.
@@ -246,6 +246,6 @@ There are no `/wb-backup-setup`, `/wb-backup-status`, or `/wb-backup-config` sla
 ## See also
 
 - `architecture/migrations` -- the MigrationRunner schema-version ladder that restore depends on for forward-rolling a staged DB.
-- `architecture/source-foundation`, `backups/data_sensitive_checkpoint` -- the sensitive Sources/Journal boundary and its guarded capability contract.
+- `architecture/source-foundation`, `backups/data_sensitive_checkpoint` -- the sensitive Sources/Journal boundary and its guarded skill contract.
 - `architecture/health`, `architecture/control-graph` -- how the Component and its Requirements surface in Settings.
 - `tasks/task_delete` -- the soft-delete safety pattern that complements off-machine backups.

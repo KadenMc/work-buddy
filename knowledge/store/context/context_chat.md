@@ -1,11 +1,10 @@
 ---
 name: Context Chat
-kind: capability
+kind: skill
 description: Recent Claude Code conversations and CLI history with tool usage, duration, and outcome snippets
-capability_name: context_chat
 category: context
 op: op.wb.context_chat
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -17,6 +16,7 @@ parameters:
     required: false
 param_aliases:
   since: days
+skill_name: context_chat
 tags:
 - context
 - chat

@@ -16,7 +16,7 @@ Two-stage pipeline:
 The split lets callers (LLM prompts, morning routine, Sonnet/Opus
 agents) re-compose context on demand without paying for fresh
 collection every time. Sonnet/Opus agents can call the curator via
-the ``curate_context`` MCP capability to build their own views.
+the ``curate_context`` MCP skill to build their own views.
 
 This module replaces the ad-hoc ``work_buddy/collectors/*`` producers
 and the duplicate signal-gathering in ``work_buddy/triage/recommend``

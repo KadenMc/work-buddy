@@ -1,8 +1,8 @@
-"""Slice 3 / Slice D: task_search capability — store-backed text search.
+"""Tests for the store-backed ``task_search`` skill.
 
 Bridge-independent search over the description column. Sits at the
 manager layer (`task_search`) above `store.search_by_description`.
-Existing store tests cover the SQL semantics; these test the capability
+Existing store tests cover the SQL semantics; these test the skill
 shape (response envelope, default flags, registration).
 """
 
@@ -106,8 +106,8 @@ def test_search_skips_null_descriptions(isolated_store):
 # ---------------------------------------------------------------------------
 
 
-def test_capability_registered():
-    """Capability is discoverable via the registry."""
+def test_skill_registered():
+    """Skill is discoverable via the registry."""
     from work_buddy.mcp_server.registry import get_registry
     registry = get_registry()
     cap = registry.get("task_search")

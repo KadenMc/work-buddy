@@ -27,7 +27,7 @@ from work_buddy.pipelines.types import CapturedItem
 
 class TestActionLibrary:
     def test_library_contains_per_group_routes(self):
-        names = {d.capability_name for d in JOURNAL_ACTION_LIBRARY}
+        names = {d.skill_name for d in JOURNAL_ACTION_LIBRARY}
         assert "journal_route_to_tasks" in names
         assert "journal_route_to_considerations" in names
         assert "journal_append_to_note" in names
@@ -42,7 +42,7 @@ class TestActionLibrary:
         umbrella = JOURNAL_ACTION_LIBRARY.umbrella_actions()
         # rewrite_running_notes is the umbrella-level cleanup
         assert len(umbrella) == 1
-        assert umbrella[0].capability_name == "journal_rewrite_running_notes"
+        assert umbrella[0].skill_name == "journal_rewrite_running_notes"
 
     def test_pipeline_exposes_library(self):
         p = JournalBacklogPipeline()

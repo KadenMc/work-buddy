@@ -55,7 +55,7 @@ class _StubPipeline:
         self._clusters = clusters or []
         self._action_library = action_library or ActionLibrary([
             ActionDescriptor(
-                capability_name="test_action",
+                skill_name="test_action",
                 label="Test action",
                 description="A test per-group action",
                 cardinality=CARDINALITY_PER_GROUP,
@@ -151,7 +151,7 @@ class TestActionProposalRecording:
             ClusterSpec(
                 label="With action", item_ids=("i0", "i1"),
                 proposed_action=ActionProposal(
-                    capability_name="test_action",
+                    skill_name="test_action",
                     parameters={"foo": "bar"},
                     rationale="because",
                     confidence=0.85,
@@ -206,7 +206,7 @@ class TestUniversalActionsLayering:
         # library passed to refine_clusters.
         universal = ActionLibrary([
             ActionDescriptor(
-                capability_name="dismiss",
+                skill_name="dismiss",
                 label="Dismiss",
                 description="Universal dismiss action",
                 cardinality=CARDINALITY_PER_GROUP,

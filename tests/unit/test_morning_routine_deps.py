@@ -1,14 +1,14 @@
-"""Phase B flagship — verify morning-routine's transitive dependencies resolve correctly.
+"""Verify morning-routine's transitive dependencies resolve correctly.
 
 The morning-routine workflow composes native journal, task, contract, and
-calendar capabilities. The control graph's capability resolver should walk
-``workflow → steps → invokes → capabilities → requires`` and produce
+calendar skills. The control graph's skill resolver should walk
+``workflow → steps → invokes → skills → requires`` and produce
 the expected set of tool/component IDs.
 
 This test exercises the REAL registry — no mocks. If it fails, either:
 
     1. The workflow units lost the ``invokes`` entries on their steps.
-    2. ``Capability.requires`` on one of the invoked capabilities changed
+    2. ``Skill.requires`` on one of the invoked skills changed
        (rare — would indicate a real refactor).
     3. The resolver logic regressed.
 
@@ -25,13 +25,13 @@ import pytest
 def registry():
     """Full registry with tool-availability filtering disabled.
 
-    The default registry drops capabilities whose required tools fail
+    The default registry drops skills whose required tools fail
     their probes at build time. That makes resolver tests environment-
     dependent (a temporarily unavailable provider would otherwise filter
-    capabilities and break these assertions).
+    skills and break these assertions).
 
     We rebuild with ``is_tool_available`` patched to True so the
-    registry contains every declared capability and workflow, letting
+    registry contains every declared direct skill and workflow, letting
     the tests focus on the resolver logic rather than local machine
     state.
 
@@ -109,12 +109,12 @@ def test_workflow_requires_union_from_step_invokes(workflow, registry):
 
 
 # ---------------------------------------------------------------------------
-# Full transitive resolution via capability_resolver
+# Full transitive resolution via skill_resolver
 # ---------------------------------------------------------------------------
 
 def test_resolve_dependencies_transitive_set(workflow, registry):
     """Calling resolve_dependencies('morning-routine') returns the right components."""
-    from work_buddy.control.capability_resolver import resolve_dependencies
+    from work_buddy.control.skill_resolver import resolve_dependencies
 
     deps = resolve_dependencies("morning-routine", registry=registry)
     assert "obsidian" not in deps["components"]
@@ -123,35 +123,35 @@ def test_resolve_dependencies_transitive_set(workflow, registry):
     assert deps["tools"] == deps["components"]
 
 
-def test_resolve_captures_invoked_capability_names(workflow, registry):
-    """The 'capabilities' set on the resolved deps lists the hops we took."""
-    from work_buddy.control.capability_resolver import resolve_dependencies
+def test_resolve_captures_invoked_skill_names(workflow, registry):
+    """The 'skills' set on the resolved deps lists the hops we took."""
+    from work_buddy.control.skill_resolver import resolve_dependencies
 
     deps = resolve_dependencies("morning-routine", registry=registry)
-    caps = deps["capabilities"]
+    skills = deps["skills"]
     # A representative sample of the workflow's step.invokes entries must
     # be reachable through the resolver.
     for expected in ("journal_state", "task_briefing", "contract_health", "day_planner"):
-        assert expected in caps, (
-            f"expected '{expected}' in resolved capability set; got {sorted(caps)[:20]}..."
+        assert expected in skills, (
+            f"expected '{expected}' in resolved skill set; got {sorted(skills)[:20]}..."
         )
 
 
-def test_resolve_skips_missing_capability_gracefully():
-    """A step that invokes an unregistered capability must not crash the
+def test_resolve_skips_missing_skill_gracefully():
+    """A step that invokes an unregistered skill must not crash the
     resolver — it silently skips the missing hop.
 
     Uses a self-contained synthetic registry rather than relying on a
     dangling reference in a real workflow's prose, so the property stays
     covered regardless of how the shipped workflows evolve.
     """
-    from work_buddy.control.capability_resolver import resolve_dependencies
+    from work_buddy.control.skill_resolver import resolve_dependencies
     from work_buddy.mcp_server.registry import WorkflowDefinition, WorkflowStep
 
     synthetic = {
         "wf-ghost": WorkflowDefinition(
             name="wf-ghost",
-            description="invokes a capability that isn't registered",
+            description="invokes a skill that isn't registered",
             workflow_file="test:in-memory",
             execution="main",
             steps=[
@@ -161,7 +161,7 @@ def test_resolve_skips_missing_capability_gracefully():
                     step_type="reasoning",
                     depends_on=[],
                     instruction="",
-                    invokes=["ghost_capability_that_does_not_exist"],
+                    invokes=["ghost_skill_that_does_not_exist"],
                 ),
             ],
         ),
@@ -171,4 +171,4 @@ def test_resolve_skips_missing_capability_gracefully():
     # No crash, no TypeError; the three standard sets are present.
     assert isinstance(deps, dict)
     assert "components" in deps
-    assert "capabilities" in deps
+    assert "skills" in deps

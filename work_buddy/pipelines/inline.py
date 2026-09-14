@@ -34,8 +34,8 @@ End-to-end flow
      task_proposal as parameters; Thread → ``AWAITING_CONFIRMATION``.
    - ``reference`` records → ``kind="suggestion"`` action with the
      reference_proposal as parameters; Thread → ``AWAITING_CONFIRMATION``.
-     (Slice 6 of the legacy roadmap will wire a real reference-filing
-     capability; until then the suggestion is read-only on the card.)
+     (No reference-filing skill is registered, so the suggestion is
+     read-only on the card.)
    - ``calendar_only`` records → ``kind="suggestion"`` action with the
      calendar_proposal as parameters; Thread → ``AWAITING_CONFIRMATION``.
    - ``delete`` records → no Thread; counted as dropped in the result.
@@ -1229,12 +1229,12 @@ def _action_payload_for_record(
     Three live destinations:
     - ``task``: standard action ``task_create`` with task_proposal as
       parameters; the registry already exposes ``task_create`` as a
-      first-class capability.
-    - ``reference``: kind=suggestion. No registered capability today
-      (Slice 6 of the legacy roadmap was to add reference filing);
-      until that lands, the action surfaces as a free-form suggestion
-      the user can manually act on.
-    - ``calendar_only``: kind=suggestion likewise (Slice 10 territory).
+      first-class skill.
+    - ``reference``: kind=suggestion. No reference-filing skill is
+      registered, so the action surfaces as a free-form suggestion the
+      user can manually act on.
+    - ``calendar_only``: kind=suggestion likewise; no calendar action
+      skill is registered.
     """
     destination = record.get("destination")
 
@@ -1246,7 +1246,7 @@ def _action_payload_for_record(
             or "Inline-captured task"
         )[:120]
         # Build parameters dict for task_create. We pass the fields
-        # the capability accepts; unknown / forward-compat fields stay
+        # the skill accepts; unknown / forward-compat fields stay
         # in the payload for the audit trail but don't go into params.
         # ``project_tag`` (decided by the verdict from the project-picker
         # sub-LLM's candidate list) routes to ``create_task(project=...)``
@@ -1297,7 +1297,7 @@ def _action_payload_for_record(
                 f"File this as a reference: {ref_summary}"
                 + (f" → {proposal.get('suggested_path')}" if proposal.get("suggested_path") else "")
             ),
-            "blocked_on": "no reference-capture capability yet (Slice 6 territory)",
+            "blocked_on": "no reference-capture skill is registered",
             "irreversibility": "low",
             "regret_potential": "low",
             "risk_amplifier": False,
@@ -1321,7 +1321,7 @@ def _action_payload_for_record(
                 f"Add to calendar: {title}"
                 + (f" @ {proposal.get('datetime')}" if proposal.get("datetime") else "")
             ),
-            "blocked_on": "no calendar capability yet (Slice 10 territory)",
+            "blocked_on": "no calendar action skill is registered",
             "irreversibility": "low",
             "regret_potential": "low",
             "risk_amplifier": False,

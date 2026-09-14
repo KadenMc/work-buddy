@@ -33,14 +33,14 @@ def mock_inputs(monkeypatch):
             "prefs":      {comp_id: FeaturePreference},
             "health":     {"components": [...], "summary": {...}},
             "reqs":       [RequirementResult, ...],
-            "registry":   {name: Capability | WorkflowDefinition},
+            "registry":   {name: Skill | WorkflowDefinition},
         }
 
     Edit these in the test body, then call ``build_graph(force=True)``.
     """
     from work_buddy.health.preferences import FeaturePreference
     from work_buddy.health.requirements import RequirementResult
-    from work_buddy.mcp_server.registry import Capability
+    from work_buddy.mcp_server.registry import Skill
 
     levers: dict = {
         "prefs": {},
@@ -75,7 +75,7 @@ def mock_inputs(monkeypatch):
     # Expose constructors for tests
     levers["_FeaturePreference"] = FeaturePreference
     levers["_RequirementResult"] = RequirementResult
-    levers["_Capability"] = Capability
+    levers["_Skill"] = Skill
     return levers
 
 
@@ -111,7 +111,7 @@ def test_requirement_nodes_populated_from_registry(mock_inputs):
 
 
 def test_component_sidecar_is_present(mock_inputs):
-    """Phase A added `component:sidecar` to COMPONENT_CATALOG."""
+    """The sidecar is represented in the component catalog."""
     nodes = cg.build_graph(force=True)
     assert "component:sidecar" in nodes
     assert nodes["component:sidecar"].kind == "component"
@@ -199,10 +199,10 @@ def test_dep_down_produces_blocked(mock_inputs):
 
 
 # ---------------------------------------------------------------------------
-# Capability nodes
+# Skill nodes
 # ---------------------------------------------------------------------------
 
-def test_capability_node_with_ok_deps_is_ok(mock_inputs):
+def test_skill_node_with_ok_deps_is_ok(mock_inputs):
     mock_inputs["prefs"]["obsidian"] = mock_inputs["_FeaturePreference"](
         component_id="obsidian", wanted=True,
     )
@@ -211,7 +211,7 @@ def test_capability_node_with_ok_deps_is_ok(mock_inputs):
         "status": "healthy", "wanted": True, "depends_on": [],
         "details": {}, "children": [],
     }]
-    mock_inputs["registry"]["task_toggle"] = mock_inputs["_Capability"](
+    mock_inputs["registry"]["task_toggle"] = mock_inputs["_Skill"](
         name="task_toggle",
         description="Toggle a task",
         category="tasks",
@@ -220,14 +220,14 @@ def test_capability_node_with_ok_deps_is_ok(mock_inputs):
         requires=["obsidian"],
     )
     nodes = cg.build_graph(force=True)
-    assert nodes["cap:task_toggle"].effective_state == "ok"
+    assert nodes["skill:task_toggle"].effective_state == "ok"
 
 
-def test_capability_node_inherits_disabled_from_unwanted_component(mock_inputs):
+def test_skill_node_inherits_disabled_from_unwanted_component(mock_inputs):
     mock_inputs["prefs"]["obsidian"] = mock_inputs["_FeaturePreference"](
         component_id="obsidian", wanted=False,
     )
-    mock_inputs["registry"]["task_toggle"] = mock_inputs["_Capability"](
+    mock_inputs["registry"]["task_toggle"] = mock_inputs["_Skill"](
         name="task_toggle",
         description="Toggle a task",
         category="tasks",
@@ -236,14 +236,14 @@ def test_capability_node_inherits_disabled_from_unwanted_component(mock_inputs):
         requires=["obsidian"],
     )
     nodes = cg.build_graph(force=True)
-    # task_toggle's dep is component:obsidian which is disabled → capability blocked
+    # task_toggle's dep is component:obsidian which is disabled → skill blocked
     # (our rule: if any dep is disabled AND not all are, → blocked)
-    # With only one dep, and it disabled, all deps disabled → capability disabled
-    assert nodes["cap:task_toggle"].effective_state == "disabled"
+    # With only one dep, and it disabled, all deps disabled → skill disabled
+    assert nodes["skill:task_toggle"].effective_state == "disabled"
 
 
-def test_affects_capabilities_inverse_edge(mock_inputs):
-    mock_inputs["registry"]["task_toggle"] = mock_inputs["_Capability"](
+def test_affects_skills_inverse_edge(mock_inputs):
+    mock_inputs["registry"]["task_toggle"] = mock_inputs["_Skill"](
         name="task_toggle",
         description="Toggle a task",
         category="tasks",
@@ -252,7 +252,7 @@ def test_affects_capabilities_inverse_edge(mock_inputs):
         requires=["obsidian"],
     )
     nodes = cg.build_graph(force=True)
-    assert "task_toggle" in nodes["component:obsidian"].affects_capabilities
+    assert "task_toggle" in nodes["component:obsidian"].affects_skills
 
 
 # ---------------------------------------------------------------------------
@@ -335,14 +335,14 @@ def test_sidecar_is_in_domain_system(mock_inputs):
 
 
 # ---------------------------------------------------------------------------
-# Capability resolver
+# Skill resolver
 # ---------------------------------------------------------------------------
 
-def test_capability_resolver_computes_transitive_deps(mock_inputs):
-    from work_buddy.control.capability_resolver import resolve_dependencies
+def test_skill_resolver_computes_transitive_deps(mock_inputs):
+    from work_buddy.control.skill_resolver import resolve_dependencies
     from work_buddy.mcp_server.registry import WorkflowDefinition, WorkflowStep
 
-    cap_a = mock_inputs["_Capability"](
+    cap_a = mock_inputs["_Skill"](
         name="cap_a",
         description="",
         category="x",
@@ -360,7 +360,7 @@ def test_capability_resolver_computes_transitive_deps(mock_inputs):
     registry = {"cap_a": cap_a, "wf_x": wf}
     deps = resolve_dependencies("wf_x", registry=registry)
     assert "obsidian" in deps["components"]
-    assert "cap_a" in deps["capabilities"]
+    assert "cap_a" in deps["skills"]
 
 
 def test_soft_dep_down_degrades_not_blocks(mock_inputs):
@@ -618,9 +618,9 @@ def test_core_component_always_wanted_via_is_wanted(mock_inputs):
     assert is_core("telegram") is False
 
 
-def test_capability_resolver_handles_missing_capability(mock_inputs):
-    """Invoking an unregistered capability doesn't crash; it's silently skipped."""
-    from work_buddy.control.capability_resolver import resolve_dependencies
+def test_skill_resolver_handles_missing_skill(mock_inputs):
+    """Invoking an unregistered skill doesn't crash; it's silently skipped."""
+    from work_buddy.control.skill_resolver import resolve_dependencies
     from work_buddy.mcp_server.registry import WorkflowDefinition, WorkflowStep
 
     wf = WorkflowDefinition(
@@ -632,4 +632,4 @@ def test_capability_resolver_handles_missing_capability(mock_inputs):
     )
     deps = resolve_dependencies("wf_y", registry={"wf_y": wf})
     assert deps["components"] == set()
-    assert deps["capabilities"] == set()
+    assert deps["skills"] == set()

@@ -2,7 +2,7 @@
 name: Resolution phase (vs. execution)
 kind: concept
 description: Resolution = the cyclic, human-in-loop FSM where the system decides what to do. Execution = whichever runtime owns the dispatched action; the threads FSM dispatches but does not itself host the action runtime.
-summary: 'Pre-dispatch: per-Thread FSM is cyclic; human-in-the-loop is a state. Inference + clarification + confirmation happen here. Post-dispatch: existing capability call infrastructure, workflow conductor, or agent loop — none introduced by v5. Two events (execution_started, execution_finished) mirror back; per-step detail lives on the run record.'
+summary: 'Pre-dispatch: per-Thread FSM is cyclic; human-in-the-loop is a state. Inference + clarification + confirmation happen here. Post-dispatch: existing skill call infrastructure, workflow conductor, or agent loop — none introduced by v5. Two events (execution_started, execution_finished) mirror back; per-step detail lives on the run record.'
 tags:
 - threads
 - resolution

@@ -1,11 +1,10 @@
 ---
 name: Conversation Create
-kind: capability
+kind: skill
 description: Create a new conversation with the user. Opens a chat sidebar on the dashboard.
-capability_name: conversation_create
 category: conversations
 op: op.wb.conversation_create
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   title:
     type: string
@@ -17,6 +16,7 @@ parameters:
   source:
     type: string
     description: Source identifier (auto-detected if omitted)
+skill_name: conversation_create
 tags:
 - conversations
 - conversation

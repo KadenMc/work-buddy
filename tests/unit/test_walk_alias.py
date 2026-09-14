@@ -1,7 +1,7 @@
 """Tests for the `walk` op — canonical short name for `drill_tree`.
 
 Both ops share the same callable (`drill_tree_op`); these tests verify
-the binding via the op registry and that the capability declaration
+the binding via the op registry and that the skill declaration
 loads cleanly.
 """
 
@@ -17,6 +17,14 @@ import pytest
 import work_buddy.mcp_server.ops.disclosure_ops  # noqa: F401
 from work_buddy.summarization import Provenance, SummaryNode
 from work_buddy.summarization.stores import DurableSummaryStore
+
+
+@pytest.fixture(autouse=True)
+def _ensure_builtin_ops_loaded():
+    """Make these registry tests independent of other tests clearing global ops."""
+    from work_buddy.mcp_server.op_registry import load_builtin_ops
+
+    load_builtin_ops()
 
 
 @pytest.fixture

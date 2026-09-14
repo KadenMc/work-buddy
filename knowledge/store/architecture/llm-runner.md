@@ -151,14 +151,12 @@ Both LM-Studio-backed backends run inside ``LocalInferenceBroker.slot(...)`` bef
 
 Priority is threaded from the runner: ``LLMRunner.call(priority=...)`` forwards it through ``run_task`` and ``_run_profile`` to the backend's ``broker.slot(...)``. Both backend functions accept a ``priority`` kwarg (defaults to ``WORKFLOW``) and ``queue_wait_s`` (default 30s); the runner forwards ``priority`` and leaves ``queue_wait_s`` at the backend/config default. Callers on user-facing paths pass ``priority=Priority.INTERACTIVE``; batch classifiers / summarizers pass ``Priority.BACKGROUND`` to yield to interactive work. ``priority=None`` (the default) leaves the backend's ``WORKFLOW`` default in place.
 
-The MCP-exposed ``llm_call`` / ``llm_submit`` capabilities take the priority as a string (``"interactive"`` / ``"workflow"`` / ``"background"``), mapped onto the enum by ``work_buddy.inference.parse_priority``. ``llm_submit`` validates it at submit time and carries the canonical name across the queue boundary so the sidecar-replayed ``llm_call`` admits at the requested priority.
+The MCP-exposed ``llm_call`` / ``llm_submit`` skills take the priority as a string (``"interactive"`` / ``"workflow"`` / ``"background"``), mapped onto the enum by ``work_buddy.inference.parse_priority``. ``llm_submit`` validates it at submit time and carries the canonical name across the queue boundary so the sidecar-replayed ``llm_call`` admits at the requested priority.
 
 The Anthropic backend is NOT broker-wrapped — Anthropic is a cloud service, its own rate-limiting handles the admission layer, and the priority/slot vocabulary doesn't apply (the runner attaches ``priority`` only to the local-profile dispatch).
 
 ## Current internal callers
 
-- `work_buddy.triage.capabilities.inline_triage_scan` — FRONTIER_BALANCED → FRONTIER_BEST on timeout/context/empty/rate-limited (via `verdict_call`)
-- `work_buddy.triage.capabilities.journal_triage_scan` — same escalation policy (via `verdict_call`)
 - `work_buddy.triage.recommend.group_intents` (Chrome intent grouping) — FRONTIER_BALANCED
 - `work_buddy.llm.classify`, `work_buddy.llm.summarize` — FRONTIER_FAST (Haiku)
 - `work_buddy.triage.adapters.journal._call_segmenter` and `work_buddy.journal_backlog.manifest.build_thread_manifest` — retained migration/receipt compatibility only; no native Journal surface invokes them

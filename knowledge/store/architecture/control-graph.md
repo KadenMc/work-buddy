@@ -2,7 +2,7 @@
 name: Control Graph
 kind: concept
 description: Unified view-model over preferences, requirements, health, and registry. Powers the Settings tab; backs the fix + help systems.
-summary: 'Graph of domains/subsystems/components/requirements/capabilities fused from the five existing subsystems. Settings tab renders it; Fix + Help + Reprobe endpoints mutate/refresh it. Read-only in spirit: source data lives in health/, preferences/, requirements/, registry — control/ just aggregates and exposes.'
+summary: 'Graph of domains/subsystems/components/requirements/skills fused from the five existing subsystems. Settings tab renders it; Fix + Help + Reprobe endpoints mutate/refresh it. Read-only in spirit: source data lives in health/, preferences/, requirements/, registry — control/ just aggregates and exposes.'
 tags:
 - control-graph
 - settings
@@ -35,7 +35,7 @@ Unified view-model layer that fuses work-buddy's five loosely-coupled observabil
 * **Requirements** (``work_buddy.health.requirements``) — filesystem/config checks.
 * **Health** (``work_buddy.health.engine``) — runtime probes + sidecar state.
 * **Diagnostics** (``work_buddy.health.diagnostics``) — ordered troubleshooting.
-* **Registry** (``work_buddy.mcp_server.registry``) — capabilities + workflows.
+* **Registry** (``work_buddy.mcp_server.registry``) — direct skills + workflow skills.
 
 Before the control graph, each subsystem exposed its own slice and agents had to correlate state across five different shapes. The graph gives one node view that answers questions like "this workflow is blocked because a requirement of a dependency component isn't met" without cross-cutting the consumer.
 
@@ -47,7 +47,7 @@ Five kinds of ``ControlNode``:
 * ``subsystem`` — intermediate grouping under a domain (Daily Notes, Task Lifecycle, Hindsight, Bootstrap, Credentials, ...).
 * ``component`` — concrete runtime entity from ``COMPONENT_CATALOG``. Carries the ``preference`` field.
 * ``requirement`` — configuration check (wrapped from ``REQUIREMENT_REGISTRY``). Carries fix metadata (``fix_kind``, ``fix_fn``, ``fix_params``, ``fix_preview``).
-* ``capability`` — registry entry (both atomic Capability and WorkflowDefinition). Unparented — surfaces via component ``affects_capabilities`` inverse edges rather than a noisy flat domain listing.
+* ``skill`` — registry entry (both direct ``Skill`` and ``WorkflowDefinition``). Unparented — surfaces via component ``affects_skills`` inverse edges rather than a noisy flat domain listing.
 
 Each node carries two kinds of edges:
 
@@ -119,6 +119,6 @@ The primary consumer lives at ``work_buddy/dashboard/frontend/scripts/tabs/setti
 
 ## Relationship to other surfaces
 
-* ``SetupWizard.guided()`` consumes the same domains (Phase G migration).
+* ``SetupWizard.guided()`` consumes the same domains.
 * The bridge latency chart, sidecar event log, and notification log live in the Settings → Activity sub-tab as registry-driven cards; the bridge card is gated on the ``obsidian`` component preference. See ``architecture/feature-cards``.
 * Agents can call ``agent_docs(scope="architecture/control-graph")`` for this overview, then ``/api/control/graph`` for live state.

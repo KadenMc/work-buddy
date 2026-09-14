@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { IntentResult, JsonValue, WidgetRendererProps } from "../../dashboard/contributions/contracts";
 import { useDashboardAnnouncer } from "../../dashboard/accessibility/DashboardAnnouncer";
 import { useWidgetDraft } from "../../dashboard/drafts";
@@ -6,7 +6,7 @@ import { AssistDraftButton, useAssistedDraft } from "../../dashboard/assistance"
 import { HelpTarget } from "../../dashboard/help";
 import { Button, InlineAlert, TextAreaField } from "../../ui";
 import { createCorrelationId, createWidgetIntent } from "../../widget-library/shared";
-import { EMPTY_JOB_DRAFT, JOB_INTENTS, type JobAuthoringInput, type JobCreateDraft } from "./contracts";
+import { EMPTY_JOB_DRAFT, JOB_INTENTS, jobCreateDraftNeedsNormalization, normalizeJobCreateDraft, type JobAuthoringInput, type JobCreateDraft } from "./contracts";
 
 export default function JobComposer({ input, emit, presentation }: WidgetRendererProps<JobAuthoringInput>) {
   const draft = useWidgetDraft("job-create", EMPTY_JOB_DRAFT, {
@@ -21,12 +21,16 @@ export default function JobComposer({ input, emit, presentation }: WidgetRendere
   const [schedule, setSchedule] = useState<{ valid: boolean; description: string; maximum: number } | null>(null);
   const readOnly = input.access.mode === "read_only" || presentation.interactionMode === "arrange";
   const assistance = useAssistedDraft("job-create", draft, { title: "Help me create a job", interactionMode: presentation.interactionMode, readOnly: readOnly || busy });
-  const value = draft.value;
+  const value = useMemo(() => normalizeJobCreateDraft(draft.value), [draft.value]);
+  const needsNormalization = jobCreateDraftNeedsNormalization(draft.value);
+  useEffect(() => {
+    if (draft.ready && needsNormalization) draft.setValue(value);
+  }, [draft.ready, draft.setValue, needsNormalization, value]);
   const smallJitter = value.jitter_seconds > 0 && value.jitter_seconds < 30;
   // Validation describes the submitted values, not later manual/assistant edits.
   const errors = Object.fromEntries(Object.entries(validation?.errors ?? {}).filter(([key]) => {
     if (!validation || value[key as keyof JobCreateDraft] !== validation.values[key as keyof JobCreateDraft]) return false;
-    if (["capability", "workflow", "params", "prompt"].includes(key) && value.job_type !== validation.values.job_type) return false;
+    if (["skill", "workflow", "params", "prompt"].includes(key) && value.job_type !== validation.values.job_type) return false;
     return key !== "jitter_seconds" || value.schedule === validation.values.schedule;
   }));
   const openedByLink = useRef(false);
@@ -57,8 +61,8 @@ export default function JobComposer({ input, emit, presentation }: WidgetRendere
     "aria-describedby": [errors[key] ? fieldId(key, "error") : "", (key === "schedule" && schedule !== null) || (key === "jitter_seconds" && smallJitter) ? fieldId(key, "hint") : ""].filter(Boolean).join(" ") || undefined,
   });
   const hint = (key: keyof JobCreateDraft) => errors[key] ? <small id={fieldId(key, "error")} className="wb-job-error">{errors[key]}</small> : null;
-  const registry = value.job_type === "workflow" ? input.workflows : input.capabilities;
-  const invokeName = value.job_type === "workflow" ? value.workflow : value.capability;
+  const registry = value.job_type === "workflow" ? input.workflows : input.skills;
+  const invokeName = value.job_type === "workflow" ? value.workflow : value.skill;
   const selected = registry.find((entry) => entry.name === invokeName);
   const submit = async () => {
     if (readOnly || busy) return;
@@ -100,11 +104,11 @@ export default function JobComposer({ input, emit, presentation }: WidgetRendere
     <div className="wb-job-fields">
       <label><span id={fieldId("name", "label")}>Job name</span><input {...fieldProps("name")} value={value.name} placeholder="weekly-review" onChange={(event) => update("name", event.target.value)} />{hint("name")}</label>
       <label><span id={fieldId("schedule", "label")}>Schedule</span><HelpTarget content={{ summary: "Choose when this job runs.", details: `Use a five-field schedule in ${input.timeZone}, or ask the assistant to turn a plain-English schedule into these fields.` }}><input {...fieldProps("schedule")} value={value.schedule} placeholder="0 9 * * 1" onChange={(event) => update("schedule", event.target.value)} /></HelpTarget>{hint("schedule")}{schedule ? <small id={fieldId("schedule", "hint")} aria-live="polite">{schedule.valid ? `${schedule.description} · ${input.timeZone}` : "This does not parse as a five-field schedule."}</small> : null}</label>
-      <label><span id={fieldId("job_type", "label")}>Job type</span><select {...fieldProps("job_type")} value={value.job_type} onChange={(event) => update("job_type", event.target.value as JobCreateDraft["job_type"])}><option value="prompt">Agent prompt</option><option value="capability">Capability</option><option value="workflow">Workflow</option></select></label>
+      <label><span id={fieldId("job_type", "label")}>Job type</span><select {...fieldProps("job_type")} value={value.job_type} onChange={(event) => update("job_type", event.target.value as JobCreateDraft["job_type"])}><option value="prompt">Agent prompt</option><option value="skill">Skill</option><option value="workflow">Workflow</option></select></label>
       <label><span id={fieldId("jitter_seconds", "label")}>Jitter (seconds)</span><HelpTarget content={{ summary: "Optionally delay each scheduled run.", details: `Use up to ${schedule?.maximum ?? 300} seconds for this schedule. A delay below 30 seconds may be too small to affect the scheduler tick.` }}><input {...fieldProps("jitter_seconds")} type="number" min={0} max={schedule?.maximum ?? 300} value={value.jitter_seconds} onChange={(event) => update("jitter_seconds", event.target.value === "" ? 0 : Number(event.target.value))} /></HelpTarget>{hint("jitter_seconds")}{smallJitter ? <small id={fieldId("jitter_seconds", "hint")}>Below 30 seconds may be too small to affect the scheduler tick.</small> : null}</label>
     </div>
     {value.job_type === "prompt" ? <TextAreaField {...assistance.fieldProps(["prompt"])} disabled={readOnly || busy} label="What should the job do?" value={value.prompt} rows={5} description={errors.prompt} aria-invalid={errors.prompt ? "true" : undefined} onChange={(next) => update("prompt", next)} /> : <>
-      <label className="wb-job-invoke"><span id={fieldId(value.job_type, "label")}>{value.job_type === "workflow" ? "Workflow" : "Capability"}</span><HelpTarget content={{ summary: `Choose a registered ${value.job_type}.`, details: selected?.description || "Choose a registered name; creation validates it before scheduling the job." }}><input {...fieldProps(value.job_type)} list={`${formId}-registry`} value={invokeName} onChange={(event) => update(value.job_type === "workflow" ? "workflow" : "capability", event.target.value)} /></HelpTarget>{hint(value.job_type)}</label>
+      <label className="wb-job-invoke"><span id={fieldId(value.job_type, "label")}>{value.job_type === "workflow" ? "Workflow" : "Skill"}</span><HelpTarget content={{ summary: `Choose a registered ${value.job_type}.`, details: selected?.description || "Choose a registered name; creation validates it before scheduling the job." }}><input {...fieldProps(value.job_type)} list={`${formId}-registry`} value={invokeName} onChange={(event) => update(value.job_type === "workflow" ? "workflow" : "skill", event.target.value)} /></HelpTarget>{hint(value.job_type)}</label>
       <datalist id={`${formId}-registry`}>{registry.map((entry) => <option key={entry.name} value={entry.name}>{entry.description}</option>)}</datalist>
       {selected && Object.keys(selected.parameters).length > 0 ? <details><summary>Expected parameters</summary><ul>{Object.entries(selected.parameters).map(([name, parameter]) => <li key={name}><strong>{name}</strong>{parameter.required ? " (required)" : ""} · {parameter.type} — {parameter.description}</li>)}</ul></details> : null}
       <TextAreaField {...assistance.fieldProps(["params"])} disabled={readOnly || busy} label="Parameters (JSON)" value={value.params} rows={4} description={errors.params} aria-invalid={errors.params ? "true" : undefined} onChange={(next) => update("params", next)} />

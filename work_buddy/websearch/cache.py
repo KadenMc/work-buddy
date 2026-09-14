@@ -1,6 +1,6 @@
 """Opt-in, artifact-managed search cache.
 
-**Default is no-store.** The agent-facing ``web_search`` capability never
+**Default is no-store.** The agent-facing ``web_search`` skill never
 caches — results go straight back to the caller (ephemeral). Only a *reuse*
 consumer (a poll-diff watcher, or rate-limit relief) passes ``cache=True`` to
 :func:`work_buddy.websearch.router.search`, which stores the **structured

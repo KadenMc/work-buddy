@@ -1,8 +1,7 @@
 ---
 name: Entity Remove Alias
-kind: capability
+kind: skill
 description: Detach an alias from an entity. No-op if not attached.
-capability_name: entity_remove_alias
 category: entities
 parameters:
   entity_id:
@@ -20,7 +19,8 @@ parameters:
 mutates_state: true
 retry_policy: manual
 op: op.wb.entity_remove_alias
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_remove_alias
 tags:
 - entities
 - entity

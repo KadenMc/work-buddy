@@ -2,16 +2,16 @@
 
 Enumerates every workflow in the registry and reports its consent
 fingerprint: declared ``consent_operations`` across constituent
-capabilities, inferred consent weight (max risk over those ops), and a
+skills, inferred consent weight (max risk over those ops), and a
 recommendation for whether the workflow needs an explicit
-``consent_weight`` declaration on its capabilities.
+``consent_weight`` declaration on its skills.
 
 Run via::
 
     uv run python -m scripts.audit_workflow_consent
 
 Used to prioritize which workflows to convert (explicit
-``consent_weight`` on their high-risk capabilities) versus which ride
+``consent_weight`` on their high-risk skills) versus which ride
 the low-weight auto-bypass.
 """
 
@@ -30,7 +30,7 @@ def _inferred_weight(workflow_name: str) -> dict:
     """Walk a workflow's DAG and compute its inferred consent weight.
 
     Returns a dict with: ``workflow_name``, ``declared_ops`` (list),
-    ``max_risk``, ``invokes`` (sorted set of capability names), and
+    ``max_risk``, ``invokes`` (sorted set of skill names), and
     ``status`` (``"safe_default"`` / ``"needs_declaration"`` /
     ``"requires_prompt"``).
     """
@@ -54,7 +54,7 @@ def _inferred_weight(workflow_name: str) -> dict:
     max_risk = "low"
     for cap_name in sorted(invokes):
         cap_entry = registry.get_entry(cap_name)
-        if not isinstance(cap_entry, registry.Capability):
+        if not isinstance(cap_entry, registry.Skill):
             continue
         for op in cap_entry.consent_operations:
             if op in seen:

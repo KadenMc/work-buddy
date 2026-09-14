@@ -160,7 +160,7 @@ class TestActionPayloadForRecord:
         assert payload["kind"] == "suggestion"
         assert payload["name"] == "reference_capture_suggested"
         assert payload["parameters"]["summary"] == "MIT paper draft notes"
-        assert "no reference-capture capability" in payload["blocked_on"].lower()
+        assert "no reference-capture skill" in payload["blocked_on"].lower()
         assert title == "MIT paper draft notes"
 
     def test_calendar_destination(self):

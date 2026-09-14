@@ -18,8 +18,8 @@ parents:
 
 ## Documentation Hierarchy
 
-1. **`CLAUDE.md`** — Agent orientation file. High-level structure, capability registry tables, operational rules. Valid to edit directly for top-level changes.
-2. **`knowledge/store/**/*.md`** — The canonical, queryable documentation store, one Markdown file per unit. All detailed subsystem docs, behavioral directions, capability declarations, and workflow definitions live here. Edit or create units via the `docs_edit` workflow (or a direct `.md` edit + `agent_docs_rebuild`); remove/relocate via `docs_delete` / `docs_move`.
+1. **`CLAUDE.md`** — Agent orientation file. High-level structure, skill registry tables, operational rules. Valid to edit directly for top-level changes.
+2. **`knowledge/store/**/*.md`** — The canonical, queryable documentation store, one Markdown file per unit. All detailed subsystem docs, behavioral directions, skill declarations, and workflow definitions live here. Edit or create units via the `docs_edit` workflow (or a direct `.md` edit + `agent_docs_rebuild`); remove/relocate via `docs_delete` / `docs_move`.
 3. **`CLAUDE.local.md`** — User-specific behavioral instructions. Not checked into git.
 
 ## What is DEPRECATED / Legacy
@@ -33,7 +33,7 @@ parents:
 
 1. **For knowledge store content**: Use the `docs_edit` workflow to edit or create units — it returns the unit's `.md` path, you edit it with your native `Edit` tool, and the commit step validates and reconciles. A direct `.md` edit + `agent_docs_rebuild` works too.
 2. **For CLAUDE.md**: Edit the file directly — it's the orientation layer, not a knowledge store unit.
-3. **For capability declarations**: a capability is an Op (callable in `work_buddy/mcp_server/ops/`) plus a `kind: capability` declaration unit. Edit the declaration like any other unit (via `docs_edit`); see `architecture/data-first-capabilities`.
+3. **For skill declarations**: a skill is an Op (callable in `work_buddy/mcp_server/ops/`) plus a `kind: skill` declaration unit. Edit the declaration like any other unit (via `docs_edit`); see `architecture/data-first-skills`.
 4. **For personal knowledge**: Use `knowledge_mint` to create/update vault-backed units.
 
 ## Common Mistakes to Avoid

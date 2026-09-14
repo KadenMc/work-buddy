@@ -1,8 +1,7 @@
 ---
 name: Find
-kind: capability
+kind: skill
 description: Structured IR search across any indexed source. Returns a plain list of hits, or — when `drill=True` — the funnel shape (`stage1_hits` + `candidate_items` + `drilled`). Subsumes `summary_search` (which remains as an alias).
-capability_name: find
 category: search
 parameters:
   query:
@@ -42,7 +41,8 @@ parameters:
     description: When drilling, how many raw-span hits per item (default 5).
     required: false
 op: op.wb.find
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: find
 tags:
 - allow-transient-labels
 - search

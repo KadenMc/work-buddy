@@ -1,4 +1,4 @@
-"""Disclosure-domain ops — the unified `drill_tree` capability.
+"""Disclosure-domain ops — the unified `drill_tree` skill.
 
 `drill_tree` walks any registered `TreeDrillable` at three depths
 (index/summary/full). Today's domains: ``knowledge`` and ``summary``;
@@ -25,7 +25,7 @@ def drill_tree_op(
 
 def _register() -> None:
     # Canonical short-name alias `walk` registered alongside `drill_tree`.
-    # Both bind the same callable; capability declarations live separately
+    # Both bind the same callable; skill declarations live separately
     # so each gets its own discoverable name, parameter schema, and
     # content body. ``replace=True`` is set on both registrations so a
     # registry reload (importlib.reload via load_builtin_ops) re-binds

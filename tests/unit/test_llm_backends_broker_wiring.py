@@ -437,7 +437,7 @@ def test_parse_priority_rejects_unknown():
 
 
 def test_llm_call_threads_string_priority_to_broker(monkeypatch):
-    """The llm_call MCP capability accepts a string priority and threads
+    """The llm_call MCP skill accepts a string priority and threads
     it (mapped to the Priority enum) down to the backend broker slot."""
     import work_buddy.llm.backends.openai_compat as oa_mod
     from work_buddy.llm.call import llm_call
@@ -460,7 +460,7 @@ def test_llm_call_threads_string_priority_to_broker(monkeypatch):
 
 
 def test_llm_call_rejects_invalid_priority():
-    """A bad priority string is rejected at the capability boundary
+    """A bad priority string is rejected at the skill boundary
     before any backend call — no broker slot is taken."""
     from work_buddy.llm.call import llm_call
 

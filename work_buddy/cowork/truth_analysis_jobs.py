@@ -18,10 +18,10 @@ from work_buddy.agent_execution.models import (
 from work_buddy.cowork.execution_identity import cowork_truth_analysis_session_id
 
 
-TRUTH_ANALYSIS_JOB_GET_CAPABILITY = "cowork_truth_analysis_job_get"
-TRUTH_ANALYSIS_SEARCH_CAPABILITY = "cowork_truth_analysis_search"
-TRUTH_ANALYSIS_FETCH_CAPABILITY = "cowork_truth_analysis_fetch"
-TRUTH_ANALYSIS_JOB_SUBMIT_CAPABILITY = "cowork_truth_analysis_job_submit"
+TRUTH_ANALYSIS_JOB_GET_SKILL = "cowork_truth_analysis_job_get"
+TRUTH_ANALYSIS_SEARCH_SKILL = "cowork_truth_analysis_search"
+TRUTH_ANALYSIS_FETCH_SKILL = "cowork_truth_analysis_fetch"
+TRUTH_ANALYSIS_JOB_SUBMIT_SKILL = "cowork_truth_analysis_job_submit"
 DEFAULT_TRUTH_ANALYSIS_BUDGET_USD = 2.0
 MAX_TRUTH_ANALYSIS_BUDGET_USD = 2.0
 _BOUND_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -127,12 +127,12 @@ You are one job-scoped worker preparing candidates for Co-work Truth review.
 ## Work Buddy setup and delivery
 
 1. Read `WORK_BUDDY_SESSION_ID` and call `wb_init` exactly once.
-2. Resolve only these capabilities with `wb_search`:
-   `{TRUTH_ANALYSIS_JOB_GET_CAPABILITY}`,
-   `{TRUTH_ANALYSIS_SEARCH_CAPABILITY}`,
-   `{TRUTH_ANALYSIS_FETCH_CAPABILITY}`, and
-   `{TRUTH_ANALYSIS_JOB_SUBMIT_CAPABILITY}`.
-3. Call `{TRUTH_ANALYSIS_JOB_GET_CAPABILITY}` for run_id={run!r}. The server
+2. Resolve only these skills with `wb_search`:
+   `{TRUTH_ANALYSIS_JOB_GET_SKILL}`,
+   `{TRUTH_ANALYSIS_SEARCH_SKILL}`,
+   `{TRUTH_ANALYSIS_FETCH_SKILL}`, and
+   `{TRUTH_ANALYSIS_JOB_SUBMIT_SKILL}`.
+3. Call `{TRUTH_ANALYSIS_JOB_GET_SKILL}` for run_id={run!r}. The server
    derives all authority from your transport session and returns the exact
    selected passage, bounded existing Truth context, source coverage, limits,
    and output schema.
@@ -143,12 +143,12 @@ You are one job-scoped worker preparing candidates for Co-work Truth review.
 5. Search the web only when it would materially help assess a factual claim.
    Use at most the server-reported limits. Fetch only server-issued hit IDs;
    there is no arbitrary URL fetch. Never describe a source as searched or
-   fetched unless the corresponding capability receipt says so.
+   fetched unless the corresponding skill receipt says so.
 6. Submit exactly one typed output through
-   `{TRUTH_ANALYSIS_JOB_SUBMIT_CAPABILITY}`. Reuse the identical logical
+   `{TRUTH_ANALYSIS_JOB_SUBMIT_SKILL}`. Reuse the identical logical
    payload if a response is ambiguous.
 
-The submit capability is the only authoritative delivery path. Your output is
+The submit skill is the only authoritative delivery path. Your output is
 staged review material, not a fact, claim-ledger mutation, human decision, or
 document edit. Do not claim completion unless submit reports success.
 
@@ -229,10 +229,10 @@ def spawn_truth_analysis_job(
 __all__ = [
     "DEFAULT_TRUTH_ANALYSIS_BUDGET_USD",
     "MAX_TRUTH_ANALYSIS_BUDGET_USD",
-    "TRUTH_ANALYSIS_FETCH_CAPABILITY",
-    "TRUTH_ANALYSIS_JOB_GET_CAPABILITY",
-    "TRUTH_ANALYSIS_JOB_SUBMIT_CAPABILITY",
-    "TRUTH_ANALYSIS_SEARCH_CAPABILITY",
+    "TRUTH_ANALYSIS_FETCH_SKILL",
+    "TRUTH_ANALYSIS_JOB_GET_SKILL",
+    "TRUTH_ANALYSIS_JOB_SUBMIT_SKILL",
+    "TRUTH_ANALYSIS_SEARCH_SKILL",
     "TruthAnalysisSpawnIntegrityError",
     "TruthAnalysisSpawnMetadata",
     "build_truth_analysis_prompt",

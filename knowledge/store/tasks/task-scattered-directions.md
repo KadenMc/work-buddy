@@ -5,7 +5,7 @@ description: How to present scattered task results and triage into action catego
 summary: 'Present results grouped by file. Assess: stale tasks, active project tasks, duplicates. Suggest concrete actions. Keep output concise.'
 trigger: user asks to find tasks scattered across the vault
 command: wb-task-scattered
-capabilities:
+skills:
 - tasks/task_scattered
 tags:
 - tasks

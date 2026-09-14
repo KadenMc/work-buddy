@@ -1,16 +1,16 @@
 ---
 name: Datacore Validate
-kind: capability
+kind: skill
 description: Validate a Datacore query string without executing it. Returns parse error details if invalid.
-capability_name: datacore_validate
 category: context
 op: op.wb.datacore_validate
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
     description: Datacore query string to validate
     required: true
+skill_name: datacore_validate
 tags:
 - context
 - datacore

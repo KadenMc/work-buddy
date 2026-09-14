@@ -5,7 +5,7 @@ by :meth:`SourcePipeline.precluster` and emits the final cluster set
 plus a proposed action per cluster. Generalises Chrome's pre-rebuild
 intent-grouping (``clarify/recommend.py:group_intents``) to be
 source-agnostic — the prompt template takes per-source guidance and
-the action library declares which capabilities the LLM may pick from.
+the action library declares which skills the LLM may pick from.
 
 Failure modes
 -------------
@@ -15,7 +15,7 @@ The runner treats this stage as best-effort. On any of:
 - LLM timeout / API error
 - Unparseable JSON response
 - Schema validation failure (item_id missing / duplicated /
-  capability_name not in library / confidence out of range)
+  skill_name not in library / confidence out of range)
 
 …the function falls back to returning ``pre`` unchanged with no
 proposed actions. The umbrella + group sub-threads still spawn; the
@@ -65,7 +65,7 @@ REFINE_OUTPUT_SCHEMA: dict[str, Any] = {
                                 "type": "object",
                                 "additionalProperties": False,
                                 "properties": {
-                                    "capability_name": {"type": "string"},
+                                    "skill_name": {"type": "string"},
                                     "rationale": {"type": "string"},
                                     # Range constraint enforced in
                                     # Python validator (Anthropic's
@@ -73,7 +73,7 @@ REFINE_OUTPUT_SCHEMA: dict[str, Any] = {
                                     # rejects minimum/maximum).
                                     "confidence": {"type": "number"},
                                 },
-                                "required": ["capability_name"],
+                                "required": ["skill_name"],
                             },
                         ],
                     },
@@ -377,7 +377,7 @@ def _render_user_payload(
     ]
     actions_payload = [
         {
-            "capability_name": d["capability_name"],
+            "skill_name": d["skill_name"],
             "label": d["label"],
             "description": d["description"],
         }
@@ -487,15 +487,15 @@ def _validate_proposal(
         raise _ValidationError(
             f"cluster {cluster_label!r}: proposed_action is not an object",
         )
-    capability = raw.get("capability_name")
-    if not isinstance(capability, str) or not capability.strip():
+    skill = raw.get("skill_name")
+    if not isinstance(skill, str) or not skill.strip():
         raise _ValidationError(
-            f"cluster {cluster_label!r}: proposed_action.capability_name missing",
+            f"cluster {cluster_label!r}: proposed_action.skill_name missing",
         )
-    if not action_library.has(capability):
+    if not action_library.has(skill):
         raise _ValidationError(
-            f"cluster {cluster_label!r}: proposed_action.capability_name "
-            f"{capability!r} not in action library",
+            f"cluster {cluster_label!r}: proposed_action.skill_name "
+            f"{skill!r} not in action library",
         )
     confidence = raw.get("confidence", 0.0)
     if not isinstance(confidence, (int, float)):
@@ -514,7 +514,7 @@ def _validate_proposal(
             f"cluster {cluster_label!r}: proposed_action.rationale not string",
         )
     return ActionProposal(
-        capability_name=capability,
+        skill_name=skill,
         parameters=dict(raw.get("parameters") or {}),
         rationale=rationale,
         confidence=confidence,

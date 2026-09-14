@@ -57,7 +57,7 @@ def _triage_dict(
 
 class TestActionLibrary:
     def test_contains_chrome_specific(self):
-        names = {d.capability_name for d in CHROME_ACTION_LIBRARY}
+        names = {d.skill_name for d in CHROME_ACTION_LIBRARY}
         assert "chrome_tab_close" in names
         assert "chrome_tab_group" in names
         assert "chrome_tab_move" in names

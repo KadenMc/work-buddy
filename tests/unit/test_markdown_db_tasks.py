@@ -6,7 +6,7 @@ the ``task_metadata`` store for the same inputs. These tests run both
 against the same temp master-task-list + a fresh temp DB and assert the
 resulting store state matches column-for-column.
 
-If these pass, the cutover (repointing the cron + capability at
+If these pass, the cutover (repointing the cron + skill at
 ``TaskMarkdownDB``) is a behaviour-preserving change.
 """
 

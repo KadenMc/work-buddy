@@ -88,7 +88,7 @@ def test_gateway_create_response_loss_reuses_persisted_mutation_id(
     assert first["replayed"] is False
     gateway._complete_operation(operation_id, error="response lost")
 
-    capability = registry.Capability(
+    skill = registry.Skill(
         name="task_create",
         description="test create",
         category="tasks",
@@ -97,7 +97,7 @@ def test_gateway_create_response_loss_reuses_persisted_mutation_id(
         mutates_state=True,
         retry_policy="verify_first",
     )
-    monkeypatch.setattr(registry, "get_entry", lambda _name: capability)
+    monkeypatch.setattr(registry, "get_entry", lambda _name: skill)
     replay = gateway.retry_operation(operation_id)
 
     assert replay["result"]["replayed"] is True
@@ -151,7 +151,7 @@ def test_gateway_response_loss_replays_same_revision_and_mutation_id(
     # Model a transport failure after the application service committed but
     # before the gateway could persist/deliver the success response.
     gateway._complete_operation(operation_id, error="response lost")
-    capability = registry.Capability(
+    skill = registry.Skill(
         name="task_toggle",
         description="test toggle",
         category="tasks",
@@ -160,7 +160,7 @@ def test_gateway_response_loss_replays_same_revision_and_mutation_id(
         mutates_state=True,
         retry_policy="verify_first",
     )
-    monkeypatch.setattr(registry, "get_entry", lambda _name: capability)
+    monkeypatch.setattr(registry, "get_entry", lambda _name: skill)
 
     replay = gateway.retry_operation(operation_id)
 

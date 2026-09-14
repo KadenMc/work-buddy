@@ -18,6 +18,10 @@ import work_buddy.paths as pmod
 @pytest.fixture
 def fake_repo(tmp_path, monkeypatch):
     """Point ``paths.repo_root()`` at a tmp dir so we control config files."""
+    # The suite-level production-state fence deliberately sets this before
+    # collection. These tests exercise config-root fallback itself, so remove
+    # the process override only after repo_root has been redirected to tmp_path.
+    monkeypatch.delenv("WORK_BUDDY_DATA_DIR", raising=False)
     monkeypatch.setattr(pmod, "repo_root", lambda: tmp_path)
     return tmp_path
 

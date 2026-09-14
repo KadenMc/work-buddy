@@ -3,7 +3,7 @@
 When a message arrives with ``recipient="work-buddy"`` and
 ``status="pending"``, the router:
 1. Reads the full message body
-2. Classifies it: does the subject match a known capability or workflow?
+2. Classifies it: does the subject match a known direct skill or workflow?
 3. Executes the job
 4. Replies with results
 5. Updates the message status to ``resolved``
@@ -14,7 +14,7 @@ from typing import Any
 
 from work_buddy.logging_config import get_logger
 from work_buddy.sidecar.dispatch.executor import (
-    _execute_capability,
+    _execute_skill,
     _execute_prompt,
     _execute_workflow,
 )
@@ -111,7 +111,7 @@ class MessagePoller:
         # --- Special case: consent_grant from out-of-band surfaces ---
         # The Obsidian modal posts a ``consent_grant`` message when the
         # user clicks Allow on a notification whose gateway poll has
-        # already timed out. Routing through the generic capability
+        # already timed out. Routing through the generic skill
         # dispatch would write the grant to the sidecar's own session
         # DB; we want it in the ORIGINATING agent's DB so the
         # ``@requires_consent`` decorators see it on the agent's next
@@ -122,7 +122,7 @@ class MessagePoller:
         if normalized_subject == "consent_grant":
             result = _handle_consent_grant_message(body)
         else:
-            # --- Classify: try to match subject to a known capability/workflow ---
+            # --- Classify: try to match subject to a known skill/workflow ---
             result = self._classify_and_execute(subject, body)
 
         # --- Reply with results ---
@@ -147,14 +147,14 @@ class MessagePoller:
         """Classify a message and execute the appropriate handler.
 
         Classification order:
-        1. Exact match of subject against registered capability names
+        1. Exact match of subject against registered direct-skill names
         2. Exact match against registered workflow names
         3. Fallback: treat body as freeform prompt
         """
         try:
             from work_buddy.mcp_server.registry import (
                 get_registry,
-                Capability,
+                Skill,
                 WorkflowDefinition,
             )
 
@@ -163,13 +163,13 @@ class MessagePoller:
             # Normalize subject for matching
             subject_lower = subject.strip().lower().replace(" ", "_").replace("-", "_")
 
-            # Try capability match
+            # Try direct-skill match
             for name, entry in registry.items():
-                if isinstance(entry, Capability):
+                if isinstance(entry, Skill):
                     if name.lower() == subject_lower:
-                        logger.info("Message matched capability: %s", name)
+                        logger.info("Message matched skill: %s", name)
                         params = _parse_body_params(body)
-                        return _execute_capability(name, params)
+                        return _execute_skill(name, params)
 
             # Try workflow match
             for name, entry in registry.items():
@@ -291,7 +291,7 @@ def _handle_consent_grant_message(body: str) -> dict[str, Any]:
 
 
 def _parse_body_params(body: str) -> dict[str, Any]:
-    """Parse a message body as JSON params for capability dispatch.
+    """Parse a message body as JSON params for direct-skill dispatch.
 
     If the body is valid JSON dict, use it directly as params.
     If it's a JSON string containing a JSON dict, parse the inner dict.

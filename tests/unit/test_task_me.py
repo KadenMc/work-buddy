@@ -31,7 +31,7 @@ def test_load_context_returns_expected_keys(monkeypatch):
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
-        "work_buddy.tasks.capabilities.daily_briefing",
+        "work_buddy.tasks.skills.daily_briefing",
         lambda: {"focused": [{"description": "X", "task_id": "t-x"}]},
     )
     monkeypatch.setattr(
@@ -58,7 +58,7 @@ def test_load_context_degrades_on_briefing_failure(monkeypatch):
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
-        "work_buddy.tasks.capabilities.daily_briefing", boom,
+        "work_buddy.tasks.skills.daily_briefing", boom,
     )
     monkeypatch.setattr(
         "work_buddy.dashboard.service._build_engage_view_payload",

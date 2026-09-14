@@ -1,11 +1,10 @@
 ---
 name: Context Bundle
-kind: capability
+kind: skill
 description: Run permitted native collectors and save a context bundle to disk. Obsidian app sources are skipped before cache or collector access when the feature is opted out; filesystem Vault and provider-neutral Calendar remain available. Use individual collectors when only one source is needed.
-capability_name: context_bundle
 category: context
 op: op.wb.context_bundle
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   days:
     type: int
@@ -27,6 +26,7 @@ parameters:
     type: str
     description: 'Comma-separated collectors (e.g. ''git,chats''). Default: all.'
     required: false
+skill_name: context_bundle
 tags:
 - context
 - bundle

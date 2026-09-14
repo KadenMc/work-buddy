@@ -1,8 +1,7 @@
 ---
 name: Entity Create
-kind: capability
+kind: skill
 description: Create a new entity with optional description, tags, and aliases. Consent-gated for agent-author writes. Optionally anchors an initial reference if source_path + source_kind are supplied.
-capability_name: entity_create
 category: entities
 parameters:
   canonical_name:
@@ -37,7 +36,8 @@ mutates_state: true
 retry_policy: manual
 consent_required: true
 op: op.wb.entity_create
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: entity_create
 tags:
 - entities
 - entity

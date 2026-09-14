@@ -77,10 +77,10 @@ def _resolution_request_notif(thread_id: str) -> Notification:
 
 def _ordinary_notif() -> Notification:
     """A non-thread notification (e.g. a consent prompt for an
-    autonomous capability call) that DOES correspond to a real
+    autonomous skill call) that DOES correspond to a real
     workflow-view on the dashboard."""
     return Notification(
-        notification_id="capability-consent-abc123",
+        notification_id="skill-consent-abc123",
         title="Approve eval_js",
         response_type=ResponseType.CUSTOM.value,
         custom_template={"consent_meta": {"operation": "obsidian.eval_js"}},
@@ -97,7 +97,7 @@ class TestDashboardUrlFor:
     def test_ordinary_notification_uses_workflow_view_pattern(self, cfg):
         notif = _ordinary_notif()
         url = cfg._dashboard_url_for(notif)
-        assert url == f"{_BASE}/#view/capability-consent-abc123"
+        assert url == f"{_BASE}/#view/skill-consent-abc123"
 
     def test_resolution_request_without_thread_id_falls_back(self, cfg):
         """Defensive: if the custom_template is malformed (no
@@ -137,5 +137,5 @@ class TestRenderNotificationLinkRouting:
     def test_ordinary_consent_message_links_to_workflow_view(self, cfg):
         notif = _ordinary_notif()
         rendered = cfg.render_notification(notif)
-        assert "view/capability\\-consent\\-abc123" in rendered["text"]
+        assert "view/skill\\-consent\\-abc123" in rendered["text"]
         assert "tab\\=threads" not in rendered["text"]

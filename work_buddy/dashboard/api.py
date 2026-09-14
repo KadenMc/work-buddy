@@ -1949,10 +1949,10 @@ def _obsidian_commands(cfg: dict) -> list[dict]:
 
 
 def _workbuddy_commands(cfg: dict) -> list[dict]:
-    """Fetch work-buddy capabilities from the MCP registry."""
+    """Fetch work-buddy skills from the MCP registry."""
     try:
         from work_buddy.mcp_server.registry import (
-            Capability,
+            Skill,
             WorkflowDefinition,
             get_registry,
         )
@@ -1980,7 +1980,7 @@ def _workbuddy_commands(cfg: dict) -> list[dict]:
                     "command_type": "workflow",
                     "slash_command": entry.slash_command,
                 })
-            elif isinstance(entry, Capability):
+            elif isinstance(entry, Skill):
                 if entry.category in exclude_cats:
                     continue
                 has_params = bool(entry.parameters)
@@ -1997,7 +1997,7 @@ def _workbuddy_commands(cfg: dict) -> list[dict]:
                 })
         return results
     except Exception as exc:
-        logger.warning("Failed to fetch work-buddy capabilities: %s", exc)
+        logger.warning("Failed to fetch work-buddy skills: %s", exc)
         return []
 
 

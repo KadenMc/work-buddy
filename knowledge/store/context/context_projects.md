@@ -1,16 +1,16 @@
 ---
 name: Context Projects
-kind: capability
+kind: skill
 description: Active projects with identity, state, and trajectory — synthesized from vault directories, STATE.md files in repos, task tags, git activity, and contracts. Filters the rendered output to active projects by default; pass ``statuses`` to widen.
-capability_name: context_projects
 category: context
 op: op.wb.context_projects
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   statuses:
     type: list
     description: 'Project lifecycle statuses to include in the rendered bundle. Default: active only. Valid values: active, paused, future, past. Pass ["active", "paused", "future", "past"] to include everything (deleted is never rendered). Filters only the rendered output — every project is still scanned and synced to the registry.'
     required: false
+skill_name: context_projects
 tags:
 - context
 - projects

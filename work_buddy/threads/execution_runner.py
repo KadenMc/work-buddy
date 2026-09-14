@@ -2,7 +2,7 @@
 
 When the FSM transitions a Thread into :data:`FSMState.EXECUTING`,
 this handler reads the latest ``action_inferred`` event off the
-Thread, looks up the named capability in the MCP registry, binds
+Thread, looks up the named skill in the MCP registry, binds
 parameters (auto-filling Chrome-specific ``tab_ids`` from the
 Thread's context items), invokes it, records ``execution_started``
 + ``execution_finished`` events, and fires
@@ -49,7 +49,7 @@ def execution_state_entry_handler(transition_result) -> None:
     """Engine state-entry handler for :data:`FSMState.EXECUTING`.
 
     Reads the latest non-cleared ``action_inferred`` event, dispatches
-    its capability via the MCP registry, then fires the matching
+    its skill via the MCP registry, then fires the matching
     completion trigger. Failures land an ``execution_finished`` event
     flagged ``success=False`` and fire :data:`TRIG_EXECUTION_FAILED`.
     """
@@ -80,24 +80,24 @@ def execution_state_entry_handler(transition_result) -> None:
         _record_failure(
             thread_id,
             error="no action_inferred event found",
-            capability=None,
+            skill=None,
         )
         return
 
-    capability_name = proposal.get("name") or ""
+    skill_name = proposal.get("name") or ""
     raw_parameters = dict(proposal.get("parameters") or {})
 
     # Resolve the registry entry once and thread it through both the
     # parameter binder (which reads the declared param schema) and the
     # dispatcher (which calls the entry's callable).
-    entry = _get_capability_entry(capability_name)
+    entry = _get_skill_entry(skill_name)
 
     # Bind dynamic parameters that depend on the thread's runtime
     # state (e.g. tab_ids pulled from context_items for chrome_tab_*
     # actions). Static parameters set on the proposal at refine-time
     # win — we only fill in what wasn't already provided.
     bound = _bind_runtime_parameters(
-        capability_name=capability_name,
+        skill_name=skill_name,
         thread=thread,
         provided=raw_parameters,
         entry=entry,
@@ -109,7 +109,7 @@ def execution_state_entry_handler(transition_result) -> None:
         kind=KIND_EXECUTION_STARTED,
         actor=ACTOR_AGENT,
         data={
-            "capability_name": capability_name,
+            "skill_name": skill_name,
             "parameters": bound,
         },
         parent_event_id=store.latest_event_id(thread_id),
@@ -120,8 +120,8 @@ def execution_state_entry_handler(transition_result) -> None:
     )
 
     # Dispatch.
-    success, result, error = _invoke_capability(
-        capability_name=capability_name, parameters=bound, entry=entry,
+    success, result, error = _invoke_skill(
+        skill_name=skill_name, parameters=bound, entry=entry,
     )
 
     # Audit finish (always — both success + failure paths).
@@ -130,7 +130,7 @@ def execution_state_entry_handler(transition_result) -> None:
         kind=KIND_EXECUTION_FINISHED,
         actor=ACTOR_AGENT,
         data={
-            "capability_name": capability_name,
+            "skill_name": skill_name,
             "success": success,
             "result": _truncate_for_log(result),
             "error": error,
@@ -151,7 +151,7 @@ def execution_state_entry_handler(transition_result) -> None:
             data={
                 "success": success,
                 "error": error,
-                "capability_name": capability_name,
+                "skill_name": skill_name,
             },
             parent_event_id=store.latest_event_id(thread_id),
             fire_side_effects=True,
@@ -189,22 +189,22 @@ def _latest_action_proposal(thread_id: str) -> dict[str, Any] | None:
 
 def _bind_runtime_parameters(
     *,
-    capability_name: str,
+    skill_name: str,
     thread,
     provided: dict[str, Any],
     entry=None,
 ) -> dict[str, Any]:
-    """Fill in capability parameters that depend on thread runtime
+    """Fill in skill parameters that depend on thread runtime
     state. Static params from the proposal win.
 
-    Covers the Chrome-action capabilities (which need ``tab_ids``
+    Covers the Chrome-action skills (which need ``tab_ids``
     extracted from the Thread's context items) and any action whose
     callable takes the host thread as a ``thread_id`` argument. Other
-    capabilities pass through unchanged.
+    skills pass through unchanged.
     """
     out = dict(provided)
 
-    if capability_name in (
+    if skill_name in (
         "chrome_tab_close", "chrome_tab_group", "chrome_tab_move",
     ):
         if "tab_ids" not in out:
@@ -218,10 +218,10 @@ def _bind_runtime_parameters(
     # "Redirect needed" notification.
     #
     # The binding is driven by the declared parameter schema, not a
-    # hardcoded capability list: the op callable is a ``**kwargs``
+    # hardcoded skill list: the op callable is a ``**kwargs``
     # wrapper whose signature can't be introspected, but the declaration
     # names ``thread_id`` for exactly the actions that need it. The
-    # ``is_action`` gate excludes non-action capabilities (e.g. the
+    # ``is_action`` gate excludes non-action skills (e.g. the
     # messaging tools) that declare an unrelated ``thread_id``.
     #
     # This ALWAYS overrides any provided ``thread_id``: the host thread is
@@ -253,8 +253,8 @@ def _collect_tab_ids(thread) -> list[int]:
     return out
 
 
-def _get_capability_entry(capability_name: str):
-    """Resolve a capability's registry entry, or ``None`` if the
+def _get_skill_entry(skill_name: str):
+    """Resolve a skill's registry entry, or ``None`` if the
     registry can't be imported or the name isn't registered.
 
     Used to look up the entry once per execution so both the parameter
@@ -266,15 +266,15 @@ def _get_capability_entry(capability_name: str):
     except Exception:
         logger.exception("execution_runner: registry import failed")
         return None
-    return get_registry().get(capability_name)
+    return get_registry().get(skill_name)
 
 
-def _invoke_capability(
-    *, capability_name: str, parameters: dict[str, Any], entry=None,
+def _invoke_skill(
+    *, skill_name: str, parameters: dict[str, Any], entry=None,
 ) -> tuple[bool, Any, str | None]:
-    """Look up the capability in the MCP registry and call it.
+    """Look up the skill in the MCP registry and call it.
 
-    Returns ``(success, result, error_msg)``. The capability's
+    Returns ``(success, result, error_msg)``. The skill's
     callable is called with ``**parameters``; any exception is caught
     and surfaced as a failure. ``entry`` may be passed pre-resolved to
     avoid a second registry lookup; when omitted it is resolved here.
@@ -284,26 +284,26 @@ def _invoke_capability(
             from work_buddy.mcp_server.registry import get_registry
         except Exception as e:
             return (False, None, f"registry import failed: {e}")
-        entry = get_registry().get(capability_name)
+        entry = get_registry().get(skill_name)
     if entry is None:
         return (
             False, None,
-            f"capability {capability_name!r} not registered",
+            f"skill {skill_name!r} not registered",
         )
     callable_ = getattr(entry, "callable", None)
     if not callable(callable_):
         return (
             False, None,
-            f"capability {capability_name!r} has no callable",
+            f"skill {skill_name!r} has no callable",
         )
 
     try:
         result = callable_(**parameters)
     except TypeError as e:
         return (False, None, f"parameter mismatch: {e}")
-    except Exception as e:  # noqa: BLE001 — capability errors are surfaced
+    except Exception as e:  # noqa: BLE001 — skill errors are surfaced
         logger.exception(
-            "execution_runner: capability %s raised", capability_name,
+            "execution_runner: skill %s raised", skill_name,
         )
         return (False, None, f"{type(e).__name__}: {e}")
 

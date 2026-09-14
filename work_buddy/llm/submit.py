@@ -121,7 +121,7 @@ def llm_submit(
 
     record: dict[str, Any] = {
         "operation_id": op_id,
-        "type": "capability",
+        "type": "skill",
         "name": "llm_call",
         "params": replay_params,
         "retry_policy": "replay",

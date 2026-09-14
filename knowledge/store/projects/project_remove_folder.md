@@ -1,11 +1,10 @@
 ---
 name: Project Remove Folder
-kind: capability
+kind: skill
 description: Detach a folder from a project. Writes a revision.
-capability_name: project_remove_folder
 category: projects
 op: op.wb.project_remove_folder
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   slug:
     type: str
@@ -25,6 +24,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: project_remove_folder
 tags:
 - projects
 - project

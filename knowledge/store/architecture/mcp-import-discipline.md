@@ -1,8 +1,8 @@
 ---
 name: MCP Server Import Discipline
 kind: concept
-description: 'Critical safety constraint: why heavy library imports in capability callables deadlock the MCP server, and the correct pattern to avoid it'
-summary: The MCP server process must never import heavy compute libraries (numpy, rank_bm25, sentence-transformers, sqlite3) in capability callables. They deadlock the asyncio event loop via Python's import lock. Route heavy compute through the embedding service HTTP API (localhost:5124).
+description: 'Critical safety constraint: why heavy library imports in skill callables deadlock the MCP server, and the correct pattern to avoid it'
+summary: The MCP server process must never import heavy compute libraries (numpy, rank_bm25, sentence-transformers, sqlite3) in skill callables. They deadlock the asyncio event loop via Python's import lock. Route heavy compute through the embedding service HTTP API (localhost:5124).
 tags:
 - architecture
 - mcp
@@ -25,13 +25,13 @@ parents:
 
 ## Rule
 
-The MCP server process must **never** import heavy compute libraries in capability callables. This includes `numpy`, `rank_bm25`, `sentence-transformers`, and `sqlite3` (via `ir.store`).
+The MCP server process must **never** import heavy compute libraries in skill callables. This includes `numpy`, `rank_bm25`, `sentence-transformers`, and `sqlite3` (via `ir.store`).
 
 All heavy compute goes through the embedding service HTTP API (`localhost:5124`).
 
 ## Why: the deadlock mechanism
 
-The MCP server uses `asyncio.to_thread()` to dispatch capability callables to a thread pool. If a callable does a deferred import of a heavy module (e.g., `from work_buddy.ir.engine import search`), the import triggers Python's per-module import lock. The main thread (running the asyncio event loop) may also need import locks for its own operations. Result: **permanent deadlock**.
+The MCP server uses `asyncio.to_thread()` to dispatch skill callables to a thread pool. If a callable does a deferred import of a heavy module (e.g., `from work_buddy.ir.engine import search`), the import triggers Python's per-module import lock. The main thread (running the asyncio event loop) may also need import locks for its own operations. Result: **permanent deadlock**.
 
 ### Step-by-step
 
@@ -61,7 +61,7 @@ The MCP server's `_ir_search_dispatch` and `_ir_index_dispatch` call `client.ir_
 
 The `_IN_SERVICE` flag in `ir/dense.py` lets the embedding service call models directly (avoiding HTTP self-calls) while external callers still use the HTTP API.
 
-## Safe vs unsafe imports in capability callables
+## Safe vs unsafe imports in skill callables
 
 | Safe | Unsafe |
 |------|--------|
@@ -72,7 +72,7 @@ The `_IN_SERVICE` flag in `ir/dense.py` lets the embedding service call models d
 
 ## Key files
 
-- `work_buddy/mcp_server/registry.py` — capability registration (deadlock warnings in `_build_registry()` and `_context_capabilities()`)
+- `work_buddy/mcp_server/registry.py` — skill registration (deadlock warnings in `_build_registry()` and `_context_skills()`)
 - `work_buddy/embedding/service.py` — the correct home for heavy compute
 - `work_buddy/ir/dense.py` — `_IN_SERVICE` flag
 - `work_buddy/mcp_server/context_wrappers.py` — gateway-callable wrappers following the correct pattern
@@ -100,13 +100,13 @@ If you want to read arguments and route, that's fine inline. If you want to *do 
 
 To verify a new handler doesn't block the event loop:
 
-1. Rebuild the registry on a running gateway: `mcp__work-buddy__wb_run("reload_capability_data")`
+1. Rebuild the registry on a running gateway: `mcp__work-buddy__wb_run("reload_skill_data")`
 2. In another terminal, hammer `/health` at ~20 Hz: `while true; do curl -sm1 -o/dev/null -w "%{time_total}\n" http://localhost:5126/health; done`
 3. Call your new tool once.
 4. `/health` latency must stay under ~100ms throughout. A spike into seconds means you're blocking the event loop.
 
 ### Defenses already in place
 
-- **Background warm-start**: `main_http()` in `mcp_server/server.py` fires a daemon thread that calls `get_registry()` immediately after bind. By the time the first real request lands, the registry is already built. This hides latency — but it does *not* excuse skipping `asyncio.to_thread` on new handlers, because `reload_capability_data` can rebuild at any time.
+- **Background warm-start**: `main_http()` in `mcp_server/server.py` fires a daemon thread that calls `get_registry()` immediately after bind. By the time the first real request lands, the registry is already built. This hides latency — but it does *not* excuse skipping `asyncio.to_thread` on new handlers, because `reload_skill_data` can rebuild at any time.
 - **Slow-rebuild warning**: `_build_registry()` emits a `WARNING` to the main log when total rebuild exceeds 5s, with a per-section breakdown (`tool_probes`, `cap:*`, `knowledge_index`). Check the sidecar log if `/health` flakes — a noisy section there usually points at the culprit (often the Obsidian probe's 10s HTTP timeout when Obsidian is closed).
 - **Fast-path socket check**: `compat._find_pids_on_port` shortcuts to a socket probe before shelling out to PowerShell (`Get-NetTCPConnection`). Pinned by a regression test in `tests/unit/test_compat_port_cleanup.py` — sidecar restart is ~15s on Windows, not 25–30s.

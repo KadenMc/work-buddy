@@ -2,7 +2,7 @@
 
 Composes the store's count primitives into a status dict shaped like the IR
 engine's ``ir.store.index_status`` — the single source of truth consumed by the
-``vault_index`` capability's ``status`` action, the ``/vault/index`` status path,
+``vault_index`` skill's ``status`` action, the ``/vault/index`` status path,
 and the indexing-seam vault adapter. Pure SQLite reads (no numpy, no embedding
 service), so status answers even when the embedding service is down.
 """

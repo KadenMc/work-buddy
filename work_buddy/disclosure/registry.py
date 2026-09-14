@@ -1,6 +1,6 @@
 """Per-domain registry of `TreeDrillable` instances.
 
-A `TreeDrillable` registers itself by domain name; the dispatch capability
+A `TreeDrillable` registers itself by domain name; the dispatch skill
 (`drill_tree`) looks up the instance and routes the call. The registry is
 lazy: instances are constructed on first access (cheap; the constructors
 do no I/O), so importing this module is safe in the gateway boot path.

@@ -1,8 +1,7 @@
 ---
 name: Calendar Coverage
-kind: capability
+kind: skill
 description: Report which calendars work-buddy can actually see and how many events each yields in a window. Distinguishes subscribed vs blacklisted vs errored calendars. Defaults to a today..today+days window when start/end omitted.
-capability_name: calendar_coverage
 category: calendar
 parameters:
   start:
@@ -18,7 +17,8 @@ parameters:
     description: Window length in days when start/end omitted (default 7)
     required: false
 op: op.wb.calendar_coverage
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: calendar_coverage
 tags:
 - calendar
 - coverage

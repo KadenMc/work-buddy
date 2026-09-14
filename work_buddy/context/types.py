@@ -178,7 +178,7 @@ class ContextSource(Protocol):
     store mtime, ledger tail) — default implementation is always-fresh
     so sources that can't cheaply self-check can skip it.
 
-    ``drill_down`` is for the ``context_drill_down`` MCP capability —
+    ``drill_down`` is for the ``context_drill_down`` MCP skill —
     less-capable agents ask for more detail on a specific item by id
     and field. Default raises ``NotImplementedError`` until a source
     opts in.

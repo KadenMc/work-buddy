@@ -955,7 +955,7 @@ class ActionProposalService:
                 "sidecar",
                 {
                     "intent_event_id": intent.id,
-                    "capability_name": "task_create",
+                    "skill_name": "task_create",
                     "client_mutation_id": mutation_id,
                 },
             )
@@ -995,7 +995,7 @@ class ActionProposalService:
                         "sidecar",
                         {
                             "intent_event_id": intent.id,
-                            "capability_name": "task_create",
+                            "skill_name": "task_create",
                             "success": False,
                             "error": error.to_dict(),
                         },
@@ -1021,7 +1021,7 @@ class ActionProposalService:
                 "sidecar",
                 {
                     "intent_event_id": intent.id,
-                    "capability_name": "task_create",
+                    "skill_name": "task_create",
                     "success": True,
                 },
             )

@@ -2,9 +2,9 @@
 name: Datacore Query Directions (Legacy)
 kind: directions
 description: Legacy-only guidance for an explicit Datacore query against an opted-in Obsidian vault; the slash command and automatic use are retired.
-summary: 'Use only when the user explicitly chooses the legacy Obsidian/Datacore compatibility surface. Never suggest enabling Obsidian for native content search.'
+summary: Use only when the user explicitly chooses the legacy Obsidian/Datacore compatibility surface. Never suggest enabling Obsidian for native content search.
 trigger: user explicitly requests the legacy Obsidian Datacore compatibility surface and Obsidian is opted in
-capabilities:
+skills:
 - context/datacore_schema
 - context/datacore_run_plan
 - context/datacore_query
@@ -105,7 +105,7 @@ Datacore result objects have circular parent/child references. The JS snippets h
 
 ## Don'ts
 - Don't skip schema discovery
-- Don't import work_buddy.* modules -- use MCP capabilities
+- Don't import work_buddy.* modules -- use MCP skills
 - Don't dump raw JSON -- format results for readability
 - Don't run queries without field selection on large result sets
 - Don't silently pick one interpretation when ambiguous -- ask

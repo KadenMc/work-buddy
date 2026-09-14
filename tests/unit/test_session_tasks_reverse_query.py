@@ -1,4 +1,4 @@
-"""Reverse session→tasks query + the session_tasks_get capability.
+"""Reverse session→tasks query + the session_tasks_get skill.
 
 ``store.get_sessions`` answers task→sessions; this pins the new reverse
 reader ``store.get_tasks_for_session`` and the bridge-independent

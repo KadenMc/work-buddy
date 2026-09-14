@@ -1,8 +1,8 @@
 ---
 name: Status
 kind: concept
-description: Status capabilities and workflows
-summary: Container for 23 capabilities and workflows.
+description: Status skills and workflows
+summary: Container for 23 skills and workflows.
 tags:
 - status
 ---

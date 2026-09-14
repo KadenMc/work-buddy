@@ -1,11 +1,10 @@
 ---
 name: Co-work Truth Analysis Fetch
-kind: capability
+kind: skill
 description: Fetch one server-admitted search hit through the guarded public-network boundary and persist an exact run-owned source receipt.
-capability_name: cowork_truth_analysis_fetch
 category: cowork
 op: op.wb.cowork_truth_analysis_fetch
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   run_id:
     type: str
@@ -18,6 +17,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_truth_analysis_fetch
 tags:
 - cowork
 - truth
@@ -35,7 +35,7 @@ parents:
 Authority comes from the exact `<run-id>-cowork-truth-analysis` transport
 session and the run-owned admitted `hit_id`. There is deliberately no URL
 parameter. A hit from another run, an invented ID, or a terminal run cannot
-widen this capability into a general fetch surface. At most five admitted hits
+widen this skill into a general fetch surface. At most five admitted hits
 may be fetched in one run.
 
 Before each request and redirect, the broker permits only HTTP or HTTPS,

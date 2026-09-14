@@ -7,12 +7,19 @@ import sqlite3
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from work_buddy.vault_index import store as vstore
 from work_buddy.vault_index.chunker import chunk_markdown
 from work_buddy.vault_index.source import FilesystemSource, load_vault_configs
 
 _DEFAULT_EXCLUDES = [".obsidian", ".trash", ".git", "node_modules", "repos"]
+
+
+@pytest.fixture(autouse=True)
+def _use_test_authority_data_root(tmp_path, monkeypatch):
+    """Keep authority-aware source reads within the per-test sandbox."""
+    monkeypatch.setenv("WORK_BUDDY_DATA_DIR", str(tmp_path / "data"))
 
 
 def _cfg(vaults: dict, *, vault_root: str = "", exclude_folders=None) -> dict:

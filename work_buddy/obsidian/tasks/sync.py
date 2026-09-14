@@ -350,7 +350,7 @@ def task_sync() -> dict[str, Any]:
     :class:`~work_buddy.obsidian.tasks.markdown_db.TaskMarkdownDB` — the
     markdown-canonical sync abstraction (see ``architecture/markdown-db``).
     ``task_sync`` is kept as the stable entry point: the ``task_sync``
-    capability and the dashboard Sync button both invoke this name, and
+    skill and the dashboard Sync button both invoke this name, and
     the return shape (``status`` plus per-category counts) is preserved.
 
     The reconciliation itself — orphan handling, the per-field drift

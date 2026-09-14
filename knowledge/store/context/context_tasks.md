@@ -1,11 +1,10 @@
 ---
 name: Context Tasks
-kind: capability
+kind: skill
 description: 'Native task summary: outstanding tasks plus recent lifecycle changes (last 48h by default)'
-capability_name: context_tasks
 category: context
 op: op.wb.context_tasks
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   journal_days:
     type: int
@@ -15,6 +14,7 @@ parameters:
     type: int
     description: Hours of task state history to include (default 48, from config). Pass 0 to suppress.
     required: false
+skill_name: context_tasks
 tags:
 - context
 - tasks
@@ -28,8 +28,7 @@ aliases:
 - task changes
 parents:
 - context
-requires: []
 ---
 
-After native activation this capability queries `TaskStore`; it never scans the
+After native activation this skill queries `TaskStore`; it never scans the
 frozen master list or task-note Markdown.

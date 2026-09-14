@@ -2,7 +2,7 @@
 
 Two parallel hierarchies share a common base:
 
-* **System docs** — behavioral directions, system docs, capability
+* **System docs** — behavioral directions, system docs, skill
   metadata, workflow structure — one Markdown file per unit in
   ``knowledge/store/``. User patches in ``knowledge/store.local/``
   (gitignored).
@@ -20,7 +20,7 @@ from work_buddy.knowledge.model import (
     PromptUnit,
     DirectionsUnit,
     SystemUnit,
-    CapabilityUnit,
+    SkillUnit,
     WorkflowUnit,
     VaultUnit,
     unit_from_dict,
@@ -42,7 +42,7 @@ __all__ = [
     "PromptUnit",
     "DirectionsUnit",
     "SystemUnit",
-    "CapabilityUnit",
+    "SkillUnit",
     "WorkflowUnit",
     "VaultUnit",
     "unit_from_dict",

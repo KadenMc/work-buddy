@@ -1,11 +1,10 @@
 ---
 name: Email Display
-kind: capability
+kind: skill
 description: Open a message in Thunderbird's UI. Useful when the user wants to read it themselves — does not modify anything.
-capability_name: email_display
 category: email
 op: op.wb.email_display
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   provider_message_id:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: str
     description: '''3pane'' (default), ''tab'', or ''window'''
     required: false
+skill_name: email_display
 tags:
 - email
 - display

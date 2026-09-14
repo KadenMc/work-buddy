@@ -1,6 +1,6 @@
 """Inference-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). Adding this module is
 enough to register its ops — ``load_builtin_ops`` auto-discovers every module in
 this package.

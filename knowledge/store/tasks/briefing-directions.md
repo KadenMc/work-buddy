@@ -5,7 +5,7 @@ description: How to present the daily task status summary — concise format, re
 summary: 'Run task_briefing and present under 15 lines: focused tasks, overdue, stale alerts, inbox count, archive recommendation. End with ONE recommended next action.'
 trigger: user wants a daily task status summary
 command: wb-task-briefing
-capabilities:
+skills:
 - tasks/task_briefing
 tags:
 - tasks

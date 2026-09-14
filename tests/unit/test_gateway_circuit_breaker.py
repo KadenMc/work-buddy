@@ -1,9 +1,9 @@
 """Tests for the Obsidian-bridge circuit breaker on the gateway dispatch.
 
 A missing Obsidian bridge no longer build-time disables its dependent
-capabilities (covered in ``test_gateway_auto_recovery`` and
+skills (covered in ``test_gateway_auto_recovery`` and
 ``test_registry_invariants``). Instead the gateway composes a shared circuit
-breaker into the dispatch of every bridge-dependent capability: sustained
+breaker into the dispatch of every bridge-dependent skill: sustained
 transient/timeout failures open it and shed (REJECTED) without hammering the
 bridge, while terminal failures fail fast per call and never trip it.
 """
@@ -17,14 +17,14 @@ from pathlib import Path
 import pytest
 
 from work_buddy.mcp_server import dispatch_resilience as dr
-from work_buddy.mcp_server.registry import Capability
+from work_buddy.mcp_server.registry import Skill
 from work_buddy.obsidian.errors import ObsidianNotRunning, ObsidianTimeout
 from work_buddy.resilience import OutcomeKind, guarded_call
 from work_buddy.resilience.strategies import CircuitState
 
 
-def _cap(**kw) -> Capability:
-    return Capability(
+def _skill(**kw) -> Skill:
+    return Skill(
         name="c", description="d", category="tasks", parameters={},
         callable=lambda **k: None, **kw,
     )
@@ -46,29 +46,29 @@ def reset_breaker():
 
 
 class TestStrategyAndClassifierSelection:
-    def test_obsidian_cap_gets_breaker_no_timeout(self):
+    def test_obsidian_skill_gets_breaker_no_timeout(self):
         # Unbounded budget (obsidian self-manages) → breaker only.
-        strategies = dr.build_dispatch_strategies(_cap(requires=["obsidian"]), math.inf)
+        strategies = dr.build_dispatch_strategies(_skill(requires=["obsidian"]), math.inf)
         assert [type(s).__name__ for s in strategies] == ["CircuitBreakerStrategy"]
 
-    def test_non_obsidian_cap_gets_no_breaker(self):
-        strategies = dr.build_dispatch_strategies(_cap(), 30.0)
+    def test_non_obsidian_skill_gets_no_breaker(self):
+        strategies = dr.build_dispatch_strategies(_skill(), 30.0)
         assert all(
             type(s).__name__ != "CircuitBreakerStrategy" for s in strategies
         )
 
     def test_obsidian_classifiers_and_passthrough(self):
-        classify, result_classify = dr.dispatch_classifiers(_cap(requires=["obsidian"]))
+        classify, result_classify = dr.dispatch_classifiers(_skill(requires=["obsidian"]))
         assert classify.__name__ == "classify_obsidian_error"
         assert result_classify.__name__ == "classify_bridge_result"
-        passthrough = dr.dispatch_passthrough(_cap(requires=["obsidian"]))
+        passthrough = dr.dispatch_passthrough(_skill(requires=["obsidian"]))
         names = {t.__name__ for t in passthrough}
         # Control-flow + the bridge's own post-write-uncertain passthrough.
         assert {"ConsentRequired", "ToolUnavailable", "TypeError"} <= names
         assert "ObsidianPostWriteUncertain" in names
 
     def test_non_obsidian_passthrough_is_control_flow_only(self):
-        passthrough = dr.dispatch_passthrough(_cap())
+        passthrough = dr.dispatch_passthrough(_skill())
         names = {t.__name__ for t in passthrough}
         assert names == {"ConsentRequired", "ToolUnavailable", "TypeError"}
 
@@ -77,7 +77,7 @@ class TestBreakerTripAndShed:
     def _dispatch(self, breaker_strategies, classify, result_classify, fn):
         async def _run():
             return await guarded_call(
-                "wb_run:obsidian_cap", fn,
+                "wb_run:obsidian_skill", fn,
                 strategies=breaker_strategies,
                 classify=classify,
                 result_classifier=result_classify,
@@ -86,9 +86,9 @@ class TestBreakerTripAndShed:
         return asyncio.run(_run())
 
     def test_transient_failures_trip_then_shed(self, reset_breaker):
-        cap = _cap(requires=["obsidian"])
-        strategies = dr.build_dispatch_strategies(cap, math.inf)
-        classify, result_classify = dr.dispatch_classifiers(cap)
+        skill = _skill(requires=["obsidian"])
+        strategies = dr.build_dispatch_strategies(skill, math.inf)
+        classify, result_classify = dr.dispatch_classifiers(skill)
 
         def _boom():
             raise ObsidianTimeout("bridge slow")
@@ -99,7 +99,7 @@ class TestBreakerTripAndShed:
             assert outcome.kind is OutcomeKind.TIMEOUT
         assert reset_breaker.state is CircuitState.OPEN
 
-        # The next call is shed without invoking the capability at all.
+        # The next call is shed without invoking the skill at all.
         invoked = {"n": 0}
 
         def _should_not_run():
@@ -111,9 +111,9 @@ class TestBreakerTripAndShed:
         assert invoked["n"] == 0, "open circuit must shed without invoking the call"
 
     def test_terminal_failure_does_not_trip(self, reset_breaker):
-        cap = _cap(requires=["obsidian"])
-        strategies = dr.build_dispatch_strategies(cap, math.inf)
-        classify, result_classify = dr.dispatch_classifiers(cap)
+        skill = _skill(requires=["obsidian"])
+        strategies = dr.build_dispatch_strategies(skill, math.inf)
+        classify, result_classify = dr.dispatch_classifiers(skill)
 
         def _down():
             raise ObsidianNotRunning("obsidian closed")
@@ -138,36 +138,36 @@ class TestBridgeFamily:
         backed = obsidian_backed_tools()
         assert {"obsidian", "datacore", "google_calendar"} <= backed
 
-    def test_plugin_cap_is_breaker_governed_and_unbounded(self):
-        # A datacore-requiring cap (NOT directly requiring obsidian) still gets
+    def test_plugin_skill_is_breaker_governed_and_unbounded(self):
+        # A datacore-requiring skill (NOT directly requiring obsidian) still gets
         # the bridge breaker + obsidian classifiers + unbounded budget.
-        cap = _cap(requires=["datacore"])
-        assert dr.resolve_timeout_budget(cap, {}) == math.inf
-        assert [type(s).__name__ for s in dr.build_dispatch_strategies(cap, math.inf)] == [
+        skill = _skill(requires=["datacore"])
+        assert dr.resolve_timeout_budget(skill, {}) == math.inf
+        assert [type(s).__name__ for s in dr.build_dispatch_strategies(skill, math.inf)] == [
             "CircuitBreakerStrategy"
         ]
-        classify, result_classify = dr.dispatch_classifiers(cap)
+        classify, result_classify = dr.dispatch_classifiers(skill)
         assert classify.__name__ == "classify_obsidian_error"
         assert result_classify.__name__ == "classify_bridge_result"
 
-    def test_plugin_cap_admitted_when_bridge_down_disabled_when_genuinely_missing(self):
-        """Transitive-only: a datacore cap stays admitted when the bridge is
+    def test_plugin_skill_admitted_when_bridge_down_disabled_when_genuinely_missing(self):
+        """Transitive-only: a datacore skill stays admitted when the bridge is
         down (breaker governs), but is hard-disabled when the bridge is up and
         the plugin itself is genuinely missing."""
         from unittest.mock import patch
         from work_buddy.mcp_server import registry as reg_mod
-        from work_buddy.tools import DISABLED_CAPABILITIES
+        from work_buddy.tools import DISABLED_SKILLS
 
         def build(unavailable: set[str]):
             reg_mod._REGISTRY = None
-            reg_mod._DISABLED_REGISTRY.clear()
-            DISABLED_CAPABILITIES.clear()
+            reg_mod._DISABLED_SKILL_REGISTRY.clear()
+            DISABLED_SKILLS.clear()
             with patch(
                 "work_buddy.tools.is_tool_available",
                 side_effect=lambda t: t not in unavailable,
             ):
                 reg_mod.get_registry()
-            return dict(DISABLED_CAPABILITIES)
+            return dict(DISABLED_SKILLS)
 
         try:
             # Bridge down → obsidian + all its plugins unavailable transitively.
@@ -185,8 +185,8 @@ class TestBridgeFamily:
             )
         finally:
             reg_mod._REGISTRY = None
-            reg_mod._DISABLED_REGISTRY.clear()
-            DISABLED_CAPABILITIES.clear()
+            reg_mod._DISABLED_SKILL_REGISTRY.clear()
+            DISABLED_SKILLS.clear()
 
 
 class TestGatewayWiringSmoke:
@@ -214,5 +214,5 @@ class TestGatewayWiringSmoke:
         assert "obsidian_backed_tools" in source and "bridge_down" in source, (
             "registry.py no longer excludes the bridge-backed tool family from "
             "the build-time disable filter — a transient bridge probe failure "
-            "would again disable every bridge-dependent capability for the session."
+            "would again disable every bridge-dependent skill for the session."
         )

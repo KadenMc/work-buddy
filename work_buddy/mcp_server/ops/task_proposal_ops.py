@@ -1,6 +1,6 @@
 """Bounded domain-only recovery for authored task proposals and their links.
 
-This maintenance capability does not infer proposals or grant approval. Threads
+This maintenance skill does not infer proposals or grant approval. Threads
 may resume only its durable, human-approved execution intents; Journal may
 replay only already-recorded proposal ingress and synchronize receipt links.
 """

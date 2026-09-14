@@ -1,4 +1,4 @@
-"""v5 Stage 1.5 — Capability/WorkflowDefinition gain new fields.
+"""Tests for action-catalog fields on Skill and WorkflowDefinition.
 
 Pins the contract:
 - ``is_action`` defaults False (preserves v4 — nothing is an Action
@@ -16,13 +16,13 @@ DESIGN.md §10 (Action Catalog) is the spec.
 
 from __future__ import annotations
 
-from work_buddy.mcp_server.registry import Capability, WorkflowDefinition
+from work_buddy.mcp_server.registry import Skill, WorkflowDefinition
 from work_buddy.threads.enums import InvocationContext
 
 
-class TestCapabilityV5Defaults:
+class TestSkillV5Defaults:
     def _basic(self, **kwargs):
-        return Capability(
+        return Skill(
             name=kwargs.pop("name", "test"),
             description=kwargs.pop("description", ""),
             category=kwargs.pop("category", "test"),
@@ -65,9 +65,9 @@ class TestCapabilityV5Defaults:
         assert InvocationContext.FSM_INTERNAL not in b.available_in
 
 
-class TestCapabilityV5OptIn:
+class TestSkillV5OptIn:
     def test_action_template_with_full_v5_fields(self):
-        c = Capability(
+        c = Skill(
             name="send_email",
             description="Send an email.",
             category="email",
@@ -94,8 +94,8 @@ class TestCapabilityV5OptIn:
         assert c.parameter_schema_for_action["required"] == ["to", "subject", "body"]
         assert c.requires_post_review
 
-    def test_fsm_internal_capability_overrides_available_in(self):
-        c = Capability(
+    def test_fsm_internal_skill_overrides_available_in(self):
+        c = Skill(
             name="migrate_context",
             description="FSM-only context migration",
             category="threads",

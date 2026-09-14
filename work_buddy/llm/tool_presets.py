@@ -1,6 +1,6 @@
 """MCP tool presets for local-model tool access.
 
-Each preset is a frozen whitelist of work-buddy capability names a
+Each preset is a frozen whitelist of work-buddy skill names a
 local model is permitted to call during an ``llm_with_tools`` session.
 The whitelist lives in CODE (not config) so adding or expanding a
 preset is a reviewed PR-level change, not something mis-edited config
@@ -16,8 +16,8 @@ can silently relax.
   brittle in the sense that it relies on the model following the
   instruction. Follow-up: modify the gateway to auto-register from a
   request header so we don't have to trust the model.
-* **Read-only presets must contain zero mutating capabilities.** Any
-  capability whose name starts with ``task_`` (other than reads like
+* **Read-only presets must contain zero mutating skills.** Any
+  skill whose name starts with ``task_`` (other than reads like
   ``task_briefing``, ``task_stale_check``, ``task_review_inbox``,
   ``task_scattered``) or touches vault writes, messaging, memory
   writes, consent grants, or service_restart is disallowed.
@@ -44,7 +44,7 @@ from __future__ import annotations
 # ``X-Work-Buddy-Session`` header on first contact — the model never
 # needs to call wb_init itself. Allowing wb_init inside an ACL-scoped
 # session was confirmed (2026-04-17 live test) to be an ACL-escape
-# vector: a small model could call wb_run(capability="wb_init",
+# vector: a small model could call wb_run(skill="wb_init",
 # session_id="other") to swap its session and drop the ACL. The
 # gateway now hard-rejects wb_init from ACL-scoped sessions at the
 # `wb_run` dispatch path (belt), and the preset omission is the
@@ -153,7 +153,7 @@ _READONLY_CONTEXT = _READONLY_SAFE | frozenset({
 
 
 # NOTE: the legacy ``triage_agent`` and ``triage_submit_only`` presets
-# (built around the now-deleted ``triage_submit`` capability) were
+# (built around the now-deleted ``triage_submit`` skill) were
 # retired during the clarify -> Threads migration. Triage now flows
 # through ``run_source_pipeline`` for backlog scans and through
 # ``pipelines.inline_capture`` for the right-click handoff; neither
@@ -165,9 +165,9 @@ PRESETS: dict[str, frozenset[str]] = {
     "readonly_context": _READONLY_CONTEXT,
 }
 
-# Capability names that are considered mutating — any preset whose
+# Skill names that are considered mutating — any preset whose
 # name starts with ``readonly_`` must contain none of these.
-_MUTATING_CAPABILITIES: frozenset[str] = frozenset({
+_MUTATING_SKILLS: frozenset[str] = frozenset({
     # Tasks
     "task_create", "task_assign", "task_change_state", "task_toggle",
     "task_delete", "task_sync", "task_archive",
@@ -196,7 +196,7 @@ _MUTATING_CAPABILITIES: frozenset[str] = frozenset({
     # Admin
     "service_restart", "obsidian_retry",
     # Docs edits (content authoring/creation is the docs_edit workflow, not a
-    # capability; these are the structural + reconcile capabilities)
+    # skill; these are the structural + reconcile skills)
     "docs_delete", "docs_move", "docs_validate",
     "agent_docs_rebuild", "knowledge_mint", "knowledge_index_rebuild",
     # Artifacts
@@ -236,9 +236,9 @@ def validate_presets(registry_names: set[str] | None = None) -> list[str]:
     Checks:
     - No preset contains ``wb_init`` (security: would allow ACL escape
       via session re-init; header-based auto-init makes it unnecessary).
-    - Each ``readonly_*`` preset contains zero mutating capabilities.
+    - Each ``readonly_*`` preset contains zero mutating skills.
     - When ``registry_names`` is provided, every preset entry is a
-      real registered capability (no typos, no drift from deletions).
+      real registered skill (no typos, no drift from deletions).
 
     Returns a list of problems; empty when all presets are clean.
     """
@@ -252,10 +252,10 @@ def validate_presets(registry_names: set[str] | None = None) -> list[str]:
                 f"auto-init handles session registration for local models."
             )
         if preset_name.startswith("readonly_"):
-            mutating = tools & _MUTATING_CAPABILITIES
+            mutating = tools & _MUTATING_SKILLS
             if mutating:
                 problems.append(
-                    f"Preset {preset_name!r} contains mutating capabilities "
+                    f"Preset {preset_name!r} contains mutating skills "
                     f"but its name claims readonly: {sorted(mutating)}"
                 )
         if registry_names is not None:
@@ -263,6 +263,6 @@ def validate_presets(registry_names: set[str] | None = None) -> list[str]:
             if unknown:
                 problems.append(
                     f"Preset {preset_name!r} references names not in the "
-                    f"capability registry: {sorted(unknown)}"
+                    f"skill registry: {sorted(unknown)}"
                 )
     return problems

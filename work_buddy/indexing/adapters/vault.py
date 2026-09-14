@@ -1,7 +1,7 @@
 """Vault semantic index → :class:`Index`. One partition per vault.
 
 Sources its counts from ``vault_index.status.index_status`` (the single source of
-truth) so the capability, the ``/vault/index`` status path, and this adapter never
+truth) so the skill, the ``/vault/index`` status path, and this adapter never
 drift. The vault is one shared SQLite file across all vaults, so DB size is an
 index-level figure (not per-partition).
 """

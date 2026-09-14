@@ -1,6 +1,6 @@
 """Summarization-domain ops.
 
-Each op is referenced by a capability declaration (a ``kind: "capability"``
+Each op is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field).
 
 Lazy imports inside the callables: the funnel pulls in `ir.search` and

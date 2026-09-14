@@ -1,11 +1,10 @@
 ---
 name: Task-note Migration Operator
-kind: capability
+kind: skill
 description: Legacy per-note migration operator retained only for pre-native recovery; superseded by the native task importer and cutover.
-capability_name: task_note_migration_operator
 category: tasks
 op: op.wb.task_note_migration_operator
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: string
@@ -36,6 +35,7 @@ consent_operations:
 - tasks.task_note_authority_change
 retry_policy: manual
 auto_retry: false
+skill_name: task_note_migration_operator
 tags:
 - tasks
 - task-note
@@ -51,7 +51,7 @@ parents:
 - tasks
 ---
 
-This capability belongs to the superseded per-note Markdown migration. It is
+This skill belongs to the superseded per-note Markdown migration. It is
 retained for inspection and recovery of pre-native receipts and must not be used
 as the native task cutover path or invoked after native authority activates.
 
@@ -64,7 +64,7 @@ acknowledgement. Parity uses newline/BOM normalization only.
 The task-note cutover gate is closed when the migration store is created.
 Journal readiness is not a second mutable Boolean: cutover calls the Journal
 domain's current exit-evidence verifier and requires its persisted cohort and
-production-callsite digests to still match. This capability cannot manufacture
+production-callsite digests to still match. This skill cannot manufacture
 that evidence. Gate changes, cutover, and rollback carry a separate high-risk
 consent gate. Cutover is
 per note and additionally requires recorded parity plus a future rollback

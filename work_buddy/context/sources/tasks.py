@@ -323,7 +323,7 @@ def _read_task_note(task_id: str) -> str | None:
     from work_buddy.tasks.runtime import native_authority_active
 
     if native_authority_active():
-        from work_buddy.tasks.capabilities import task_read
+        from work_buddy.tasks.skills import task_read
 
         payload = task_read(task_id)
         if not payload.get("success"):

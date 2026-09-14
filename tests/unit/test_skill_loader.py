@@ -1,7 +1,7 @@
-"""Unit tests for the capability loader (``work_buddy.knowledge.capability_loader``).
+"""Unit tests for the skill loader (``work_buddy.knowledge.skill_loader``).
 
-The loader resolves inert ``kind: "capability"`` declarations (those carrying
-an ``op`` field) against the Op registry and emits dispatchable ``Capability``
+The loader resolves inert ``kind: "skill"`` declarations (those carrying an
+``op`` field) against the Op registry and emits dispatchable ``Skill``
 objects. Tests inject a synthetic store so they exercise resolution logic
 without depending on the live knowledge store.
 """
@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from work_buddy.knowledge.capability_loader import (
+from work_buddy.knowledge.skill_loader import (
     SCHEMA_VERSION,
-    load_declared_capabilities,
+    load_declared_skills,
     validate_signature,
 )
-from work_buddy.knowledge.model import CapabilityUnit, SystemUnit
+from work_buddy.knowledge.model import SkillUnit, SystemUnit
 from work_buddy.mcp_server import op_registry
 
 
@@ -30,13 +30,13 @@ def _sample_op(task_id, done=False):
     return {"task_id": task_id, "done": done}
 
 
-def _declaration(**overrides) -> CapabilityUnit:
-    """A well-formed declaration-based capability unit, overridable per test."""
+def _declaration(**overrides) -> SkillUnit:
+    """A well-formed direct-skill declaration, overridable per test."""
     fields = dict(
-        path="tasks/sample_cap",
-        name="Sample Cap",
-        description="A sample capability.",
-        capability_name="sample_cap",
+        path="tasks/sample_skill",
+        name="Sample Skill",
+        description="A sample skill.",
+        skill_name="sample_skill",
         category="tasks",
         parameters={
             "task_id": {"type": "str", "description": "Task ID", "required": True},
@@ -46,7 +46,7 @@ def _declaration(**overrides) -> CapabilityUnit:
         schema_version=SCHEMA_VERSION,
     )
     fields.update(overrides)
-    return CapabilityUnit(**fields)
+    return SkillUnit(**fields)
 
 
 # ---------------------------------------------------------------------------
@@ -80,63 +80,62 @@ class TestValidateSignature:
 
 
 # ---------------------------------------------------------------------------
-# load_declared_capabilities
+# load_declared_skills
 # ---------------------------------------------------------------------------
 
-class TestLoadDeclaredCapabilities:
+class TestLoadDeclaredSkills:
     def test_clean_resolution(self):
         op_registry.register_op("op.wb.sample", _sample_op)
-        store = {"tasks/sample_cap": _declaration()}
-        caps, issues = load_declared_capabilities(store)
+        store = {"tasks/sample_skill": _declaration()}
+        skills, issues = load_declared_skills(store)
         assert issues == []
-        assert len(caps) == 1
-        cap = caps[0]
-        assert cap.name == "sample_cap"
-        assert cap.callable is _sample_op
-        assert cap.op_id == "op.wb.sample"
-        assert cap.category == "tasks"
+        assert len(skills) == 1
+        skill = skills[0]
+        assert skill.name == "sample_skill"
+        assert skill.callable is _sample_op
+        assert skill.op_id == "op.wb.sample"
+        assert skill.category == "tasks"
 
     def test_generated_unit_without_op_is_skipped(self):
-        """A capability unit with no ``op`` field is generated/legacy — the
-        loader ignores it (it flows through the old registration path)."""
+        """A skill unit without an ``op`` is not a dispatchable declaration."""
         op_registry.register_op("op.wb.sample", _sample_op)
         generated = _declaration(op="", schema_version="")
-        caps, issues = load_declared_capabilities({"tasks/sample_cap": generated})
-        assert caps == []
+        skills, issues = load_declared_skills({"tasks/sample_skill": generated})
+        assert skills == []
         assert issues == []
 
-    def test_non_capability_units_ignored(self):
+    def test_non_skill_units_ignored(self):
         store = {"sys/x": SystemUnit(path="sys/x", name="X", description="x")}
-        caps, issues = load_declared_capabilities(store)
-        assert caps == [] and issues == []
+        skills, issues = load_declared_skills(store)
+        assert skills == [] and issues == []
 
     def test_missing_op_emits_warning(self):
         # op.wb.sample is never registered.
-        store = {"tasks/sample_cap": _declaration()}
-        caps, issues = load_declared_capabilities(store)
-        assert caps == []
+        store = {"tasks/sample_skill": _declaration()}
+        skills, issues = load_declared_skills(store)
+        assert skills == []
         assert len(issues) == 1
         assert issues[0]["severity"] == "warning"
-        assert issues[0]["check"] == "capability_op_resolution"
+        assert issues[0]["check"] == "skill_op_resolution"
         assert "not registered" in issues[0]["message"]
 
     def test_unknown_schema_version_emits_warning(self):
         op_registry.register_op("op.wb.sample", _sample_op)
-        store = {"tasks/sample_cap": _declaration(schema_version="wb-capability/v99")}
-        caps, issues = load_declared_capabilities(store)
-        assert caps == []
+        store = {"tasks/sample_skill": _declaration(schema_version="wb-skill/v99")}
+        skills, issues = load_declared_skills(store)
+        assert skills == []
         assert len(issues) == 1
         assert "schema_version" in issues[0]["message"]
 
     def test_signature_mismatch_emits_warning_and_skips_dispatch(self):
         op_registry.register_op("op.wb.sample", _sample_op)
         bad = _declaration(parameters={"bogus": {"type": "str", "required": True}})
-        caps, issues = load_declared_capabilities({"tasks/sample_cap": bad})
-        assert caps == []  # not dispatched — schema disagrees with the op
+        skills, issues = load_declared_skills({"tasks/sample_skill": bad})
+        assert skills == []  # not dispatched — schema disagrees with the Op
         assert any("signature mismatch" in i["message"] for i in issues)
 
     def test_malformed_op_id_emits_warning(self):
-        store = {"tasks/sample_cap": _declaration(op="not-an-op-id")}
-        caps, issues = load_declared_capabilities(store)
-        assert caps == []
+        store = {"tasks/sample_skill": _declaration(op="not-an-op-id")}
+        skills, issues = load_declared_skills(store)
+        assert skills == []
         assert any("malformed op ID" in i["message"] for i in issues)

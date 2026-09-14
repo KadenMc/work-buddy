@@ -2,8 +2,8 @@
 schedule: "0 0,12 * * *"  # midnight + noon local
 recurring: true
 jitter_seconds: 300  # up to 5 min, avoid hammering the same instant on every tick
-type: capability
-capability: claude_code_usage_scan
+type: skill
+skill: claude_code_usage_scan
 params: {}
 enabled: true
 ---

@@ -1,11 +1,10 @@
 ---
 name: Knowledge
-kind: capability
+kind: skill
 description: Search across both system documentation and personal knowledge from the Obsidian vault. Returns results tagged with their source scope (system or personal).
-capability_name: knowledge
 category: context
 op: op.wb.knowledge
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -21,7 +20,7 @@ parameters:
     required: false
   kind:
     type: str
-    description: 'Filter by kind: directions, capability, workflow, system, service, integration, reference, concept, personal.'
+    description: 'Filter by kind: directions, skill, workflow, system, service, integration, reference, concept, personal.'
     required: false
   category:
     type: str
@@ -43,6 +42,7 @@ parameters:
     type: bool
     description: Include dev_notes in full-depth results. Auto-set when session dev mode is active.
     required: false
+skill_name: knowledge
 tags:
 - context
 - knowledge

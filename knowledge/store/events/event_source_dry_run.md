@@ -1,11 +1,10 @@
 ---
 name: Event Source Dry Run
-kind: capability
+kind: skill
 description: Preview an event source without any side effects — fetch, diff against the last value, and evaluate the condition, but never publish, run an action, or advance the cursor. Returns the sampled value, whether it changed, the would-emit event, and whether the condition would pass. The preview the /wb-event-new authoring loop shows before activating.
-capability_name: event_source_dry_run
 category: events
 op: op.wb.event_source_dry_run
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   name:
     type: str
@@ -25,6 +24,7 @@ is_action: false
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: event_source_dry_run
 tags:
 - events
 - source

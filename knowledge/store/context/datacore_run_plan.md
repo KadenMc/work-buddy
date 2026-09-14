@@ -1,11 +1,10 @@
 ---
 name: Datacore Run Plan
-kind: capability
+kind: skill
 description: Compile and execute a structured query plan in one step. Preferred over raw datacore_query when building queries programmatically — the plan schema is simpler and validates before execution.
-capability_name: datacore_run_plan
 category: context
 op: op.wb.datacore_run_plan
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   plan_json:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Max results (default 50)
     required: false
+skill_name: datacore_run_plan
 tags:
 - context
 - datacore

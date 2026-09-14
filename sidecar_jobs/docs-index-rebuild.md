@@ -2,8 +2,8 @@
 schedule: "*/15 * * * *"  # every 15 minutes
 recurring: true
 jitter_seconds: 60  # spread 15-minute pile-ups
-type: capability
-capability: ir_index
+type: skill
+skill: ir_index
 params:
   action: build
   source: docs

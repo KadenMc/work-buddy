@@ -93,7 +93,7 @@ def _annotate_commits(raw: str, session_map: dict[str, str] | None) -> str:
 
     The map values are full session UUIDs; this function truncates to
     8 chars for display — the canonical short form accepted by all
-    ``session_*`` inspection capabilities.
+    ``session_*`` inspection skills.
     """
     if not session_map or not raw:
         return raw

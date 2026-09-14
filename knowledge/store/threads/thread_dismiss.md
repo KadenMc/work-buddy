@@ -1,11 +1,10 @@
 ---
 name: Thread Dismiss
-kind: capability
+kind: skill
 description: Mark a thread as dismissed via the standard FSM transition. For group sub-threads this is the 'do nothing with this cluster' action. For umbrellas it cascades through the existing dismiss flow.
-capability_name: thread_dismiss
 category: threads
 op: op.wb.thread_dismiss
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   thread_id:
     type: str
@@ -21,6 +20,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: thread_dismiss
 tags:
 - threads
 - thread

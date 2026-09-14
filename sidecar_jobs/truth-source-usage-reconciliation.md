@@ -2,8 +2,8 @@
 schedule: "2-59/5 * * * *"
 recurring: true
 jitter_seconds: 45
-type: capability
-capability: truth_source_usage_reconcile
+type: skill
+skill: truth_source_usage_reconcile
 params:
   limit_per_store: 100
 ---

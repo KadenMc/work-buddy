@@ -1,4 +1,4 @@
-"""Tests for llm_submit async capability + queue-field rename.
+"""Tests for the llm_submit async skill and queue-field rename.
 
 Covers:
 - llm_submit writes an op record with the new canonical fields
@@ -229,7 +229,7 @@ def test_retry_sweep_uses_custom_lease_seconds(monkeypatch, tmp_path):
     record = {
         "operation_id": "op_leasetest",
         "type": "capability",
-        "name": "nonexistent_capability_for_lease_test",
+        "name": "nonexistent_skill_for_lease_test",
         "params": {},
         "retry_policy": "replay",
         "status": "failed",
@@ -247,7 +247,7 @@ def test_retry_sweep_uses_custom_lease_seconds(monkeypatch, tmp_path):
     (ops_dir / "op_leasetest.json").write_text(json.dumps(record))
 
     sweep = RetrySweep()
-    sweep.sweep()  # Capability is nonexistent so it fails fast; we only
+    sweep.sweep()  # Skill is nonexistent so it fails fast; we only
                    # care that the lease was set with the right duration
 
     after = json.loads((ops_dir / "op_leasetest.json").read_text())
@@ -260,6 +260,9 @@ def test_retry_sweep_uses_custom_lease_seconds(monkeypatch, tmp_path):
     # way to observe post-hoc). This test mainly guards against
     # regressions introducing required reads that break our field.
     assert after["attempt"] == 1, "sweep should have attempted once"
+    assert after["type"] == "skill", (
+        "persisted legacy direct-call records should be rewritten canonically"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 Layered onto every per-source action library by the runner. The
 backing implementations live in
 :mod:`work_buddy.threads.universal_actions` and are registered as
-capabilities in :mod:`work_buddy.mcp_server.registry` with
+skills in :mod:`work_buddy.mcp_server.registry` with
 ``is_action=True``.
 
 The user can pick any of these from the action chip dropdown on a
@@ -27,7 +27,7 @@ from work_buddy.pipelines.actions import (
 
 UNIVERSAL_ACTIONS: list[ActionDescriptor] = [
     ActionDescriptor(
-        capability_name="thread_dismiss",
+        skill_name="thread_dismiss",
         label="Dismiss thread",
         description=(
             "Mark this group sub-thread as dismissed (terminal). The "
@@ -40,7 +40,7 @@ UNIVERSAL_ACTIONS: list[ActionDescriptor] = [
         icon="x-circle",
     ),
     ActionDescriptor(
-        capability_name="thread_defer",
+        skill_name="thread_defer",
         label="Defer thread",
         description=(
             "Resurface this group sub-thread later (default: 24 hours). "
@@ -52,7 +52,7 @@ UNIVERSAL_ACTIONS: list[ActionDescriptor] = [
         icon="clock",
     ),
     ActionDescriptor(
-        capability_name="thread_rename",
+        skill_name="thread_rename",
         label="Rename thread",
         description=(
             "Override the cluster label. The new title surfaces on the "

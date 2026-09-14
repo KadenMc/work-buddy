@@ -6,7 +6,7 @@ entry_points:
 - work_buddy.websearch
 - work_buddy.websearch.provider
 - work_buddy.websearch.router
-- work_buddy.websearch.capabilities
+- work_buddy.websearch.skills
 - work_buddy.websearch.classify
 tags:
 - websearch
@@ -32,7 +32,7 @@ work-buddy needs **general programmatic web search** for arbitrary agent/instanc
 ## Architecture
 
 ```
-agents / capabilities / (future) Events Processor
+agents / skills / (future) Events Processor
    │
    ▼
 router.search()                  # routing (jina → ddgs), fallback, opt-in cache
@@ -47,7 +47,7 @@ providers/{jina, ddgs_meta, fake}    # one backend = one provider
 
 ## Provider seam
 
-`work_buddy.websearch.provider.SearchProvider` is a `@runtime_checkable` Protocol; `get_search_provider(name)` is the factory (config `websearch.provider`/`routing`, `enabled: false` short-circuit via `WebSearchProviderDisabled`, lazy adapter import, a `fake` backend). This mirrors `work_buddy/{email,calendar}/provider.py` 1:1. Typed `WebSearchError(error_kind)` subclasses (`…Disabled/Unavailable/RateLimited/Timeout/BadKey`) let the router and capability wrappers `isinstance`-classify.
+`work_buddy.websearch.provider.SearchProvider` is a `@runtime_checkable` Protocol; `get_search_provider(name)` is the factory (config `websearch.provider`/`routing`, `enabled: false` short-circuit via `WebSearchProviderDisabled`, lazy adapter import, a `fake` backend). This mirrors `work_buddy/{email,calendar}/provider.py` 1:1. Typed `WebSearchError(error_kind)` subclasses (`…Disabled/Unavailable/RateLimited/Timeout/BadKey`) let the router and skill wrappers `isinstance`-classify.
 
 ## Backends
 
@@ -63,7 +63,7 @@ providers/{jina, ddgs_meta, fake}    # one backend = one provider
 
 `classify_evidence(question, cards)` judges *retrieved evidence* (not the open web) at `ModelTier.LOCAL_FAST`, `Priority.BACKGROUND`, via `LLMRunner.call` — the local backend's own broker slot provides admission (see dev_notes). Returns a structured `ClassifyResult`; defaults to `relevant=False` on any error so a watcher never fires on an inconclusive judgment.
 
-## Capabilities
+## Skills
 
 - `web_search` — routed search; returns `{ok, count, provider, hits:[…]}`. Ephemeral (no persistence).
 - `web_search_health` — the active backend (first usable in the routing order) and its readiness.

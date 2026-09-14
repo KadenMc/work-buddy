@@ -1,8 +1,7 @@
 ---
 name: Walk
-kind: capability
+kind: skill
 description: 'Universal tree navigation — canonical short name for `drill_tree`. Walks any registered `TreeDrillable` at three depths (index | summary | full). Today''s domains: knowledge (units), summary (framework per-node store).'
-capability_name: walk
 category: disclosure
 parameters:
   domain:
@@ -18,7 +17,8 @@ parameters:
     description: '''index'' (default; node + child names only — cheapest), ''summary'' (node + each child''s summary text), or ''full'' (everything).'
     required: false
 op: op.wb.walk
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
+skill_name: walk
 tags:
 - disclosure
 - drill
@@ -55,4 +55,4 @@ Same as `drill_tree`:
 - **`summary`** — framework summaries (`{namespace}:{item_id}` / `{namespace}:{item_id}#n{ordinal}`).
 - **`knowledge`** — knowledge units (unit path, e.g. `architecture/summarization-framework`).
 
-New tree-shaped domains plug in via `work_buddy.disclosure.registry.register_drillable` without needing a new capability declaration — they're discovered through the same `walk` verb.
+New tree-shaped domains plug in via `work_buddy.disclosure.registry.register_drillable` without needing a new skill declaration — they're discovered through the same `walk` verb.

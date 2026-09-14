@@ -129,7 +129,7 @@ class WorkerDisclosureBoundary:
         recipient: str = "agent_model",
         derivation_refs: Sequence[str] = (),
     ) -> tuple[DisclosureEntry, ManifestDigest]:
-        """Write ahead and account one exact capability response.
+        """Write ahead and account one exact skill response.
 
         A repeat of a proven-sent logical response is permitted only while its
         original Sources reservation and redaction epoch remain live.  A
@@ -217,7 +217,7 @@ class WorkerDisclosureBoundary:
     ) -> tuple[DisclosureEntry, ...]:
         """Use a worker output call as causal receipt of its ordered inputs.
 
-        A capability return is only a local handoff attempt, so it remains
+        A skill return is only a local handoff attempt, so it remains
         ambiguous.  A later output/proposal call from the same leased worker is
         downstream evidence that the worker received the input.  Every source
         epoch is revalidated before any transition; ambiguous reads are never

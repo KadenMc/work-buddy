@@ -1,6 +1,5 @@
 ---
-short: What should I do right now?
-workflow: task-me
+description: What should I do right now?
 ---
 Load directions via `mcp__work-buddy__wb_run("agent_docs", {"path": "tasks/task-me-directions", "depth": "full"})`, then run the workflow via `mcp__work-buddy__wb_run("task-me")`.
 

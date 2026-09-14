@@ -1,4 +1,4 @@
-"""Agent-facing capabilities for the Co-work document surface.
+"""Agent-facing skills for the Co-work document surface.
 
 These five operations are the entire agent-facing surface of a cowork doc.
 Agents may list and read registered documents and PROPOSE work on them
@@ -435,7 +435,7 @@ def _expression_view(
 
 
 # --------------------------------------------------------------------------
-# Read capabilities.
+# Read skills.
 # --------------------------------------------------------------------------
 
 
@@ -880,7 +880,7 @@ def cowork_action_snapshot_get(
 
 
 # --------------------------------------------------------------------------
-# Propose capabilities (normal weight, no decision authority).
+# Propose skills (normal weight, no decision authority).
 # --------------------------------------------------------------------------
 
 
@@ -1289,7 +1289,7 @@ def cowork_doc_expression_mark(
 
 
 # --------------------------------------------------------------------------
-# Least-authority Co-work Verify worker capabilities.
+# Least-authority Co-work Verify worker skills.
 # --------------------------------------------------------------------------
 
 
@@ -1340,7 +1340,7 @@ def cowork_verify_job_submit(
 
 
 # --------------------------------------------------------------------------
-# Least-authority Co-work Truth-analysis worker capabilities.
+# Least-authority Co-work Truth-analysis worker skills.
 # --------------------------------------------------------------------------
 
 
@@ -1407,7 +1407,7 @@ def cowork_truth_analysis_job_submit(
     payload: Mapping[str, Any],
     agent_session_id: str | None = None,
 ) -> dict[str, Any]:
-    """Stage one typed output; this capability has no Truth-ledger authority."""
+    """Stage one typed output; this skill has no Truth-ledger authority."""
 
     from work_buddy.cowork.truth_analysis import submit_worker_output
     from work_buddy.cowork.truth_analysis_disclosure import (

@@ -1,7 +1,7 @@
 ---
 name: Vault Semantic Index
 kind: system
-description: Native chunk-level semantic search over configured Markdown roots ("vaults"), in work-buddy's own processes (not Obsidian's heap). Heading-aware chunker → SQLite chunk store with float16 vector blobs + FTS5 → hybrid lexical⊕dense (RRF) search served warm from the embedding service. Reached via the vault_search / vault_index / vault_config capabilities and a 5-minute incremental cron.
+description: Native chunk-level semantic search over configured Markdown roots ("vaults"), in work-buddy's own processes (not Obsidian's heap). Heading-aware chunker → SQLite chunk store with float16 vector blobs + FTS5 → hybrid lexical⊕dense (RRF) search served warm from the embedding service. Reached via the vault_search / vault_index / vault_config skills and a 5-minute incremental cron.
 entry_points:
 - work_buddy.vault_index
 - work_buddy.indexing
@@ -125,7 +125,7 @@ the two are fused with Reciprocal Rank Fusion. **Graceful degradation:** if the 
 service is unavailable the query encoder returns `None` and search falls back to lexical-only —
 never an error.
 
-## Capabilities + cron
+## Skills + cron
 
 - `vault_search` — hybrid search → markdown results (degrades to in-process lexical if the
   service is down).
@@ -152,7 +152,7 @@ by `/api/embeddings` over the index-agnostic seam.
 - `work_buddy/vault_index/{chunker,handlers,source,store,indexer,dense,dense_cache,search,status}.py`
 - `work_buddy/vault_index/__main__.py` — manual/dev build CLI.
 - `work_buddy/indexing/` — the index-agnostic status seam (IR / vault / knowledge adapters).
-- `work_buddy/mcp_server/ops/vault_ops.py` — the three capability dispatchers.
+- `work_buddy/mcp_server/ops/vault_ops.py` — the three skill dispatchers.
 - `work_buddy/embedding/service.py` — the in-service `/vault/search` + `/vault/index` host.
 
 See `architecture/embedding-service` for the dense-encode backend and `architecture/inference/broker`

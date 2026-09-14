@@ -5,7 +5,7 @@ description: Run one source-pipeline pass over recent email; spawns Threads carr
 trigger: When the user invokes /wb-email-triage or asks to triage / scan / sweep their email inbox
 command: wb-email-triage
 workflow: email/email-triage
-capabilities:
+skills:
 - run_source_pipeline
 - email_health
 - email_accounts
@@ -30,7 +30,7 @@ aliases:
 parents:
 - email
 - email
-dev_notes: Email triage routes through the unified source pipeline and surfaces on Threads (`run_source_pipeline` with `source='email_triage'`); there is no separate `email_triage_run` capability. The hourly cron at `sidecar_jobs/email-triage-scan.md` invokes the same path. Per-cluster actions resolve through the email action library declared on `EmailTriagePipeline.action_library`.
+dev_notes: Email triage routes through the unified source pipeline and surfaces on Threads (`run_source_pipeline` with `source='email_triage'`); there is no separate `email_triage_run` skill. The hourly cron at `sidecar_jobs/email-triage-scan.md` invokes the same path. Per-cluster actions resolve through the email action library declared on `EmailTriagePipeline.action_library`.
 ---
 
 ## Goal

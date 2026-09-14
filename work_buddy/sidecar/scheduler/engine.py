@@ -71,7 +71,7 @@ def _summarize_job_result(status: str, detail: Any) -> str:
             return f"{status} — {s[:80]}…"
         return f"{status} — {s}"
 
-    # Capability dispatch wraps the operation payload as {"result": ...}.
+    # Skill dispatch wraps the operation payload as {"result": ...}.
     # Unwrap a single structured result so bounded index progress is not reduced
     # to the uninformative fallback string "ok".
     nested_result = detail.get("result")

@@ -1,11 +1,10 @@
 ---
 name: Web Search
-kind: capability
+kind: skill
 description: General web search — Jina default with a keyless ddgs fallback. Returns ranked hits (title, url, snippet, and full page text when the backend provides it). Ephemeral — results are not persisted. Use for arbitrary lookups, research, or fact-checking from inside an agent flow.
-capability_name: web_search
 category: websearch
 op: op.wb.web_search
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   query:
     type: str
@@ -23,6 +22,7 @@ parameters:
     type: str
     description: Optional recency filter — d|w|m|y or a custom date range.
     required: false
+skill_name: web_search
 tags:
 - websearch
 - search
@@ -35,5 +35,4 @@ aliases:
 - find on the internet
 parents:
 - websearch
-requires: []
 ---

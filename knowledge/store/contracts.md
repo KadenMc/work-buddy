@@ -1,8 +1,8 @@
 ---
 name: Contracts
 kind: system
-description: Contracts capabilities and workflows
-summary: Container for 7 capabilities and workflows.
+description: Contracts skills and workflows
+summary: Container for 7 skills and workflows.
 tags:
 - contracts
 ---

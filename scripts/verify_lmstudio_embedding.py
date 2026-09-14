@@ -67,7 +67,7 @@ DEFAULT_TEXTS = [
     "Re-encoded the conversation index with incremental checkpoints; cold start no longer stalls.",
     # Task-description-like
     "Add repo_paths to project schema; enable file-path to project resolution and commit attribution.",
-    "Harden MCP-gateway/triage pipeline reliability: per-capability timeout, dispatch logging, registry warmup.",
+    "Harden MCP-gateway/triage pipeline reliability: per-skill timeout, dispatch logging, registry warmup.",
     "Fix read-modify-write race in _find_and_replace_task_line via app.vault.process() atomic callback.",
     "Offload document-side embedding to LM Studio while keeping sentence_transformers as fallback.",
     "Split sidecar_jobs into system vs user jobs so users can schedule cron tasks without polluting the tracked repo.",
@@ -79,7 +79,7 @@ DEFAULT_TEXTS = [
     # README / doc-like prose
     "Work-buddy is a personal agent framework built on Claude Code and MCP. It orchestrates tasks, manages workflows, and coordinates across projects.",
     "The knowledge store uses progressive disclosure: index, summary, full. Each unit has parents and children, forming a navigable DAG.",
-    "Capabilities declare consent_operations. When a capability runs, the executor checks whether the user has granted matching grants before proceeding.",
+    "Skills declare consent_operations. When a skill runs, the executor checks whether the user has granted matching grants before proceeding.",
     # Error messages / diagnostic lines
     "MCP error -32001: Request timed out",
     "EditorConflict: Tasks plugin rejected write — file is dirty in an open editor",

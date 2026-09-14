@@ -18,7 +18,7 @@ The gateway invokes :func:`verify_post_write` to make the call:
                       plain ObsidianTimeout.
   - "indeterminate" → can't tell (e.g. filesystem read failed). Treat
                       conservatively as "absent" — the retry will
-                      re-execute the capability and either succeed
+                      re-execute the skill and either succeed
                       (if the original write DID land, the retry's
                       first action is typically a re-read that
                       picks up the new content) or land cleanly.
@@ -173,30 +173,30 @@ def verify_post_write_effects(
     """Walk a multi-effect manifest, return the overall verdict.
 
     Closes the multi-effect blind spot in :func:`verify_post_write`
-    (single-effect verifier). For capabilities that produce multiple
+    (single-effect verifier). For skills that produce multiple
     external effects (e.g. ``task_create`` writes a note file AND
     appends a master-list line), the gateway's PWU recovery path
     invokes THIS function instead of the single-effect one when the
-    capability has a non-empty ``effects`` manifest registered.
+    skill has a non-empty ``effects`` manifest registered.
 
     Args:
-        effects: The capability's declared effect manifest.
-        params: The capability's invocation params (used for path /
+        effects: The skill's declared effect manifest.
+        params: The skill's invocation params (used for path /
             witness template substitution and for the optional
             per-effect resolver to look up generated values from
-            the capability's idempotency cache).
+            the skill's idempotency cache).
 
     Returns:
         ``"verified"``     — every declared effect is present on disk.
         ``"partial"``      — some effects landed, some didn't. Caller
-                             enqueues a retry of the FULL capability;
-                             the capability is required to be
+                             enqueues a retry of the FULL skill;
+                             the skill is required to be
                              idempotent under retry (``task_create``'s
                              C.2 cache is the canonical example).
         ``"absent"``       — no effects landed. Same as today's
                              single-effect "absent": enqueue retry.
         ``"indeterminate"``— couldn't resolve effect paths/witnesses
-                             (capability cache miss / template values
+                             (skill cache miss / template values
                              missing). Caller treats as absent
                              (conservative).
 
@@ -304,7 +304,7 @@ def _aggregate_effect_verdicts(
       - some indeterminate, some absent (no verified) → "absent"
         (conservative — schedule a retry; if it was actually verified,
         the retry will see the same end state and the idempotent
-        capability won't double-write)
+        skill won't double-write)
       - all absent                   → "absent"
     """
     if not statuses:

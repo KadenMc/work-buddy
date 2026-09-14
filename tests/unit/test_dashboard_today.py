@@ -62,7 +62,7 @@ def client(_isolated_store, monkeypatch):
     )
     # Stub the native task briefing; authority routing itself remains real.
     monkeypatch.setattr(
-        "work_buddy.tasks.capabilities.daily_briefing",
+        "work_buddy.tasks.skills.daily_briefing",
         lambda: {"focused": [], "mit": [], "overdue": [], "stale": [],
                  "inbox_count": 0},
     )

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from work_buddy.mcp_server.registry import Capability, WorkflowDefinition
+from work_buddy.mcp_server.registry import Skill, WorkflowDefinition
 from work_buddy.threads import actions
 from work_buddy.threads.enums import InvocationContext
 
@@ -24,7 +24,7 @@ def _cap(
     intrinsic_amplifiers=None, requires_post_review=False,
     category="test",
 ):
-    return Capability(
+    return Skill(
         name=name,
         description=f"desc-{name}",
         category=category,
@@ -114,7 +114,7 @@ class TestCatalogFor:
             InvocationContext.ACTION_PROPOSAL, registry=reg,
         )
         kinds = {(t.name, t.kind) for t in out}
-        assert ("cap1", "capability") in kinds
+        assert ("cap1", "skill") in kinds
         assert ("wf1", "workflow") in kinds
         assert ("wf2_not_action", "workflow") not in kinds
 
@@ -132,7 +132,7 @@ class TestCatalogFor:
         assert names == ["a", "c"]
 
     def test_fsm_internal_default_excluded(self):
-        # Default available_in for new capabilities is every
+        # Default available_in for new skills is every
         # context EXCEPT FSM_INTERNAL. Passing FSM_INTERNAL should
         # return nothing for a default-shaped action.
         reg = _registry(_cap("a", is_action=True))

@@ -278,7 +278,7 @@ class TestSchedulerCurrentJob:
         )
         job = Job(
             name="probe-job", file_path=Path("."), schedule="*/5 * * * *",
-            job_type="capability", capability="noop",
+            job_type="skill", skill="noop",
         )
         assert sch.current_job == ""
         sch._fire_job(job)
@@ -296,7 +296,7 @@ class TestSchedulerCurrentJob:
         )
         job = Job(
             name="probe-job", file_path=Path("."), schedule="*/5 * * * *",
-            job_type="capability", capability="noop",
+            job_type="skill", skill="noop",
         )
         sch._fire_job(job)
         assert sch.current_job == ""

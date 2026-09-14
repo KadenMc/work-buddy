@@ -9,7 +9,7 @@ import pytest
 from work_buddy.collectors.obsidian_collector import _get_tasks
 from work_buddy.projects.sync import _scan_task_projects
 from work_buddy.tasks import runtime
-from work_buddy.tasks import capabilities as native_capabilities
+from work_buddy.tasks import skills as native_skills
 from work_buddy.tasks.service import TaskApplicationService
 from work_buddy.tasks.store import TaskStore
 
@@ -108,13 +108,13 @@ def test_task_new_enrichment_uses_native_tag_universe(
             "admin/uhn": 2,
         }
     )
-    monkeypatch.setattr(native_capabilities, "_namespace_counts", lambda: counts)
+    monkeypatch.setattr(native_skills, "_namespace_counts", lambda: counts)
     monkeypatch.setattr(
         "work_buddy.projects.store.list_projects",
         lambda: [{"slug": "work-buddy", "name": "Work Buddy", "status": "active"}],
     )
 
-    result = native_capabilities.enrich_plan(
+    result = native_skills.enrich_plan(
         {
             "task_text": "Improve the task system",
             "project": "work-buddy",

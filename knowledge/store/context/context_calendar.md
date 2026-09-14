@@ -1,11 +1,10 @@
 ---
 name: Context Calendar
-kind: capability
+kind: skill
 description: Provider-neutral Calendar schedule for a given date. With the current configuration it uses native Google OAuth and never calls Obsidian.
-capability_name: context_calendar
 category: context
 op: op.wb.context_calendar
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   date:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: bool
     description: Return only readiness check, no schedule fetch (default false)
     required: false
+skill_name: context_calendar
 tags:
 - context
 - calendar

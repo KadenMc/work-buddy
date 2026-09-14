@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 JOURNAL_ACTIONS: list[ActionDescriptor] = [
     ActionDescriptor(
-        capability_name="journal_route_to_tasks",
+        skill_name="journal_route_to_tasks",
         label="Route to tasks",
         description=(
             "Create one task in the master task list per item in this "
@@ -63,7 +63,7 @@ JOURNAL_ACTIONS: list[ActionDescriptor] = [
         icon="check-square",
     ),
     ActionDescriptor(
-        capability_name="journal_route_to_considerations",
+        skill_name="journal_route_to_considerations",
         label="Route to considerations",
         description=(
             "Create one consideration note per item in this group. "
@@ -75,7 +75,7 @@ JOURNAL_ACTIONS: list[ActionDescriptor] = [
         icon="book-open",
     ),
     ActionDescriptor(
-        capability_name="journal_append_to_note",
+        skill_name="journal_append_to_note",
         label="Append to a note",
         description=(
             "Append all items from this group as bullets to a single "
@@ -87,7 +87,7 @@ JOURNAL_ACTIONS: list[ActionDescriptor] = [
         icon="file-plus",
     ),
     ActionDescriptor(
-        capability_name="journal_rewrite_running_notes",
+        skill_name="journal_rewrite_running_notes",
         label="Rewrite running notes",
         description=(
             "Remove processed lines from today's daily note "

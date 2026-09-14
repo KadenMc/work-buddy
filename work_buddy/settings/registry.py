@@ -315,7 +315,7 @@ _DEFINITIONS: tuple[dict[str, Any], ...] = (
             },
             {
                 "ref": {
-                    "kind": "capability",
+                    "kind": "skill",
                     "id": "journal_state",
                     "label": "Journal state",
                 },

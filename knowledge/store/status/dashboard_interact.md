@@ -1,11 +1,10 @@
 ---
 name: Dashboard Interact
-kind: capability
-description: "Frozen compatibility bridge for registered root-dashboard forms. Jobs authoring is not supported: every jobs-add-job action returns form_migrated with /app/jobs. New React forms use widget-native assisted drafts with human-only submission."
-capability_name: dashboard_interact
+kind: skill
+description: 'Frozen compatibility bridge for registered root-dashboard forms. Jobs authoring is not supported: every jobs-add-job action returns form_migrated with /app/jobs. New React forms use widget-native assisted drafts with human-only submission.'
 category: status
 op: op.wb.dashboard_interact
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: str
@@ -29,6 +28,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: dashboard_interact
 tags:
 - status
 - dashboard
@@ -44,6 +44,6 @@ parents:
 - status
 ---
 
-This capability is retained compatibility infrastructure, not the extension path for new forms. `jobs-add-job` returns `{ok: false, code: "form_migrated", href: "/app/jobs"}` for every action without editing fields, opening a conversation, or submitting a job.
+This skill is retained compatibility infrastructure, not the extension path for new forms. `jobs-add-job` returns `{ok: false, code: "form_migrated", href: "/app/jobs"}` for every action without editing fields, opening a conversation, or submitting a job.
 
 Use `/app/jobs` for Jobs authoring. React forms share host-owned draft assistance and leave final submission to the user; see `services/dashboard/react/assisted-drafts`. The retained bridge protocol is documented at `services/dashboard/form-bridge`.

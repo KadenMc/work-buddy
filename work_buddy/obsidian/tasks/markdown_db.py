@@ -28,7 +28,7 @@ base class's orphan logic and :meth:`TaskMarkdownDB.post_reconcile`.
   an existing line; it deliberately leaves the plugin emoji metadata
   (📅 / ✅ / ⏫🔼🔽) untouched. Reconciliation runs markdown→store, so the
   store-wins write-back path for emoji fields is not exercised; the task
-  mutation capabilities (``update_task`` etc. in ``mutations.py``) own
+  mutation skills (``update_task`` etc. in ``mutations.py``) own
   emoji-bearing task-line writes — and they already write both surfaces.
 - The ``task_sync_status`` freshness write and the ``task_tags`` cache
   rebuild run in :meth:`post_reconcile`, after the field-drift loop.
@@ -326,7 +326,7 @@ def reconcile_tasks() -> dict[str, Any]:
     generic drift loop (plus the tag-cache / freshness post-pass) and
     returns a summary dict in the shape the legacy ``task_sync``
     produced — ``status`` + per-category counts — so the ``task_sync``
-    capability and the dashboard's Sync button keep their contract.
+    skill and the dashboard's Sync button keep their contract.
     """
     db = TaskMarkdownDB(task_store)
     report = db.reconcile_drift()

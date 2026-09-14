@@ -6,7 +6,7 @@ summary: Run five contract MCP calls, flag health issues with specific phrasing,
 trigger: user wants to review, audit, or check the health of their active contracts
 command: wb-contract-check
 workflow: contracts/analyze-contracts
-capabilities:
+skills:
 - contracts/contract_health
 - contracts/active_contracts
 - contracts/contract_constraints

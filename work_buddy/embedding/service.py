@@ -961,13 +961,13 @@ def _prewarm_search_cache() -> None:
     entirely — only the 1-text query needs encoding per call.
     """
     try:
-        from work_buddy.mcp_server.registry import get_registry, Capability
+        from work_buddy.mcp_server.registry import get_registry, Skill
 
         registry = get_registry()
         candidates = []
         for name, entry in registry.items():
             phrases = [name.replace("-", " ").replace("_", " "), entry.description]
-            if isinstance(entry, Capability) and entry.search_aliases:
+            if isinstance(entry, Skill) and entry.search_aliases:
                 phrases.extend(entry.search_aliases)
             phrases.append(f"{name} {entry.description}")
             candidates.append({"name": name, "texts": phrases})

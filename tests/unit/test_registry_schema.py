@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from work_buddy.mcp_server.registry import (
     AutoRun,
-    Capability,
+    Skill,
     WorkflowDefinition,
     WorkflowStep,
     _compute_workflow_requires,
@@ -19,9 +19,9 @@ def _noop(**_kwargs):
     return None
 
 
-def test_capability_invokes_default_empty():
-    """Existing `Capability(...)` calls without `invokes` still construct."""
-    cap = Capability(
+def test_skill_invokes_default_empty():
+    """Existing `Skill(...)` calls without `invokes` still construct."""
+    cap = Skill(
         name="sample",
         description="",
         category="status",
@@ -60,9 +60,9 @@ def test_compute_workflow_requires_from_step_requires():
     assert wf.requires == ["obsidian"]
 
 
-def test_compute_workflow_requires_from_capability_invokes():
-    """A step.invokes=[cap] pulls in that capability's requires."""
-    cap = Capability(
+def test_compute_workflow_requires_from_skill_invokes():
+    """A step.invokes=[cap] pulls in that skill's requires."""
+    cap = Skill(
         name="task_create",
         description="", category="tasks", parameters={},
         callable=_noop, requires=["obsidian"],
@@ -82,11 +82,11 @@ def test_compute_workflow_requires_from_capability_invokes():
 
 
 def test_compute_workflow_requires_unions_and_dedupes():
-    cap_a = Capability(
+    cap_a = Skill(
         name="cap_a", description="", category="x", parameters={},
         callable=_noop, requires=["obsidian", "hindsight"],
     )
-    cap_b = Capability(
+    cap_b = Skill(
         name="cap_b", description="", category="x", parameters={},
         callable=_noop, requires=["obsidian"],
     )
@@ -109,8 +109,8 @@ def test_compute_workflow_requires_unions_and_dedupes():
     assert wf.requires == ["hindsight", "obsidian", "postgresql"]
 
 
-def test_compute_workflow_requires_skips_unknown_capability():
-    """Invoking a capability that isn't in the registry is a no-op (not an error)."""
+def test_compute_workflow_requires_skips_unknown_skill():
+    """Invoking a skill that isn't in the registry is a no-op (not an error)."""
     wf = WorkflowDefinition(
         name="wf4", description="", workflow_file="store:test", execution="main",
         steps=[

@@ -442,7 +442,7 @@ function _humanizeAge(seconds) {
 }
 
 // Sync button handler. Posts to /api/task_sync which calls the
-// MCP capability inside a user_initiated() consent context so the
+// MCP skill inside a user_initiated() consent context so the
 // click is the consent boundary. On success, re-fetch the task list
 // so the freshness label updates.
 async function _onSyncClick() {

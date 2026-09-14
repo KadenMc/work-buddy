@@ -1,7 +1,7 @@
 """Sidecar state persistence — writes ``sidecar_state.json``.
 
 The state file is the primary observability surface for the sidecar.
-MCP capabilities, statusline scripts, and dashboards can read this
+MCP skills, statusline scripts, and dashboards can read this
 file to see what the sidecar is doing without querying it over HTTP.
 """
 

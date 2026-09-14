@@ -1,11 +1,10 @@
 ---
 name: Running Notes
-kind: capability
+kind: skill
 description: Read native Running Note records from the Journal database. Supports a logical day, date range, recent N-day window, or same-day view.
-capability_name: running_notes
 category: journal
 op: op.wb.running_notes
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   same_day:
     type: bool
@@ -27,6 +26,7 @@ parameters:
     type: str
     description: 'Logical Journal date (YYYY-MM-DD). Default: the active Journal day.'
     required: false
+skill_name: running_notes
 tags:
 - journal
 - running
@@ -39,7 +39,6 @@ aliases:
 - journal running notes content
 parents:
 - journal
-requires: []
 ---
 
 Returns only native records whose item kind is `running_note`, in descending

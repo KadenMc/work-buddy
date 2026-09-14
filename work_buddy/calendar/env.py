@@ -153,11 +153,11 @@ def get_today_schedule() -> dict[str, Any]:
 
 
 # Consent for calendar writes lives one layer up, in
-# ``work_buddy.calendar.capabilities`` — provider-agnostic, so a non-bridge
+# ``work_buddy.calendar.skills`` — provider-agnostic, so a non-bridge
 # adapter (google_native) inherits identical gating. This writer only declares
 # its internal eval_js call low-risk so it passes the obsidian.eval_js gate
 # without a second prompt; the change-specific calendar consent is the
-# capability layer's job.
+# skill layer's job.
 @reduces_risk_for("obsidian.eval_js", "low")
 def create_event(
     summary: str,
@@ -213,7 +213,7 @@ def create_event(
     )
 
 
-# Consent lives in the capability layer (see create_event above).
+# Consent lives in the skill layer (see create_event above).
 @reduces_risk_for("obsidian.eval_js", "low")
 def update_event(
     event: dict[str, Any],
@@ -243,7 +243,7 @@ def update_event(
     )
 
 
-# Consent lives in the capability layer (see create_event above).
+# Consent lives in the skill layer (see create_event above).
 @reduces_risk_for("obsidian.eval_js", "low")
 def delete_event(
     event: dict[str, Any],

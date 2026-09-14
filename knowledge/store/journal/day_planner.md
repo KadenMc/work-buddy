@@ -1,11 +1,10 @@
 ---
 name: Day Planner
-kind: capability
-description: 'Generate a time-blocked plan from calendar events and focused tasks, then optionally store it as a Source-backed native Journal artifact.'
-capability_name: day_planner
+kind: skill
+description: Generate a time-blocked plan from calendar events and focused tasks, then optionally store it as a Source-backed native Journal artifact.
 category: journal
 op: op.wb.day_planner
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: str
@@ -33,6 +32,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: day_planner
 tags:
 - journal
 - day
@@ -45,7 +45,6 @@ aliases:
 - time blocks
 parents:
 - journal
-requires: []
 ---
 
 The scheduling algorithm is pure and provider-neutral. `status` checks native

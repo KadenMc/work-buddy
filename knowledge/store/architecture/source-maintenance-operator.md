@@ -1,11 +1,10 @@
 ---
 name: Sources Maintenance Operator
-kind: capability
+kind: skill
 description: Preview, export, recover, safely abort, import, redact, or resume an exact paused effect through a high-consent operator boundary.
-capability_name: source_maintenance_operator
 category: context
 op: op.wb.source_maintenance_operator
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   action:
     type: string
@@ -48,6 +47,7 @@ consent_operations:
 - sources.maintenance
 retry_policy: manual
 auto_retry: false
+skill_name: source_maintenance_operator
 tags:
 - sources
 - provenance

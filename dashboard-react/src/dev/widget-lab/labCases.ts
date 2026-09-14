@@ -121,7 +121,7 @@ const inputForType = (
         ? { mode: "read_only", reason: "Widget Lab read-only fixture." }
         : { mode: "read_write" },
       timeZone: "America/New_York",
-      capabilities: [{
+      skills: [{
         name: "journal_state",
         description: "Read the current Journal state.",
         parameters: {},

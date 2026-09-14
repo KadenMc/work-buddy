@@ -1,4 +1,4 @@
-"""General-purpose LLM call capability for the MCP gateway.
+"""General-purpose LLM call skill for the MCP gateway.
 
 Wraps ``run_task()`` with auto-generated cache keys and schema resolution,
 so callers never need to think about ``task_id`` or file paths.
@@ -8,7 +8,7 @@ resolve to JSON files in ``work_buddy/llm/schemas/``.
 
 .. deprecated::
    This module exists for backward compatibility with the MCP-exposed
-   ``llm_call`` capability. New Python callers should use
+   ``llm_call`` skill. New Python callers should use
    :class:`work_buddy.llm.LLMRunner` (or the module-level
    :func:`work_buddy.llm.llm_call` convenience) which returns a
    normalized :class:`LLMResponse` and supports tier escalation.

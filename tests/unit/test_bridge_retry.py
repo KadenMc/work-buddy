@@ -1,5 +1,5 @@
 """Unit tests for the @bridge_retry decorator, bridge_failure protocol,
-and obsidian_retry capability.
+and obsidian_retry skill.
 
 Post-CP7 additions:
 - TestBridgeRetryTypedExceptions: terminal subclasses
@@ -250,16 +250,16 @@ class TestBridgeRetryReturnValue:
 
 
 # ---------------------------------------------------------------------------
-# obsidian_retry capability
+# obsidian_retry skill
 # ---------------------------------------------------------------------------
 
-class TestObsidianRetryCapability:
-    """Tests for the obsidian_retry MCP capability.
+class TestObsidianRetrySkill:
+    """Tests for the obsidian_retry MCP skill.
 
     ``obsidian_retry`` requires an ``operation_id`` and loads the
-    capability name + params from the operation record. There is no
+    skill name + params from the operation record. There is no
     override path — callers without an op_id should call the
-    capability directly (the gateway's background retry handles
+    skill directly (the gateway's background retry handles
     transient bridge hiccups on fresh calls).
     """
 
@@ -295,7 +295,7 @@ class TestObsidianRetryCapability:
 
     @patch("work_buddy.mcp_server.registry.get_registry")
     @patch("work_buddy.mcp_server.tools.gateway._load_operation")
-    def test_unknown_capability(self, mock_load, mock_registry):
+    def test_unknown_skill(self, mock_load, mock_registry):
         mock_load.return_value = {"name": "nonexistent", "params": {}}
         mock_registry.return_value = {}
 
@@ -560,7 +560,7 @@ class TestBridgeRetryTypedExceptions:
 
 class TestObsidianRetryTypedExceptions:
     """Same terminal-state and exhaustion-translation logic in
-    the obsidian_retry capability."""
+    the obsidian_retry skill."""
 
     @patch("work_buddy.obsidian.bridge.get_latency_context", return_value="t")
     @patch("work_buddy.obsidian.bridge.is_available", return_value=True)

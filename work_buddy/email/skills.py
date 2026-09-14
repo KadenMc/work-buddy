@@ -1,7 +1,7 @@
-"""Capability callables for the email/Thunderbird integration.
+"""Skill callables for the email/Thunderbird integration.
 
 Registered in :mod:`work_buddy.mcp_server.registry` (see
-``_email_capabilities()``). All callables are lightweight: they instantiate
+``_email_skills()``). All callables are lightweight: they instantiate
 the configured provider on demand, perform one HTTP round-trip, and return
 JSON-serialisable dicts. No heavy imports — keeps the gateway snappy.
 
@@ -16,8 +16,8 @@ Triage
 
 Email triage runs through the unified source pipeline at
 ``work_buddy.pipelines.email.EmailTriagePipeline`` (dispatched via the
-``run_source_pipeline`` capability with ``source='email_triage'``); the
-legacy ``email_triage_run`` capability that used to live in this module
+``run_source_pipeline`` skill with ``source='email_triage'``); the
+legacy ``email_triage_run`` skill that used to live in this module
 was retired during the clarify -> Threads migration.
 """
 

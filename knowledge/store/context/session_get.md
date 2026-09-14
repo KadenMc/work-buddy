@@ -1,11 +1,10 @@
 ---
 name: Session Get
-kind: capability
+kind: skill
 description: Browse messages in a Claude Code session. Paginated with role/type filtering. Use after context_search finds a session.
-capability_name: session_get
 category: context
 op: op.wb.session_get
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   session_id:
     type: str
@@ -31,6 +30,7 @@ parameters:
     type: str
     description: Substring filter on message text (case-insensitive)
     required: false
+skill_name: session_get
 tags:
 - context
 - session

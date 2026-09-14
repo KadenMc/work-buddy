@@ -1,11 +1,10 @@
 ---
 name: Project State At
-kind: capability
+kind: skill
 description: Reconstruct a project's state as of a given timestamp (latest revision ≤ timestamp). Includes folders + aliases as they were then.
-capability_name: project_state_at
 category: projects
 op: op.wb.project_state_at
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   slug:
     type: str
@@ -15,6 +14,7 @@ parameters:
     type: str
     description: ISO 8601 UTC timestamp (e.g. '2026-04-14T00:00:00Z')
     required: true
+skill_name: project_state_at
 tags:
 - projects
 - project

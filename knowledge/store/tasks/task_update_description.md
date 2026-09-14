@@ -1,11 +1,10 @@
 ---
 name: Task Update Description
-kind: capability
+kind: skill
 description: Update a native task description with revision checking and an idempotent mutation receipt.
-capability_name: task_update_description
 category: tasks
 op: op.wb.task_update_description
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_id:
     type: str
@@ -27,6 +26,7 @@ mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.update_task
+skill_name: task_update_description
 tags:
 - tasks
 - task
@@ -42,5 +42,4 @@ aliases:
 - rewrite task text
 parents:
 - tasks
-requires: []
 ---

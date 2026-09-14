@@ -5,7 +5,7 @@ description: When and how to use agent-user conversations — decision guide, re
 summary: 'Use conversations for: explaining plans before executing, multi-step decisions, progress updates, follow-up dialogue. conversation_create opens the dashboard sidebar automatically. conversation_ask blocks up to 110s.'
 trigger: user wants to start a conversation, or agent needs to explain a plan, ask multi-step questions, or send progress updates
 command: wb-conversation
-capabilities:
+skills:
 - conversations/conversation_create
 - conversations/conversation_send
 - conversations/conversation_ask

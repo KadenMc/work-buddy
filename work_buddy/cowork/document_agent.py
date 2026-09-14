@@ -116,7 +116,7 @@ def build_document_agent_prompt(
     ``conversation_history`` and ``feedback`` remain accepted for compatibility
     with older callers, but their content must never enter the provider launch
     prompt.  Every content-bearing value is delivered later through a
-    Sources/Agent Execution-accounted capability response.
+    Sources/Agent Execution-accounted skill response.
     """
 
     del conversation_history, feedback
@@ -248,7 +248,7 @@ Bindings:
 ## Source delivery boundary
 
 This launch prompt intentionally contains no document, selection, feedback, or
-conversation content. Obtain such content only through the bound capabilities
+conversation content. Obtain such content only through the bound skills
 above. Never infer missing content from IDs, paths, titles, or this prompt.
 """
 
@@ -822,7 +822,7 @@ def fence_document_agent(
 
     The persisted generation is stopped before process termination, so even a
     process that outlives the best-effort kill can no longer mutate the
-    conversation or document through generation-fenced capabilities.
+    conversation or document through generation-fenced skills.
     """
     with _SPAWN_LOCK:
         lease = get_agent_lease(conversation_id, consumer)

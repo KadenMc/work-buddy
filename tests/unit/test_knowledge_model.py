@@ -11,7 +11,7 @@ from work_buddy.knowledge.model import (
     IntegrationUnit,
     ReferenceUnit,
     ConceptUnit,
-    CapabilityUnit,
+    SkillUnit,
     WorkflowUnit,
     VaultUnit,
     unit_from_dict,
@@ -204,8 +204,41 @@ class TestNewKinds:
         assert c.kind == "concept"
         assert c._kind_fields() == {}
 
+    def test_skill_unit_uses_canonical_schema_fields(self):
+        s = SkillUnit(
+            path="tasks/create",
+            name="Task create",
+            description="Create a task",
+            skill_name="task_create",
+            category="tasks",
+            op="op.wb.task_create",
+            schema_version="wb-skill/v1",
+        )
+        assert s.kind == "skill"
+        fields = s._kind_fields()
+        assert fields["skill_name"] == "task_create"
+        assert fields["schema_version"] == "wb-skill/v1"
+        assert "capability_name" not in fields
+
+    def test_directions_unit_serializes_related_skills(self):
+        d = DirectionsUnit(
+            path="tasks/new",
+            name="New task",
+            description="Create a task",
+            skills=["task_create"],
+        )
+        assert d._kind_fields()["skills"] == ["task_create"]
+        assert "capabilities" not in d._kind_fields()
+
     def test_all_new_kinds_are_prompt_units(self):
-        for cls in (SystemUnit, ServiceUnit, IntegrationUnit, ReferenceUnit, ConceptUnit):
+        for cls in (
+            SystemUnit,
+            ServiceUnit,
+            IntegrationUnit,
+            ReferenceUnit,
+            ConceptUnit,
+            SkillUnit,
+        ):
             assert issubclass(cls, PromptUnit)
 
 
@@ -305,6 +338,11 @@ class TestDeserialization:
              "entry_points": ["m:f"]},
             {"kind": "concept", "name": "C", "description": "c"},
             {"kind": "system", "name": "Y", "description": "y"},
+            {"kind": "directions", "name": "D", "description": "d",
+             "skills": ["task_create"]},
+            {"kind": "skill", "name": "K", "description": "k",
+             "skill_name": "task_create", "category": "tasks",
+             "schema_version": "wb-skill/v1"},
         ]
         for data in cases:
             u = unit_from_dict("test/path", data)
@@ -655,7 +693,7 @@ class TestRecursiveMode:
         assert "<!-- wb: missing not found -->" in out_all
 
     def test_invalid_mode_raises_in_agent_docs(self):
-        """The capability surface validates ``recursive`` and returns an
+        """The skill surface validates ``recursive`` and returns an
         error dict (not a raise) so MCP transport stays well-typed."""
         from work_buddy.knowledge.query import agent_docs
         result = agent_docs(path="nonexistent/unit", recursive="bogus")

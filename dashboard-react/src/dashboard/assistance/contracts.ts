@@ -29,7 +29,7 @@ export interface AssistedFormSchema {
   readonly maxOperations: number;
   readonly maxPatchBytes: number;
   readonly maxSnapshotBytes: number;
-  readonly referenceScopes?: readonly ("job_capability" | "job_workflow")[];
+  readonly referenceScopes?: readonly ("job_skill" | "job_workflow")[];
   readonly fields: readonly AssistedField[];
 }
 

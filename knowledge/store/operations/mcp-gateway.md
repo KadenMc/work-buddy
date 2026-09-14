@@ -1,9 +1,9 @@
 ---
 name: MCP Gateway
 kind: directions
-description: How to discover and call MCP gateway capabilities — the primary interface for agents
+description: How to discover and call MCP gateway skills — the primary interface for agents
 summary: '5-tool FastMCP gateway on port 5126: wb_init (required first call), wb_search (discover+inspect), wb_run (execute), wb_advance (workflow step), wb_status. Use these over raw Python imports.'
-trigger: agent needs to interact with work-buddy systems or discover capabilities
+trigger: agent needs to interact with work-buddy systems or discover skills
 tags:
 - mcp
 - gateway
@@ -23,23 +23,23 @@ parents:
 - operations
 ---
 
-FastMCP server exposing work-buddy capabilities via 5 gateway tools with dynamic tool discovery. Runs as a persistent sidecar service on `localhost:5126`, shared across all Claude Code sessions in this project.
+FastMCP server exposing work-buddy skills via 5 gateway tools with dynamic tool discovery. Runs as a persistent sidecar service on `localhost:5126`, shared across all Claude Code sessions in this project.
 
 ## Before writing Python: check the gateway
 
-Before writing Python to interact with the vault, tasks, journal, contracts, memory, or any work-buddy state — **check the gateway first**. Many operations already exist as registered capabilities. Do not guess at Python imports or invent APIs.
+Before writing Python to interact with the vault, tasks, journal, contracts, memory, or any work-buddy state — **check the gateway first**. Many operations already exist as registered skills. Do not guess at Python imports or invent APIs.
 
 | Tool | Purpose |
 |------|---------|
 | `mcp__work-buddy__wb_init(session_id)` | **REQUIRED first call.** Registers your session with the gateway. Pass your `WORK_BUDDY_SESSION_ID`. |
-| `mcp__work-buddy__wb_search(query)` | **Discover OR inspect.** Natural language → find capabilities. Exact name → get its full parameter schema. |
-| `mcp__work-buddy__wb_run(capability, params)` | Execute a discovered capability. Params: JSON string or dict. |
+| `mcp__work-buddy__wb_search(query)` | **Discover OR inspect.** Natural language → find skills. Exact name → get its full parameter schema. |
+| `mcp__work-buddy__wb_run(skill, params)` | Execute a discovered skill. Params: JSON string or dict. |
 | `mcp__work-buddy__wb_advance(workflow_run_id, result)` | Step through multi-step workflows. |
 | `mcp__work-buddy__wb_status()` | Check system health and active workflows. |
 | `mcp__work-buddy__wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
-| `mcp__work-buddy__wb_capability_result(operation_id, key?)` | Retrieve the full result of a capability call that the dispatch-size cap truncated to a marker — whole, or a single top-level key. The capability-side twin of `wb_step_result`. |
+| `mcp__work-buddy__wb_skill_result(operation_id, key?)` | Retrieve the full result of a skill call that the dispatch-size cap truncated to a marker — whole, or a single top-level key. The skill-side twin of `wb_step_result`. |
 
-These are **MCP tools**, not Python functions. They appear in the tool list as `mcp__work-buddy__wb_run`, `mcp__work-buddy__wb_search`, etc. **Always prefer these MCP tools over Python code** for work-buddy capabilities and workflows.
+These are **MCP tools**, not Python functions. They appear in the tool list as `mcp__work-buddy__wb_run`, `mcp__work-buddy__wb_search`, etc. **Always prefer these MCP tools over Python code** for work-buddy skills and workflows.
 
 ## Session initialization (mandatory)
 
@@ -52,7 +52,7 @@ mcp__work-buddy__wb_init(session_id="<your WORK_BUDDY_SESSION_ID>")
 If `wb_init` is not in your tool list (e.g., resumed session with cached tools):
 
 ```
-mcp__work-buddy__wb_run(capability="wb_init", params={"session_id": "<your WORK_BUDDY_SESSION_ID>"})
+mcp__work-buddy__wb_run(skill="wb_init", params={"session_id": "<your WORK_BUDDY_SESSION_ID>"})
 ```
 
 `WORK_BUDDY_SESSION_ID` is set automatically by the SessionStart hook; read it from conversation context or the environment.
@@ -61,14 +61,14 @@ mcp__work-buddy__wb_run(capability="wb_init", params={"session_id": "<your WORK_
 
 `wb_init` → `wb_search` to discover → read the parameter schema in the search result → `wb_run` to execute.
 
-**Inspect before calling unfamiliar capabilities.** `wb_search("task_create")` with an exact capability name returns just that one entry with its full parameter schema — no search overhead, no extra results. Do not guess parameter names.
+**Inspect before calling unfamiliar skills.** `wb_search("task_create")` with an exact skill name returns just that one entry with its full parameter schema — no search overhead, no extra results. Do not guess parameter names.
 
-**Performance caveat:** `wb_search` can hang when the embedding service is cold (5+ minutes observed). When you already know the capability name, use `wb_run` directly and skip search.
+**Performance caveat:** `wb_search` can hang when the embedding service is cold (5+ minutes observed). When you already know the skill name, use `wb_run` directly and skip search.
 
 ## Do not
 
 - **Guess at `work_buddy.*` module paths or function signatures** — search first.
-- **Write raw Python to read vault files** when a gateway capability already exists.
+- **Write raw Python to read vault files** when a gateway skill already exists.
 - **Write Python to call work-buddy functions** when the same operation is available as an MCP tool.
 - **Skip `wb_init`** — all other tools are gated behind it.
 
@@ -85,18 +85,18 @@ Diagnose and fix via these steps:
 
 ### `wb_run` is the interface contract, not a convenience wrapper
 
-If a capability is registered in the gateway, `wb_run` is the only valid way to invoke it — even when MCP is connected and working. Calling the underlying Python directly bypasses session tracking, consent gates, operation logging, and retry policy. The operation is **not equivalent** even if the outcome looks the same.
+If a skill is registered in the gateway, `wb_run` is the only valid way to invoke it — even when MCP is connected and working. Calling the underlying Python directly bypasses session tracking, consent gates, operation logging, and retry policy. The operation is **not equivalent** even if the outcome looks the same.
 
 ## Dispatch reliability — timeouts and the bridge circuit breaker
 
 Every `wb_run` dispatch runs under an operation-appropriate wall-time budget and emits timing telemetry. Two failure responses you may see carry a distinct `error_kind`:
 
-- **`mcp_gateway_timeout`** — the capability did not return within its dispatch budget (most local capabilities: 30s; some declare their own). The work may still be running in the background, so treat the outcome as unknown rather than failed; retry only if the operation is idempotent. The budget is a property of the operation, not something you set per call.
-- **`obsidian_bridge_circuit_open`** (also `bridge_circuit_open: true`) — Obsidian-bridge capabilities are governed by a shared circuit breaker. After repeated bridge failures the breaker opens and sheds further bridge calls instead of hammering a struggling bridge; it admits a probe again automatically after a short cooldown. If you see this, the bridge is unhealthy (check that Obsidian is running with the bridge plugin enabled) — wait and retry rather than looping immediately.
+- **`mcp_gateway_timeout`** — the skill did not return within its dispatch budget (most local skills: 30s; some declare their own). The work may still be running in the background, so treat the outcome as unknown rather than failed; retry only if the operation is idempotent. The budget is a property of the operation, not something you set per call.
+- **`obsidian_bridge_circuit_open`** (also `bridge_circuit_open: true`) — Obsidian-bridge skills are governed by a shared circuit breaker. After repeated bridge failures the breaker opens and sheds further bridge calls instead of hammering a struggling bridge; it admits a probe again automatically after a short cooldown. If you see this, the bridge is unhealthy (check that Obsidian is running with the bridge plugin enabled) — wait and retry rather than looping immediately.
 
-A capability whose bridge is momentarily down fails fast per call with an actionable error and recovers the instant the bridge returns — no registry reload needed.
+A skill whose bridge is momentarily down fails fast per call with an actionable error and recovers the instant the bridge returns — no registry reload needed.
 
-An oversized result is also handled gracefully rather than blowing the response: when a capability's serialized result exceeds the inline cap (`gateway.result_cap_chars`, default 100000), `wb_run` returns a `{_truncated, _size, _keys, _operation_id, _message}` marker instead of the full payload. The full result is preserved in the operation record — retrieve it whole or by a single top-level key with `wb_capability_result(operation_id[, key])`. This is the capability-dispatch analogue of the workflow visibility system's `wb_step_result`.
+An oversized result is also handled gracefully rather than blowing the response: when a skill's serialized result exceeds the inline cap (`gateway.result_cap_chars`, default 100000), `wb_run` returns a `{_truncated, _size, _keys, _operation_id, _message}` marker instead of the full payload. The full result is preserved in the operation record — retrieve it whole or by a single top-level key with `wb_skill_result(operation_id[, key])`. This is the skill-dispatch analogue of the workflow visibility system's `wb_step_result`.
 
 ## Gaps are OK to surface
 
@@ -104,7 +104,7 @@ Not everything is in the gateway yet. If `wb_search` returns nothing relevant, t
 
 ## Learning about the system
 
-When you need to understand a subsystem, figure out how to accomplish something, or find the right capabilities for a task — **use `knowledge` or `agent_docs` before reading README files or guessing at code**. `knowledge` searches both system docs and personal knowledge; `agent_docs` searches system docs only.
+When you need to understand a subsystem, figure out how to accomplish something, or find the right skills for a task — **use `knowledge` or `agent_docs` before reading README files or guessing at code**. `knowledge` searches both system docs and personal knowledge; `agent_docs` searches system docs only.
 
 ```
 // "How do I do X?" — search system docs by intent

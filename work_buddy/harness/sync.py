@@ -146,9 +146,9 @@ def _write_mcp(root: Path, harness_ids: tuple[str, ...]) -> None:
 def _write_rules(root: Path, harness_ids: tuple[str, ...]) -> None:
     source = paths.asset_root() / "CLAUDE.md"
     body = source.read_text(encoding="utf-8") if source.exists() else (
-        "Use the work-buddy MCP gateway for workflow and capability operations. "
+        "Use the work-buddy MCP gateway for direct-skill and workflow operations. "
         "Prefer `agent_docs` for system directions and `wb_search` for callable "
-        "capability discovery."
+        "skill discovery."
     )
     for harness_id in harness_ids:
         target = get_harness(harness_id)

@@ -1,11 +1,10 @@
 ---
 name: Llm Costs Query
-kind: capability
-description: 'Aggregate LLM cost / usage across one or both data sources (work-buddy''s per-call internal log + Claude Code transcripts). Smart parameters: time window (named or ISO range), group_by (project, model, session, day, tool), source filter, min_cost / project / model filters, and previous-window comparison. Single capability covering most cost questions.'
-capability_name: llm_costs_query
+kind: skill
+description: 'Aggregate LLM cost / usage across one or both data sources (work-buddy''s per-call internal log + Claude Code transcripts). Smart parameters: time window (named or ISO range), group_by (project, model, session, day, tool), source filter, min_cost / project / model filters, and previous-window comparison. Single skill covering most cost questions.'
 category: llm
 op: op.wb.llm_costs_query
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   window:
     type: str
@@ -43,6 +42,7 @@ parameters:
     type: bool
     description: Include previous-equivalent-window comparison (delta_pct_cost, delta_pct_calls). Default true.
     required: false
+skill_name: llm_costs_query
 tags:
 - llm
 - costs

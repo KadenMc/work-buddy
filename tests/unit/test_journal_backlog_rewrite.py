@@ -293,7 +293,7 @@ def test_rewrite_running_notes_idempotent_when_all_skip(
 
 
 def test_rewrite_running_notes_is_consent_gated() -> None:
-    """The rewrite capability is registered with the consent system at
+    """The rewrite skill is registered with the consent system at
     import time. We verify the registration here rather than the runtime
     block (which is order-dependent inside test sessions running under
     a workflow consent blanket)."""

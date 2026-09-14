@@ -16,7 +16,7 @@ its auto_run code steps:
   Returns the proposed timeline (NOT written back; journal write-back is a
   consent-gated reasoning step in the workflow).
 
-Both callables degrade gracefully — a missing capability returns the
+Both callables degrade gracefully — a missing skill returns the
 partial state with a status field so the engage step can render
 "calendar unavailable, working with task-only context."  Downstream
 reactive-contexts code consumes these health flags in turn.
@@ -74,7 +74,7 @@ def load_context_for_task_me(
 
     Returns:
         Dict with the following keys (each may be missing if the
-        underlying capability raised — the engage step inspects the
+        underlying skill raised — the engage step inspects the
         ``status`` flag):
 
         - ``status``: ``"ok"`` | ``"degraded"`` (one or more sub-calls failed)
@@ -98,7 +98,7 @@ def load_context_for_task_me(
         from work_buddy.tasks.runtime import native_authority_active
 
         if native_authority_active():
-            from work_buddy.tasks.capabilities import daily_briefing
+            from work_buddy.tasks.skills import daily_briefing
         else:
             from work_buddy.obsidian.tasks.manager import daily_briefing
         out["task_briefing"] = daily_briefing()

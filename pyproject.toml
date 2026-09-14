@@ -96,6 +96,7 @@ dev = [
     "pytest-cov (>=7.1.0,<8.0.0)",
     "freezegun (>=1.5.5,<2.0.0)",
     "Pillow (>=10.0.0)",
+    "pytest-xdist (>=3.8.0,<4.0.0)",
 ]
 docs = [
     "mkdocs (>=1.6.0,<2.0.0)",
@@ -109,7 +110,7 @@ markers = [
     "unit: Pure logic tests — no filesystem, no network",
     "component: Tests with temp dirs, temp DBs, or service boundaries",
     "integration: CLI smoke tests and HTTP endpoint tests",
-    "real_task_store: opt out of the autouse task-store temp-DB isolation (see _isolate_task_store_and_vault)",
+    "real_task_store: opt out of the per-test task DB patch while retaining the process data sandbox (see _isolate_task_store_and_vault)",
     "real_obsidian_bridge: opt out of the autouse Obsidian-bridge neutralization (see _isolate_task_store_and_vault)",
     "real_notification_delivery: opt out of the autouse notification-delivery stub (see _isolate_notification_delivery)",
     "real_sidecar_runtime_files: opt out of the autouse sidecar pid/state file redirection (see _isolate_sidecar_runtime_files)",

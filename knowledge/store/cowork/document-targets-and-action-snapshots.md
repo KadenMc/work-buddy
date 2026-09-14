@@ -172,7 +172,7 @@ actually consumed that frozen target.”
 
 When the frozen view is present and valid, the receipt has
 `fetch_outcome=available`. When it is missing or fails integrity validation,
-the capability still returns a durable receipt with
+the skill still returns a durable receipt with
 `fetch_outcome=unavailable`. That receipt authorizes only a truthful
 receipt-bound reply and acknowledgement explaining that the exact context
 could not be opened; it cannot support a document proposal or comment. The

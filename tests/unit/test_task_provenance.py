@@ -236,7 +236,7 @@ def test_awareness_read_note_via_task_read_mcp(co_env) -> None:
         "timestamp": "2026-05-13T10:00:00Z",
         "message": {"content": [{
             "type": "tool_use", "id": "tu", "name": "mcp__work-buddy__wb_run",
-            "input": {"capability": "task_read", "params": {"task_id": tid}},
+            "input": {"skill": "task_read", "params": {"task_id": tid}},
         }]},
     }
     write_session(co_env["projects"] / "p", "s-tr", [entry])

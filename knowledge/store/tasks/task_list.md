@@ -1,11 +1,10 @@
 ---
 name: Task List
-kind: capability
+kind: skill
 description: List tasks from the SQLite store (bridge-independent — works even when Obsidian isn't running). With no arguments returns every live, non-archived, OPEN task, oldest-created first. The enumeration complement to task_search, which matches by text — use task_list to pull the whole open backlog (e.g. for a full-list review) rather than a single lookup.
-capability_name: task_list
 category: tasks
 op: op.wb.task_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   state:
     type: str
@@ -23,6 +22,7 @@ parameters:
     type: int
     description: Max results (default 500 — high so a full-list sweep is not silently truncated).
     required: false
+skill_name: task_list
 tags:
 - tasks
 - task

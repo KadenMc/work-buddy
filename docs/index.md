@@ -24,9 +24,9 @@ Under the hood, work-buddy is a local gateway that extends Claude Code, a conduc
 
 ## How the documentation is organized
 
-work-buddy's reference is a **handbook**, and the handbook is generated from the same knowledge store your agent reads at runtime. There is no second copy of the truth to keep in sync. When your agent gains a new capability or workflow, the published docs describe it too.
+work-buddy's reference is a **handbook**, and the handbook is generated from the same knowledge store your agent reads at runtime. There is no second copy of the truth to keep in sync. When your agent gains a new skill or workflow, the published docs describe it too.
 
-- **[Handbook](handbook/index.md)**: every capability, workflow, and direction, grouped by domain. The honest "everything" list.
+- **[Handbook](handbook/index.md)**: every skill, workflow, and direction, grouped by domain. The honest "everything" list.
 - **[Architecture](architecture.md)**: one human-readable view of how the gateway, conductor, services, and integrations fit together.
 - **[CLAUDE.md](https://github.com/KadenMc/work-buddy/blob/main/CLAUDE.md)**: how an agent orients itself inside work-buddy, plus the MCP gateway reference.
 - **[Changelog](https://github.com/KadenMc/work-buddy/blob/main/CHANGELOG.md)**: release history.
@@ -35,7 +35,7 @@ work-buddy's reference is a **handbook**, and the handbook is generated from the
 
 | Concept | Description |
 |---------|-------------|
-| **Capabilities** | Single functions exposed through the MCP gateway. Discoverable via `wb_search`, executable via `wb_run`. |
+| **Skills** | Single functions exposed through the MCP gateway. Discoverable via `wb_search`, executable via `wb_run`. |
 | **Workflows** | Multi-step graphs with dependency ordering, auto-run steps, and persistent state. |
 | **Knowledge store** | The interlinked units work-buddy reads at runtime, and the source these docs are generated from. |
 | **Consent system** | Session-scoped approvals delivered to every surface at once (Obsidian, Telegram, dashboard). |

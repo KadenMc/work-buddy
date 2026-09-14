@@ -3,8 +3,8 @@ name: Consent System
 kind: directions
 description: How consent-gated operations work — auto-request in gateway, pre-flight bundling, session scope, risk levels
 summary: Gateway handles consent transparently for wb_run ops. Ordinary consent uses session-scoped grants; exact-review operations use single-use per-invocation authority with no reusable grant.
-trigger: agent calls a capability that touches @requires_consent functions (handled transparently by the gateway)
-capabilities:
+trigger: agent calls a skill that touches @requires_consent functions (handled transparently by the gateway)
+skills:
 - consent_list
 tags:
 - consent
@@ -43,26 +43,26 @@ dev_notes: |-
 
   **Failure mode the wrapper guards against.** Without `user_initiated`, clicking Approve on a `task_create` action chip fires `ConsentRequired: tasks.create_task (moderate)` and dumps the thread into `AWAITING_REDIRECT` — the user is prompted twice for the same decision (once via the action card showing parameters and risk metadata, again via a fresh consent notification). The action card itself IS the consent surface; the wrapper makes the click count.
 
-  **If you add a new dashboard endpoint** that fires a state-entry side effect invoking a `@requires_consent` capability and bypasses `_post_thread_action`, you must add the wrapper yourself. The capability dispatcher running inside `EXECUTING`'s side-effect handler runs synchronously in the same thread as `engine.transition`, so a `user_initiated` context wrapping the transition covers the entire downstream chain.
+  **If you add a new dashboard endpoint** that fires a state-entry side effect invoking a `@requires_consent` skill and bypasses `_post_thread_action`, you must add the wrapper yourself. The skill dispatcher running inside `EXECUTING`'s side-effect handler runs synchronously in the same thread as `engine.transition`, so a `user_initiated` context wrapping the transition covers the entire downstream chain.
 
   ## Modal-fallback message routing
 
   The Obsidian plugin's `ObsidianModal.dispatchConsentGrant` (handlers.ts) posts a `consent_grant` message to the messaging service whenever the user clicks an Allow option. Body shape: `{operation, mode, ttl_minutes, notification_id}`. The `notification_id` is the load-bearing field — without it the sidecar cannot resolve the originating agent's session and falls back to writing the grant in its own session DB (a legacy behavior preserved with a WARN log so an out-of-sync plugin doesn't strand the user, but the routing is broken until the plugin is rebuilt + reloaded).
 
-  The sidecar router's `MessagePoller._handle_message` special-cases `subject == "consent_grant"` before the generic capability-dispatch path. `_handle_consent_grant_message(body)` parses the body, calls `resolve_consent_request(notification_id, approved=True, mode=mode, ttl_minutes=ttl_minutes)`, and returns the dispatch status. The `resolve_consent_request` path is the canonical site for both the cross-session routing (it reads `notification.callback_session_id` and threads it through `grant_consent(..., session_id=...)`) and the bundle unbundling (it reads `consent_meta.context.operations` and calls `grant_consent_batch`).
+  The sidecar router's `MessagePoller._handle_message` special-cases `subject == "consent_grant"` before the generic skill-dispatch path. `_handle_consent_grant_message(body)` parses the body, calls `resolve_consent_request(notification_id, approved=True, mode=mode, ttl_minutes=ttl_minutes)`, and returns the dispatch status. The `resolve_consent_request` path is the canonical site for both the cross-session routing (it reads `notification.callback_session_id` and threads it through `grant_consent(..., session_id=...)`) and the bundle unbundling (it reads `consent_meta.context.operations` and calls `grant_consent_batch`).
 
   Already-resolved notifications (the gateway's in-window poll won the race) raise `ValueError` from `respond_to_notification`; the handler catches it and returns a no-op success. This keeps the modal-click → message-dispatch path idempotent without depending on the plugin to know whether the gateway already grabbed the response.
 
   **`grant_consent` and `grant_consent_batch` accept `session_id` as a keyword.** Plumbs through to `ConsentCache.grant(..., session_id=...)` — the same mechanism workflow blanket grants use to write to a different session's DB than the calling process. The audit log includes the truncated session id in the `GRANTED` details column so cross-session writes are auditable post-hoc.
 
-  **The bundle key (`bundle:<capability>`) is granted alongside individual ops.** It serves as audit-log readability — `GRANTED | bundle:task_create | once` is more informative than three separate GRANTED rows for the underlying ops. No decorator checks the bundle key, so leaving it in the DB doesn't satisfy any gate by accident.
+  **The bundle key (`bundle:<skill>`) is granted alongside individual ops.** It serves as audit-log readability — `GRANTED | bundle:task_create | once` is more informative than three separate GRANTED rows for the underlying ops. No decorator checks the bundle key, so leaving it in the DB doesn't satisfy any gate by accident.
 
   ## Response → grant pipeline (finalize_consent_response)
 
   When a user responds to a consent prompt — on any surface — the system has to do two distinct things:
 
   1. **Record the response** on the notification (status: `pending` → `responded`, persist the chosen mode and surface).
-  2. **Translate that response into grants** in the right session's `consent.db` (individual op grants for capability bundles; `workflow_class:<name>` grant for workflow-consent prompts).
+  2. **Translate that response into grants** in the right session's `consent.db` (individual op grants for skill bundles; `workflow_class:<name>` grant for workflow-consent prompts).
 
   The first is `notifications.store.respond_to_notification`. The second is `consent.finalize_consent_response(notification_id)` — extracted from `resolve_consent_request` so any surface can call it after recording the response. Every response-recording path calls them in that order:
 
@@ -90,16 +90,16 @@ dev_notes: |-
 
   ## Listing grants in the agent's session
 
-  `consent_list` (capability `op.wb.consent_list`) accepts `agent_session_id` and routes the SQLite read to that session's `consent.db`. The gateway auto-injects the caller's session id when dispatching the capability via `wb_run`. Direct Python callers (tests, scripts) can pass it explicitly; passing `None` falls back to the cache's default-path resolution (which uses whatever session was first connected — typically the process's bootstrap session, which is rarely what a tool caller wants to see).
+  `consent_list` (skill `op.wb.consent_list`) accepts `agent_session_id` and routes the SQLite read to that session's `consent.db`. The gateway auto-injects the caller's session id when dispatching the skill via `wb_run`. Direct Python callers (tests, scripts) can pass it explicitly; passing `None` falls back to the cache's default-path resolution (which uses whatever session was first connected — typically the process's bootstrap session, which is rarely what a tool caller wants to see).
 
   The underlying `ConsentCache.list_all(*, session_id=None)` mirrors the routing pattern used by `grant`, `revoke`, and `_is_granted_in_session`: explicit session id when set, default-path fallback when not.
 ---
 
-Some `work_buddy` functions are protected by a `@requires_consent` decorator. **The gateway handles consent transparently** — when you call `wb_run` on a consent-gated capability, the gateway automatically requests consent from the user, waits for approval, and retries the operation. You do not need to manually orchestrate consent.
+Some `work_buddy` functions are protected by a `@requires_consent` decorator. **The gateway handles consent transparently** — when you call `wb_run` on a consent-gated skill, the gateway automatically requests consent from the user, waits for approval, and retries the operation. You do not need to manually orchestrate consent.
 
 ## How it works
 
-1. **Pre-flight check** — capabilities declare `consent_operations` listing operations they may trigger. The gateway checks all upfront and bundles missing grants into ONE notification. This list enriches the notification body (UX) but is not required for correctness.
+1. **Pre-flight check** — skills declare `consent_operations` listing operations they may trigger. The gateway checks all upfront and bundles missing grants into ONE notification. This list enriches the notification body (UX) but is not required for correctness.
 2. **Consent context** — when a consent-gated function executes, it establishes a thread-local context. Nested `@requires_consent` calls (e.g., `toggle_task` → `bridge.write_file`) pass through automatically; the outer consent subsumes inner ones. No manual bookkeeping or `*_raw` function variants needed.
 3. **Fallback** — if a `ConsentRequired` fires at runtime (unanticipated gate not covered by pre-flight or context), the gateway auto-requests and retries (max 2 retries).
 4. **You see**: success (normal result), denied (`{status: "denied"}`), or timeout (`{status: "timeout", operation_id: "op_xxx"}`).
@@ -111,7 +111,7 @@ Some `work_buddy` functions are protected by a `@requires_consent` decorator. **
 
 **Do NOT use `AskUserQuestion` for consent.** The notification system is the canonical consent surface — it reaches the user on their phone, in Obsidian, and on the dashboard. `AskUserQuestion` only works when the user is actively watching the terminal.
 
-**Agents cannot self-grant consent.** The Python functions `consent.grant_consent`, `consent.revoke_consent`, and `consent.resolve_consent_request` are internal — they are called by the sidecar router (Obsidian out-of-band path), Telegram and dashboard handlers, and the gateway's own auto-consent flow. They are not exposed as agent-callable capabilities. The only way an agent gets consent is the user approving on a surface; the gateway handles the rest.
+**Agents cannot self-grant consent.** The Python functions `consent.grant_consent`, `consent.revoke_consent`, and `consent.resolve_consent_request` are internal — they are called by the sidecar router (Obsidian out-of-band path), Telegram and dashboard handlers, and the gateway's own auto-consent flow. They are not exposed as agent-callable skills. The only way an agent gets consent is the user approving on a surface; the gateway handles the rest.
 
 **Interpreting Python-side grant/revoke return values.** `consent.grant_consent`, `consent.grant_consent_batch`, and `consent.revoke_consent` are **side-effect functions that return `None`** — any call routed through `wb_run` records `result_summary: null` in the activity ledger.  A `null` ledger entry is the *expected* return shape; it does NOT signal that the write failed. To verify a grant actually landed, call `list_consents()` (with `agent_session_id` for cross-process callers) — that is the canonical success check.
 
@@ -129,15 +129,15 @@ Operations declared with `grant_policy="per_invocation"` use a stricter exact-re
 
 The notification record is the durable **first-response-wins** authority for both ordinary and per-invocation prompts. After polling, the gateway reloads the stored response and follows that winner even if another surface returned a conflicting answer or the poll returned no answer. A later response cannot replace the recorded winner.
 
-Per-invocation timeout is fail-closed in an additional way: once the gateway returns `status: timeout`, a later approval may be recorded for audit but cannot authorize the timed-out execution, a retry of its operation record, or any future execution, and still writes no reusable grant. The caller must invoke the capability again to obtain a fresh exact-review prompt. This restriction does not change the ordinary pending-request behavior described above.
+Per-invocation timeout is fail-closed in an additional way: once the gateway returns `status: timeout`, a later approval may be recorded for audit but cannot authorize the timed-out execution, a retry of its operation record, or any future execution, and still writes no reusable grant. The caller must invoke the skill again to obtain a fresh exact-review prompt. This restriction does not change the ordinary pending-request behavior described above.
 
 When the sidecar's retry sweep replays a previously-consented operation, the consent check ALSO consults the originating user-session's grants (looked up by reference to the op record's `originating_session_id`). This means a consented operation that hits PWU and gets queued for retry will not fail with `ConsentRequired` on replay. Revocation in the originating session immediately disables future replays.
 
 **Workflow grants do NOT time-travel through the retry queue.** The originating-session fallback considers individual op-grants only — `workflow_class:*` / `workflow_run:*` / legacy `__workflow_consent__` keys are deliberately skipped on the replay path. The rationale: a workflow grant active when an op was queued may have been revoked, or have a class TTL that long expired by the time the sweep replays the op days later; the user's *temporally-bounded* trust in the workflow does not generalize to a *later* replay. Replays succeed only on individual op grants the user explicitly authorized for that op (or that exist in the current replay-time session).
 
-**Cross-session routing on out-of-band approval.** When a user approves a consent prompt on the Obsidian modal *after* the gateway's in-window poll has already returned `{status: "timeout"}`, the plugin posts a `consent_grant` message to the messaging service. The sidecar's MessagePoller picks it up and routes the grant via `resolve_consent_request`, which looks up the notification's `callback_session_id` and writes grants to **that** session's DB — not the sidecar's. The originating agent's subsequent `obsidian_retry` (or fresh capability call) then sees the grant and proceeds. Without this routing, modal-approved grants would land in the sidecar's bootstrap-session DB where no agent could see them.
+**Cross-session routing on out-of-band approval.** When a user approves a consent prompt on the Obsidian modal *after* the gateway's in-window poll has already returned `{status: "timeout"}`, the plugin posts a `consent_grant` message to the messaging service. The sidecar's MessagePoller picks it up and routes the grant via `resolve_consent_request`, which looks up the notification's `callback_session_id` and writes grants to **that** session's DB — not the sidecar's. The originating agent's subsequent `obsidian_retry` (or fresh skill call) then sees the grant and proceeds. Without this routing, modal-approved grants would land in the sidecar's bootstrap-session DB where no agent could see them.
 
-**Bundle unbundling.** When the gateway requests consent for a multi-op capability, the notification's `operation` field is a label of the form `bundle:<capability_name>` and the underlying ops live in `consent_meta.context.operations`. `resolve_consent_request` writes grants for **each underlying op individually** in addition to the bundle label, because the `@requires_consent` decorators check the individual operation names (e.g. `tasks.create_task`, `obsidian.write_file`), not the bundle. The bundle label survives as audit metadata.
+**Bundle unbundling.** When the gateway requests consent for a multi-op skill, the notification's `operation` field is a label of the form `bundle:<skill_name>` and the underlying ops live in `consent_meta.context.operations`. `resolve_consent_request` writes grants for **each underlying op individually** in addition to the bundle label, because the `@requires_consent` decorators check the individual operation names (e.g. `tasks.create_task`, `obsidian.write_file`), not the bundle. The bundle label survives as audit metadata.
 
 ## Composable workflow consent
 
@@ -163,7 +163,7 @@ The `@requires_consent` check inside a workflow run consults, in order:
 3. Any live `workflow_class:*` key in this session.
 4. Legacy `__workflow_consent__` (deprecation-logged once per op per process).
 
-Capabilities tagged with `consent_weight="high"` on their `@requires_consent` decorator (and mirrored on the `Capability.consent_weight` field) BYPASS the workflow-grant carry entirely — they always re-prompt individually, even inside an approved workflow run. This mirrors Cursor's destructive-command carve-out and OpenAI's `isConsequential` flag for GPT Actions. The default `consent_weight` mirrors the declared `risk` value, so the legacy behavior of "workflow blanket carries everything" is preserved for low-risk ops while high-risk ops are properly gated.
+Skills tagged with `consent_weight="high"` on their `@requires_consent` decorator (and mirrored on the `Skill.consent_weight` field) BYPASS the workflow-grant carry entirely — they always re-prompt individually, even inside an approved workflow run. This mirrors Cursor's destructive-command carve-out and OpenAI's `isConsequential` flag for GPT Actions. The default `consent_weight` mirrors the declared `risk` value, so the legacy behavior of "workflow blanket carries everything" is preserved for low-risk ops while high-risk ops are properly gated.
 
 ### `requires_individual_consent: true` step flag
 
@@ -171,7 +171,7 @@ A workflow step can opt out of the run-grant carry via `requires_individual_cons
 
 ### Low-weight workflow auto-bypass
 
-Workflows whose constituent capabilities declare only low-weight `consent_operations` (or none at all) auto-bypass the pre-flight prompt. The gateway audit-logs each bypass as `WORKFLOW_AUTO_BYPASS_LOW_WEIGHT | workflow=<name>` so the `scripts/audit_workflow_consent.py` script can enumerate which workflows ride the bypass and which prompt. The bypass keeps read-only routines like `task-search` frictionless while still prompting for any workflow that touches moderate or high-risk operations.
+Workflows whose constituent skills declare only low-weight `consent_operations` (or none at all) auto-bypass the pre-flight prompt. The gateway audit-logs each bypass as `WORKFLOW_AUTO_BYPASS_LOW_WEIGHT | workflow=<name>` so the `scripts/audit_workflow_consent.py` script can enumerate which workflows ride the bypass and which prompt. The bypass keeps read-only routines like `task-search` frictionless while still prompting for any workflow that touches moderate or high-risk operations.
 
 ### Orphan reconciliation
 
@@ -193,7 +193,7 @@ Risk must be one of: `"low"`, `"moderate"`, `"high"` (validated by the `Risk` en
 
 A function decorated with `@reduces_risk_for("some.op", "low")` declares itself a safe invoker of `some.op`. While it is on the call stack, inner `@requires_consent("some.op", ...)` checks auto-pass (for `"low"`) or prompt at the reduced risk (for `"moderate"`). Direct agent calls to the primitive — outside any safe-caller scope — still gate at the original risk.
 
-This is the mechanism that lets read-only capabilities (e.g. `daily_briefing`) internally call `obsidian.eval_js` (registered at `risk=high`) without spamming prompts, while preserving high-risk gating for direct `eval_js` invocations from agents or the local-model tool preset. Declarations are module-level code (not config) and inspectable via `list_risk_reducers()` — adding or expanding one is a reviewed PR, not a runtime grant.
+This is the mechanism that lets read-only skills (e.g. `daily_briefing`) internally call `obsidian.eval_js` (registered at `risk=high`) without spamming prompts, while preserving high-risk gating for direct `eval_js` invocations from agents or the local-model tool preset. Declarations are module-level code (not config) and inspectable via `list_risk_reducers()` — adding or expanding one is a reviewed PR, not a runtime grant.
 
 ## UI-click bypass (`user_initiated`)
 
@@ -216,8 +216,8 @@ def api_user_job_create():
 
 The dashboard's thread-action endpoints (Approve, Confirm, Review-accept, Redirect, etc.) all funnel through `work_buddy/dashboard/service.py:_post_thread_action`, which wraps `engine.transition` in `user_initiated()` for any trigger in the `_THREAD_USER_INITIATED_TRIGGERS` set (`execute`, `confirmed`, `review_accepted`, `provided`, `redirected`, `retry_cleanup`, `accept_cleanup_failure`). The same wiring lives in `work_buddy/threads/group.py:_run_child_accept` for the cluster-umbrella Approve-All cascade — each child's accept-equivalent trigger runs inside `user_initiated("thread.cascade_approve.<trigger>")`.
 
-This is the right shape because thread actions are inferred by the LLM, surfaced on the confirmation card (with risk metadata, rationale, parameters all visible to the user), and only fire when the user clicks Approve. That click IS the consent boundary; the side-effect handler that dispatches the capability runs synchronously inside the transition, so the `user_initiated` context covers the entire downstream chain (action dispatch → @requires_consent decorator → underlying capability).
+This is the right shape because thread actions are inferred by the LLM, surfaced on the confirmation card (with risk metadata, rationale, parameters all visible to the user), and only fire when the user clicks Approve. That click IS the consent boundary; the side-effect handler that dispatches the skill runs synchronously inside the transition, so the `user_initiated` context covers the entire downstream chain (action dispatch → @requires_consent decorator → underlying skill).
 
-If you add a new dashboard endpoint that fires a state-entry side effect invoking a `@requires_consent` capability, follow this pattern. If you bypass `_post_thread_action` and call `engine.transition` directly from a Flask handler, you must add the wrapper yourself or the user will see a `ConsentRequired` re-prompt after they've already clicked Approve.
+If you add a new dashboard endpoint that fires a state-entry side effect invoking a `@requires_consent` skill, follow this pattern. If you bypass `_post_thread_action` and call `engine.transition` directly from a Flask handler, you must add the wrapper yourself or the user will see a `ConsentRequired` re-prompt after they've already clicked Approve.
 
 **Use sparingly elsewhere.** Outside the thread-approve path, the right callers are: dashboard POST handlers reachable only via a button click; CLI scripts the user invoked explicitly; slash-command handlers. Do NOT use this in code an agent can reach without a user click — that defeats the consent model. Reentrant; thread-local; restores depth on exception.

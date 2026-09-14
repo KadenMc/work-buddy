@@ -34,7 +34,7 @@ export class HttpJobsProvider implements ViewProvider {
     if (!viewResponse.ok) throw new Error("Job authoring is unavailable.");
     const registry = registryResponse.ok ? await json(registryResponse) : {};
     const access = record(view.access) && view.access.mode === "read_write" ? { mode: "read_write" as const } : { mode: "read_only" as const, reason: record(view.access) && typeof view.access.reason === "string" ? view.access.reason : "Job editing is temporarily unavailable." };
-    const input: JobAuthoringInput = { access, timeZone: typeof view.time_zone === "string" ? view.time_zone : "local time", capabilities: entries(registry.capabilities), workflows: entries(registry.workflows), openAssistance: new URLSearchParams(this.location?.getSearch() ?? "").get("assist") === "1" };
+    const input: JobAuthoringInput = { access, timeZone: typeof view.time_zone === "string" ? view.time_zone : "local time", skills: entries(registry.skills), workflows: entries(registry.workflows), openAssistance: new URLSearchParams(this.location?.getSearch() ?? "").get("assist") === "1" };
     this.#last = { viewId, observedAt: new Date().toISOString(), status: access.mode === "read_only" ? "read-only" : "ready", quality: { kind: "complete" }, model: input, bindings: {}, widgetInputs: { [JOBS_INSTANCE_ID]: input } };
     return this.#last;
   }

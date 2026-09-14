@@ -1,4 +1,4 @@
-"""Tests for the read-only calendar capabilities and coverage report."""
+"""Tests for the read-only calendar skills and coverage report."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from work_buddy.calendar import capabilities as caps
+from work_buddy.calendar import skills
 from work_buddy.calendar.errors import CalendarBridgeUnreachable
 from work_buddy.calendar.identity import stable_key_for
 from work_buddy.calendar.models import CalendarEvent, EventTime
@@ -35,12 +35,12 @@ def prov():
 
 
 def _use(monkeypatch, prov):
-    monkeypatch.setattr(caps, "get_calendar_provider", lambda: prov)
+    monkeypatch.setattr(skills, "get_calendar_provider", lambda: prov)
 
 
 def test_health_ok(monkeypatch, prov):
     _use(monkeypatch, prov)
-    res = caps.calendar_health()
+    res = skills.calendar_health()
     assert res["ok"] and res["provider"] == "fake"
     assert res["ready"] is True
 
@@ -50,14 +50,14 @@ def test_health_propagates_typed_error(monkeypatch):
         def health(self):
             raise CalendarBridgeUnreachable("Obsidian not running")
     _use(monkeypatch, Boom())
-    res = caps.calendar_health()
+    res = skills.calendar_health()
     assert not res["ok"]
     assert res["error_kind"] == "calendar_bridge_unreachable"
 
 
 def test_list_events(monkeypatch, prov):
     _use(monkeypatch, prov)
-    res = caps.list_calendar_events(start="2026-04-01", end="2026-04-07")
+    res = skills.list_calendar_events(start="2026-04-01", end="2026-04-07")
     assert res["ok"]
     assert res["count"] == 3
     assert res["window"] == {"start": "2026-04-01", "end": "2026-04-07"}
@@ -67,21 +67,21 @@ def test_list_events(monkeypatch, prov):
 
 def test_list_events_requires_window(monkeypatch, prov):
     _use(monkeypatch, prov)
-    res = caps.list_calendar_events(start="", end="")
+    res = skills.list_calendar_events(start="", end="")
     assert not res["ok"] and res["error_kind"] == "bad_request"
 
 
 def test_get_event_found_and_missing(monkeypatch, prov):
     _use(monkeypatch, prov)
-    ok = caps.get_calendar_event(calendar_id="primary", event_id="p1")
+    ok = skills.get_calendar_event(calendar_id="primary", event_id="p1")
     assert ok["ok"] and ok["event"]["provider_event_id"] == "p1"
-    missing = caps.get_calendar_event(calendar_id="primary", event_id="zzz")
+    missing = skills.get_calendar_event(calendar_id="primary", event_id="zzz")
     assert not missing["ok"] and missing["error_kind"] == "calendar_event_not_found"
 
 
 def test_coverage_counts_per_calendar(monkeypatch, prov):
     _use(monkeypatch, prov)
-    res = caps.calendar_coverage(start="2026-04-01", end="2026-04-07")
+    res = skills.calendar_coverage(start="2026-04-01", end="2026-04-07")
     assert res["ok"]
     assert len(res["subscribed"]) == 3
     assert res["per_calendar_counts"] == {"primary": 2, "sk": 1, "empty": 0}
@@ -92,7 +92,7 @@ def test_coverage_counts_per_calendar(monkeypatch, prov):
 def test_coverage_excludes_blacklisted(monkeypatch, prov):
     prov.blacklist("sk")
     _use(monkeypatch, prov)
-    res = caps.calendar_coverage(start="2026-04-01", end="2026-04-07")
+    res = skills.calendar_coverage(start="2026-04-01", end="2026-04-07")
     assert "sk" not in res["per_calendar_counts"]
     assert res["blacklisted"] == ["sk"]
     assert res["total_events"] == 2
@@ -102,7 +102,7 @@ def test_coverage_default_window(monkeypatch, prov):
     from work_buddy import config
     monkeypatch.setattr(config, "USER_TZ", _EDT, raising=False)
     _use(monkeypatch, prov)
-    res = caps.calendar_coverage()
+    res = skills.calendar_coverage()
     assert res["ok"]
     assert "start" in res["window"] and "end" in res["window"]
 
@@ -112,7 +112,7 @@ def test_coverage_total_failure_populates_errored(monkeypatch, prov):
         raise CalendarBridgeUnreachable("bridge down mid-window")
     monkeypatch.setattr(prov, "list_events", boom)
     _use(monkeypatch, prov)
-    rep = caps.build_coverage_report(prov, "2026-04-01", "2026-04-07")
+    rep = skills.build_coverage_report(prov, "2026-04-01", "2026-04-07")
     # every visible calendar flagged errored; none silently zero
     assert set(rep.errored) == {"primary", "sk", "empty"}
     assert rep.total_events == 0

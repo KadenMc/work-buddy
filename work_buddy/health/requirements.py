@@ -508,7 +508,7 @@ _register(RequirementDef(
         "Clone https://github.com/KadenMc/obsidian-work-buddy into "
         ".obsidian/plugins/ and enable 'Work Buddy' under Settings → "
         "Community Plugins. This plugin provides the HTTP bridge on port "
-        "27125 that every Obsidian-backed capability relies on."
+        "27125 that every Obsidian-backed skill relies on."
     ),
     setup_group="obsidian",
     fix_kind="agent_handoff",
@@ -516,7 +516,7 @@ _register(RequirementDef(
     fix_agent_brief=(
         "You are helping the user install the work-buddy Obsidian bridge "
         "plugin. Without it, the HTTP bridge on port 27125 doesn't exist "
-        "and every Obsidian-backed capability fails.\n\n"
+        "and every Obsidian-backed skill fails.\n\n"
         "## Steps to walk the user through\n\n"
         "1. Identify the user's vault path from work-buddy config "
         "(Read `config.yaml`, look for `vault_root`).\n"
@@ -857,7 +857,7 @@ _register(RequirementDef(
         "   nothing.)\n"
         "3. In config.local.yaml, set tools.thunderbird.enabled: true.\n"
         "4. Reload the work-buddy registry:\n"
-        "     wb_run('reload_capability_data')"
+        "     wb_run('reload_skill_data')"
     ),
     setup_group="thunderbird",
     fix_kind="agent_handoff",
@@ -894,7 +894,7 @@ _register(RequirementDef(
         "     tools:\n"
         "       thunderbird:\n"
         "         enabled: true\n"
-        "6. Reload the registry: wb_run('reload_capability_data'). Then "
+        "6. Reload the registry: wb_run('reload_skill_data'). Then "
         "wb_run('email_health') — expect ok: true and a non-zero "
         "accessible_accounts count.\n"
         "7. If ok: false, the 'reason' field tells you which step missed:\n"

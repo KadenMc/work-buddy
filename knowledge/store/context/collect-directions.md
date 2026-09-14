@@ -6,7 +6,7 @@ summary: Collect via context_bundle, read in priority order (git -> tasks -> pro
 trigger: user wants to know their current work state or collect context
 command: wb-context-collect
 workflow: context/collect-and-orient
-capabilities:
+skills:
 - context/context_bundle
 - context/context_git
 - context/context_tasks
@@ -83,4 +83,4 @@ Keep to 10-15 lines max. The user doesn't need a report -- they need a mirror.
 - Don't generate a 50-line report
 - Don't invent concerns not in the data
 - Don't skip the contract cross-reference
-- Don't import work_buddy.* modules when a wb_run capability exists
+- Don't import work_buddy.* modules when a wb_run skill exists

@@ -8,7 +8,7 @@
      - source_specific_guidance:  optional source-specific tips block
      - items:             list[dict] with id, label, summary, tags
      - pre_clusters:      list[dict] with label, item_ids
-     - per_group_actions: list[dict] with capability_name, label, description
+     - per_group_actions: list[dict] with skill_name, label, description
 #}
 You are organising a {{ source_label }} into a small number of coherent
 groups for the user to review and act on.
@@ -23,7 +23,7 @@ You receive:
    spread across multiple clusters), under-split (heterogeneous
    items lumped together), or attach a generic label.
 3. A list of available **per-group actions** the user can run on
-   each cluster. Each entry has a ``capability_name``, a short
+   each cluster. Each entry has a ``skill_name``, a short
    ``label``, and a ``description`` of what running it does.
 
 Your job:
@@ -56,8 +56,8 @@ Hard constraints:
 - **Every input item id MUST appear in exactly one output cluster.**
   No orphans, no duplicates. The set of output item_ids equals the
   set of input item ids.
-- **Each proposed_action.capability_name MUST be one of the
-  capability names in the supplied per-group action list.** If
+- **Each proposed_action.skill_name MUST be one of the
+  skill names in the supplied per-group action list.** If
   none of the listed actions fit, return ``null`` for
   ``proposed_action``.
 - ``confidence`` is a number in [0.0, 1.0].
@@ -71,7 +71,7 @@ Output a single JSON object matching this schema:
       "label": "Human-readable cluster name",
       "item_ids": ["item_id_1", "item_id_2", ...],
       "proposed_action": {
-        "capability_name": "name_from_action_list",
+        "skill_name": "name_from_action_list",
         "rationale": "Brief one-line justification for this action.",
         "confidence": 0.0
       }

@@ -18,7 +18,7 @@ from work_buddy.pipelines.actions import (
 
 def _desc(name: str, cardinality: str = CARDINALITY_PER_GROUP) -> ActionDescriptor:
     return ActionDescriptor(
-        capability_name=name,
+        skill_name=name,
         label=name.replace("_", " ").title(),
         description=f"Test descriptor for {name}",
         cardinality=cardinality,
@@ -33,7 +33,7 @@ class TestActionDescriptor:
     def test_invalid_cardinality_rejected(self):
         with pytest.raises(ValueError, match="Invalid cardinality"):
             ActionDescriptor(
-                capability_name="x",
+                skill_name="x",
                 label="x", description="x",
                 cardinality="not_a_real_one",
             )
@@ -41,7 +41,7 @@ class TestActionDescriptor:
     def test_to_dict_round_trip(self):
         d = _desc("task_create")
         out = d.to_dict()
-        assert out["capability_name"] == "task_create"
+        assert out["skill_name"] == "task_create"
         assert out["cardinality"] == CARDINALITY_PER_GROUP
         assert out["default_params"] == {}
 
@@ -67,9 +67,9 @@ class TestActionLibrary:
             _desc("task_open_each", CARDINALITY_PER_ITEM),
             _desc("rewrite_notes", CARDINALITY_UMBRELLA),
         ])
-        assert {d.capability_name for d in lib.per_group_actions()} == {"task_create"}
-        assert {d.capability_name for d in lib.per_item_actions()} == {"task_open_each"}
-        assert {d.capability_name for d in lib.umbrella_actions()} == {"rewrite_notes"}
+        assert {d.skill_name for d in lib.per_group_actions()} == {"task_create"}
+        assert {d.skill_name for d in lib.per_item_actions()} == {"task_open_each"}
+        assert {d.skill_name for d in lib.umbrella_actions()} == {"rewrite_notes"}
 
     def test_merged_with_layers_and_overrides(self):
         universal = ActionLibrary([
@@ -81,7 +81,7 @@ class TestActionLibrary:
             # Chrome can override "dismiss" with a Chrome-specific
             # description (e.g. "Stop watching these tabs").
             ActionDescriptor(
-                capability_name="dismiss",
+                skill_name="dismiss",
                 label="Stop watching",
                 description="Chrome-specific override",
                 cardinality=CARDINALITY_PER_GROUP,
@@ -110,7 +110,7 @@ class TestActionLibrary:
         # Round-trips through JSON cleanly.
         text = json.dumps(lib.to_list())
         parsed = json.loads(text)
-        assert {entry["capability_name"] for entry in parsed} == {
+        assert {entry["skill_name"] for entry in parsed} == {
             "task_create", "dismiss",
         }
 
@@ -118,4 +118,4 @@ class TestActionLibrary:
         lib = ActionLibrary([
             _desc("first"), _desc("second"), _desc("third"),
         ])
-        assert [d.capability_name for d in lib] == ["first", "second", "third"]
+        assert [d.skill_name for d in lib] == ["first", "second", "third"]

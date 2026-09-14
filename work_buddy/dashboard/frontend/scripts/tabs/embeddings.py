@@ -3,7 +3,7 @@
 Two tables: **System** (work-buddy's own indexes — IR + knowledge — read-only) and
 **Your vaults** (the user's roots — editable). Data via ``/api/embeddings``. The ⚙
 opens an inline form editing a vault's id/path/include/exclude, POSTing to
-``/api/embeddings/vault`` (the ``vault_config`` capability); plus add/remove. The form
+``/api/embeddings/vault`` (the ``vault_config`` skill); plus add/remove. The form
 **reuses the Jobs add-form styling** (``.jobs-add-form`` + ``.jobs-form-*``) so inputs,
 buttons, and validation match the rest of the dashboard. All mutating controls are
 hidden in read-only mode. Per-vault on-disk size is not separable (one shared DB) → the

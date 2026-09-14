@@ -1,8 +1,8 @@
-"""task_list capability — store-backed bridge-independent enumeration.
+"""task_list skill — store-backed bridge-independent enumeration.
 
 The "give me the whole (filtered) set" complement to ``task_search``.
 Sits at the manager layer (`task_list`) above `store.list_tasks`. These
-test the capability shape (response envelope, filter defaults, the
+test the skill shape (response envelope, filter defaults, the
 liveness/done/archived predicates) and registration.
 """
 
@@ -109,8 +109,8 @@ def test_list_empty_store(isolated_store):
 # ---------------------------------------------------------------------------
 
 
-def test_capability_registered():
-    """Capability is discoverable via the registry."""
+def test_skill_registered():
+    """Skill is discoverable via the registry."""
     from work_buddy.mcp_server.registry import get_registry
     registry = get_registry()
     cap = registry.get("task_list")

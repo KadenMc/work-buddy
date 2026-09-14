@@ -1,6 +1,6 @@
 """Composite per-session view: the observed row, optionally enriched.
 
-One assembler shared by the single-session capability (`conversation_observability_get`)
+One assembler shared by the single-session skill (`conversation_observability_get`)
 and the context collector, so both produce the same per-session shape. "Tell me
 everything about this session" is one call with opt-in flags rather than four
 separate reads (observed row + summary + commits + writes + PRs).

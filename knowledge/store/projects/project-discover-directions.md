@@ -5,7 +5,7 @@ description: How to evaluate and triage project_discover candidates — create, 
 summary: 'project_discover scans task tags (#projects/<slug>) and git repos for signals not matching any confirmed project. For each candidate: decide create / alias in config.yaml / ignore. Watch for artifact candidates (e.g., #projects/open-source is a tag, not a real project). Present candidates with your assessment and let the user decide.'
 trigger: agent or user wants to find unregistered project candidates from vault signals
 command: wb-project-discover
-capabilities:
+skills:
 - projects/project_discover
 - projects/project_create
 tags:

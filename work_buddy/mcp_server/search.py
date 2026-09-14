@@ -1,4 +1,4 @@
-"""Search over MCP gateway capabilities via the shared search service.
+"""Search over MCP gateway skills via the shared search service.
 
 The MCP server subprocess does NOT import numpy, rank_bm25, or
 sentence-transformers. All scoring is delegated to the shared
@@ -40,7 +40,7 @@ def _log_to_file(path: Path, msg: str) -> None:
 
 def _get_search_texts(entry: Any) -> list[str]:
     """Extract search phrases from a registry entry."""
-    from work_buddy.mcp_server.registry import Capability
+    from work_buddy.mcp_server.registry import Skill
 
     name = entry.name
     desc = entry.description
@@ -48,7 +48,7 @@ def _get_search_texts(entry: Any) -> list[str]:
         name.replace("-", " ").replace("_", " "),
         desc,
     ]
-    if isinstance(entry, Capability) and entry.search_aliases:
+    if isinstance(entry, Skill) and entry.search_aliases:
         phrases.extend(entry.search_aliases)
     phrases.append(f"{name} {desc}")
     return phrases

@@ -5,7 +5,7 @@ description: How to run the setup wizard — modes, feature preferences, require
 summary: 'Four modes: status (quick overview), guided (interactive walkthrough), diagnose (deep diagnostic for one component), preferences (view/edit wanted features). Default is status.'
 trigger: user runs /wb-setup, asks to configure features, or wants to know what's set up
 command: wb-setup
-capabilities:
+skills:
 - status/setup_wizard
 tags:
 - status

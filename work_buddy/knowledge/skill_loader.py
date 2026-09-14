@@ -1,17 +1,15 @@
-"""Capability loader — resolves inert capability declarations against ops.
+"""Skill loader — resolves inert direct-skill declarations against Ops.
 
-A **capability declaration** is a knowledge-store unit of ``kind: "capability"``
+A **skill declaration** is a knowledge-store unit of ``kind: "skill"``
 that carries an ``op`` field naming an Op ID. This module reads those
 declarations, resolves each ``op`` against the Op registry, validates the
 declared parameter schema against the resolved callable's signature, and emits
-ready-to-dispatch ``Capability`` objects the gateway registry can hold.
+ready-to-dispatch ``Skill`` objects the gateway registry can hold.
 
 It is the data-first counterpart to ``_discover_workflows_from_store()``:
-workflows are inert data the conductor resolves at load time; capability
-declarations load the same way. Every capability unit is a declaration,
+workflows are inert data the conductor resolves at load time; skill
+declarations load the same way. Every skill unit is a declaration,
 discriminated by a non-empty ``op`` field.
-
-See ``architecture/data-first-capabilities``.
 """
 
 from __future__ import annotations
@@ -23,15 +21,15 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 # The version of the declaration *format* this loader understands. Bumped only
-# when the shape of a capability unit changes incompatibly; the loader refuses
+# when the shape of a skill unit changes incompatibly; the loader refuses
 # declarations stamped with an unknown version so old data fails loud, not weird.
-SCHEMA_VERSION = "wb-capability/v1"
+SCHEMA_VERSION = "wb-skill/v1"
 
 # Issue dicts share the shape the validator's check registry expects
 # (``check`` / ``path`` / ``message``), plus a ``severity``. They carry
-# ``warning`` severity: the direct and declaration-based registration paths
-# coexist, so an unresolved declaration is surfaced without blocking the store.
-_CHECK_NAME = "capability_op_resolution"
+# ``warning`` severity so an unresolved declaration surfaces without blocking
+# unrelated knowledge-unit edits; live-store invariants promote it to CI failure.
+_CHECK_NAME = "skill_op_resolution"
 
 
 def _issue(path: str, message: str) -> dict[str, str]:
@@ -89,37 +87,37 @@ def validate_signature(declared_params: dict[str, Any], fn: Callable) -> list[st
     return issues
 
 
-def load_declared_capabilities(
+def load_declared_skills(
     store: dict[str, Any] | None = None,
 ) -> tuple[list[Any], list[dict[str, str]]]:
-    """Resolve every declaration-based capability unit in the knowledge store.
+    """Resolve every direct-skill declaration in the knowledge store.
 
     Args:
         store: A pre-loaded knowledge store to resolve against. Defaults to
             ``load_store()`` — passing one explicitly is for tests.
 
-    Returns ``(capabilities, issues)``:
-      - ``capabilities`` — resolved ``Capability`` objects ready for the
+    Returns ``(skills, issues)``:
+      - ``skills`` — resolved ``Skill`` objects ready for the
         gateway registry. A declaration that fails resolution is *omitted*
-        (never dispatched against a broken op) rather than raising.
+        (never dispatched against a broken Op) rather than raising.
       - ``issues`` — warning dicts for unknown schema versions, malformed or
         missing op references, and signature mismatches.
     """
-    from work_buddy.knowledge.model import CapabilityUnit
+    from work_buddy.knowledge.model import SkillUnit
     from work_buddy.knowledge.store import load_store
     from work_buddy.mcp_server import op_registry
-    from work_buddy.mcp_server.registry import Capability
+    from work_buddy.mcp_server.registry import Skill
 
     op_registry.load_builtin_ops()
     if store is None:
         store = load_store()
 
-    capabilities: list[Any] = []
+    skills: list[Any] = []
     issues: list[dict[str, str]] = []
 
     for path, unit in sorted(store.items()):
-        if not isinstance(unit, CapabilityUnit) or not unit.op:
-            continue  # not a declaration-based capability
+        if not isinstance(unit, SkillUnit) or not unit.op:
+            continue  # not a direct-skill declaration
 
         if unit.schema_version != SCHEMA_VERSION:
             issues.append(_issue(
@@ -140,15 +138,15 @@ def load_declared_capabilities(
             ))
             continue
 
-        if not unit.capability_name:
-            issues.append(_issue(path, "declaration is missing 'capability_name'"))
+        if not unit.skill_name:
+            issues.append(_issue(path, "declaration is missing 'skill_name'"))
             continue
 
         sig_issues = validate_signature(unit.parameters, fn)
         if sig_issues:
             for si in sig_issues:
                 issues.append(_issue(path, f"signature mismatch: {si}"))
-            continue  # never dispatch a capability whose schema disagrees with its op
+            continue  # never dispatch a skill whose schema disagrees with its Op
 
         available_when = None
         if unit.available_when:
@@ -161,10 +159,10 @@ def load_declared_capabilities(
                 issues.append(_issue(
                     path, f"invalid available_when {unit.available_when!r}: {exc}"
                 ))
-                continue  # never dispatch a capability whose mode gate is malformed
+                continue  # never dispatch a skill whose mode gate is malformed
 
-        capabilities.append(Capability(
-            name=unit.capability_name,
+        skills.append(Skill(
+            name=unit.skill_name,
             description=unit.description,
             category=unit.category,
             parameters=unit.parameters,
@@ -185,4 +183,4 @@ def load_declared_capabilities(
             available_when=available_when,
         ))
 
-    return capabilities, issues
+    return skills, issues

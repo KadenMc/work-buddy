@@ -1,17 +1,17 @@
-"""Lazy auto-recovery for disabled capabilities.
+"""Lazy auto-recovery for disabled skills.
 
 When the sidecar starts and a tool's first probe fails (or hasn't run
-yet), capabilities depending on that tool get filtered into
-``DISABLED_CAPABILITIES`` by the registry filter pass. If the probe
-later recovers, those capabilities stay disabled until the registry is
-rebuilt — by ``reload_capability_data`` (data-only, no purge) or the
+yet), skills depending on that tool get filtered into
+``DISABLED_SKILLS`` by the registry filter pass. If the probe
+later recovers, those skills stay disabled until the registry is
+rebuilt — by ``reload_skill_data`` (data-only, no purge) or the
 dormant ``invalidate_registry`` (a ~6s heavy operation that purges
 ``sys.modules`` and re-imports everything).
 
 This module closes that papercut. The dispatch path (gateway + conductor)
-calls into this module on hitting a disabled capability or unavailable
+calls into this module on hitting a disabled skill or unavailable
 tool; we re-probe the missing tool(s), and if they're now available we
-restore the capability to the live registry without rebuilding.
+restore the skill to the live registry without rebuilding.
 
 Public API
 ----------
@@ -20,9 +20,9 @@ Public API
   available. Used by the conductor's per-step gating to recover
   stale-unavailable tools.
 
-- :func:`recheck_disabled_capability` — re-probe the missing tools for a
-  named disabled capability and, if all are now available, restore the
-  capability to the live registry. Used by the gateway's ``wb_run``
+- :func:`recheck_disabled_skill` — re-probe the missing tools for a
+  named disabled skill and, if all are now available, restore the
+  skill to the live registry. Used by the gateway's ``wb_run``
   dispatch path before returning the disabled error.
 
 Both honour a per-tool cool-down (default 30s) to avoid hammering on a
@@ -34,7 +34,7 @@ Concurrency policy
 
 The single ``_RECOVERY_LOCK`` (RLock) serializes:
 
-- every entry into :func:`recheck_disabled_capability` and :func:`recheck_tool`;
+- every entry into :func:`recheck_disabled_skill` and :func:`recheck_tool`;
 - the mutation phase of ``invalidate_registry`` (acquired inside
   :func:`reload_registry_under_lock`, the lock-aware wrapper for
   ``invalidate_registry``).
@@ -44,8 +44,8 @@ serializes, sees the just-finished probe, and reuses the result without
 re-probing.
 
 Order of mutations on restore: assign to ``_REGISTRY`` BEFORE popping
-from ``_DISABLED_REGISTRY`` and ``DISABLED_CAPABILITIES``, so concurrent
-readers always see the capability in at least one of the maps.
+from ``_DISABLED_SKILL_REGISTRY`` and ``DISABLED_SKILLS``, so concurrent
+readers always see the skill in at least one of the maps.
 """
 
 from __future__ import annotations
@@ -157,55 +157,55 @@ def recheck_tool(tool_id: str, *, force: bool = False) -> bool:
         return result
 
 
-def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
-    """Try to recover a capability from ``DISABLED_CAPABILITIES``.
+def recheck_disabled_skill(name: str, *, force: bool = False) -> bool:
+    """Try to recover a skill from ``DISABLED_SKILLS``.
 
-    Re-probes each of the capability's missing tools (honouring per-tool
+    Re-probes each of the skill's missing tools (honouring per-tool
     cool-down unless ``force=True``). If ALL missing tools are now
-    available, restores the capability to the live registry by moving
-    it from ``_DISABLED_REGISTRY`` to ``_REGISTRY`` and clearing it
-    from ``DISABLED_CAPABILITIES``.
+    available, restores the skill to the live registry by moving
+    it from ``_DISABLED_SKILL_REGISTRY`` to ``_REGISTRY`` and clearing it
+    from ``DISABLED_SKILLS``.
 
     Args:
-        name: The capability name. Must be a key in ``DISABLED_CAPABILITIES``.
+        name: The skill name. Must be a key in ``DISABLED_SKILLS``.
         force: Bypass per-tool cool-downs (mainly for tests).
 
     Returns:
-        ``True`` if the capability is now in the live registry (either
+        ``True`` if the skill is now in the live registry (either
         because it was already there — concurrent caller restored it —
         or because this call restored it).
-        ``False`` if the capability remains disabled. In this case
-        ``DISABLED_CAPABILITIES[name]`` is updated to reflect the
+        ``False`` if the skill remains disabled. In this case
+        ``DISABLED_SKILLS[name]`` is updated to reflect the
         current set of still-missing tools (which may be smaller than
         before if SOME tools recovered).
 
-    If ``name`` is not in ``DISABLED_CAPABILITIES``, returns ``True``
-    without probing — the capability is either already live or genuinely
+    If ``name`` is not in ``DISABLED_SKILLS``, returns ``True``
+    without probing — the skill is either already live or genuinely
     unknown (the caller must distinguish those two cases by checking
     ``_REGISTRY`` separately).
     """
     from work_buddy.health.preferences import is_wanted
-    from work_buddy.tools import DISABLED_CAPABILITIES, is_tool_available
+    from work_buddy.tools import DISABLED_SKILLS, is_tool_available
     from work_buddy.mcp_server.registry import (
-        _DISABLED_REGISTRY,
+        _DISABLED_SKILL_REGISTRY,
         get_registry,
     )
 
     with _RECOVERY_LOCK:
-        # Early return: capability is no longer disabled. Either it was
+        # Early return: skill is no longer disabled. Either it was
         # never there (caller's check is stale) or a concurrent caller
         # restored it while we were waiting on the lock.
-        missing = DISABLED_CAPABILITIES.get(name)
+        missing = DISABLED_SKILLS.get(name)
         if missing is None:
             logger.debug(
-                "recheck_disabled_capability(%s): not in DISABLED_CAPABILITIES, "
+                "recheck_disabled_skill(%s): not in DISABLED_SKILLS, "
                 "returning True (already restored or never disabled)",
                 name,
             )
             return True
 
         logger.info(
-            "recheck_disabled_capability(%s): missing=%s, force=%s",
+            "recheck_disabled_skill(%s): missing=%s, force=%s",
             name, missing, force,
         )
 
@@ -217,7 +217,7 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
         for tool_id in list(missing):
             if is_wanted(tool_id) is False:
                 logger.debug(
-                    "recheck_disabled_capability(%s): tool %s is opted out; "
+                    "recheck_disabled_skill(%s): tool %s is opted out; "
                     "skipping probe",
                     name,
                     tool_id,
@@ -227,7 +227,7 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
             elapsed = time.monotonic() - last
             if not force and elapsed < _COOLDOWN_SECONDS:
                 logger.debug(
-                    "recheck_disabled_capability(%s): tool %s cool-down "
+                    "recheck_disabled_skill(%s): tool %s cool-down "
                     "(%.1fs < %.1fs), skipping probe",
                     name, tool_id, elapsed, _COOLDOWN_SECONDS,
                 )
@@ -237,7 +237,7 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
                 _LAST_RECHECK_AT[tool_id] = time.monotonic()
             except Exception as exc:  # noqa: BLE001 — defensive
                 logger.warning(
-                    "recheck_disabled_capability(%s): reprobe_one(%s) "
+                    "recheck_disabled_skill(%s): reprobe_one(%s) "
                     "raised: %s",
                     name, tool_id, exc,
                 )
@@ -251,27 +251,27 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
         if still_missing:
             # Update the disabled list — may have shrunk if some tools
             # recovered. Caller can render a more accurate error.
-            DISABLED_CAPABILITIES[name] = still_missing
+            DISABLED_SKILLS[name] = still_missing
             logger.info(
-                "recheck_disabled_capability(%s): still disabled, "
+                "recheck_disabled_skill(%s): still disabled, "
                 "missing=%s (was %s)",
                 name, still_missing, missing,
             )
             return False
 
-        # All tools now available — restore the capability.
+        # All tools now available — restore the skill.
         # Trigger a registry build if it hasn't run yet (which would
-        # also populate _DISABLED_REGISTRY). Then perform the swap.
+        # also populate _DISABLED_SKILL_REGISTRY). Then perform the swap.
         get_registry()  # ensures _REGISTRY is initialised
 
-        capability = _DISABLED_REGISTRY.get(name)
-        if capability is None:
-            # Defensive: DISABLED_CAPABILITIES had the name but
-            # _DISABLED_REGISTRY didn't. Should not happen post-CP-A1
+        skill = _DISABLED_SKILL_REGISTRY.get(name)
+        if skill is None:
+            # Defensive: DISABLED_SKILLS had the name but
+            # _DISABLED_SKILL_REGISTRY didn't. Should not happen post-CP-A1
             # invariants, but log loudly and treat as still-disabled.
             logger.error(
-                "recheck_disabled_capability(%s): tools recovered but "
-                "_DISABLED_REGISTRY has no Capability object — "
+                "recheck_disabled_skill(%s): tools recovered but "
+                "_DISABLED_SKILL_REGISTRY has no Skill object — "
                 "invariant violated. Forcing full registry rebuild.",
                 name,
             )
@@ -284,18 +284,18 @@ def recheck_disabled_capability(name: str, *, force: bool = False) -> bool:
             # get_registry() above should have initialised this — but
             # belt-and-suspenders.
             logger.error(
-                "recheck_disabled_capability(%s): _REGISTRY is None after "
+                "recheck_disabled_skill(%s): _REGISTRY is None after "
                 "get_registry() — aborting restore",
                 name,
             )
             return False
 
-        _REGISTRY[name] = capability
-        _DISABLED_REGISTRY.pop(name, None)
-        DISABLED_CAPABILITIES.pop(name, None)
+        _REGISTRY[name] = skill
+        _DISABLED_SKILL_REGISTRY.pop(name, None)
+        DISABLED_SKILLS.pop(name, None)
 
         logger.info(
-            "recheck_disabled_capability(%s): RESTORED to live registry",
+            "recheck_disabled_skill(%s): RESTORED to live registry",
             name,
         )
         return True
@@ -314,14 +314,14 @@ def reload_registry_under_lock() -> None:
       - reload-in-flight: rechecks queue, then see the freshly-rebuilt
         registry and operate on it.
       - recheck-in-flight: reload waits, then rebuilds (clearing
-        _DISABLED_REGISTRY and _LAST_RECHECK_AT in the process — see
+        _DISABLED_SKILL_REGISTRY and _LAST_RECHECK_AT in the process — see
         :func:`_clear_recovery_state_on_reload`).
     """
     from work_buddy.mcp_server.registry import invalidate_registry
 
     with _RECOVERY_LOCK:
         # Clear cool-down timestamps so post-reload probes run fresh.
-        # _DISABLED_REGISTRY clearing is already handled by
+        # _DISABLED_SKILL_REGISTRY clearing is already handled by
         # _build_registry() at the top of the filter pass (CP-A1).
         _LAST_RECHECK_AT.clear()
         invalidate_registry()

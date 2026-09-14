@@ -185,7 +185,7 @@ def _operation(ctx: dict[str, Any], job_id: str) -> tuple[Path, dict[str, Any]]:
     return path, json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_production_start_uses_non_capability_internal_queue(
+def test_production_start_uses_non_skill_internal_queue(
     durable_dispatch_ctx: dict[str, Any],
 ):
     _capture_value, started = _start(durable_dispatch_ctx)

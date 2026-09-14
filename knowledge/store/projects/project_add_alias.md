@@ -1,11 +1,10 @@
 ---
 name: Project Add Alias
-kind: capability
-description: Attach an alternative slug (alias) to a project. Aliases route to the canonical row across capabilities. Writes a revision.
-capability_name: project_add_alias
+kind: skill
+description: Attach an alternative slug (alias) to a project. Aliases route to the canonical row across skills. Writes a revision.
 category: projects
 op: op.wb.project_add_alias
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   slug:
     type: str
@@ -25,6 +24,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: manual
+skill_name: project_add_alias
 tags:
 - projects
 - project

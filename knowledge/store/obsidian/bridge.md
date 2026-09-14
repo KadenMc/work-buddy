@@ -55,7 +55,7 @@ dev_notes: |-
 ---
 
 This bridge is an opt-in compatibility surface after native-domain cutover.
-Runtime admission must skip bridge-backed capabilities and health/plugin probes
+Runtime admission must skip bridge-backed skills and health/plugin probes
 when Obsidian is opted out, and bridge availability must never re-enable a
 sealed native domain. Native Journal, Tasks, Contracts, Projects, Personal
 Knowledge, and the default Calendar provider use their own database or provider
@@ -89,7 +89,7 @@ Every kind classifies as `transient` EXCEPT `obsidian_refused` (4xx other than 4
 
 The pre-typed-exception four-state classification still flows through `get_last_bridge_state()` and the dashboard sparkline (`work_buddy/dashboard/api.py::get_bridge_status`). The bridge module sets `_last_failure_kind` to `'timeout' | 'unreachable' | 'http_error' | ''` on every failure path, derived from the typed exception class. The dashboard frontend (`scripts/tabs/settings.py`, the `loadActivity` function) maps these strings to bar classes (`bar-ok`, `bar-slow`, `bar-fail`, `bar-unreachable`). This contract is preserved.
 
-Every bridge-dependent capability's failure response also carries:
+Every bridge-dependent skill's failure response also carries:
 - `_bridge_state`: one of `ok`, `timeout`, `obsidian_not_running`, `plugin_not_installed`, `plugin_disabled`, `obsidian_startup_race`, `http_error`, `unknown`
 - `_bridge_state_detail`: human-readable explanation
 - `_bridge_terminal`: `true` when the state is one that retrying will never fix (obsidian_not_running / plugin_not_installed / plugin_disabled). `obsidian_startup_race` (Obsidian + plugin up but the port hasn't bound yet) is explicitly NON-terminal — the transient startup window, worth retrying. `@bridge_retry` short-circuits on terminal states via `_BridgeHealthGate`'s terminal-classification path. The typed-exception path uses the analogous `_TERMINAL_OBSIDIAN_ERROR_KINDS` set in `work_buddy.obsidian.retry`. The string `_bridge_state` and the typed `error_kind` are kept in lock-step: both `get_last_bridge_state` and `_refine_unreachable_kind` derive from one shared `_classify_unreachable` decision, so a startup race classifies non-terminal in both representations.
@@ -104,7 +104,7 @@ A client-side timeout AFTER a PUT body has been sent is ambiguous: the plugin ma
 
 `write_mode` controls verifier semantics: `"replace"` matches a sha256 hint; `"insert"` / `"append"` checks the hint as a substring; `"absent"` (delete-style operations) inverts — verified iff the hint is NOT in the file.
 
-For capabilities that produce multiple external effects (declared via `Capability.effects`), the recovery path uses `verify_post_write_effects` which walks every declared effect and can return `partial` (some landed, some not). See `architecture/retry-queue` for the recovery semantics and `work_buddy.obsidian.effects.EffectSpec` for the schema.
+For skills that produce multiple external effects (declared via `Skill.effects`), the recovery path uses `verify_post_write_effects` which walks every declared effect and can return `partial` (some landed, some not). See `architecture/retry-queue` for the recovery semantics and `work_buddy.obsidian.effects.EffectSpec` for the schema.
 
 Wired in three places: `tools/gateway.py` wb_run dispatch, `tools/gateway.py` retry_workflow_step, `sidecar/retry_sweep.py::_replay`. All admitted bridge write paths benefit.
 
@@ -127,7 +127,7 @@ The read side mirrors the write side's soft/typed split (cf. `obsidian/vault-wri
 
 Classification is cheap: `get_last_bridge_state()` reads module-level counters set by `_request_with_status`, consults `is_obsidian_running()` (process check) and `get_work_buddy_plugin_state()` (filesystem check on `.obsidian/plugins/obsidian-work-buddy/manifest.json` + `community-plugins.json`). If the OS process probe itself raises, `is_obsidian_running()` returns `False` rather than assuming Obsidian is running, allowing the caller's documented fallback path. On Windows, closed TCP ports often surface as socket timeouts rather than ECONNREFUSED; `_probe_port_open()` disambiguates via a direct TCP probe so timeouts on closed ports reclassify as `unreachable`. The `unreachable` disambiguation (not-running / plugin-missing / plugin-disabled / startup-race) lives in one place — `_classify_unreachable()` — which `get_last_bridge_state` (string + detail), `_refine_unreachable_kind` (typed exception), and `require_available()` (the precondition guard — it raises the precise typed `ObsidianUnreachable` subclass rather than a generic `RuntimeError`, so a precondition failure classifies identically to a request-time failure) all derive from.
 
-Entry points: `work_buddy.obsidian.errors` (typed hierarchy), `work_buddy.obsidian.bridge.get_last_bridge_state`, `work_buddy.obsidian.bridge._request_with_status`, `work_buddy.obsidian.bridge.write_file_raw`, `work_buddy.obsidian.bridge.atomic_replace_line_by_task_id`, `work_buddy.obsidian.bridge.atomic_delete_line_by_task_id`, `work_buddy.obsidian.post_write_verify.verify_post_write`, `work_buddy.obsidian.post_write_verify.verify_post_write_effects`, `work_buddy.obsidian.effects.EffectSpec`, `work_buddy.obsidian.retry.bridge_failure` (auto-enriches), `work_buddy.obsidian.retry.bridge_retry` (decorator — a thin shim that runs `RetryStrategy → _BridgeHealthGate → call` via `guarded_call_sync`; see `architecture/resilience`), `work_buddy.obsidian.retry.obsidian_retry` (capability), `work_buddy.health.requirement_checks.get_work_buddy_plugin_state`.
+Entry points: `work_buddy.obsidian.errors` (typed hierarchy), `work_buddy.obsidian.bridge.get_last_bridge_state`, `work_buddy.obsidian.bridge._request_with_status`, `work_buddy.obsidian.bridge.write_file_raw`, `work_buddy.obsidian.bridge.atomic_replace_line_by_task_id`, `work_buddy.obsidian.bridge.atomic_delete_line_by_task_id`, `work_buddy.obsidian.post_write_verify.verify_post_write`, `work_buddy.obsidian.post_write_verify.verify_post_write_effects`, `work_buddy.obsidian.effects.EffectSpec`, `work_buddy.obsidian.retry.bridge_failure` (auto-enriches), `work_buddy.obsidian.retry.bridge_retry` (decorator — a thin shim that runs `RetryStrategy → _BridgeHealthGate → call` via `guarded_call_sync`; see `architecture/resilience`), `work_buddy.obsidian.retry.obsidian_retry` (skill), `work_buddy.health.requirement_checks.get_work_buddy_plugin_state`.
 
 ## What was removed in CP9
 

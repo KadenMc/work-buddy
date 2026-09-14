@@ -2,7 +2,7 @@
 name: Harness Projection
 kind: concept
 description: Agent-host projection for Claude Code, Codex, and future harnesses using generated rulesync input rather than duplicating work-buddy workflow behavior.
-summary: Work-buddy owns workflow/capability behavior in the knowledge store and MCP runtime; rulesync projects host-native files, lifecycle hooks normalize session behavior, and transcript providers normalize conversation history.
+summary: Work-buddy owns direct-skill/workflow behavior in the knowledge store and MCP runtime; rulesync projects host-native files, lifecycle hooks normalize session behavior, and transcript providers normalize conversation history.
 tags:
 - harness
 - rulesync
@@ -18,7 +18,7 @@ Harness projection is the boundary between work-buddy's canonical behavior and a
 
 The canonical behavior stays in:
 
-- `knowledge/store/` directions, capabilities, and workflows.
+- `knowledge/store/` directions, work-buddy skills, and workflows.
 - the `wb_*` MCP gateway and runtime services.
 - existing thin launchers such as `.claude/commands/wb-dev-pr.md`, which load directions and start workflows instead of embedding behavior.
 
@@ -52,7 +52,7 @@ First-run install:
 - A successful provision installs rulesync, generates the selected native surface, and fails the install result if projection fails.
 - `--allow-experimental-harness` exists for development/testing, not ordinary first-run setup.
 
-Do not edit generated harness outputs as the source of truth. Update the knowledge-store directions, MCP capabilities/workflows, or the canonical launcher source, then rerun `wbuddy harness sync`.
+Do not edit generated harness outputs as the source of truth. Update the knowledge-store directions, work-buddy MCP skills/workflows, or the canonical launcher source, then rerun `wbuddy harness sync`.
 
 Git hygiene:
 

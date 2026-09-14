@@ -1,11 +1,10 @@
 ---
 name: Cowork Doc List
-kind: capability
+kind: skill
 description: List registered cowork docs in a scope with source-writeback mode, hashes, drift, and open-proposal counts.
-capability_name: cowork_doc_list
 category: cowork
 op: op.wb.cowork_doc_list
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -18,6 +17,7 @@ parameters:
 mutates_state: false
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_doc_list
 tags:
 - cowork
 - doc

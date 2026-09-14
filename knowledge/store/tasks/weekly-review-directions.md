@@ -6,7 +6,7 @@ summary: Agent assembles the picture and proposes; user validates. Under 15 minu
 trigger: user wants to run their weekly task review and planning session
 command: wb-task-review
 workflow: tasks/weekly-review
-capabilities:
+skills:
 - tasks/task_change_state
 - tasks/task_briefing
 - contracts/contract_constraints

@@ -191,9 +191,9 @@ def classify_error(exc: Exception) -> str:
 
 
 def is_transient_result(result: Any) -> bool:
-    """Check if a capability's return value indicates a transient failure.
+    """Check if a skill's return value indicates a transient failure.
 
-    Many capabilities return ``{"error": "..."}`` or ``{"success": False, ...}``
+    Many skills return ``{"error": "..."}`` or ``{"success": False, ...}``
     instead of raising. This decides whether the failure looks transient.
 
     Resolution order (post-CP3):

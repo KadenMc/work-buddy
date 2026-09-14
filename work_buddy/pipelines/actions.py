@@ -2,7 +2,7 @@
 group sub-threads can carry.
 
 Each :class:`SourcePipeline` declares an :class:`ActionLibrary` listing
-the capabilities that apply to its data source. The runner merges that
+the skills that apply to its data source. The runner merges that
 with universal actions (dismiss / defer / rename / approve-individually)
 so every group sub-thread carries a baseline set, plus the source-
 specific extensions.
@@ -16,8 +16,8 @@ The library is the canonical input to two surfaces:
    ``→ Tasks ▾`` on a column header, the dropdown options come from
    the library.
 
-An :class:`ActionDescriptor` references an existing capability in the
-work-buddy capability registry. Cardinality declares whether the
+An :class:`ActionDescriptor` references an existing skill in the
+work-buddy skill registry. Cardinality declares whether the
 action is meant to act on one item, one group, or the whole umbrella.
 """
 
@@ -47,10 +47,10 @@ class ActionDescriptor:
 
     Fields
     ------
-    capability_name:
-        Name of a registered capability in the capability registry.
-        The capability MUST be marked ``is_action=True``. Resolved at
-        dispatch time via the standard capability lookup.
+    skill_name:
+        Name of a registered skill in the skill registry.
+        The skill MUST be marked ``is_action=True``. Resolved at
+        dispatch time via the standard skill lookup.
     label:
         Short user-facing label shown in the action chip dropdown
         (e.g. ``"Close all tabs"``, ``"Route to tasks"``).
@@ -70,7 +70,7 @@ class ActionDescriptor:
         if absent.
     """
 
-    capability_name: str
+    skill_name: str
     label: str
     description: str
     cardinality: str
@@ -86,7 +86,7 @@ class ActionDescriptor:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "capability_name": self.capability_name,
+            "skill_name": self.skill_name,
             "label": self.label,
             "description": self.description,
             "cardinality": self.cardinality,
@@ -101,7 +101,7 @@ class ActionLibrary:
 
     Construction is order-sensitive: when two libraries are merged, the
     second's descriptors override the first's for matching
-    ``capability_name``. This is how a per-source library "wins" over
+    ``skill_name``. This is how a per-source library "wins" over
     universal defaults if it wants to customize an action's label /
     description for its domain.
     """
@@ -112,7 +112,7 @@ class ActionLibrary:
     ) -> None:
         self._by_name: dict[str, ActionDescriptor] = {}
         for d in descriptors:
-            self._by_name[d.capability_name] = d
+            self._by_name[d.skill_name] = d
 
     # ----------------------------------------------------------------
     # Construction helpers
@@ -121,7 +121,7 @@ class ActionLibrary:
     def merged_with(self, other: ActionLibrary) -> ActionLibrary:
         """Return a new library combining ``self`` and ``other``.
 
-        Entries from ``other`` win on ``capability_name`` collision.
+        Entries from ``other`` win on ``skill_name`` collision.
         Used by the runner to layer per-source actions on top of
         universal actions.
         """
@@ -162,12 +162,12 @@ class ActionLibrary:
             if d.cardinality == CARDINALITY_UMBRELLA
         ]
 
-    def by_name(self, capability_name: str) -> ActionDescriptor | None:
-        """Look up a descriptor by its capability name; None if absent."""
-        return self._by_name.get(capability_name)
+    def by_name(self, skill_name: str) -> ActionDescriptor | None:
+        """Look up a descriptor by its skill name; None if absent."""
+        return self._by_name.get(skill_name)
 
-    def has(self, capability_name: str) -> bool:
-        return capability_name in self._by_name
+    def has(self, skill_name: str) -> bool:
+        return skill_name in self._by_name
 
     def __len__(self) -> int:
         return len(self._by_name)

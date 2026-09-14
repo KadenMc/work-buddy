@@ -179,6 +179,6 @@ def test_collector_renders_prs_and_first_message_fallback(co_db, monkeypatch):
     out = collect({"refresh": False, "include_tldr": True, "include_topics": True})
     assert "first message: Do the PR thing" in out
     assert "PRs: #42 created" in out
-    # Drill footer names the composite + search capabilities.
+    # Drill footer names the composite + search skills.
     assert "conversation_observability_get" in out
     assert "summary_search" in out

@@ -534,7 +534,7 @@ def _run_child_accept(
         )
     # The umbrella's Approve-All click cascades to each child's
     # accept-equivalent trigger; each may fire a synchronous side
-    # effect that invokes a @requires_consent-gated capability. Wrap
+    # effect that invokes a @requires_consent-gated skill. Wrap
     # in ``user_initiated`` so the user's umbrella-click counts as
     # consent for the cascaded operations — same policy as
     # ``_post_thread_action`` for direct per-thread Approve clicks.

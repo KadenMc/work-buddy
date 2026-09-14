@@ -5,7 +5,7 @@ Tests construct a provider with fixture calendars and events; production never
 selects this provider unless ``calendar.provider: fake`` is set explicitly.
 Mirrors :class:`work_buddy.email.providers.fake.FakeEmailProvider`.
 
-Write methods mutate in-memory state so write-capability tests can drive this
+Write methods mutate in-memory state so write-skill tests can drive this
 provider too; ``health()`` is always ready unless a test overrides it.
 """
 
@@ -109,7 +109,7 @@ class FakeCalendarProvider:
             f"fake: no event {event_id!r} on calendar {calendar_id!r}"
         )
 
-    # --- Write (state-mutating; exercised by write-capability tests) -------
+    # --- Write (state-mutating; exercised by write-skill tests) ------------
 
     def create_event(
         self,

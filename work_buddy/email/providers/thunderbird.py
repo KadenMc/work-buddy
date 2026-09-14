@@ -5,7 +5,7 @@ connection file at ``<tmpdir>/thunderbird-work-buddy/connection.json`` with
 the per-startup port and bearer token; we discover it on demand.
 
 Failure model: methods raise typed :class:`EmailError` subclasses. The
-``ToolProbe`` registered for ``thunderbird`` short-circuits capability
+``ToolProbe`` registered for ``thunderbird`` short-circuits skill
 dispatch when the bridge is closed, so ordinary callers only see
 ``EmailBridgeUnreachable`` on transient races (Thunderbird restarted between
 probe and call).

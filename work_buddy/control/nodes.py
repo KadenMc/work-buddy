@@ -7,7 +7,7 @@ projections apply:
     subsystem    grouping with dependency edges — state rolled up
     component    leaf runtime entity — carries preference + health
     requirement  configuration check under a component — derived from check
-    capability   registered capability or workflow — derived from requires/invokes
+    skill        registered direct skill or workflow — derived from requires/invokes
 
 Edges come in two flavors and live on different fields:
 
@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-NodeKind = Literal["domain", "subsystem", "component", "requirement", "capability"]
+NodeKind = Literal["domain", "subsystem", "component", "requirement", "skill"]
 
 EffectiveState = Literal[
     "ok",             # wanted + deps ok + config ok + probe healthy
@@ -48,9 +48,9 @@ Preference = Literal["wanted", "unwanted", "undecided", "required"]
 class Edge:
     """Dependency edge between control nodes.
 
-    ``mode='any'`` (deferred) is reserved for future "LM Studio OR Ollama"
-    style fan-in. Phase A honors only ``mode='all'`` — every listed target
-    must be healthy for the edge to be satisfied.
+    ``mode='any'`` is reserved for future "LM Studio OR Ollama" style fan-in.
+    The graph currently honors only ``mode='all'`` — every listed target must
+    be healthy for the edge to be satisfied.
 
     ``hardness`` distinguishes two semantic flavors:
 
@@ -98,7 +98,7 @@ class ControlNode:
         subsystem:daily-notes
         component:obsidian
         req:obsidian/daily-note/log-section
-        cap:task_create
+        skill:task_create
 
     ``component_id`` on component-kind nodes matches the key used in
     ``work_buddy.health.components.COMPONENT_CATALOG`` — this is the
@@ -124,7 +124,7 @@ class ControlNode:
     # sidecar service (most components — only ~4 do).
     sidecar_service: str | None = None
     requirement_ids: list[str] = field(default_factory=list)
-    affects_capabilities: list[str] = field(default_factory=list)
+    affects_skills: list[str] = field(default_factory=list)
 
     status_reason: str = ""
     blocking_issues: list[str] = field(default_factory=list)
@@ -161,7 +161,7 @@ class ControlNode:
             "component_id": self.component_id,
             "sidecar_service": self.sidecar_service,
             "requirement_ids": list(self.requirement_ids),
-            "affects_capabilities": list(self.affects_capabilities),
+            "affects_skills": list(self.affects_skills),
             "status_reason": self.status_reason,
             "blocking_issues": list(self.blocking_issues),
             "primary_actions": list(self.primary_actions),

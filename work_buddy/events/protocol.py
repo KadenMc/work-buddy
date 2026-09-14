@@ -2,7 +2,7 @@
 
 This module defines the *contracts*; concrete Sources and Conditions are not
 yet implemented. The shapes are intentionally minimal so later backends (native
-capability / workflow, and eventually ``external_flow``) are implementations
+skill / workflow, and eventually ``external_flow``) are implementations
 behind these ports rather than a redesign.
 
 A **Sink** is just a ``Processor`` whose effect is "land it in a thread /
@@ -78,7 +78,7 @@ class Source(Protocol):
 
 @runtime_checkable
 class Processor(Protocol):
-    """The work a delivered event triggers (capability / workflow / sink)."""
+    """The work a delivered event triggers (skill / workflow / sink)."""
 
     manifest: ProcessorManifest
 

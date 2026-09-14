@@ -48,6 +48,22 @@ _DRIVER_FAILED = "driver_failed"
 logger = logging.getLogger(__name__)
 
 
+def _canonical_reference_kind(reference_kind: str) -> str:
+    """Map the persisted Jobs reference-scope spelling to the current one."""
+    return "job_skill" if reference_kind == "job_capability" else reference_kind
+
+
+def _canonical_reference_payload(payload: Any) -> Any:
+    """Project a stored reference receipt through the current vocabulary."""
+    if not isinstance(payload, dict):
+        return payload
+    normalized = dict(payload)
+    normalized["reference_kind"] = _canonical_reference_kind(
+        str(normalized.get("reference_kind") or "")
+    )
+    return normalized
+
+
 def _driver_error_message(error: object, provider_id: str) -> str | None:
     """Project only known failure categories, never process diagnostics."""
     if not error:
@@ -223,7 +239,7 @@ class AssistanceBroker:
             "message": "Choose a chat model, then Launch."
             if enabled
             else "Enable Dashboard AI in Settings, or continue editing manually.",
-            "disclosure": "Launch sends up to 32 KiB of allowlisted form fields plus bounded recent conversation context to your selected chat provider (at most 64 KiB per context disclosure). For Jobs, the assistant may also look up the same registered capability and workflow metadata shown in the form. It can ask questions and suggest allowlisted edits, but cannot execute, submit, create or schedule anything. Do not include secrets.",
+            "disclosure": "Launch sends up to 32 KiB of allowlisted form fields plus bounded recent conversation context to your selected chat provider (at most 64 KiB per context disclosure). For Jobs, the assistant may also look up the same registered skill and workflow metadata shown in the form. It can ask questions and suggest allowlisted edits, but cannot execute, submit, create or schedule anything. Do not include secrets.",
             "localProviderNotice": "Local inference profiles do not currently provide an interactive chat driver. Only registered chat providers can be selected; there is no cloud fallback.",
         }
 
@@ -1790,6 +1806,10 @@ class AssistanceBroker:
         """Return immutable form-authorized metadata without dispatching it."""
 
         text_id(request_id, "reference_request_id")
+        # Reference receipts are persisted and can survive a process upgrade.
+        # Accept the old Jobs scope only at this boundary, while all fresh
+        # authorization checks, searches, and payloads use ``job_skill``.
+        search_reference_kind = _canonical_reference_kind(reference_kind)
         if (
             not isinstance(query, str)
             or not query.strip()
@@ -1798,14 +1818,18 @@ class AssistanceBroker:
         ):
             raise AssistanceError("invalid_reference_query")
         normalized_query = " ".join(query.split())
-        request_hash = digest(
-            {
-                "message_id": message_id,
-                "consumption_receipt_id": consumption_receipt_id,
-                "reference_kind": reference_kind,
-                "query": normalized_query,
-            }
-        )
+        request_material = {
+            "message_id": message_id,
+            "consumption_receipt_id": consumption_receipt_id,
+            "reference_kind": search_reference_kind,
+            "query": normalized_query,
+        }
+        request_hash = digest(request_material)
+        compatible_request_hashes = {request_hash}
+        if search_reference_kind == "job_skill":
+            compatible_request_hashes.add(
+                digest({**request_material, "reference_kind": "job_capability"})
+            )
 
         with self._transaction() as conn:
             session = self._worker_scope(**scope, conn=conn, require_initial=False)
@@ -1817,7 +1841,7 @@ class AssistanceBroker:
             if receipt["receipt_id"] != consumption_receipt_id:
                 raise AssistanceError("assistance_receipt_mismatch", status=409)
             form = form_schema(session["identity"]["draftName"], session["schema"])
-            if reference_kind not in form.get("referenceScopes", ()):
+            if search_reference_kind not in form.get("referenceScopes", ()):
                 raise AssistanceError("assistance_reference_not_allowed", status=403)
             existing = conn.execute(
                 "SELECT * FROM assisted_draft_reference_receipts WHERE session_id=? AND start_id=? AND generation=? AND request_id=?",
@@ -1829,11 +1853,29 @@ class AssistanceBroker:
                 ),
             ).fetchone()
             if existing is not None:
-                if existing["request_hash"] != request_hash:
+                if existing["request_hash"] not in compatible_request_hashes:
                     raise AssistanceError(
                         "assistance_reference_request_conflict", status=409
                     )
-                payload = json.loads(existing["payload_json"])
+                payload = _canonical_reference_payload(
+                    json.loads(existing["payload_json"])
+                )
+                canonical_payload = canonical(payload)
+                if (
+                    existing["request_hash"] != request_hash
+                    or existing["payload_json"] != canonical_payload
+                ):
+                    conn.execute(
+                        "UPDATE assisted_draft_reference_receipts SET request_hash=?, payload_json=? WHERE session_id=? AND start_id=? AND generation=? AND request_id=?",
+                        (
+                            request_hash,
+                            canonical_payload,
+                            assistant_session_id,
+                            session["activeStartId"],
+                            scope["generation"],
+                            request_id,
+                        ),
+                    )
             start_id = session["activeStartId"]
 
         if existing is None:
@@ -1841,7 +1883,7 @@ class AssistanceBroker:
 
             try:
                 results = search_job_registry(
-                    reference_kind=reference_kind, query=normalized_query
+                    reference_kind=search_reference_kind, query=normalized_query
                 )
             except ValueError as exc:
                 raise AssistanceError(
@@ -1853,7 +1895,7 @@ class AssistanceBroker:
                 "conversation_id": scope["conversation_id"],
                 "message_id": message_id,
                 "request_id": request_id,
-                "reference_kind": reference_kind,
+                "reference_kind": search_reference_kind,
                 "query": normalized_query,
                 "results": results,
                 "reference_receipt_id": "arr-"
@@ -1907,12 +1949,30 @@ class AssistanceBroker:
                             canonical(payload),
                         ),
                     )
-                elif raced["request_hash"] != request_hash:
+                elif raced["request_hash"] not in compatible_request_hashes:
                     raise AssistanceError(
                         "assistance_reference_request_conflict", status=409
                     )
                 else:
-                    payload = json.loads(raced["payload_json"])
+                    payload = _canonical_reference_payload(
+                        json.loads(raced["payload_json"])
+                    )
+                    canonical_payload = canonical(payload)
+                    if (
+                        raced["request_hash"] != request_hash
+                        or raced["payload_json"] != canonical_payload
+                    ):
+                        conn.execute(
+                            "UPDATE assisted_draft_reference_receipts SET request_hash=?, payload_json=? WHERE session_id=? AND start_id=? AND generation=? AND request_id=?",
+                            (
+                                request_hash,
+                                canonical_payload,
+                                assistant_session_id,
+                                start_id,
+                                scope["generation"],
+                                request_id,
+                            ),
+                        )
 
         entry = self._account(
             session, payload, "assisted_draft_reference_search"

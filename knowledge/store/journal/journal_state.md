@@ -1,11 +1,10 @@
 ---
 name: Journal State
-kind: capability
+kind: skill
 description: 'Read the native Journal day: logical date, activity window, frozen profile, typed fields, and entries.'
-capability_name: journal_state
 category: journal
 op: op.wb.journal_state
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   target:
     type: str
@@ -18,6 +17,7 @@ parameters:
 param_aliases:
   target_date: target
   date: target
+skill_name: journal_state
 tags:
 - journal
 - state
@@ -31,7 +31,6 @@ aliases:
 - journal metadata
 parents:
 - journal
-requires: []
 ---
 
 Read Journal state from the Journal SQLite authority for an explicit date or the active logical Journal day. `target="today"` is resolved by the backend under the configured Journal timezone and boundary; it does not mean the browser's civil date.

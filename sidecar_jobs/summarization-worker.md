@@ -2,8 +2,8 @@
 schedule: "3-59/5 * * * *"  # every 5 minutes, offset 3 minutes from conversation-observability-refresh
 recurring: true
 jitter_seconds: 60
-type: capability
-capability: summarization_worker_tick
+type: skill
+skill: summarization_worker_tick
 params: {}
 ---
 Summarization queue worker. Drains the

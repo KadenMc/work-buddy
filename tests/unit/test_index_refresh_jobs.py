@@ -37,8 +37,8 @@ def test_index_refresh_job_well_formed(jobs_by_name, partition):
     job_name = _PARTITION_JOBS[partition]
     job = jobs_by_name.get(job_name)
     assert job is not None, f"missing sidecar job {job_name}"
-    assert job.job_type == "capability"
-    assert job.capability == "index_rebuild"
+    assert job.job_type == "skill"
+    assert job.skill == "index_rebuild"
     assert job.params.get("partition") == partition
     assert job.params.get("force") is False  # incremental, never force, on a recurring job
     if partition == "conversation":

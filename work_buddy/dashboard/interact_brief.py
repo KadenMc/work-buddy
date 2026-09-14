@@ -62,8 +62,8 @@ def render_form_section(schema: FormSchema) -> str:
     lines.append("### How to drive the form")
     lines.append("")
     lines.append(
-        "All form interaction goes through the single MCP capability "
-        "``dashboard_interact``. Validation happens in the capability — "
+        "All form interaction goes through the single MCP skill "
+        "``dashboard_interact``. Validation happens in the skill — "
         "you receive a typed error if you address an unknown field, "
         "wrong value type, or invalid value. The frontend never sees "
         "an unvalidated event."
@@ -132,7 +132,7 @@ def render_form_section(schema: FormSchema) -> str:
     lines.append("```")
     lines.append("")
     lines.append(
-        "The capability blocks (default 10s) until the form's submit "
+        "The skill blocks (default 10s) until the form's submit "
         "handler returns. Returns ``{ok: true}`` on success or "
         "``{ok: false, error: \"…\", errors_by_field: {field: msg, …}}`` "
         "on validation failure. On error, fix the offending field via "

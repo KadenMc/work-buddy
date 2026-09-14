@@ -1,19 +1,18 @@
 ---
 name: Session Activity
-kind: capability
-description: Query the session activity ledger — what this agent session has done through work-buddy. Filters by event type, capability, category, status. Returns last N matching entries (newest first).
-capability_name: session_activity
+kind: skill
+description: Query the session activity ledger — what this agent session has done through work-buddy. Filters by event type, skill, category, status. Returns last N matching entries (newest first).
 category: status
 op: op.wb.session_activity
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   event_type:
     type: str
-    description: 'Filter: capability_invoked, workflow_started, workflow_step_completed, search_performed'
+    description: 'Filter: skill_invoked, workflow_started, workflow_step_completed, search_performed'
     required: false
-  capability_name:
+  skill_name:
     type: str
-    description: Filter to a specific capability name
+    description: Filter to a specific skill name
     required: false
   category:
     type: str
@@ -31,6 +30,9 @@ parameters:
     type: bool
     description: Include wb_search events (default false)
     required: false
+param_aliases:
+  capability_name: skill_name
+skill_name: session_activity
 tags:
 - status
 - session

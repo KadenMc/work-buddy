@@ -1,6 +1,6 @@
-"""Effect manifests for multi-effect capabilities.
+"""Effect manifests for multi-effect skills.
 
-Capabilities that produce multiple externally-visible side effects
+Skills that produce multiple externally-visible side effects
 (e.g. ``task_create`` writes a note file AND appends a line to the
 master task list) declare their effects via a manifest. The
 post-write verification path (see ``post_write_verify``) walks the
@@ -17,10 +17,10 @@ Schema is intentionally narrow: each effect declares (1) what KIND of
 write it is, (2) where it lands (literal path or template), (3) how
 to verify it landed (witness substring + mode). Generated values
 (e.g. uuid-derived paths) are resolved via an optional resolver
-callable that pulls from the capability's idempotency cache or
+callable that pulls from the skill's idempotency cache or
 similar side channel.
 
-Capabilities WITHOUT a declared manifest fall back to the existing
+Skills WITHOUT a declared manifest fall back to the existing
 single-effect behavior — backward compat preserved.
 """
 
@@ -45,7 +45,7 @@ EffectKind = Literal["file_write", "line_append", "file_delete"]
 
 @dataclass(frozen=True)
 class EffectSpec:
-    """One declared external effect of a capability.
+    """One declared external effect of a skill.
 
     Either ``path`` (literal) OR ``path_template`` (string with ``{name}``
     placeholders resolved from params + resolver output) must be set,
@@ -57,10 +57,10 @@ class EffectSpec:
     existence at the resolved path.
 
     ``resolver`` is an optional callable that receives the
-    capability's ``params`` dict and returns a dict of additional
+    skill's ``params`` dict and returns a dict of additional
     values to inject into template substitution. The intended use is
     pulling generated values (uuids, task_ids) from a side channel —
-    typically the capability's idempotency cache (e.g.
+    typically the skill's idempotency cache (e.g.
     ``mutations._resolve_idempotent_create_ids`` for ``task_create``).
 
     A resolver returning a dict with any-None values is treated as
@@ -117,7 +117,7 @@ class EffectSpec:
         Returns:
             dict of generated values on success
             None if no resolver OR resolver couldn't resolve
-            (capability cache miss / templating-relevant value missing)
+            (skill cache miss / templating-relevant value missing)
         """
         if self.resolver is None:
             return {}

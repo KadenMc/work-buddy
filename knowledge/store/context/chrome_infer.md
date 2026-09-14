@@ -1,11 +1,10 @@
 ---
 name: Chrome Infer
-kind: capability
+kind: skill
 description: Infer what the user is working on by reading page content from engaged Chrome tabs and analyzing with Haiku. Evaluates provided theories against actual page evidence. Caches results per tab to avoid redundant API calls. ~$0.001/call.
-capability_name: chrome_infer
 category: context
 op: op.wb.chrome_infer
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   since:
     type: str
@@ -19,6 +18,7 @@ parameters:
     type: int
     description: Max tabs to analyze (default 5)
     required: false
+skill_name: chrome_infer
 tags:
 - context
 - chrome

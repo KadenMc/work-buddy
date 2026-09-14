@@ -1,11 +1,10 @@
 ---
 name: Escalation Recent
-kind: capability
+kind: skill
 description: Recent LLM-escalation observability records. Each record is one logical job (one LLMRunner.call OR one adapter-level escalation chain across multiple calls) with its full per-tier attempt list, final outcome, and trace correlation.
-capability_name: escalation_recent
 category: llm
 op: op.wb.escalation_recent
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   limit:
     type: int
@@ -27,6 +26,7 @@ parameters:
     type: bool
     description: When true, return aggregate counts (by source / outcome / final_tier, plus 'escalated_past_first') instead of records.
     required: false
+skill_name: escalation_recent
 tags:
 - llm
 - escalation

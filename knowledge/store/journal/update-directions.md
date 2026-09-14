@@ -6,7 +6,7 @@ summary: 'Create one native record per distinct activity with a minute-level tim
 trigger: user wants to update their journal with recent activity
 command: wb-journal-update
 workflow: daily-journal/update-journal
-capabilities:
+skills:
 - journal/journal_state
 - journal/journal_write
 - context/context_bundle
@@ -37,8 +37,8 @@ Target date: Defaults to the backend-resolved logical Journal day. Do not ask a 
 
 The Log is a near-real-time event log, not a high-level summary. Each entry anchors a thing that happened at a specific time.
 
-Capability tuple (attributed):     `["<TIME>", "#projects/<slug> — <description>."]`
-Capability tuple (unattributable): `["<TIME>", "<description>."]`
+Entry tuple (attributed):     `["<TIME>", "#projects/<slug> — <description>."]`
+Entry tuple (unattributable): `["<TIME>", "<description>."]`
 - One tuple per record; do not pre-render a Markdown bullet or hidden marker.
 - Single line per entry -- no sub-bullets, no nesting.
 - Terse, specific -- match the user's journal voice
@@ -81,7 +81,7 @@ Two gates stand between a draft and `journal_write`. Both are mandatory every ru
 1. **Dedupe against what is already there.** Before presenting, call `journal_state` for **each target day** and read its existing Log entries. Drop any draft entry whose activity is already logged (same activity/time). When backfilling a multi-day window, whole days are often already covered — skip those days entirely. The write must be idempotent and safe to re-run.
 2. **Get explicit user approval.** Present the deduped entries (grouped by day; name the days you are skipping as already-covered) and wait for an explicit go-ahead. The user may edit, reword, add, or remove. Do NOT call `journal_write` until they approve — a verbal "looks good / proceed" counts; silence does not. When presenting, you MUST also call out every entry you left **unattributed** ("N entries I couldn't attribute to a project: …") so the omissions are visible and auditable — never omit a project tag silently.
 
-`journal_write` remains consent-gated by Work Buddy's normal capability policy, separate from the in-chat approval above. For a multi-day backfill, the user can approve the repeated operation for the current session. No Obsidian prompt or file write occurs.
+`journal_write` remains consent-gated by Work Buddy's normal skill policy, separate from the in-chat approval above. For a multi-day backfill, the user can approve the repeated operation for the current session. No Obsidian prompt or file write occurs.
 
 ## Calling journal_write
 

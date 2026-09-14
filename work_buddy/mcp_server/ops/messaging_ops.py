@@ -1,6 +1,6 @@
 """Messaging-domain ops.
 
-Each op here is referenced by a capability declaration (a ``kind: "capability"``
+Each op here is referenced by a skill declaration (a ``kind: "skill"``
 knowledge-store unit carrying a matching ``op`` field). The declaration supplies
 the prose, parameter schema, and runtime metadata; the op supplies the callable.
 """
@@ -12,7 +12,7 @@ from work_buddy.mcp_server.op_registry import register_op
 
 def _register() -> None:
     # Lazy import inside the registration function, matching the
-    # lazy-import discipline of the registry's capability builders
+    # lazy-import discipline of the registry's skill builders
     # (see architecture/mcp-import-discipline).
     from work_buddy.messaging import client
 

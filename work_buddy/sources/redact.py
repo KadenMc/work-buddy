@@ -78,7 +78,7 @@ def redact_source(
                 at=now,
             )
         # Exact run payloads may embed the source bytes inside a larger JSON
-        # capability response. Their explicit derivation edges are part of the
+        # skill response. Their explicit derivation edges are part of the
         # erasure inventory: redact those retained copies transitively while
         # leaving semantic derivatives reviewable instead of guessing.
         cascade: list[tuple[SourceRef, Any, SourceRef | None]] = [

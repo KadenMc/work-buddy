@@ -2,10 +2,10 @@
 name: Tailscale Status Directions
 kind: directions
 description: Check Tailscale VPN status — daemon state, tailnet identity, online peers, Serve config
-summary: Pure capability call -- no special presentation required.
+summary: Pure skill call -- no special presentation required.
 trigger: user asks about Tailscale, VPN status, or published ports
 command: wb-tailscale-status
-capabilities:
+skills:
 - status/tailscale_status
 tags:
 - status
@@ -22,7 +22,7 @@ parents:
 dev_notes: Tailscale serve CLI takes a single target argument (port or URL); HTTPS is the default mode. Older `tailscale serve --bg https <url>` syntax is rejected by current CLI versions. Fixer + fix_hint + this directions unit use port-only form (`tailscale serve --bg 5127`) for clarity.
 ---
 
-Run `mcp__work-buddy__wb_run("tailscale_status")` and read the result as a diagnostic, not a state dump. The capability returns daemon state (`installed`, `running`, `backend_state`), this device's tailnet identity (`self.online`, `self.name`, `tailnet`), peers (`peers[].online`, `peers[].last_seen`), and Serve config (`serve.Web` handlers). Match what you see against the table below and lead with the fix.
+Run `mcp__work-buddy__wb_run("tailscale_status")` and read the result as a diagnostic, not a state dump. The skill returns daemon state (`installed`, `running`, `backend_state`), this device's tailnet identity (`self.online`, `self.name`, `tailnet`), peers (`peers[].online`, `peers[].last_seen`), and Serve config (`serve.Web` handlers). Match what you see against the table below and lead with the fix.
 
 ## Common diagnoses
 

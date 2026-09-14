@@ -7,8 +7,8 @@ Two mechanisms:
    or returns a failure result after retries are exhausted.  Never raises
    on transient failures — safe for MCP gateway use.
 
-2. ``obsidian_retry`` capability — explicit MCP wrapper agents can call
-   on any bridge-dependent capability with custom retry params.
+2. ``obsidian_retry`` skill — explicit MCP wrapper agents can call
+   on any bridge-dependent skill with custom retry params.
 
 Both check bridge health before each attempt, wait between retries,
 and log latency context per attempt.
@@ -483,7 +483,7 @@ def bridge_retry(
 
 
 # ---------------------------------------------------------------------------
-# obsidian_retry capability
+# obsidian_retry skill
 # ---------------------------------------------------------------------------
 
 def obsidian_retry(
@@ -494,17 +494,17 @@ def obsidian_retry(
     """Synchronous bridge-aware retry for a previously recorded operation.
 
     Unlike ``@bridge_retry`` (decorator, applied at definition time), this
-    is an explicit MCP capability agents can call to replay a bridge-
+    is an explicit MCP skill agents can call to replay a bridge-
     dependent operation that failed or timed out — typically after a
     consent timeout or an Obsidian bridge hiccup.
 
     Health-checks the bridge before each attempt, waits between retries,
     and captures latency context per attempt.
 
-    The capability name and parameters are loaded from the operation
+    The skill name and parameters are loaded from the operation
     record; agents do not re-supply them. If you don't have an
     ``operation_id`` you don't need retry — just call the underlying
-    capability directly; the gateway's automatic background retry
+    skill directly; the gateway's automatic background retry
     handles transient bridge hiccups on fresh calls.
 
     Args:
@@ -515,7 +515,7 @@ def obsidian_retry(
         wait_seconds: Seconds to wait between attempts (default: 60).
 
     Returns:
-        The capability's result on success, or a bridge_failure dict on
+        The skill's result on success, or a bridge_failure dict on
         exhaustion.
     """
     from work_buddy.mcp_server.registry import get_registry
@@ -536,15 +536,15 @@ def obsidian_retry(
             "error": f"Operation '{operation_id}' not found",
         }
 
-    capability = record.get("name")
+    skill = record.get("name")
     params = record.get("params") or {}
     originating_session_id = record.get("originating_session_id")
 
-    if not capability:
+    if not skill:
         return {
             "success": False,
             "error": (
-                f"Operation '{operation_id}' is missing a capability name "
+                f"Operation '{operation_id}' is missing a skill name "
                 f"in its record — cannot replay."
             ),
         }
@@ -560,7 +560,7 @@ def obsidian_retry(
         "task_toggle",
         "task_update_description",
     }
-    is_task_mutation = capability in task_mutations
+    is_task_mutation = skill in task_mutations
     if is_task_mutation:
         from work_buddy.tasks.runtime import (
             assert_task_replay_authority,
@@ -585,7 +585,7 @@ def obsidian_retry(
                 "retired": True,
                 "error": (
                     "obsidian_retry cannot replay native task operations; "
-                    "use the bridge-independent retry capability instead."
+                    "use the bridge-independent retry skill instead."
                 ),
                 "error_code": "task_obsidian_retry_retired",
             }
@@ -595,10 +595,10 @@ def obsidian_retry(
     from work_buddy.obsidian.bridge import is_available, get_latency_context
 
     registry = get_registry()
-    entry = registry.get(capability)
+    entry = registry.get(skill)
 
     if entry is None:
-        return {"success": False, "error": f"Capability '{capability}' not found"}
+        return {"success": False, "error": f"Skill '{skill}' not found"}
 
     last_failure: dict[str, Any] | None = None
     last_exc: Exception | None = None
@@ -609,7 +609,7 @@ def obsidian_retry(
             logger.info(
                 "obsidian_retry(%s): bridge unavailable before attempt "
                 "%d/%d (%s). Waiting %ds...",
-                capability, attempt, max_retries, latency, wait_seconds,
+                skill, attempt, max_retries, latency, wait_seconds,
             )
             if attempt < max_retries:
                 time.sleep(wait_seconds)
@@ -655,7 +655,7 @@ def obsidian_retry(
                     from work_buddy.obsidian.tasks.mutations import (
                         refresh_idempotency_on_replay,
                     )
-                    refresh_idempotency_on_replay(capability, params)
+                    refresh_idempotency_on_replay(skill, params)
                 except Exception:  # pragma: no cover — legacy best effort
                     pass
             try:
@@ -687,7 +687,7 @@ def obsidian_retry(
                     "obsidian_retry(%s): propagating "
                     "ObsidianPostWriteUncertain (path=%r, write_mode=%r) "
                     "to gateway for verify-then-decide.",
-                    capability,
+                    skill,
                     getattr(exc, "path", "?"),
                     getattr(exc, "write_mode", "?"),
                 )
@@ -699,16 +699,16 @@ def obsidian_retry(
                 logger.info(
                     "obsidian_retry(%s): terminal ObsidianError '%s' "
                     "on attempt %d/%d — short-circuiting.",
-                    capability, getattr(exc, "error_kind", ""),
+                    skill, getattr(exc, "error_kind", ""),
                     attempt, max_retries,
                 )
-                return _exception_to_bridge_failure(exc, capability)
+                return _exception_to_bridge_failure(exc, skill)
 
             error_class = classify_error(exc)
             latency = get_latency_context()
             logger.warning(
                 "obsidian_retry(%s): attempt %d/%d raised (%s): %s [%s]",
-                capability, attempt, max_retries,
+                skill, attempt, max_retries,
                 error_class, exc, latency,
             )
             last_exc = exc
@@ -735,7 +735,7 @@ def obsidian_retry(
                 except ImportError:
                     ObsidianError = ()  # type: ignore[assignment]
                 if isinstance(exc, ObsidianError):
-                    return _exception_to_bridge_failure(exc, capability)
+                    return _exception_to_bridge_failure(exc, skill)
                 return {"success": False, "error": str(exc)}
             continue
 
@@ -744,7 +744,7 @@ def obsidian_retry(
             logger.warning(
                 "obsidian_retry(%s): attempt %d/%d returned "
                 "bridge_failure: %s [%s]",
-                capability, attempt, max_retries,
+                skill, attempt, max_retries,
                 result.get("message", ""), latency,
             )
             last_failure = result
@@ -755,7 +755,7 @@ def obsidian_retry(
                 logger.info(
                     "obsidian_retry(%s): terminal state '%s' — "
                     "skipping remaining retries.",
-                    capability, result.get("_bridge_state"),
+                    skill, result.get("_bridge_state"),
                 )
                 return result
 

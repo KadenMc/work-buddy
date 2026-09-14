@@ -50,7 +50,7 @@ def task_creation_attribution(
     command must therefore retain the recorded human approver rather than use
     the current sidecar/gateway session. This is attribution only: native epoch,
     mutation fencing, and the caller's approval boundary remain in force. The
-    context is not exposed as a capability parameter and affects create only.
+    context is not exposed as a skill parameter and affects create only.
     """
     if not isinstance(actor, str) or not actor.strip():
         raise ValueError("A recorded task creation actor is required")

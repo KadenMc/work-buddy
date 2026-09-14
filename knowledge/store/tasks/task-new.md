@@ -29,7 +29,7 @@ steps:
   depends_on:
   - plan
   auto_run:
-    callable: work_buddy.tasks.capabilities.enrich_plan
+    callable: work_buddy.tasks.skills.enrich_plan
     input_map:
       plan: plan
     timeout: 30
@@ -123,7 +123,7 @@ near-matches against the namespace universe.
 
 ## enrich
 
-Auto-run. Calls the native `work_buddy.tasks.capabilities.enrich_plan` on the plan from the prior step. Returns:
+Auto-run. Calls the native `work_buddy.tasks.skills.enrich_plan` on the plan from the prior step. Returns:
 - `suggestions`: ranked existing namespaces relevant to task_text, including any historical projects/ paths still assigned
 - `tag_status`: per proposed_tag, whether it already exists, and if not, the closest near-matches
 - `project_status`: registry context — `known_projects` includes `project_id`, slug, name, and status. `proposed_slug` and `slug_exists` describe the explicit legacy `plan.project` field; tag spelling does not infer that field. `near_subtrees` and `subtree_matches` retain historical namespace hints only. The task service validates final project IDs at creation.

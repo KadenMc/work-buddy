@@ -1,10 +1,10 @@
 """WebSearch-domain ops.
 
-Each op here is referenced by a ``kind: capability`` declaration unit under
+Each op here is referenced by a ``kind: skill`` declaration unit under
 ``knowledge/store/websearch/`` carrying a matching ``op`` field. Mirrors
-``email_ops.py``: a module-level ``_register()`` binds the thin capability
+``email_ops.py``: a module-level ``_register()`` binds the thin skill
 callables to ``op.wb.*`` ids. A newly added op requires a full MCP server
-restart to enter the tool dispatcher; ``reload_capability_data`` refreshes
+restart to enter the tool dispatcher; ``reload_skill_data`` refreshes
 declaration / workflow *data*, not new Op code.
 """
 
@@ -14,7 +14,7 @@ from work_buddy.mcp_server.op_registry import register_op
 
 
 def _register() -> None:
-    from work_buddy.websearch.capabilities import (
+    from work_buddy.websearch.skills import (
         web_fetch,
         web_search,
         web_search_health,

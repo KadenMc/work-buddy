@@ -2,7 +2,7 @@
 
 Thin wrapper that maps a knowledge-unit path → the three `TreeView`
 depths by delegating to `agent_docs`. Lets agents walk the knowledge
-store using the same `drill_tree` capability they use for summaries
+store using the same `drill_tree` skill they use for summaries
 and any future tree-shaped domain.
 
 Cost notes:
@@ -86,11 +86,11 @@ class KnowledgeTreeDrillable:
             "tags": list(unit.get("tags") or []),
             "aliases": list(unit.get("aliases") or []),
         }
-        # Pass through capability-specific frontmatter when present so
+        # Pass through skill-specific frontmatter when present so
         # consumers can act on it (e.g. `op`, `category`, `command`).
         for key in (
             "op", "category", "schema_version", "command", "workflow",
-            "capability_name", "trigger", "mutates_state", "retry_policy",
+            "skill_name", "trigger", "mutates_state", "retry_policy",
             "entry_points", "consent_required",
         ):
             if key in unit and unit[key] is not None:

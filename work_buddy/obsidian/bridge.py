@@ -1024,7 +1024,7 @@ def eval_js_internal(code: str, timeout: int = 15) -> Any:
     """Internal eval_js without the human-consent gate.
 
     For use only by bridge-internal helpers (e.g. atomic vault-write paths)
-    whose calling capability ALREADY holds an equivalent or stronger
+    whose calling skill ALREADY holds an equivalent or stronger
     consent (typically ``obsidian.write_file`` — the atomic-write helper
     is semantically a write, not arbitrary JS execution). Skipping a
     second ``obsidian.eval_js`` prompt avoids double-consenting the user

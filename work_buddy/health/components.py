@@ -118,7 +118,7 @@ _register(ComponentDef(
                 "stopped heartbeating). Start it with:\n"
                 + ("  Start-ScheduledTask 'WB-Sidecar'" if _IS_WINDOWS
                    else "  python -m work_buddy.sidecar &")
-                + "\n\nMost work-buddy capabilities depend on the sidecar — "
+                + "\n\nMost work-buddy skills depend on the sidecar — "
                 "if it's down, health checks, scheduled jobs, and inter-agent "
                 "messaging will be unavailable."
             ),

@@ -8,9 +8,9 @@ effect verify would see the note exists with the right sha256, declare
 ``verified``, and let the sweep fire ``retry_success`` — even when the
 SECOND effect (the master-list line) had never landed.
 
-The wrapper-aware contract: when the queued capability is a wrapper
+The wrapper-aware contract: when the queued skill is a wrapper
 (``retry`` / ``obsidian_retry``) and its ``params.operation_id``
-references an inner op, the verifier looks up the inner op's capability
+references an inner op, the verifier looks up the inner op's skill
 and walks ITS effects manifest. Only when the inner record can't be
 resolved does it fall back to the single-effect path.
 """
@@ -176,7 +176,7 @@ def test_obsidian_retry_wrapper_uses_inner_task_create_manifest(
 
     assert verdict is None, (
         "Wrapper-style record (obsidian_retry) should defer to inner "
-        "capability's effects manifest. Got: "
+        "skill's effects manifest. Got: "
         f"{verdict!r}"
     )
 
@@ -185,7 +185,7 @@ def test_generic_retry_wrapper_uses_inner_manifest(
     vault: Path, operations_dir: Path, monkeypatch,
 ) -> None:
     """Same as the obsidian_retry case but for the generic ``retry``
-    capability. Both replay an inner op by id; both need the inner
+    skill. Both replay an inner op by id; both need the inner
     manifest for multi-effect verify."""
     note_uuid = "33333333-3333-3333-3333-333333333333"
     note_content = "GENERIC-RETRY body"
@@ -229,7 +229,7 @@ def test_generic_retry_wrapper_uses_inner_manifest(
     )
 
     assert verdict is None, (
-        "Generic retry wrapper should also defer to inner capability's "
+        "Generic retry wrapper should also defer to inner skill's "
         f"effects manifest. Got: {verdict!r}"
     )
 
@@ -270,7 +270,7 @@ def test_wrapper_falls_back_to_single_effect_when_inner_op_missing(
 def test_non_wrapper_unchanged(
     vault: Path, operations_dir: Path,
 ) -> None:
-    """Regression guard: non-wrapper capabilities without their own
+    """Regression guard: non-wrapper skills without their own
     manifest still hit the single-effect verify path. The new lookup
     must NOT trigger for arbitrary names."""
     note_uuid = "44444444-4444-4444-4444-444444444444"
@@ -278,8 +278,8 @@ def test_non_wrapper_unchanged(
     note_path_rel, sha_hint = _make_note(vault, note_uuid, note_content)
 
     record = {
-        "operation_id": "op_some_other_capability",
-        "name": "some_unrelated_capability",
+        "operation_id": "op_some_other_skill",
+        "name": "some_unrelated_skill",
         "params": {"operation_id": "op_does_not_exist"},  # not a wrapper-id field
         "pwu_carrier": {
             "path": note_path_rel,

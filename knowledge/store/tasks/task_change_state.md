@@ -1,11 +1,10 @@
 ---
 name: Task Change State
-kind: capability
+kind: skill
 description: 'Update task metadata: state (not completion), urgency, due date. Cannot set state=''done'' — use task_toggle for completion.'
-capability_name: task_change_state
 category: tasks
 op: op.wb.task_change_state
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   task_id:
     type: str
@@ -43,6 +42,7 @@ mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.update_task
+skill_name: task_change_state
 tags:
 - tasks
 - task
@@ -59,5 +59,4 @@ aliases:
 - move task to inbox
 parents:
 - tasks
-requires: []
 ---

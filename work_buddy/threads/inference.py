@@ -231,7 +231,7 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
     # combined_inferred_meta event records that they all came from
     # one call. Default tier is FRONTIER_BALANCED — combined is more
     # demanding than each individual target and benefits from the
-    # extra capability.
+    # extra skill.
     InferenceTarget.COMBINED: TargetSpec(
         target=InferenceTarget.COMBINED,
         event_kind="combined_inferred",  # virtual; per-target events

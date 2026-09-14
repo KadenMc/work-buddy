@@ -1,8 +1,8 @@
-"""Resilience wiring for the MCP gateway's capability dispatch.
+"""Resilience wiring for the MCP gateway's skill dispatch.
 
-Every ``wb_run`` capability dispatch runs through the resilience framework's
+Every ``wb_run`` skill dispatch runs through the resilience framework's
 ``guarded_call`` so the gateway emits dispatch-timing telemetry under the
-``wb_run:<capability>`` operation key. Listeners registered here record those
+``wb_run:<skill>`` operation key. Listeners registered here record those
 events (an in-process metrics ring) and log one grep-able line per dispatch.
 
 Kept lightweight: only the resilience framework (stdlib-only) is imported at
@@ -34,11 +34,11 @@ from work_buddy.resilience.telemetry import (
 
 logger = logging.getLogger("work_buddy.mcp_server.dispatch")
 
-# Default wall-time budget for a capability dispatch that declares none and is
+# Default wall-time budget for a skill dispatch that declares none and is
 # not self-managing. Local / leaf operations complete well within this.
 DEFAULT_DISPATCH_TIMEOUT_S: float = 30.0
 
-# Tool id whose dependent capabilities self-retry (via @bridge_retry) and own
+# Tool id whose dependent skills self-retry (via @bridge_retry) and own
 # their own time budget — the gateway does not impose a timeout on them.
 _OBSIDIAN_TOOL_ID = "obsidian"
 
@@ -78,7 +78,7 @@ _CONTROL_FLOW_PASSTHROUGH: tuple[type[BaseException], ...] = (
 
 
 def _requires_bridge(entry: Any) -> bool:
-    """True if the capability requires any bridge-backed tool (the Obsidian
+    """True if the skill requires any bridge-backed tool (the Obsidian
     bridge itself or an in-Obsidian plugin that depends on it)."""
     requires = getattr(entry, "requires", None) or []
     return bool(set(requires) & _bridge_tools())
@@ -136,12 +136,12 @@ def get_dispatch_metrics() -> InMemoryMetrics:
 
 
 def _domain_default(entry: Any) -> float:
-    """The budget for a capability that declares no ``timeout_seconds``.
+    """The budget for a skill that declares no ``timeout_seconds``.
 
     The gateway timeout is **opt-in**: an undeclared budget is unbounded
-    (``math.inf``), so the gateway imposes no wall-time cap unless a capability
+    (``math.inf``), so the gateway imposes no wall-time cap unless a skill
     explicitly asks for one. A flat default is deliberately NOT auto-applied —
-    a too-low default silently breaks the whole class of capabilities that
+    a too-low default silently breaks the whole class of skills that
     legitimately run long: human-in-the-loop prompts that poll for a response
     (``request_send`` / ``request_poll``), synchronous retry wrappers
     (``obsidian_retry`` / ``retry``), and LLM submission (``llm_submit``). A
@@ -149,7 +149,7 @@ def _domain_default(entry: Any) -> float:
     this module records) AND paired with explicit exemptions for those
     long-runners. ``DEFAULT_DISPATCH_TIMEOUT_S`` is the candidate value for that
     future calibration; it is intentionally not applied yet. An un-capped
-    capability that hangs leaks only a worker thread — it does not stall the
+    skill that hangs leaks only a worker thread — it does not stall the
     gateway event loop — so opt-in is safe.
     """
     return math.inf
@@ -204,13 +204,13 @@ def build_dispatch_deadline(budget: float) -> Deadline:
 
 
 def build_dispatch_strategies(entry: Any, budget: float) -> list:
-    """The resilience strategy chain for one capability dispatch.
+    """The resilience strategy chain for one skill dispatch.
 
     Canonical order (outermost first): ``TimeoutStrategy`` (only when the
     budget is bounded) then the shared Obsidian ``CircuitBreakerStrategy``
-    (only for bridge-dependent capabilities). No retry strategy is added here
+    (only for bridge-dependent skills). No retry strategy is added here
     — the one-retry-layer rule reserves retry for the inner chain
-    (``@bridge_retry``-decorated capabilities).
+    (``@bridge_retry``-decorated skills).
     """
     strategies: list = []
     if budget != math.inf:
@@ -223,7 +223,7 @@ def build_dispatch_strategies(entry: Any, budget: float) -> list:
 def dispatch_classifiers(entry: Any):
     """The (exception classifier, result classifier) for a dispatch.
 
-    Obsidian-bridge capabilities use the bridge classifiers so a raised
+    Obsidian-bridge skills use the bridge classifiers so a raised
     ``ObsidianError`` and a legacy ``bridge_failure`` return-dict both map onto
     the outcome taxonomy that the circuit breaker counts. Everything else uses
     the framework default (and has no result classifier).

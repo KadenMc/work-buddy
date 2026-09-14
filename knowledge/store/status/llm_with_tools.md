@@ -1,11 +1,10 @@
 ---
 name: Llm With Tools
-kind: capability
+kind: skill
 description: 'Invoke a local model with restricted work-buddy MCP tool access, so it can look things up (projects, tasks, journal, context) while answering. Tool access is limited to a named preset defined in work_buddy/llm/tool_presets.py (currently: ''readonly_safe'', ''readonly_context''). No arbitrary tool list accepted at call time — presets are the security boundary. Requires ''profile'' and ''tool_preset''.'
-capability_name: llm_with_tools
 category: llm
 op: op.wb.llm_with_tools
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   system:
     type: str
@@ -23,9 +22,9 @@ parameters:
     type: str
     description: 'Named whitelist of allowed work-buddy tools. Currently: ''readonly_safe'', ''readonly_context''. Presets are code, not config — defined in work_buddy/llm/tool_presets.py.'
     required: true
-  required_capabilities:
+  required_skills:
     type: list[str]
-    description: Optional list of capability names the model MUST be able to call (e.g. ['update-journal', 'journal_write']). Pre-flight checked against the preset; if any are missing, the call fails fast with an explicit error. Use this to catch goal-preset mismatches — e.g. running a workflow from a read-only preset that doesn't include the workflow's name.
+    description: Optional list of skill names the model MUST be able to call (e.g. ['update-journal', 'journal_write']). Pre-flight checked against the preset; if any are missing, the call fails fast with an explicit error. Use this to catch goal-preset mismatches — e.g. running a workflow from a read-only preset that doesn't include the workflow's name.
     required: false
   previous_response_id:
     type: str
@@ -116,6 +115,7 @@ invokes:
 - task_stale_check
 - weekly_review_data
 auto_retry: false
+skill_name: llm_with_tools
 tags:
 - llm
 - with

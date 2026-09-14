@@ -4,7 +4,7 @@ Markdown is treated as untrusted bytes.  This module never executes template,
 Dataview, Datacore, JavaScript, command, or plugin syntax.  It inventories the
 frozen corpus and assigns every byte to one deterministic disposition; the
 private orchestration that selects a user-specific source root and mapping lives under
-the ignored migration workspace rather than becoming a public capability.
+the ignored migration workspace rather than becoming a public skill.
 """
 
 from __future__ import annotations

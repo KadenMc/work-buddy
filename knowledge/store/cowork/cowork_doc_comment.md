@@ -1,11 +1,10 @@
 ---
 name: Cowork Doc Comment
-kind: capability
-description: "Raise a quote-anchored concern as a flag (`replacement: null`) on a cowork doc; flags are not deletion edits."
-capability_name: cowork_doc_comment
+kind: skill
+description: 'Raise a quote-anchored concern as a flag (`replacement: null`) on a cowork doc; flags are not deletion edits.'
 category: cowork
 op: op.wb.cowork_doc_comment
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   store_id:
     type: str
@@ -17,7 +16,7 @@ parameters:
     required: true
   quote_anchor:
     type: dict
-    description: "A mapping of {exact, prefix, suffix} resolved by the kernel anchor resolver."
+    description: A mapping of {exact, prefix, suffix} resolved by the kernel anchor resolver.
     required: true
   body:
     type: str
@@ -37,7 +36,7 @@ parameters:
     required: false
   claim_refs:
     type: list
-    description: "Optional. A list of {claim, role} where claim is a local claim id or a wb-truth URI and role is one of quote, paraphrase, summary, or instantiation, defaulting to instantiation."
+    description: Optional. A list of {claim, role} where claim is a local claim id or a wb-truth URI and role is one of quote, paraphrase, summary, or instantiation, defaulting to instantiation.
     required: false
   producer_call_id:
     type: str
@@ -58,6 +57,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_doc_comment
 tags:
 - cowork
 - doc
@@ -73,12 +73,12 @@ parents:
 ---
 
 Document agents supply `conversation_id`, `consumer`, and `generation`
-together. The capability verifies that the conversation is the real binding for
+together. The skill verifies that the conversation is the real binding for
 this store and document, then holds that exact live lease while the flag is
 created. Other callers may omit the complete tuple. Partial or mismatched tuples
 are rejected.
 
-Use this capability when the concern has no concrete text replacement. To
+Use this skill when the concern has no concrete text replacement. To
 propose deleting the anchored passage, use `cowork_doc_propose_edit` with an
 empty-string replacement instead; a flag does not produce tracked deletion
 markup.

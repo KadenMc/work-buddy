@@ -1,6 +1,6 @@
 """Tests for the gateway's dispatch-resilience wiring.
 
-The gateway routes every ``wb_run`` capability dispatch through
+The gateway routes every ``wb_run`` skill dispatch through
 ``guarded_call`` so it emits dispatch-timing telemetry. These tests cover the
 ``dispatch_resilience`` module's primitives (listener registration, the
 in-process metrics recorder, the log listener) and a wiring smoke test that
@@ -54,7 +54,7 @@ class TestDispatchTelemetry:
         dr.ensure_listeners_registered()
 
         async def _run():
-            return await guarded_call("wb_run:demo_cap", lambda: "ok")
+            return await guarded_call("wb_run:demo_skill", lambda: "ok")
 
         outcome = asyncio.run(_run())
         assert outcome.is_success
@@ -62,19 +62,19 @@ class TestDispatchTelemetry:
 
         snap = dr.get_dispatch_metrics().snapshot()
         assert snap["call_count"] == 1
-        assert "wb_run:demo_cap/success" in snap["counts_by_operation_outcome"]
+        assert "wb_run:demo_skill/success" in snap["counts_by_operation_outcome"]
 
     def test_log_listener_emits_grep_able_line(self, caplog):
         listener = dr._DispatchLogListener()
         event = CallCompleted(
-            operation_key="wb_run:demo_cap",
+            operation_key="wb_run:demo_skill",
             call_id="abc123",
             duration_s=0.042,
             outcome=OutcomeKind.SUCCESS,
         )
         with caplog.at_level(logging.INFO, logger="work_buddy.mcp_server.dispatch"):
             listener.on_event(event)
-        assert "guard.call op=wb_run:demo_cap" in caplog.text
+        assert "guard.call op=wb_run:demo_skill" in caplog.text
         assert "outcome=success" in caplog.text
 
 
@@ -88,8 +88,8 @@ class TestGatewayWiringSmoke:
             "gateway.py no longer routes the dispatch through guarded_call — "
             "dispatch telemetry / timeout wiring may have been removed."
         )
-        assert 'f"wb_run:{capability}"' in source, (
-            "gateway.py no longer tags the dispatch with the wb_run:<cap> "
+        assert 'f"wb_run:{skill}"' in source, (
+            "gateway.py no longer tags the dispatch with the wb_run:<skill> "
             "operation key."
         )
         assert "ensure_listeners_registered" in source, (

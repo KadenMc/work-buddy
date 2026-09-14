@@ -135,7 +135,7 @@ workflow, result-retrieval, and unrelated document operations are unavailable.
 A restarted or retired generation loses all inbox and mutation authority.
 
 Claude begins with only its built-in ToolSearch, uses that bootstrap to load the
-exact Work Buddy initialization and capability tools named by its execution
+exact Work Buddy initialization and skill tools named by its execution
 identity, and receives a strict MCP configuration containing only Work Buddy.
 The private brief forbids loading other tools. This bootstrap is required for
 the driver to initialize and consume its durable inbox; disabling every tool

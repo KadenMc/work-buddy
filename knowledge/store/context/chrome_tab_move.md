@@ -1,11 +1,10 @@
 ---
 name: Chrome Tab Move
-kind: capability
+kind: skill
 description: Move Chrome tabs to a specific position or window.
-capability_name: chrome_tab_move
 category: context
 op: op.wb.chrome_tab_move
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   tab_ids:
     type: list
@@ -25,6 +24,7 @@ is_action: true
 intrinsic_amplifiers:
   irreversibility: low
   regret_potential: low
+skill_name: chrome_tab_move
 tags:
 - context
 - chrome

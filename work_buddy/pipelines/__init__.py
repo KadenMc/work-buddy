@@ -13,7 +13,7 @@ five-stage flow regardless of source:
     spawn        → group umbrella thread + group sub-threads + items as
                    ContextItems (via ``threads.group.group_thread``)
 
-Per-group actions are dispatched through the standard capability
+Per-group actions are dispatched through the standard skill
 registry (``is_action=True`` entries). The same action chip UI surfaces
 on group sub-thread column headers AND decompose-parent sub-thread
 mini-cards, so the dashboard UX is uniform.
@@ -34,7 +34,7 @@ from work_buddy.pipelines.actions import (
     ActionDescriptor,
     ActionLibrary,
 )
-from work_buddy.pipelines.capability import (
+from work_buddy.pipelines.source_registry import (
     PIPELINES,
     UnknownSourceError,
     run_source_pipeline,

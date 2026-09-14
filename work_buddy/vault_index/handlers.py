@@ -4,7 +4,7 @@ Markdown-only by default, open for extension. A ``ContentHandler`` claims one or
 more file extensions and turns a file's text into ``Chunk``s. The pipeline asks
 the registry for a handler by extension; **no handler -> the file is skipped.**
 Adding ``.pdf`` / source-code / etc. later is a new handler registration with
-zero change to the source walker, store, search, or capability — ``Chunk`` is the
+zero change to the source walker, store, search, or skill — ``Chunk`` is the
 stable contract between handlers and the rest of the system (DESIGN §6).
 
 Extensions are stored and looked up **with the leading dot, lowercased**, so the

@@ -1,11 +1,10 @@
 ---
 name: Journal Write
-kind: capability
-description: 'Create Source-backed native Journal records or a generated briefing artifact, with AI provenance and no automatic Truth analysis.'
-capability_name: journal_write
+kind: skill
+description: Create Source-backed native Journal records or a generated briefing artifact, with AI provenance and no automatic Truth analysis.
 category: journal
 op: op.wb.journal_write
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   mode:
     type: str
@@ -35,6 +34,7 @@ consent_operations:
 param_aliases:
   target_date: target
   date: target
+skill_name: journal_write
 tags:
 - journal
 - write
@@ -46,7 +46,6 @@ aliases:
 - update log
 parents:
 - journal
-requires: []
 ---
 
 Each complete rendered record or briefing is committed to Sources before the

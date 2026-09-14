@@ -2,8 +2,8 @@
 schedule: "* * * * *"
 recurring: true
 jitter_seconds: 10
-type: capability
-capability: task_creation_reconcile
+type: skill
+skill: task_creation_reconcile
 params:
   limit: 25
 ---

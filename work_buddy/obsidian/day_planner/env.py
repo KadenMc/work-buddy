@@ -126,7 +126,7 @@ def get_todays_plan(journal_path: str) -> dict[str, Any]:
     # bridge failure (raises a typed ObsidianError). A transient must NOT be
     # reported as "no plan" — a caller could act on found=False (skip display,
     # or regenerate from scratch). We let the typed exception propagate: the
-    # @bridge_retry-wrapped day_planner capability replays it, and the
+    # @bridge_retry-wrapped day_planner skill replays it, and the
     # best-effort collector catches it and renders "unavailable".
     from work_buddy.config import load_config
     from work_buddy.journal_capture.content_adapter import JournalContentAdapter
@@ -204,7 +204,7 @@ def write_plan(
     Returns dict with success, entries_written, journal_path.
     """
     # read_file_raw raises a typed ObsidianError on a transient (propagates to
-    # the @bridge_retry-wrapped day_planner capability, which replays the
+    # the @bridge_retry-wrapped day_planner skill, which replays the
     # write); 404 → None means the journal file genuinely does not exist.
     from work_buddy.config import load_config
     from work_buddy.journal_capture.content_adapter import JournalContentAdapter
@@ -234,7 +234,7 @@ def write_plan(
     new_content = content[:section_start] + new_body + content[section_end:]
 
     # Post-CP6: bridge.write_file raises typed ObsidianError on failure.
-    # This function is called from a capability that's typically wrapped
+    # This function is called from a skill that's typically wrapped
     # by retry policy; let exceptions propagate to the gateway exception
     # handler (which classifies + enqueues + verifies post-write
     # uncertain).

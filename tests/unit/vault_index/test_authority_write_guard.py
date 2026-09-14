@@ -14,6 +14,12 @@ from work_buddy.vault_index.authority_exclusions import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _use_test_authority_data_root(tmp_path: Path, monkeypatch) -> None:
+    """Point authority lookups at the database created by each test."""
+    monkeypatch.setenv("WORK_BUDDY_DATA_DIR", str(tmp_path / "data"))
+
+
 def _config(tmp_path: Path) -> dict:
     vault = tmp_path / "vault"
     data = tmp_path / "data"

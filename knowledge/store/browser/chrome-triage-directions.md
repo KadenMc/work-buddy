@@ -6,7 +6,7 @@ summary: Start chrome-triage workflow. The unified source pipeline runs automati
 trigger: user wants to triage, organize, or close Chrome tabs
 command: wb-chrome-triage
 workflow: browser/chrome-triage
-capabilities:
+skills:
 - context/chrome_activity
 - context/chrome_content
 - context/chrome_infer
@@ -68,7 +68,7 @@ column grid on the Threads tab — drag-drops items between groups
 action chip dropdown, and clicks Approve all to dispatch every
 non-terminal child's chosen action through the standard FSM.
 
-Capabilities the per-group action chip can dispatch:
+Skills the per-group action chip can dispatch:
 
 - ``chrome_tab_close`` — close every tab in the group
 - ``chrome_tab_group`` — create a Chrome tab group named after
@@ -83,7 +83,7 @@ Capabilities the per-group action chip can dispatch:
 
 Chrome write-side mutations (``chrome_tab_close`` / ``chrome_tab_group``
 / ``chrome_tab_move``) auto-bind ``tab_ids`` from the child's
-``context_items`` at dispatch time; the ``thread_*`` capabilities
+``context_items`` at dispatch time; the ``thread_*`` skills
 auto-bind ``thread_id``. The user does not need to fill in
 parameters for any of these.
 

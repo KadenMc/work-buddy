@@ -1,11 +1,10 @@
 ---
 name: Commit Record
-kind: capability
+kind: skill
 description: Record structured commit metadata (hash, files, test results, knowledge units updated) as an artifact. Called after a successful git commit to enable enriched commit cards in the dashboard.
-capability_name: commit_record
 category: artifacts
 op: op.wb.commit_record
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   commit_hash:
     type: str
@@ -49,6 +48,7 @@ parameters:
     required: false
 mutates_state: true
 retry_policy: replay
+skill_name: commit_record
 tags:
 - artifacts
 - commit

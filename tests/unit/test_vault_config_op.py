@@ -1,4 +1,4 @@
-"""B — the vault_config write capability (config.local.yaml round-trip, validation)."""
+"""B — the vault_config write skill (config.local.yaml round-trip, validation)."""
 from __future__ import annotations
 
 import work_buddy.mcp_server.ops.vault_ops as vo

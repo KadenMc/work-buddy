@@ -2,8 +2,8 @@
 schedule: "*/5 * * * *"  # minute 0 of each 5-min cycle — the anchor that sibling index crons offset off
 recurring: true
 jitter_seconds: 45  # intra-minute de-sync only; kept under 60s so it stays within minute 0 (sibling crons own minutes 1-4)
-type: capability
-capability: ir_index
+type: skill
+skill: ir_index
 params:
   action: build
   source: conversation

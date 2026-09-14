@@ -1,11 +1,10 @@
 ---
 name: Co-work Truth Analysis Search
-kind: capability
+kind: skill
 description: Run one replay-safe bounded web query for the exact Co-work Truth-analysis worker and persist up to five lead-only hits.
-capability_name: cowork_truth_analysis_search
 category: cowork
 op: op.wb.cowork_truth_analysis_search
-schema_version: wb-capability/v1
+schema_version: wb-skill/v1
 parameters:
   run_id:
     type: str
@@ -18,6 +17,7 @@ parameters:
 mutates_state: true
 retry_policy: manual
 auto_retry: false
+skill_name: cowork_truth_analysis_search
 tags:
 - cowork
 - truth
@@ -33,7 +33,7 @@ parents:
 ---
 
 Only the exact `<run-id>-cowork-truth-analysis` transport session can call this
-capability. The run must still be active. Each run may admit at most three
+skill. The run must still be active. Each run may admit at most three
 distinct normalized queries, with at most five hits per query; the worker
 cannot raise either limit or choose a different search transport.
 
@@ -46,7 +46,7 @@ before launch.
 Persisted hits contain stable opaque IDs, source titles and URLs, provider
 metadata, and snippets marked as leads. Search snippets and provider-inline
 page text are never supporting evidence. A later fetch must name one of these
-server-admitted hit IDs; this capability never creates an evidence receipt,
+server-admitted hit IDs; this skill never creates an evidence receipt,
 claim-support relationship, ledger claim, or fact.
 
 An identical normalized-query replay returns the original durable search and

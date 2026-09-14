@@ -78,6 +78,20 @@ class TestResolveForEdit:
         assert data is not None
         assert data["kind"] == "directions"
 
+    def test_create_skill_scaffold_uses_canonical_field(self, tmp_store):
+        r = resolve_for_edit(params={
+            "path": "x/sample_skill",
+            "create": True,
+            "kind": "skill",
+            "skill_name": "sample_skill",
+        })
+        assert r["ok"] is True
+        data = file_store.read_unit(tmp_store, "x/sample_skill")
+        assert data is not None
+        assert data["kind"] == "skill"
+        assert data["skill_name"] == "sample_skill"
+        assert "capability_name" not in data
+
     def test_create_without_kind_errors(self, tmp_store):
         r = resolve_for_edit(params={"path": "x/new", "create": True})
         assert r["ok"] is False

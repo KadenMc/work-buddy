@@ -224,7 +224,7 @@ def _html(*, native_tasks_active: bool = False) -> str:
             <label class="job-form-type-row">What does this job do?
                 <select id="job-form-type" data-on-change="onJobTypeChange">
                     <option value="prompt">Run a prompt — agent does a freeform task</option>
-                    <option value="invoke">Invoke a capability or workflow</option>
+                    <option value="invoke">Invoke a skill or workflow</option>
                 </select>
             </label>
         </div>
@@ -239,12 +239,12 @@ def _html(*, native_tasks_active: bool = False) -> str:
         <div id="job-form-invoke-row" class="job-form-row" hidden>
             <label>Kind
                 <select id="job-form-invoke-kind" data-on-change="onInvokeKindChange">
-                    <option value="capability">capability</option>
+                    <option value="skill">skill</option>
                     <option value="workflow">workflow</option>
                 </select>
             </label>
             <label>
-                <span id="job-form-invoke-name-label">Capability name</span>
+                <span id="job-form-invoke-name-label">Skill name</span>
                 <input id="job-form-invoke-name" type="text" list="job-form-invoke-options"
                        placeholder="task_briefing" autocomplete="off"
                        data-on-input="onInvokeNameInput" />
@@ -517,7 +517,7 @@ def _html(*, native_tasks_active: bool = False) -> str:
 
 <!-- SETTINGS -->
 <!-- Unified control-graph view: domains → subsystems → components →
-     requirements + affected capabilities. Read-only in Phase E;
+     requirements + affected skills. Read-only in Phase E;
      preference toggles land in Phase F. -->
 <div class="tab-panel" id="panel-settings">
     <div class="settings-subtab-bar">

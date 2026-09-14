@@ -49,7 +49,7 @@ tags:
 - triage
 parents:
 - tasks
-dev_notes: 'task-triage previously auto-fired `task_archive()` (zero args) at the apply step when the gather step showed >10 completed tasks. This collapsed bulk-archive into the same consent prompt as per-task state changes, leading to the 2026-05-08 incident where 183 tasks archived against a user who thought they were approving a single-task test. The fix: archiving is now an explicit, separate operation. The capability''s own consent body shows a count and a random 5-title sample (see `archive_completed._archive_consent_body_extras`).'
+dev_notes: 'Archiving is an explicit operation separate from task-triage. Combining bulk archive with per-task state-change consent can authorize a much larger mutation than the user expects. The archive skill therefore shows the affected count and a random five-title sample in its consent body (see `archive_completed._archive_consent_body_extras`).'
 ---
 
 ## gather
