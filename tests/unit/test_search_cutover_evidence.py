@@ -22,6 +22,12 @@ from work_buddy.vault_index.partition import VaultChunkPartition
 from work_buddy.vault_index.source import FilesystemSource
 
 
+@pytest.fixture(autouse=True)
+def _use_test_authority_data_root(tmp_path, monkeypatch):
+    """Keep explicit authority fixtures inside this test's isolated data root."""
+    monkeypatch.setenv("WORK_BUDDY_DATA_DIR", str(tmp_path / "data"))
+
+
 class _Encoder:
     def __init__(self):
         self.document_batches = []
