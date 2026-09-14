@@ -1,8 +1,9 @@
 ---
 name: Docs Edit
 kind: workflow
-description: Edit or create any knowledge unit by editing its Markdown file directly, with kind-aware validation and index propagation bracketing the edit.
+description: Edit or create any knowledge unit by editing its Markdown file directly, with Workflow identity scaffolding, kind-aware validation, and index propagation bracketing the edit.
 workflow_name: docs-edit
+workflow_id: wfd_16dc10a6e5eb496ca192ef5fd677085a
 execution: main
 allow_override: false
 command: null
@@ -73,12 +74,12 @@ It handles **every unit kind** — prose (directions, system, concept, reference
 
 ## resolve
 
-Auto-run. Validates the request and returns the absolute `.md` `file` to edit. With `create=true` it scaffolds a minimal valid unit of the given `kind` first and returns that file. You take no action here — read the returned `file` path for the next step.
+Auto-run. Validates the request and returns the absolute `.md` `file` to edit. With `create=true` it scaffolds a minimal valid unit of the given `kind` first and returns that file. A Workflow scaffold receives a fresh opaque `workflow_id`; do not copy or edit it. You take no action here — read the returned `file` path for the next step.
 
 ## edit
 
-Edit the unit file at the `file` path the `resolve` step returned, using your native `Edit` tool. The YAML frontmatter carries the unit's structured fields; the Markdown body is `content.full`. For a **workflow** unit, the `steps` DAG lives in frontmatter and each step's prose lives under a `## <step-id>` body section — keep the step ids in the frontmatter and the body headings in sync. When the edit is done, advance with `{"edited": true}`.
+Edit the unit file at the `file` path the `resolve` step returned, using your native `Edit` tool. The YAML frontmatter carries the unit's structured fields; the Markdown body is `content.full`. For a **Workflow** unit, preserve its `workflow_id`, never author `workflow_revision`, retain the former `workflow_name` in `workflow_aliases` on a raw rename, and keep the frontmatter Step IDs synchronized with the `## <step-id>` body sections. Use `docs_move` rather than a raw file move so identity and path-based Directions bindings remain correct. When the edit is done, advance with `{"edited": true}`.
 
 ## commit
 
-Auto-run. Re-reads the file and runs the kind-aware validation suite — DAG integrity, duplicate placeholders, required and kind-specific fields, skill op-resolution, directions→workflow binding resolution, and (for workflow units) step-DAG cycles / dangling dependencies and `## heading` ↔ step-id consistency — then reconciles the store cache and search index. If it returns `status: "error"`, fix the reported issues in the file and run `docs_edit` again; the reported `unit_errors` are scoped to the unit you edited.
+Auto-run. Re-reads the file and runs the kind-aware validation suite — DAG integrity, duplicate placeholders, required and kind-specific fields, Skill Op resolution, Directions→Workflow binding resolution, Workflow identity/address collisions, and Step-DAG cycles / dangling dependencies plus `## heading` ↔ Step-ID consistency — then reconciles the store cache and search index. The resolve result carries the original Workflow ID, so this full Workflow rejects replacement as well as missing, malformed, duplicate, or colliding IDs. A native edit performed outside the resolve→commit flow has no pre-edit ID to compare and must preserve the value itself. If the step returns `status: "error"`, fix the reported issues in the file and run `docs_edit` again; the reported `unit_errors` are scoped to the unit you edited.

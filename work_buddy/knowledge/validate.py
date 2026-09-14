@@ -183,6 +183,145 @@ def _check_kind_specific_fields(store: dict[str, PromptUnit]) -> list[dict[str, 
     return errors
 
 
+def _check_workflow_identity(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Require unambiguous stable IDs and human-facing Workflow addresses."""
+
+    from work_buddy.workflows.identity import is_valid_workflow_id
+
+    errors: list[dict[str, str]] = []
+    owners: dict[str, str] = {}
+    address_owners: dict[str, str] = {}
+    skill_owners = {
+        unit.skill_name: path
+        for path, unit in store.items()
+        if isinstance(unit, SkillUnit) and unit.skill_name
+    }
+    for path, unit in sorted(store.items()):
+        if not isinstance(unit, WorkflowUnit):
+            continue
+        workflow_id = unit.workflow_id
+        if not workflow_id:
+            errors.append({
+                "check": "workflow_identity",
+                "path": path,
+                "message": "WorkflowUnit missing stable 'workflow_id'",
+            })
+        elif not is_valid_workflow_id(workflow_id):
+            errors.append({
+                "check": "workflow_identity",
+                "path": path,
+                "message": (
+                    f"invalid workflow_id {workflow_id!r}; expected "
+                    "'wfd_' followed by 32 lowercase hex characters"
+                ),
+            })
+        else:
+            prior = owners.get(workflow_id)
+            if prior is not None:
+                for owner, other in ((path, prior), (prior, path)):
+                    errors.append({
+                        "check": "workflow_identity",
+                        "path": owner,
+                        "message": (
+                            f"duplicate workflow_id {workflow_id!r}; "
+                            f"also used by {other!r}"
+                        ),
+                    })
+            else:
+                owners[workflow_id] = path
+
+        aliases = unit.workflow_aliases
+        if not isinstance(aliases, list):
+            errors.append({
+                "check": "workflow_identity",
+                "path": path,
+                "message": "workflow_aliases must be a list of non-empty strings",
+            })
+            aliases = []
+
+        local_addresses: set[str] = set()
+        for field_name, address in (
+            ("workflow_name", unit.workflow_name),
+            *(("workflow_alias", alias) for alias in aliases),
+        ):
+            if not isinstance(address, str) or not address.strip():
+                errors.append({
+                    "check": "workflow_identity",
+                    "path": path,
+                    "message": f"{field_name} must be a non-empty string",
+                })
+                continue
+            if address != address.strip():
+                errors.append({
+                    "check": "workflow_identity",
+                    "path": path,
+                    "message": f"{field_name} {address!r} must not have surrounding whitespace",
+                })
+                continue
+            if is_valid_workflow_id(address):
+                errors.append({
+                    "check": "workflow_identity",
+                    "path": path,
+                    "message": (
+                        f"{field_name} {address!r} uses the reserved stable-ID namespace"
+                    ),
+                })
+            if address in local_addresses:
+                errors.append({
+                    "check": "workflow_identity",
+                    "path": path,
+                    "message": f"duplicate workflow address {address!r} on one definition",
+                })
+                continue
+            local_addresses.add(address)
+            prior = address_owners.get(address)
+            if prior is not None:
+                for owner, other in ((path, prior), (prior, path)):
+                    errors.append({
+                        "check": "workflow_identity",
+                        "path": owner,
+                        "message": (
+                            f"duplicate workflow address {address!r}; "
+                            f"also used by {other!r}"
+                        ),
+                    })
+            else:
+                address_owners[address] = path
+            skill_owner = skill_owners.get(address)
+            if skill_owner is not None:
+                errors.append({
+                    "check": "workflow_identity",
+                    "path": path,
+                    "message": (
+                        f"workflow address {address!r} collides with Skill at "
+                        f"{skill_owner!r}"
+                    ),
+                })
+
+    for workflow_id, path in sorted(owners.items()):
+        address_owner = address_owners.get(workflow_id)
+        if address_owner is not None:
+            errors.append({
+                "check": "workflow_identity",
+                "path": address_owner,
+                "message": (
+                    f"workflow address {workflow_id!r} collides with stable ID "
+                    f"owned by {path!r}"
+                ),
+            })
+        skill_owner = skill_owners.get(workflow_id)
+        if skill_owner is not None:
+            errors.append({
+                "check": "workflow_identity",
+                "path": path,
+                "message": (
+                    f"stable workflow_id {workflow_id!r} collides with Skill at "
+                    f"{skill_owner!r}"
+                ),
+            })
+    return errors
+
+
 def _check_placeholder_duplicates(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
     """Check 8: No placeholder target may appear more than once in a
     single unit's ``content["full"]``.
@@ -613,11 +752,16 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
     parsing is best-effort (single-level, non-nested ``{...}`` literals in
     prose); multi-line or nested params are skipped rather than mis-flagged.
     """
-    workflow_slugs: dict[str, str] = {}      # slug -> store path
+    workflow_addresses: dict[str, str] = {}  # canonical name / alias / ID -> store path
     skill_names: set[str] = set()
     for p, u in store.items():
         if isinstance(u, WorkflowUnit) and u.workflow_name:
-            workflow_slugs[u.workflow_name] = p
+            workflow_addresses[u.workflow_name] = p
+            for alias in u.workflow_aliases or []:
+                if isinstance(alias, str) and alias:
+                    workflow_addresses[alias] = p
+            if u.workflow_id:
+                workflow_addresses[u.workflow_id] = p
         elif isinstance(u, SkillUnit) and getattr(u, "skill_name", ""):
             skill_names.add(u.skill_name)
     bound_workflows = {
@@ -642,11 +786,16 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
         # Collect referenced names from the structured `invokes` lists and the
         # `wb_run("...")` calls in step prose + workflow-level content.
         referenced: set[str] = set()
+        workflow_refs: set[str] = set()
         for s in unit.steps or []:
             if isinstance(s, dict):
                 for inv in s.get("invokes") or []:
                     if isinstance(inv, str):
                         referenced.add(inv)
+                workflow_ref = s.get("workflow_ref")
+                if isinstance(workflow_ref, str) and workflow_ref:
+                    workflow_refs.add(workflow_ref)
+                    referenced.add(workflow_ref)
         texts = [v for v in (unit.step_instructions or {}).values() if isinstance(v, str)]
         full = unit.content.get("full", "") if isinstance(unit.content, dict) else ""
         if isinstance(full, str):
@@ -662,14 +811,15 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
                 )
 
         for name in sorted(referenced):
-            if name == unit.workflow_name:
+            target_path = workflow_addresses.get(name)
+            if target_path == path:
                 continue                       # self-reference ("Start via …")
             if name in skill_names:
                 continue                       # a direct-skill call, not a delegation
-            if name in workflow_slugs:
-                target = store[workflow_slugs[name]]
+            if target_path is not None:
+                target = store[target_path]
                 bare = _bare_reasoning_ids(target)  # type: ignore[arg-type]
-                if bare and workflow_slugs[name] not in bound_workflows:
+                if bare and target_path not in bound_workflows:
                     errors.append({
                         "check": "workflow_delegation_resolution",
                         "path": path,
@@ -703,7 +853,7 @@ def _check_workflow_delegation_resolution(store: dict[str, PromptUnit]) -> list[
                             "(and wire them via input_map) or drop them."
                         ),
                     })
-            elif "-" in name:
+            elif name in workflow_refs or "-" in name:
                 errors.append({
                     "check": "workflow_delegation_resolution",
                     "path": path,
@@ -729,6 +879,7 @@ _CHECKS = [
     ("required_fields", _check_required_fields),
     ("directions_fields", _check_directions_fields),
     ("kind_specific_fields", _check_kind_specific_fields),
+    ("workflow_identity", _check_workflow_identity),
     ("placeholder_duplicate", _check_placeholder_duplicates),
     ("harness_placeholder_default", _check_harness_placeholders),
     ("durable_surfaces", _check_durable_surfaces),
@@ -823,7 +974,7 @@ def docs_validate(
         checks: Comma-separated check names to run. Empty = run all.
                  Available: dag_integrity, command_mapping, thinned_commands,
                  store_path_validity, required_fields, directions_fields,
-                 kind_specific_fields, placeholder_duplicate, harness_placeholder_default,
+                 kind_specific_fields, workflow_identity, placeholder_duplicate, harness_placeholder_default,
                  durable_surfaces, parent_child_symmetry,
                  skill_op_resolution,
                  workflow_step_dag, workflow_step_consistency,

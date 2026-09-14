@@ -54,7 +54,7 @@ Apply this decision flow in order; first match wins:
 
 1. **Behavioral guide loaded by a slash command (`/wb-...`)** → `directions`.
 2. **Callable from MCP via `wb_run`** → `skill`. An Op (a callable in `work_buddy/mcp_server/ops/`) plus a `kind: skill` declaration unit; author the declaration via `docs_edit`.
-3. **Multi-step DAG the conductor advances** → `workflow`. A `kind: workflow` unit (one Markdown file; `steps` DAG in frontmatter); author via `docs_edit`.
+3. **Multi-step DAG the conductor advances** → `workflow`. A `kind: workflow` unit has an immutable opaque `workflow_id`, mutable canonical `workflow_name`, optional executable `workflow_aliases`, and a `steps` DAG in frontmatter; author via `docs_edit` so creation mints a fresh ID.
 4. **Personal/user-authored knowledge (Obsidian-vault-backed)** → `personal`. Create via `knowledge_mint`.
 5. **Runs on a network port internal to work-buddy** → `service`. Examples: dashboard (5127), embedding service (5124), messaging (5123). Has `ports`.
 6. **Primarily documents a connection to an **external** system** → `integration`. Obsidian, Thunderbird, Tailscale, Hindsight, an Obsidian plugin, etc. Even if work-buddy runs a local bridge for it, the bridge is the mechanism; the external thing is the unit's identity. Has `external_system`, `bridge_module`.
@@ -146,7 +146,15 @@ Every unit kind is applied the same way — by editing its Markdown file:
 - `create` / `update` (any kind, including `workflow` and `skill`) → edit `knowledge/store/<path>.md` with your native `Edit` / `Write` tool (or drive the `docs_edit` workflow). Frontmatter holds structured fields; the body is `content_full`; a workflow's `steps` DAG lives in frontmatter with `## <step-id>` body sections.
 - `delete` → `docs_delete(path)`.
 
-After the file edits, call `agent_docs_rebuild()` once so the store cache + search index reflect them (the `docs_edit` workflow does this per unit automatically).
+Workflow identity is a special authoring invariant even though the file substrate is shared:
+
+- Never propose or apply a change to an existing `workflow_id`.
+- `docs_edit(..., create=true, kind="workflow")` mints a fresh ID. For an unavoidable native creation, mint one with `uv run --frozen python -c "from work_buddy.workflows.identity import new_workflow_id; print(new_workflow_id())"`; never copy an ID from another definition.
+- A `workflow_name` rename preserves the old canonical address in `workflow_aliases`.
+- `workflow_revision` is computed from the serialized authored definition snapshot, the directly bound Directions snapshot, and compiled child-Workflow target identities. Never author it.
+- Use `docs_move` for path changes so the ID is preserved and path-based Directions bindings are rewritten.
+
+After the file edits, call `agent_docs_rebuild()` once so the store cache + search index reflect them (the `docs_edit` workflow does this per unit automatically). If a Skill declaration or Workflow definition/address/schema changed, record that a `reload_skill_data` call is required after this editing Workflow finishes; rebuilding docs alone does not refresh the live executable registry.
 
 To reclassify a unit (e.g. reference → concept), change its `kind` field in the frontmatter — a deliberate audit decision, not a routine field edit.
 
@@ -156,16 +164,17 @@ After `apply` lands, the workflow auto-runs `docs_validate` over the whole store
 - DAG integrity (cycles, missing parents/children).
 - Command-to-store mappings (every `wb-*.md` slash command needs a matching directions unit).
 - Required fields per kind (directions units need a trigger; workflow units need steps).
+- Workflow identity and address integrity (missing/invalid/duplicate IDs, malformed aliases, and Skill/Workflow address collisions).
 - Parent-child symmetry (if A lists B as a parent, B must list A as a child).
 - Dangling path references.
 - **Placeholder duplicates** — the same `<<wb:X>>` target appearing more than once within a single unit. Hard error: duplicates render as back-reference markers at read time and contribute zero readable content, so they're never the right authorial choice. The editor pre-rejects them at write time; this corpus-wide check catches direct-JSON bypasses.
 
-The `report` step surfaces any failures. Fix them **in the same run** with a follow-up edit to the offending unit's `.md` (via `docs_edit`, or a native `Edit` + `agent_docs_rebuild`) — don't commit with a broken store.
+The `report` step surfaces any failures. Fix them **in the same run** with a follow-up edit to the offending unit's `.md` (via `docs_edit`, or a native `Edit` + `agent_docs_rebuild`; executable declaration changes then need `reload_skill_data`) — don't commit with a broken store.
 
 ## Rules
 
 - **No clobbering** — `update` only changes the fields that are stale.
 - **No recency bias** — a unit describes its whole feature, not just your latest edit.
 - **Empty proposals are valid** — don't invent work if nothing is stale. But "I can't find anything" ≠ "I didn't look"; you must have loaded the top candidate_units and done semantic searches first.
-- **Reconcile every edit** — applying a change means editing the unit's `.md`; always validate (the `docs_edit` commit step, or `docs_validate`) and `agent_docs_rebuild` afterward so the store cache and search index stay in sync. An unreconciled file edit is invisible to live queries until the next rebuild.
+- **Reconcile every edit** — applying a change means editing the unit's `.md`; always validate (the `docs_edit` commit step, or `docs_validate`) and `agent_docs_rebuild` afterward so the store cache and search index stay in sync. For Skill declarations and Workflow definitions, run `reload_skill_data` after the active editing Workflow finishes so the executable registry also stays in sync. An unreconciled file edit is invisible to its corresponding live surface until that rebuild or reload.
 - **Validation failures block the commit** — not prescribed by a machine gate (`validate` is auto_run, not halting), but treat them as blocking: a broken store misleads every future agent.

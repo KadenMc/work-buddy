@@ -3,6 +3,7 @@ name: Analyze Contracts
 kind: workflow
 description: Review all active contracts, check health, and surface issues for the user.
 workflow_name: analyze-contracts
+workflow_id: wfd_a28801f9417e4794a1beaa2e149789e5
 execution: main
 steps:
 - id: load-contracts

@@ -31,7 +31,7 @@ Nine kinds, each positively anchored to a clear functional or structural definit
 
 - `directions` — behavioral guide loaded by a slash command ("how to do X")
 - `skill` — callable from MCP via `wb_run`; an inert declaration that names an `op` the loader resolves against the Op registry (see `architecture/data-first-skills`)
-- `workflow` — DAG of steps the conductor advances; hand-authored
+- `workflow` — authored Step DAG with stable `workflow_id`, canonical `workflow_name`, and optional executable `workflow_aliases`; registry compilation derives its revision and `WorkflowService` governs invocation
 - `personal` — user-authored knowledge backed by the personal-knowledge domain store
 - `system` — coherent functional domain whose persistent state work-buddy owns (e.g. `tasks`, `triage`, `journal`)
 - `service` — internal work-buddy component with a network surface (e.g. `services/dashboard`, `architecture/embedding-service`)
@@ -49,11 +49,27 @@ A unit at store path `P` lives at `knowledge/store/<P>.md`. A domain parent unit
 
 `children` is **not stored** — it is derived at load time from other units' `parents`, so the parent/child graph cannot drift. Only `parents` is authored.
 
-Workflow units carry their `steps` DAG in YAML frontmatter; each step's per-step instruction prose lives as a `## <step-id>` body section, split only at headings whose text exactly matches a known step id. Body text before the first step-id heading is the workflow's `content.full` narrative.
+Workflow units carry stable identity and their `steps` DAG in YAML frontmatter. Each Step's instruction prose lives in a `## <step-id>` body section, split only at headings whose text exactly matches a known Step ID. Body text before the first matching heading is the Workflow's `content.full` narrative.
 
 The system-document engine talks to the file seam (`read_unit`, `write_unit`, `list_unit_paths`, `delete_unit`, `move_unit`, `load_units_from_dir`) in `work_buddy/knowledge/file_store.py`. Personal retrieval instead resolves the active personal-knowledge provider and, after seal, reads SQLite without enumerating a vault.
 
 Local patches live in `knowledge/store.local/*.json` (gitignored, JSON-shaped, deep-merged on top of the file-per-unit base on load) — the personal-overlay seam.
+
+### Workflow identity on the file substrate
+
+A Workflow file stores its stable `workflow_id`; its file path, display `name`, and canonical `workflow_name` are not identity. The structured editor enforces the contract:
+
+- create/scaffold assigns a fresh `wfd_` ID unless a valid explicit ID is supplied;
+- update cannot replace an existing ID;
+- changing `workflow_name` preserves the old address in `workflow_aliases`;
+- move preserves the ID and rewrites path-based parent references and Directions-to-Workflow bindings;
+- a local overlay cannot replace a tracked Workflow's ID, while a local-only Workflow owns its own ID.
+
+The `docs_edit` Workflow exposes a native file-edit step and carries the original Workflow ID from resolve to commit, where replacement is rejected alongside missing, malformed, duplicate, or colliding IDs. Authors must still retain the old canonical address on rename. A native edit performed entirely outside `docs_edit` has no pre-edit identity guard, so that author must preserve the existing ID explicitly.
+
+`workflow_aliases` are executable lookup handles. The inherited KnowledgeUnit `aliases` remain descriptive search terms and do not enter the Workflow execution namespace.
+
+The `workflow_identity` validator rejects missing, malformed, or duplicate IDs; malformed or duplicate executable addresses; addresses in the reserved stable-ID namespace; and collisions between Workflow addresses/IDs and Skill names.
 
 ## DAG hierarchy and multi-parent nesting
 
@@ -127,6 +143,6 @@ A persistent BM25 + dense vector index over full unit content is warmed eagerly 
 - `mode_toggle` — toggle a session mode (e.g. dev) on or off
 - `knowledge_index_rebuild` — force rebuild knowledge search index with full embeddings
 - `knowledge_index_status` — check index health
-- `docs_edit` — the workflow for editing or creating **any** unit kind: it returns the unit's `.md` path, the agent edits it natively, and the commit step validates (kind-aware) and reconciles the store cache + index.
-- `docs_delete` / `docs_move` — structural operations (remove / relocate a unit and reconcile parent references).
-- `docs_validate` covers kind-aware structural validation over the store: DAG, placeholder duplicates, harness fallback children, skill op-resolution, and workflow step-DAG.
+- `docs_edit` — the Workflow for editing or creating **any** unit kind. A new Workflow scaffold receives a stable ID; commit validates the kind-specific schema and reconciles the store cache and index.
+- `docs_delete` / `docs_move` — structural operations. Workflow moves preserve definition identity and rewrite path-based Directions bindings.
+- `docs_validate` — kind-aware structural validation covering DAG integrity, placeholders, harness fallback children, Skill Op resolution, Workflow identity/address collisions, Workflow Step DAGs, Directions bindings, and Workflow delegation references.

@@ -3,6 +3,7 @@ name: Collect And Orient
 kind: workflow
 description: Generate a fresh context bundle and use it to orient on the user's current work state. This is the primary "what's going on right now?" workflow.
 workflow_name: collect-and-orient
+workflow_id: wfd_8719ba904d7040e8a2f185a794dd3ffd
 execution: main
 steps:
 - id: run-collector

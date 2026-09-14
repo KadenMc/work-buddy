@@ -47,7 +47,7 @@ def test_direct_skill_submission_writes_only_canonical_fields(tmp_path, monkeypa
     assert response.status_code == 200, response.json
     text = (tmp_path / "direct-skill.md").read_text(encoding="utf-8")
     assert "type: skill" in text
-    assert "skill: noop" in text
+    assert 'skill: "noop"' in text
     assert "capability" not in text
 
 
@@ -62,20 +62,20 @@ def test_authoring_api_accepts_cached_direct_skill_fields_after_raw_authorizatio
         lambda kind: ["noop"] if kind == "skill" else [],
     )
     authorize = Mock(return_value="user:test")
-    legacy_payload = payload(
+    cached_schema_payload = payload(
         name="cached-direct-skill",
         job_type="capability",
         capability="noop",
     )
     response = client(tmp_path, authorizer=authorize).post(
         "/api/jobs/authoring",
-        json=legacy_payload,
+        json=cached_schema_payload,
     )
     assert response.status_code == 200, response.json
-    authorize.assert_called_once_with(legacy_payload)
+    authorize.assert_called_once_with(cached_schema_payload)
     text = (tmp_path / "cached-direct-skill.md").read_text(encoding="utf-8")
     assert "type: skill" in text
-    assert "skill: noop" in text
+    assert 'skill: "noop"' in text
     assert "capability" not in text
 
 

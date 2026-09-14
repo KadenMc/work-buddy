@@ -3,6 +3,7 @@ name: Email Triage
 kind: workflow
 description: 'Triage recent unread email through the unified source pipeline: fetch via the Thunderbird bridge, synthesise tags from sender/folder/labels, embedding-fused cluster, refine cluster boundaries + propose a per-cluster action (close / create one task per email / create umbrella task), and spawn a group umbrella thread + group sub-threads with the emails as ContextItems. The user reviews and approves via the dashboard''s Threads tab.'
 workflow_name: email-triage
+workflow_id: wfd_e9236b7a42c24853810224a1b6d932ac
 execution: main
 allow_override: false
 steps:

@@ -3,6 +3,7 @@ name: Dev Doc Update
 kind: workflow
 description: Review current-session code changes, cross-check against the knowledge store, update units that have gone stale or need creating, then validate store integrity. Enforces scan → propose → confirm → apply → validate → report so doc drift cannot be silently skipped and broken cross-refs cannot silently ship.
 workflow_name: dev-document
+workflow_id: wfd_7391ed2ab3e5423991c4afcf7f3e65fe
 execution: main
 allow_override: false
 steps:
@@ -59,6 +60,7 @@ steps:
   invokes:
   - docs_delete
   - agent_docs_rebuild
+  - reload_skill_data
 - id: validate
   name: Validate store integrity after edits
   step_type: code
@@ -128,7 +130,7 @@ The workflow's intelligence is in the agent, not the scan. Specifically:
 - *What* new units (if any) should be created for subsystems the scan cannot know are new.
 - *Which body field* each new fact belongs in — `content_full` (every agent) vs `dev_notes` (dev-mode-only). Conscious routing between the two is the structural mechanism for the operational/developmental separation; the `propose` step's instruction enforces it inline, and `dev/dev-document-directions` carries the full criteria.
 - *Whether* CLAUDE.md or similar top-level instruction surfaces need manual updates — those live outside the knowledge store.
-- *How* to resolve any validation failures surfaced by the `validate` step — typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`).
+- *How* to resolve any validation failures surfaced by the `validate` step — typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`; executable declaration changes also need `reload_skill_data`).
 
 ## What this workflow is NOT
 
@@ -159,6 +161,8 @@ Reasoning step. You're looking at the `scan` output and producing a list of conc
 3. **Check CLAUDE.md** (the top-level instruction surface) for stale references: grep for keywords from your change. Stale entries in CLAUDE.md mislead every future agent.
 
 4. **Consider new units**: if you added a new subsystem, skill cluster, or workflow, there may be nothing in the store that describes it yet. Propose `action: "create"` with an appropriate path, kind, and content.
+
+5. **Protect Workflow identity**: never propose a new value for an existing `workflow_id`, and never author `workflow_revision`. A `workflow_name` rename must keep the former canonical address in `workflow_aliases`. A new Workflow needs a freshly minted ID, never a copied one.
 
 ## Field placement — `content_full` vs `dev_notes`
 
@@ -255,12 +259,12 @@ If `step_results.confirm.confirmed` is `false`, skip everything and return `{app
 
 Otherwise, iterate the proposals. Each unit is one Markdown file at `knowledge/store/<path>.md` — applying an edit is editing that file. For each:
 
-- `action: "update"` (any kind) → open `knowledge/store/<path>.md` and apply the proposal's `fields` with your native `Edit` tool. YAML frontmatter carries the structured fields (`description`, `dev_notes`, `parents`, and for workflow units the `steps` DAG); the Markdown body is `content_full`. For a workflow unit, keep the frontmatter `steps` ids and the `## <step-id>` body sections in sync.
-- `action: "create"` (any kind) → write a new `knowledge/store/<path>.md` with native `Write`: YAML frontmatter (`name`, `kind`, `description`, kind-specific fields such as `trigger` / `workflow_name` / `skill_name`, `parents`, optional `dev_notes`) followed by the `content_full` body. Copy the shape from a sibling unit of the same kind.
+- `action: "update"` (any kind) → open `knowledge/store/<path>.md` and apply the proposal's `fields` with your native `Edit` tool. YAML frontmatter carries the structured fields (`description`, `dev_notes`, `parents`, and for Workflow units identity/addresses plus the `steps` DAG); the Markdown body is `content_full`. Preserve an existing `workflow_id` exactly, never author `workflow_revision`, retain the former `workflow_name` in `workflow_aliases` on rename, and keep `steps` ids synchronized with `## <step-id>` body sections.
+- `action: "create"` (any kind) → write a new `knowledge/store/<path>.md` with native `Write`: YAML frontmatter (`name`, `kind`, `description`, kind-specific fields such as `trigger` / `workflow_name` / `skill_name`, `parents`, optional `dev_notes`) followed by the `content_full` body. Copy the shape from a sibling unit of the same kind, but never copy its `workflow_id`: for a native Workflow creation mint one with `uv run --frozen python -c "from work_buddy.workflows.identity import new_workflow_id; print(new_workflow_id())"`. Prefer the `docs_edit` Workflow scaffold, which mints the ID automatically.
 - `action: "delete"` → `docs_delete(path=...)`.
 - `action: "no_op"` → skip.
 
-After all file edits, call `agent_docs_rebuild()` **once** to reconcile the store cache + search index so the `validate` step (and later queries) see your changes. For a single unit you can instead drive the whole open → edit → commit through the `docs_edit` workflow (`wb_run("docs-edit", {path, ...})`), which validates and reconciles per unit.
+After all file edits, call `agent_docs_rebuild()` **once** to reconcile the store cache + search index so the `validate` step (and later queries) see your changes. If any accepted edit changed a Skill declaration or Workflow definition/address/schema, also call `reload_skill_data` after the editing Workflow finishes so the live gateway registry reflects it. For a single unit you can instead drive the whole open → edit → commit through the `docs_edit` workflow (`wb_run("docs-edit", {path, ...})`), which validates and reconciles per unit; executable declaration edits still need that post-Workflow registry reload.
 
 **Fault tolerance**: one failure does not abort the loop. Collect results as `{applied: [path, ...], failed: [{path, error}, ...], skipped: [path, ...]}` and return them.
 
@@ -280,7 +284,7 @@ Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.d
 
 You don't invoke this — it runs automatically. The next (report) step is where you surface any failures to the user.
 
-Why this gate exists: doc edits are easy to get structurally wrong (orphaned parents, typo'd path references, directions unit missing a trigger, slash command pointing at a non-existent unit). Catching these right after `apply` — not on the next unrelated commit — keeps drift localized.
+Why this gate exists: doc edits are easy to get structurally wrong (orphaned parents, typo'd path references, directions unit missing a trigger, slash command pointing at a non-existent unit, or a missing/malformed/duplicate Workflow ID or address collision). Catching these right after `apply` — not on the next unrelated commit — keeps drift localized.
 
 ## report
 
@@ -289,7 +293,7 @@ Reasoning step. Short summary of what changed:
 - **Validation outcome** (from `validate`): if `passed: false`, enumerate the errors by check type and path. These are structural problems you introduced and need to resolve before committing. Advisory warnings (the `warnings` count, e.g. durable_surfaces findings) are different: report the count and any findings your edits introduced, but they never block a commit — the open warning list is the documented cleanup backlog.
 - For any CLAUDE.md or similar non-store files the user still needs to edit manually, flag them explicitly (the store skills don't touch CLAUDE.md).
 
-If validation failed, recommend concrete next actions to the user: typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`) to fix the path/field. Do NOT treat validation failures as cosmetic; they indicate the store is in a broken state.
+If validation failed, recommend concrete next actions to the user: typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`; then `reload_skill_data` for executable declaration changes) to fix the path/field. Do NOT treat validation failures as cosmetic; they indicate the store is in a broken state.
 
 Do NOT re-summarize the code change itself — the user already knows what they did. Focus on doc hygiene + validation outcomes.
 

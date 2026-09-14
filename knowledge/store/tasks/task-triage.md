@@ -3,6 +3,7 @@ name: Task Triage
 kind: workflow
 description: 'Interactive inbox review: surface tasks that need decisions, collect user input, apply state changes.'
 workflow_name: task-triage
+workflow_id: wfd_ed32be009cbc4761a2ded58f706944f3
 execution: main
 allow_override: false
 steps:

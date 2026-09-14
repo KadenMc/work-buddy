@@ -158,6 +158,11 @@ def _render_workflow(unit: WorkflowUnit) -> str:
         lines += [f"> {unit.description}", ""]
 
     lines += [f"**Workflow name:** `{unit.workflow_name}`", ""]
+    if unit.workflow_id:
+        lines += [f"**Workflow ID:** `{unit.workflow_id}`", ""]
+    if unit.workflow_aliases:
+        aliases = ", ".join(f"`{alias}`" for alias in unit.workflow_aliases)
+        lines += [f"**Invocation aliases:** {aliases}", ""]
     lines += [f"**Execution:** `{unit.execution}`", ""]
 
     if unit.command:

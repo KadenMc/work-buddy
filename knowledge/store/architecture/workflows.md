@@ -1,8 +1,8 @@
 ---
 name: Workflow System
 kind: concept
-description: Workflow execution — DAG, execution policy, auto-run steps, conductor, step result visibility
-summary: A workflow is a kind:workflow knowledge unit — one Markdown file per workflow under knowledge/store/, with the steps DAG in frontmatter and per-step prose under ## step-id body sections. DAG enforces dependency ordering. auto_run steps execute deterministic code automatically. Steps can declare a visibility spec (full/summary/none/auto) controlling what agents see inline vs on-demand via wb_step_result.
+description: Workflow definitions, stable identity, admission, application service, DAG execution, and result visibility
+summary: A Workflow is a kind:workflow knowledge unit with immutable definition identity, human-facing invocation addresses, a deterministic revision, and a Step DAG. Every MCP or sidecar start crosses WorkflowService and composable admission before the conductor creates a revision-recorded run. auto_run Steps execute deterministic code automatically; visibility controls what agents receive inline or retrieve with wb_step_result.
 tags:
 - workflows
 - DAG
@@ -33,18 +33,50 @@ dev_notes: |-
 
   ## Sidecar executor
 
-  `work_buddy/sidecar/dispatch/executor.py::_execute_workflow(name, params)` forwards to `start_workflow(name, params=params or None)`. Job files (.md frontmatter) carry `params: {...}` under either skill or workflow types; `create_user_job_file` writes it for both. The whole pipeline is exercised by `tests/unit/test_workflow_params.py`.
+  `work_buddy/sidecar/dispatch/executor.py::_execute_workflow(name, params)` constructs a scheduler `WorkflowInvocationContext` and calls `WorkflowService.invoke(..., headless=True)`. It advertises the facilities it can actually fulfill (`program` and `subagent`); admission refuses a Workflow whose Steps require the unavailable `calling_agent` facility. Once admitted, the sidecar advances the run through `WorkflowService.advance`. Job files carry `params: {...}` under either skill or workflow types; `create_user_job_file` writes it for both. The parameter pipeline is exercised by `tests/unit/test_workflow_params.py`; the adapter boundary and admission behavior are covered by `tests/unit/test_workflow_adapter_boundary.py` and `tests/unit/test_workflow_service_admission.py`.
 ---
 
 A workflow is a `kind: workflow` knowledge unit — one Markdown file per workflow under `knowledge/store/`, with the `steps` DAG in YAML frontmatter and each step's prose under a `## <step-id>` body section. Each unit carries:
-- workflow_name: registry slug
+- `workflow_id`: immutable definition identity, `wfd_` plus 32 lowercase hexadecimal characters
+- `workflow_name`: canonical agent-invocable address
+- `workflow_aliases`: prior or alternate executable invocation addresses (optional)
 - execution: main | subagent (default policy)
 - steps: [{id, name, step_type, depends_on, auto_run, optional, execution, ...}]
 - step_instructions: {step_id: instruction text}
 - params_schema: {param_name: {type, description, required}} (optional)
 - content.full: workflow-level context (philosophy, what-not-to-do)
 
-The conductor reads these at runtime via _discover_workflows_from_store(). Workflows can chain into sub-workflows via workflow_ref. Steps with auto_run specs are executed by the conductor automatically.
+The registry loads these definitions with `_discover_workflows_from_store()`, computes each `workflow_revision`, indexes the canonical name, aliases, and stable ID, and compiles every `workflow_ref` address to `target_workflow_id`. The conductor remains the DAG engine: it schedules Steps, persists runs, and executes `auto_run` specs. Driving adapters do not start it directly; they invoke through `WorkflowService`.
+
+## Definition identity, addresses, revisions, and runs
+
+Four values serve four different purposes:
+
+- **`workflow_id`** identifies the logical authored definition and survives ordinary renames and file moves. Structured create/update/move paths generate or preserve it and refuse replacement. A raw/native file edit must preserve it itself. A local overlay may customize a tracked Workflow but cannot override its tracked identity.
+- **`workflow_name` and `workflow_aliases`** are exact executable addresses. Renaming through the editor retains the former canonical name as an alias, even when the caller also supplies an alias update. Aliases cannot be blank, ambiguous, or use the reserved stable-ID namespace. The inherited generic `aliases` field remains search-only.
+- **`workflow_revision`** is a deterministic `sha256:` hash of the serialized authored definition snapshot, the directly bound Directions-unit snapshot, and compiled child-Workflow target identities. Selected source-path and generic hierarchy fields are excluded, so moving a file alone does not manufacture a revision. Recursively rendered content referenced by the Directions unit is outside this revision seam.
+- **`workflow_run_id`** identifies one execution and uses the distinct `wf_` prefix. Two runs of the same revision share `workflow_id` and `workflow_revision` but have different run IDs.
+
+Start, advance, status, cancellation, completion, and persisted DAG responses carry the canonical `workflow_name`, stable `workflow_id`, recorded `workflow_revision`, and per-run `workflow_run_id`. The conductor checks the revision expected by `WorkflowService` immediately before creating the run; if the definition changed after resolution/admission, the start fails instead of silently executing different content. The recorded hash is a marker, not an archived definition snapshot: later metadata, visibility, or bound-Directions lookups use the current registry entry for that stable ID.
+
+Definitions that predate authored IDs remain readable through a deterministic compatibility ID, but that fallback is never written implicitly. Structured creation persists an opaque ID, and `docs_validate` treats a missing authored ID as an error. The full `docs_edit` resolve→commit flow carries the original ID and rejects replacement; a native edit performed outside that flow has no pre-edit identity to compare, so its author must preserve the existing value.
+
+## Invocation boundary and admission
+
+`WorkflowService` in `work_buddy/workflows/service.py` is the transport-neutral application boundary for the five lifecycle operations: `invoke`, `advance`, `cancel`, `status`, and `get_step_result`. The MCP gateway and sidecar scheduler each construct a `WorkflowInvocationContext` from orthogonal facts—channel, entry surface, principal/session, active modes, attendance, executor facilities, feature preferences, component availability, and authorization—and call the service.
+
+`WorkflowService.invoke` applies the boundary in this order:
+
+1. evaluate address-level authorization before lookup, preserving the ACL anti-oracle guarantee;
+2. resolve the canonical name, alias, or stable ID to one `WorkflowDefinition`;
+3. aggregate publication/surface, mode, invocation-context, feature-preference, component, executor-facility, and authorization admission rules;
+4. validate caller parameters;
+5. run the adapter's post-admission operation hook and coordinate consent when supplied;
+6. call the conductor with the stable definition ID and expected revision.
+
+Admission is fail-closed when preferences or component state cannot be verified. A denial returns a stable top-level `error_code` and `denied_by` plus `admission.reasons`, which retains every independently failing rule in deterministic order. Dependencies reachable only through optional Steps do not inflate the compiled required-component set. Consent is deliberately separate from availability and authorization, but the service coordinates it before the conductor creates the run.
+
+Restrictive MCP session ACLs authorize the submitted address before registry lookup to prevent an existence oracle. Callers in that context use an ACL-listed canonical Workflow name (or an alias/ID explicitly included in the ACL); the service does not first resolve a denied alias or ID merely to normalize it. Other invocation contexts retain canonical-name, executable-alias, and stable-ID addressing.
 
 ## Auto-Run Steps
 
@@ -124,7 +156,7 @@ Workflows can declare a `params_schema` (mirrors `Skill.parameters`) and accept 
 }
 ```
 
-Caller passes them through any of the standard surfaces (`wb_run(name, params)`, the gateway's retry path, the sidecar executor's `_execute_workflow(name, params)`). Validation is strict: workflows with no schema reject any non-empty params; workflows with a schema reject calls missing required keys or supplying unknown keys. Validation errors return `{"error": "Missing required ..." | "Unknown param(s) ..."}` and the workflow does NOT start.
+Caller passes them through any standard surface (`wb_run(name, params)`, the gateway's retry path, or the sidecar scheduler). After admission and before run creation, `WorkflowService` applies the conductor's shared validator: Workflows with no schema reject non-empty params; Workflows with a schema reject missing required keys and unknown keys. Validation errors carry `error_code: "workflow_params_invalid"`, and no run starts.
 
 Validated params reach steps via two paths:
 
@@ -137,11 +169,11 @@ Validated params reach steps via two paths:
   (Resolution lives in `_resolve_input_map` / `_execute_auto_run` in `conductor.py`; the `workflow_delegation_resolution` validator check flags a nested `wb_run("W", {...})` delegation that passes a key `W` doesn't declare — a caller/callee contract mismatch — before it can fail at runtime.)
 - **Reasoning steps via the first-step response** — the response includes an `initial_params` field alongside `workflow_context`, so the agent reading the first instruction can inspect what was passed in. There is no `{{params.foo}}` template substitution into instruction text — agents read params from the response payload.
 
-Workflows are authored / edited through the `docs_edit` workflow — you edit the unit's `.md` directly (frontmatter `steps` and `params_schema`, plus the `## <step-id>` body sections), and the commit step validates the step DAG (cycles, dangling deps) and reconciles the store + index.
+Workflows are authored / edited through the `docs_edit` Workflow. Its create scaffold mints `workflow_id`; preserve that value while editing the unit's `.md` (frontmatter `steps` and `params_schema`, plus the `## <step-id>` body sections). On commit, kind-aware validation checks identity/address integrity and the Step DAG, then reconciles the store and index. A raw rename must add the former `workflow_name` to `workflow_aliases`; use `docs_move` for relocation so path-based Directions bindings are rewritten.
 
 ## Workflow-level blanket consent
 
-Starting a workflow grants blanket consent for all its steps (grant_workflow_consent). The blanket is revoked when the workflow completes; a step can opt out with requires_individual_consent: true (which suspends it for that step only); and an orphaned blanket — one left live in a session's consent.db after an MCP-server restart wiped the conductor's in-memory run map — is reconciled away when that session next re-registers (reconcile_workflow_consent, called from the gateway's _register_session). The 3h default TTL is only a backstop. Steps need not manage any of this — the conductor handles it.
+The MCP adapter supplies consent coordination to `WorkflowService` after admission and parameter validation but before the run starts. An admitted start grants run-scoped consent for the Workflow's component operations (`grant_workflow_run`). The grant is revoked when the Workflow completes; a Step can opt out with `requires_individual_consent: true` (which suspends carry for that Step); and an orphaned grant left after a gateway restart is reconciled when the session next registers. Steps do not manage this lifecycle themselves.
 
 ## DAG resilience
 

@@ -1,8 +1,8 @@
 ---
 name: MCP Gateway
 kind: directions
-description: How to discover and call MCP gateway skills — the primary interface for agents
-summary: '5-tool FastMCP gateway on port 5126: wb_init (required first call), wb_search (discover+inspect), wb_run (execute), wb_advance (workflow step), wb_status. Use these over raw Python imports.'
+description: How to discover and invoke agent-invocable Skills and Workflows through the MCP gateway
+summary: 'FastMCP gateway on port 5126: initialize the session, discover an agent-invocable Skill or Workflow, invoke it, advance or inspect Workflow runs, and retrieve elided results. Use this boundary over raw Python imports.'
 trigger: agent needs to interact with work-buddy systems or discover skills
 tags:
 - mcp
@@ -23,7 +23,7 @@ parents:
 - operations
 ---
 
-FastMCP server exposing work-buddy skills via 5 gateway tools with dynamic tool discovery. Runs as a persistent sidecar service on `localhost:5126`, shared across all Claude Code sessions in this project.
+FastMCP server exposing agent-invocable work-buddy Skills and Workflows through a small gateway surface with dynamic discovery. It runs as a persistent service on `localhost:5126`, shared across agent sessions in this project.
 
 ## Before writing Python: check the gateway
 
@@ -32,12 +32,13 @@ Before writing Python to interact with the vault, tasks, journal, contracts, mem
 | Tool | Purpose |
 |------|---------|
 | `mcp__work-buddy__wb_init(session_id)` | **REQUIRED first call.** Registers your session with the gateway. Pass your `WORK_BUDDY_SESSION_ID`. |
-| `mcp__work-buddy__wb_search(query)` | **Discover OR inspect.** Natural language → find skills. Exact name → get its full parameter schema. |
-| `mcp__work-buddy__wb_run(skill, params)` | Execute a discovered skill. Params: JSON string or dict. |
-| `mcp__work-buddy__wb_advance(workflow_run_id, result)` | Step through multi-step workflows. |
-| `mcp__work-buddy__wb_status()` | Check system health and active workflows. |
+| `mcp__work-buddy__wb_search(query)` | **Discover OR inspect.** Natural language ranks unified-store hits, including Skills, Workflows, and compatibility knowledge previews. An exact Skill name, Workflow name, Workflow alias, or stable Workflow ID short-circuits to registry metadata and returns the matching schema. |
+| `mcp__work-buddy__wb_run(skill, params)` | Execute a discovered Skill or start a Workflow. `skill` is the compatibility-stable argument name; params may be a JSON string or dict. |
+| `mcp__work-buddy__wb_advance(workflow_run_id, step_result)` | Complete the current reasoning step and advance the Workflow DAG. |
+| `mcp__work-buddy__wb_status(workflow_run_id?, operation_id?)` | Check one Workflow run, inspect one operation record, or—when neither ID is supplied—check system health and active Workflows. |
 | `mcp__work-buddy__wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
 | `mcp__work-buddy__wb_skill_result(operation_id, key?)` | Retrieve the full result of a skill call that the dispatch-size cap truncated to a marker — whole, or a single top-level key. The skill-side twin of `wb_step_result`. |
+| `mcp__work-buddy__wb_capability_result(operation_id, key?)` | Deprecated compatibility alias for `wb_skill_result`; new callers use `wb_skill_result`. |
 
 These are **MCP tools**, not Python functions. They appear in the tool list as `mcp__work-buddy__wb_run`, `mcp__work-buddy__wb_search`, etc. **Always prefer these MCP tools over Python code** for work-buddy skills and workflows.
 
@@ -59,9 +60,9 @@ mcp__work-buddy__wb_run(skill="wb_init", params={"session_id": "<your WORK_BUDDY
 
 ## Standard discovery flow
 
-`wb_init` → `wb_search` to discover → read the parameter schema in the search result → `wb_run` to execute.
+`wb_init` → `wb_search` to discover → read the parameter schema in the search result → `wb_run` to invoke.
 
-**Inspect before calling unfamiliar skills.** `wb_search("task_create")` with an exact skill name returns just that one entry with its full parameter schema — no search overhead, no extra results. Do not guess parameter names.
+**Inspect before calling an unfamiliar action.** `wb_search("task_create")` with an exact Skill name returns just that entry with its full parameter schema. Exact Workflow lookup also accepts its canonical `workflow_name`, any executable `workflow_aliases` address, or its immutable `workflow_id`. Do not guess parameter names or Workflow addresses.
 
 **Performance caveat:** `wb_search` can hang when the embedding service is cold (5+ minutes observed). When you already know the skill name, use `wb_run` directly and skip search.
 
@@ -74,7 +75,7 @@ mcp__work-buddy__wb_run(skill="wb_init", params={"session_id": "<your WORK_BUDDY
 
 ## Hack around missing MCP tools — don't
 
-If `mcp__work-buddy__wb_init` is not in your tool list, stop immediately and tell the user. Do **not** attempt raw Python imports, async function calls from the CLI, manual JSON file reads, grepping vault files, writing to vault paths, curling sidecar ports, or any other workaround — none of them work.
+If neither `mcp__work-buddy__wb_init` nor the documented `wb_run(skill="wb_init", ...)` compatibility fallback is available, stop immediately and tell the user. Do **not** attempt raw Python imports, async function calls from the CLI, manual JSON file reads, grepping vault files, writing to vault paths, curling sidecar ports, or any other workaround — none of them work.
 
 Diagnose and fix via these steps:
 
@@ -83,9 +84,24 @@ Diagnose and fix via these steps:
 3. Otherwise (CLI) → tell the user to run **`/mcp`** to reconnect.
 4. If the sidecar itself is down, they'll also need to restart it first.
 
-### `wb_run` is the interface contract, not a convenience wrapper
+### `wb_run` is the invocation contract, not a convenience wrapper
 
-If a skill is registered in the gateway, `wb_run` is the only valid way to invoke it — even when MCP is connected and working. Calling the underlying Python directly bypasses session tracking, consent gates, operation logging, and retry policy. The operation is **not equivalent** even if the outcome looks the same.
+If a Skill or Workflow is registered in the gateway, `wb_run` is the agent-facing way to invoke it. Calling underlying Python directly bypasses session tracking, admission, consent gates, operation logging, and retry policy. The operation is **not equivalent** even if the outcome looks the same.
+
+## Workflow identity and admission
+
+A Workflow definition has four distinct identifiers:
+
+- `workflow_id` — immutable opaque definition identity (`wfd_` plus 32 lowercase hexadecimal characters).
+- `workflow_name` — mutable primary invocation address.
+- `workflow_aliases` — durable alternate invocation addresses, including former canonical names after a rename.
+- `workflow_revision` — deterministic `sha256:` revision of the serialized authored definition snapshot, directly bound Directions snapshot, and compiled child-Workflow target identities. It is computed, not authored.
+
+Every invocation gets a separate `workflow_run_id` (`wf_...`). A successful Workflow start returns the canonical name, stable definition ID, computed revision, and run ID; `wb_status` preserves the same identity fields for that run.
+
+Both MCP and sidecar adapters cross `WorkflowService`. It resolves through the shared registry, performs address-first authorization checks, aggregates structured admission failures (context, mode, preference, component, and executor-facility constraints), validates params, then coordinates consent. A denial creates no run. On success, the service starts the conductor with the stable definition ID and expected revision so a concurrent definition change cannot silently start different content.
+
+In a session with a restrictive MCP ACL, authorization deliberately evaluates the submitted address before registry resolution so known and unknown addresses have the same denial shape. Use the canonical Workflow address exposed by that ACL; an alias or stable ID is not normalized to its canonical name before this anti-oracle check unless that address is itself present in the ACL. Unrestricted MCP sessions and sidecar jobs may use canonical names, executable aliases, or stable IDs normally.
 
 ## Dispatch reliability — timeouts and the bridge circuit breaker
 
@@ -100,7 +116,7 @@ An oversized result is also handled gracefully rather than blowing the response:
 
 ## Gaps are OK to surface
 
-Not everything is in the gateway yet. If `wb_search` returns nothing relevant, then using the Python package directly (or raising a gap to the user) is acceptable — but check first.
+Not everything is in the gateway yet. If `wb_search` returns nothing relevant, no matching agent-invocable action may exist; using an explicitly documented lower-level package surface (or raising the gap to the user) can then be appropriate, but check first.
 
 ## Learning about the system
 

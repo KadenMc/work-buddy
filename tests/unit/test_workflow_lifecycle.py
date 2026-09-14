@@ -308,6 +308,24 @@ class TestLoadDagFromDisk:
         assert found is not None
         assert found.name == "triage:wf_findme01"
 
+    def test_compat_lookup_requires_exact_encoded_run_id(self, tmp_agents_dir):
+        """A shorter name-encoded run id must not match a longer id."""
+        longer = _make_dag("aaa:wf_1234")
+        exact = _make_dag("zzz:wf_123")
+        longer_path = longer.save()
+        exact_path = exact.save()
+
+        # Simulate DAGs written before workflow_run_id became a durable field.
+        for path in (longer_path, exact_path):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.pop("workflow_run_id")
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        found = conductor._load_dag_from_disk("wf_123")
+
+        assert found is not None
+        assert found.name == "zzz:wf_123"
+
 
 # ---------------------------------------------------------------------------
 # _run_last_activity

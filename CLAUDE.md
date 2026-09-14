@@ -4,20 +4,26 @@ You are **work-buddy** — a personal agent framework built on Claude Code and M
 
 ## MCP Gateway
 
-work-buddy's functionality is reached through five MCP tools that appear in your tool list as `mcp__work-buddy__*`. Always prefer them over raw Python.
+work-buddy's functionality is reached through a small MCP gateway tool surface that appears in your tool list as `mcp__work-buddy__*`. Always prefer it over raw Python.
 
 | Tool | Purpose |
 |------|---------|
 | `wb_init(session_id)` | **REQUIRED first call.** Registers your session. Pass your `WORK_BUDDY_SESSION_ID`. |
-| `wb_search(query)` | Find a **skill to call**. Natural language → ranked skills/workflows. Exact name → its parameter schema. *Not for searching documentation prose — see "Search before you build" below.* |
-| `wb_run(skill, params)` | Execute a **skill** (returns a result immediately) OR start a **workflow** (returns a `workflow_run_id` and the first step). |
-| `wb_advance(workflow_run_id, step_result)` | Advance a workflow after completing one of its steps. The parameter is `step_result` — FastMCP silently drops unknown kwargs, so naming it `result` produces a misleading validation error. |
+| `wb_search(query)` | Search the unified store for an **agent-invocable Skill or Workflow**; compatibility results may also include knowledge units. Exact Skill name, Workflow canonical name, executable alias, or stable Workflow ID → its parameter schema. See "Search before you build" below. |
+| `wb_run(skill, params)` | Execute a **Skill** (returns a result immediately) OR start a **Workflow** by canonical name, executable alias, or stable ID (returns a `workflow_run_id` and the first step). |
+| `wb_advance(workflow_run_id, step_result)` | Advance a Workflow after completing one of its steps. The parameter is `step_result` — FastMCP silently drops unknown kwargs, so naming it `result` produces a misleading validation error. |
+| `wb_status(workflow_run_id?, operation_id?)` | Report a Workflow run, an operation, or overall system health. |
 | `wb_step_result(workflow_run_id, step_id, key?)` | Retrieve full step result data elided by the visibility system. |
+| `wb_skill_result(operation_id, key?)` | Retrieve a full Skill result elided by the visibility system. |
+
+`wb_skill_result` is the primary result-retrieval name. `wb_capability_result` remains only as a deprecated compatibility alias for clients with a cached older tool schema.
 
 ### Skill vs workflow
 
 - **Skill** — a single atomic operation (`task_create`, `agent_docs`, `consent_request`, …). `wb_run` executes it and returns a result.
-- **Workflow** — a multi-step DAG defined as a `kind: workflow` unit in the knowledge store (`task-triage`, `morning-routine`, …). `wb_run` starts it; each subsequent step is unlocked by `wb_advance` after you complete the previous one. Some steps are `auto_run` — the conductor executes them programmatically, interleaving deterministic offloadable work (data loading, formatting, filesystem operations) with your reasoning steps so you only handle the parts that actually require judgment.
+- **Workflow** — a multi-step DAG defined as a `kind: workflow` unit in the knowledge store (`task-triage`, `morning-routine`, …). Each definition has an immutable `wfd_<32 lowercase hex>` ID, a canonical name, executable aliases, and a deterministic `sha256:<64 lowercase hex>` revision; each invocation has a separate `wf_<8 lowercase hex>` run ID. The Workflow Registry discovers and compiles definitions. `WorkflowService` resolves and admits gateway or sidecar invocations before the conductor starts a run. Each subsequent step is unlocked by `wb_advance` after you complete the previous one. Some steps are `auto_run` — the conductor executes them programmatically, interleaving deterministic offloadable work (data loading, formatting, filesystem operations) with your reasoning steps so you only handle the parts that actually require judgment.
+
+When authoring a Workflow, treat `workflow_id` as immutable. Structured create, update, and move operations preserve it, and the full `docs_edit` resolve→commit flow rejects replacement. A native edit performed outside that flow must preserve the existing value itself; a rename keeps the former canonical name as an alias, and a move rebinds attached Directions to the new path. Use `wb_run("reload_skill_data")` after data-only declaration or Workflow changes. Gateway Python changes require **Ctrl+R** to replace the MCP connection's loaded code.
 
 ### Workflow consent (composable)
 
@@ -101,14 +107,14 @@ Before writing Python that touches work-buddy state, search first. work-buddy ha
 
 |                          | `wb_search`                                              | `agent_docs(query=...)`                                                              |
 |--------------------------|----------------------------------------------------------|--------------------------------------------------------------------------------------|
-| **Indexes**              | skills + workflows (callable things)                     | every knowledge unit kind (see `architecture/knowledge-system` for the full taxonomy) |
-| **Use when you want to…** | **call** something                                      | **read** something                                                                   |
-| **Question shape**       | "What's the skill for X?" / "What params does Y take?" | "What's the rule for X?" / "How does subsystem Y work?" / "What does the X directions unit say?" |
-| **Returns**              | callable name + parameter schema                         | knowledge unit prose                                                                 |
+| **Indexes**              | unified store; exact invocable addresses short-circuit to registry metadata | every knowledge unit kind (see `architecture/knowledge-system` for the full taxonomy) |
+| **Use when you want to…** | **call** something or discover a likely entry point     | **read authoritative prose**                                                         |
+| **Question shape**       | "Which Skill or Workflow handles X?" / "What params does Y take?" | "What's the rule for X?" / "How does subsystem Y work?" / "What does the X directions unit say?" |
+| **Returns**              | ranked mixed hits; invocable hits include address + parameter schema | knowledge unit prose                                                                 |
 
-If your question is about *prose* — directions, behavior, how something works — `wb_search` will return plausible-looking skill hits but **not** the directions unit that actually answers you. Reach for `agent_docs(query=...)` instead.
+`wb_search` still carries a compatibility path that can return directions or system-unit previews, but those shallow mixed hits are not the documentation contract. If your question is about *prose* — directions, behavior, or how something works — use `agent_docs(query=...)` for the authoritative knowledge-unit result.
 
-`wb_run` is the interface contract, not a convenience wrapper — calling underlying Python bypasses session tracking, consent gates, operation logging, and retry policy. The operation is not equivalent even if the outcome looks the same.
+`wb_run` is the interface contract, not a convenience wrapper — calling underlying Python bypasses session tracking, Workflow admission, consent gates, operation logging, and retry policy. The operation is not equivalent even if the outcome looks the same.
 
 ### Worked example
 
@@ -125,7 +131,7 @@ mcp__work-buddy__wb_run("task_toggle", {"task_id": "...", "done": true})
     → executes
 ```
 
-If `wb_search` returns nothing relevant, the skill may not exist. If `agent_docs(query=...)` returns nothing, the rule or behavior may not be documented yet. In both cases, **ask the user** before building.
+If `wb_search` returns nothing relevant, the agent-invocable Skill or Workflow may not exist. If `agent_docs(query=...)` returns nothing, the rule or behavior may not be documented yet. In both cases, **ask the user** before building.
 
 ## Domain map
 

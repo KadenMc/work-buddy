@@ -3,6 +3,7 @@ name: Task Me — what should I do right now?
 kind: workflow
 description: What should I do right now? Loads tasks, calendar, and active contracts; clamps the day plan to the current moment; surfaces 1–2 next-action recommendations; and optionally writes the resulting plan back to the journal Day Planner.
 workflow_name: task-me
+workflow_id: wfd_4ba16ee9c99b4267a6f8ce6d0291ac98
 execution: main
 allow_override: false
 steps:

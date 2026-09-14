@@ -820,7 +820,14 @@ class WorkflowUnit(PromptUnit):
     """Workflow — DAG structure and execution policy."""
 
     kind: str = field(default="workflow", init=False)
+    # Opaque definition identity. Unlike ``workflow_name`` and ``path``, this
+    # survives human-facing renames and file moves. ``wf_`` remains reserved
+    # for individual conductor run IDs.
+    workflow_id: str = ""
     workflow_name: str = ""            # "task-triage", "morning-routine"
+    # Prior/durable invocation handles. Base ``aliases`` remains search prose
+    # and is intentionally not an executable namespace.
+    workflow_aliases: list[str] = field(default_factory=list)
     execution: str = "main"            # "main" | "subagent"
     allow_override: bool = True
     steps: list[dict[str, Any]] = field(default_factory=list)  # DAG nodes
@@ -837,10 +844,15 @@ class WorkflowUnit(PromptUnit):
     available_when: str | None = None
 
     def _kind_fields(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
+        d: dict[str, Any] = {}
+        if self.workflow_id:
+            d["workflow_id"] = self.workflow_id
+        d.update({
             "workflow_name": self.workflow_name,
             "execution": self.execution,
-        }
+        })
+        if self.workflow_aliases:
+            d["workflow_aliases"] = self.workflow_aliases
         if not self.allow_override:
             d["allow_override"] = False
         if self.steps:
@@ -858,6 +870,18 @@ class WorkflowUnit(PromptUnit):
         return d
 
     _kind_dict = _kind_fields
+
+    def search_phrases(self) -> list[str]:
+        """Include every durable human-facing Workflow address in search."""
+
+        phrases = super().search_phrases()
+        if self.workflow_name:
+            phrases.extend((
+                self.workflow_name,
+                self.workflow_name.replace("-", " ").replace("_", " "),
+            ))
+        phrases.extend(self.workflow_aliases)
+        return [phrase for phrase in phrases if phrase]
 
 
 # ---------------------------------------------------------------------------
@@ -1015,7 +1039,9 @@ def unit_from_dict(path: str, data: dict[str, Any]) -> KnowledgeUnit:
         base_kwargs["schema_version"] = data.get("schema_version", "")
         base_kwargs["available_when"] = data.get("available_when")
     elif cls is WorkflowUnit:
+        base_kwargs["workflow_id"] = data.get("workflow_id", "")
         base_kwargs["workflow_name"] = data.get("workflow_name", "")
+        base_kwargs["workflow_aliases"] = data.get("workflow_aliases", [])
         base_kwargs["execution"] = data.get("execution", "main")
         base_kwargs["allow_override"] = data.get("allow_override", True)
         base_kwargs["steps"] = data.get("steps", [])

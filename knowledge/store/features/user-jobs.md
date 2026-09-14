@@ -46,8 +46,8 @@ The skill/manual/assisted paths converge on `work_buddy.sidecar.scheduler.jobs.c
 
 * **Name** — must match ``[A-Za-z0-9][A-Za-z0-9_-]{0,63}`` (no spaces, no leading dash/underscore). Returns ``{success: false, error: '...'}``.
 * **Schedule** — exactly 5 cron fields, each parseable by ``parse_cron_field`` (range-checked).
-* **Skill / workflow names** — must exist in the MCP registry. The validator strips a leading ``/`` (so ``/morning-routine`` works), then prioritizes a slash-command-to-registry resolution: if the user typed ``wb-morning`` (or just ``morning`` for a slash command stem), the error names the underlying registry entry explicitly: *"`wb-morning` is the slash-command name; the underlying workflow is `morning-routine`"*. Falls back to a ``difflib`` close-match suggestion if no slash-command match.
-* **Workflow params** — when ``job_type=workflow`` and the workflow declares a ``params_schema``, params are pre-validated for unknown keys and missing required keys. Mismatches surface immediately at create time instead of on first cron fire.
+* **Skill / Workflow addresses** — Skill jobs use canonical Skill names. Workflow jobs accept the canonical ``workflow_name``, any executable ``workflow_aliases`` entry, or the stable ``workflow_id``; all three resolve through the registry's exact Workflow lookup. The validator strips a leading ``/`` (so ``/morning-routine`` works), then prioritizes slash-command-to-registry suggestions: if the user typed ``wb-morning`` (or just ``morning`` for a slash-command stem), the error names the underlying registry entry explicitly. It falls back to a ``difflib`` close-match suggestion if no slash-command match exists.
+* **Workflow params** — params are pre-validated against the definition resolved from that canonical name, executable alias, or stable ID. Unknown keys and missing required keys surface immediately at create time. ``WorkflowService`` repeats strict validation at fire time after admission and before run creation.
 * **Jitter** — ``jitter_seconds`` must be a non-negative integer. Bad input (negative, non-numeric) returns ``{success: false, error: 'jitter_seconds must be a non-negative integer, ...'}`` from the create path; jobs already on disk with bad input log a WARN and fall back to ``0``. The React form and its authorized API both enforce the schedule-aware ceiling; the underlying file authoring function accepts any non-negative integer.
 
 Failures return a typed ``{success: false, error: str, errors_by_field: {field: msg}, suggestions: [str]}`` shape. The dashboard retains the draft, highlights offending inputs, and lets the user correct them manually or ask for another suggestion. Assistant patches are draft edits, not validated scheduling results.
@@ -67,7 +67,7 @@ Same as system jobs. Required: `schedule`. Optional fields shown with defaults:
 schedule: "*/15 * * * *"      # 5-field cron, evaluated in config.timezone
 type: skill                # skill | workflow | prompt
 skill: noop                # for type=skill
-workflow: ""                    # for type=workflow
+workflow: ""                    # canonical slug, executable alias, or wfd_* ID
 params: {}                      # for type=skill or type=workflow
 recurring: true                 # false = one-shot, schedule cleared after firing
 enabled: true
@@ -128,7 +128,9 @@ Three pending-action banners (Created / Updated / Deleted) provide instant feedb
 
 ## Workflow params
 
-For `type: workflow` jobs, the `params` dict is forwarded to the workflow at start time. The conductor validates the params against the workflow's declared `params_schema` and exposes them to:
+For `type: workflow` jobs, the `params` dict is forwarded at start time. The scheduler constructs a headless `WorkflowInvocationContext` and enters through `WorkflowService`; admission checks the Workflow's allowed mode, required preferences/components, and executor facilities before the conductor creates a run. Scheduled execution provides program and subagent facilities, but not a calling-agent reasoning facility, so a Workflow containing a Step assigned to the calling agent is rejected with a structured admission error and no run ID.
+
+After admission, `WorkflowService` validates params against the resolved Workflow's declared `params_schema` and exposes them to:
 
 - **`auto_run` steps via `input_map`** — use the synthetic source key `__params__` (whole dict) or `__params__.foo` / `__params__.a.b` (dotted-key walk) to wire a param into a kwarg. Example workflow step:
   ```json

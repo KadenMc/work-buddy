@@ -3,6 +3,7 @@ name: Event New
 kind: workflow
 description: Author an event source in conversation — elicit what to watch, propose a grounded EventSourceDef draft, dry-run it with zero side effects, confirm, then activate it. The conversational front end for event_source_create; builds polling watchers (e.g. a stock-watcher) without hand-editing .md files.
 workflow_name: event-new
+workflow_id: wfd_25cf19382bbe4696b2afae9653eb03fe
 execution: main
 allow_override: false
 steps:

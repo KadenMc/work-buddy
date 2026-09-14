@@ -3,6 +3,7 @@ name: Morning Routine
 kind: workflow
 description: Configurable morning routine that coordinates journal, tasks, contracts, calendar, and metacognition into a single briefing-first flow. Collect everything, then synthesize and act.
 workflow_name: morning-routine
+workflow_id: wfd_23c0d64a52b34c978ba415559286e2f9
 execution: main
 steps:
 - id: load-config

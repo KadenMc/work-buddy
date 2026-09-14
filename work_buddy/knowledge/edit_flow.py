@@ -25,8 +25,9 @@ from typing import Any
 
 from work_buddy.knowledge import file_store
 from work_buddy.knowledge.model import _KIND_MAP
-from work_buddy.knowledge.store import _STORE_DIR, load_store
+from work_buddy.knowledge.store import _STORE_DIR, invalidate_store, load_store
 from work_buddy.logging_config import get_logger
+from work_buddy.workflows.identity import new_workflow_id, require_workflow_id
 
 logger = get_logger(__name__)
 
@@ -52,7 +53,18 @@ def _scaffold(path: str, kind: str, params: dict[str, Any]) -> dict[str, Any]:
         unit["trigger"] = params.get("trigger") or "TODO: when to use this"
         unit["content"] = {"full": "TODO: author this unit's body."}
     elif kind == "workflow":
+        explicit_workflow_id = params.get("workflow_id")
+        unit["workflow_id"] = (
+            require_workflow_id(explicit_workflow_id)
+            if explicit_workflow_id
+            else new_workflow_id()
+        )
         unit["workflow_name"] = params.get("workflow_name") or leaf
+        if params.get("workflow_aliases"):
+            workflow_aliases = params["workflow_aliases"]
+            if not isinstance(workflow_aliases, list):
+                raise ValueError("workflow_aliases must be a list of strings")
+            unit["workflow_aliases"] = list(workflow_aliases)
         unit["execution"] = "main"
         unit["steps"] = []
         unit["content"] = {"full": "TODO: author the workflow narrative."}
@@ -108,7 +120,11 @@ def resolve_for_edit(*, params: dict[str, Any] | None = None) -> dict[str, Any]:
                     f"Valid kinds: {', '.join(sorted(_KIND_MAP))}."
                 ),
             }
-        file_store.write_unit(_STORE_DIR, path, _scaffold(path, kind, params))
+        try:
+            scaffold = _scaffold(path, kind, params)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        file_store.write_unit(_STORE_DIR, path, scaffold)
         logger.info("docs_edit.resolve: scaffolded new %s unit at %s", kind, path)
         return {
             "ok": True,
@@ -116,6 +132,11 @@ def resolve_for_edit(*, params: dict[str, Any] | None = None) -> dict[str, Any]:
             "file": str(file_path),
             "created": True,
             "kind": kind,
+            **(
+                {"workflow_id": scaffold["workflow_id"]}
+                if kind == "workflow"
+                else {}
+            ),
             "next": (
                 f"A scaffold was written to {file_path}. Edit it with your native "
                 "Edit tool to author the unit (replace the TODO placeholders), then "
@@ -139,6 +160,11 @@ def resolve_for_edit(*, params: dict[str, Any] | None = None) -> dict[str, Any]:
         "file": str(file_path),
         "created": False,
         "kind": unit.kind,
+        **(
+            {"workflow_id": unit.workflow_id}
+            if unit.kind == "workflow"
+            else {}
+        ),
         "next": (
             f"Edit the unit file at {file_path} with your native Edit tool, then "
             "advance with {'edited': true}. (The frontmatter holds structured "
@@ -186,8 +212,10 @@ def commit_edit(
     raw = file_path.read_text(encoding="utf-8")
     heading_issues = file_store.workflow_body_heading_issues(raw)
 
-    # Validate over fresh bytes. A fresh subprocess has no stale store cache,
-    # so load_store() inside validate sees exactly what the agent just wrote.
+    # Validate over fresh bytes. Production calls use a fresh subprocess, and
+    # explicit invalidation also keeps direct/library callers from observing a
+    # cache populated during resolve_for_edit.
+    invalidate_store()
     # Scope to unit-shape checks — the slash-command-file hygiene checks
     # (command_mapping, thinned_commands, store_path_validity) are about the
     # .claude/commands surface, not a single content edit.
@@ -198,6 +226,7 @@ def commit_edit(
         "required_fields",
         "directions_fields",
         "kind_specific_fields",
+        "workflow_identity",
         "placeholder_duplicate",
         "parent_child_symmetry",
         "skill_op_resolution",
@@ -232,6 +261,18 @@ def commit_edit(
     ]
     own_errors = [e for e in own if e.get("severity", "error") != "warning"]
     own_warnings = [e for e in own if e.get("severity", "error") == "warning"]
+    expected_workflow_id = (resolve or {}).get("workflow_id")
+    actual_workflow_id = getattr(reloaded[p], "workflow_id", None)
+    if expected_workflow_id and actual_workflow_id != expected_workflow_id:
+        own_errors.append({
+            "check": "workflow_identity",
+            "path": p,
+            "message": (
+                "workflow_id is immutable within docs_edit: expected "
+                f"{expected_workflow_id!r}, found {actual_workflow_id!r}"
+            ),
+            "severity": "error",
+        })
     other_errors = [
         e for e in report.get("errors", []) if e not in own_errors
     ]

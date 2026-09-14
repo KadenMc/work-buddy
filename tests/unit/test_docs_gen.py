@@ -75,13 +75,17 @@ class TestRenderEachKind:
     def test_workflow_renders(self):
         u = _minimal(
             WorkflowUnit,
+            workflow_id="wfd_11111111111111111111111111111111",
             workflow_name="task-triage",
+            workflow_aliases=["triage-tasks", "old-task-triage"],
             execution="main",
             steps=[{"id": "s1", "name": "Step", "step_type": "reasoning", "depends_on": []}],
             step_instructions={"s1": "Do the thing."},
         )
         out = _render_unit(u)
         assert "task-triage" in out
+        assert "**Workflow ID:** `wfd_11111111111111111111111111111111`" in out
+        assert "**Invocation aliases:** `triage-tasks`, `old-task-triage`" in out
         assert "## Steps" in out
 
     def test_system_renders_via_generic(self):

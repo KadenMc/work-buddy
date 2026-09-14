@@ -295,8 +295,20 @@ def create_unit(
                 if k in extra:
                     unit_data[k] = extra[k]
     elif kind == "workflow":
+        from work_buddy.workflows.identity import new_workflow_id, require_workflow_id
+
+        explicit_workflow_id = (extra or {}).get("workflow_id")
+        try:
+            unit_data["workflow_id"] = (
+                require_workflow_id(explicit_workflow_id)
+                if explicit_workflow_id
+                else new_workflow_id()
+            )
+        except ValueError as exc:
+            return {"error": "invalid_workflow_id", "message": str(exc)}
+        unit_data["workflow_name"] = (extra or {}).get("workflow_name") or path.rsplit("/", 1)[-1]
         if extra:
-            for k in ("workflow_name", "execution", "allow_override", "steps",
+            for k in ("workflow_aliases", "execution", "allow_override", "steps",
                       "step_instructions", "params_schema", "schema_version"):
                 if k in extra:
                     unit_data[k] = extra[k]
@@ -382,12 +394,58 @@ def update_unit(
     if "content_summary" in updates:
         unit_data.setdefault("content", {})["summary"] = updates.pop("content_summary")
 
+    old_workflow_id = unit_data.get("workflow_id") if unit_data.get("kind") == "workflow" else None
+    requested_workflow_id = updates.get("workflow_id")
+    if unit_data.get("kind") == "workflow" and requested_workflow_id is not None:
+        from work_buddy.workflows.identity import require_workflow_id
+
+        try:
+            require_workflow_id(requested_workflow_id)
+        except ValueError as exc:
+            return {
+                "error": "invalid_workflow_id",
+                "path": path,
+                "message": str(exc),
+            }
+    if (
+        old_workflow_id
+        and requested_workflow_id is not None
+        and requested_workflow_id != old_workflow_id
+    ):
+        return {
+            "error": "workflow_identity_immutable",
+            "path": path,
+            "message": "workflow_id is stable definition identity and cannot be changed by update.",
+        }
+
+    if unit_data.get("kind") == "workflow" and "workflow_name" in updates:
+        old_workflow_name = unit_data.get("workflow_name")
+        new_workflow_name = updates.get("workflow_name")
+        if old_workflow_name and new_workflow_name != old_workflow_name:
+            aliases = updates.get(
+                "workflow_aliases",
+                unit_data.get("workflow_aliases") or [],
+            )
+            if not isinstance(aliases, list):
+                return {
+                    "error": "invalid_workflow_aliases",
+                    "path": path,
+                    "message": "workflow_aliases must be a list before renaming a Workflow.",
+                }
+            if old_workflow_name not in aliases:
+                updates["workflow_aliases"] = [*aliases, old_workflow_name]
+
     # Deep merge remaining updates
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(unit_data.get(key), dict):
             unit_data[key].update(value)
         else:
             unit_data[key] = value
+
+    if unit_data.get("kind") == "workflow" and not unit_data.get("workflow_id"):
+        from work_buddy.workflows.identity import new_workflow_id
+
+        unit_data["workflow_id"] = new_workflow_id()
 
     target_file = file_store.write_unit(_STORE_DIR, path, unit_data)
 
@@ -445,7 +503,7 @@ def move_unit(old_path: str, new_path: str) -> dict[str, Any]:
     """Move a unit to a new path.
 
     Moves the unit's file and rewrites any other unit that names the old
-    path as a parent.
+    path as a parent or Directions-to-Workflow binding.
     """
     store = load_store()
 
@@ -470,16 +528,24 @@ def move_unit(old_path: str, new_path: str) -> dict[str, Any]:
 
 
 def _update_parent_references(old_path: str, new_path: str) -> None:
-    """Rewrite every unit that names ``old_path`` as a parent to ``new_path``."""
+    """Rewrite path-based parents and Directions Workflow bindings."""
     for unit_path in file_store.list_unit_paths(_STORE_DIR):
         unit_data = file_store.read_unit(_STORE_DIR, unit_path)
         if unit_data is None:
             continue
         parents = unit_data.get("parents", [])
-        if old_path in parents:
+        parent_changed = old_path in parents
+        if parent_changed:
             unit_data["parents"] = [
                 new_path if p == old_path else p for p in parents
             ]
+        workflow_binding_changed = (
+            unit_data.get("kind") == "directions"
+            and unit_data.get("workflow") == old_path
+        )
+        if workflow_binding_changed:
+            unit_data["workflow"] = new_path
+        if parent_changed or workflow_binding_changed:
             file_store.write_unit(_STORE_DIR, unit_path, unit_data)
 
 

@@ -177,6 +177,14 @@ def _parse_job_file(file_path: Path, source: str = "system") -> Job | None:
         job_type = "prompt"
         skill = ""
 
+    workflow = fm.get("workflow", "") if job_type == "workflow" else ""
+    if job_type == "skill" and not isinstance(skill, str):
+        logger.warning("Invalid non-string skill address in %s — ignoring job.", name)
+        return None
+    if job_type == "workflow" and not isinstance(workflow, str):
+        logger.warning("Invalid non-string Workflow address in %s — ignoring job.", name)
+        return None
+
     # Recurring: default True, supports legacy "daily" alias
     recurring = _parse_bool(fm.get("recurring", fm.get("daily", True)))
 
@@ -221,7 +229,7 @@ def _parse_job_file(file_path: Path, source: str = "system") -> Job | None:
         job_type=job_type,
         skill=skill,
         params=fm.get("params", {}) or {},
-        workflow=fm.get("workflow", ""),
+        workflow=workflow,
         prompt=body.strip(),
         description=body.strip(),
         enabled=enabled,
@@ -323,16 +331,41 @@ def _suggest_close_name(provided: str, choices: list[str], n: int = 3) -> list[s
     return difflib.get_close_matches(provided, choices, n=n, cutoff=0.4)
 
 
+def _resolve_workflow_address(address: str) -> Any | None:
+    """Resolve a Workflow slug, executable alias, or stable definition ID."""
+
+    try:
+        from work_buddy.mcp_server.registry import get_entry
+
+        entry = get_entry(address)
+    except Exception:
+        return None
+    # Registry reload boundaries are deliberately duck-typed: a stale class
+    # object from an older module generation must not turn a valid Workflow
+    # into an unknown address merely because ``isinstance`` no longer matches.
+    return (
+        entry
+        if entry is not None
+        and hasattr(entry, "steps")
+        and not hasattr(entry, "callable")
+        else None
+    )
+
+
 def _validate_registry_name(kind: str, provided: str) -> dict | None:
-    """Return None if ``provided`` is a registered name for ``kind``,
+    """Return None if ``provided`` is a registered address for ``kind``,
     else a typed error dict ready to return from create_user_job_file.
 
+    Skills retain canonical-name validation. Workflows additionally resolve
+    executable aliases and stable definition IDs through ``get_entry``.
     The error prioritizes a slash-command-to-registry match if one
     exists — users (and agents) often remember the user-facing
     ``wb-morning`` slash command rather than its underlying
     ``morning-routine`` workflow.
     """
     choices = _registry_names(kind)
+    if kind == "workflow" and _resolve_workflow_address(provided) is not None:
+        return None
     if not choices:
         # Couldn't reach the registry — don't block creation. Caller
         # will hit a clearer error at fire time.
@@ -366,28 +399,21 @@ def _validate_registry_name(kind: str, provided: str) -> dict | None:
     }
 
 
-def _validate_workflow_params(workflow_name: str, params: dict) -> dict | None:
+def _validate_workflow_params(workflow_address: str, params: dict) -> dict | None:
     """Pre-validate workflow params against the workflow's declared
     ``params_schema`` (if any). Mirrors the conductor's start-time
     validation but at job-create time so typos surface immediately
     instead of on first fire.
     """
-    try:
-        from work_buddy.mcp_server.registry import (
-            get_registry, WorkflowDefinition,
-        )
-        reg = get_registry()
-        wf = reg.get(workflow_name)
-        if not isinstance(wf, WorkflowDefinition):
-            return None  # Already caught by name validation above.
-    except Exception:
-        return None
+    wf = _resolve_workflow_address(workflow_address)
+    if wf is None:
+        return None  # Already caught by address validation above.
     schema = getattr(wf, "params_schema", None) or {}
     if not schema and params:
         return {
             "success": False,
             "error": (
-                f"Workflow {workflow_name!r} does not declare a params schema "
+                f"Workflow {workflow_address!r} does not declare a params schema "
                 f"but params were provided: {sorted(params.keys())}."
             ),
             "errors_by_field": {"params": "this workflow accepts no params"},
@@ -409,7 +435,7 @@ def _validate_workflow_params(workflow_name: str, params: dict) -> dict | None:
     return {
         "success": False,
         "error": (
-            f"Params validation failed for workflow {workflow_name!r}: "
+            f"Params validation failed for workflow {workflow_address!r}: "
             + "; ".join(errors)
         ),
         "errors_by_field": {"params": "; ".join(errors)},
@@ -508,8 +534,8 @@ def create_user_job_file(
         # time. Direct skills don't have an introspection-time schema we
         # can validate against here without dragging in heavy imports;
         # the executor will surface those at fire time.
-        if job_type == "workflow" and params is not None:
-            params_err = _validate_workflow_params(provided, params)
+        if job_type == "workflow":
+            params_err = _validate_workflow_params(provided, params or {})
             if params_err is not None:
                 return params_err
 
@@ -539,9 +565,9 @@ def create_user_job_file(
         f"enabled: {str(bool(enabled)).lower()}",
     ]
     if job_type == "skill":
-        fm_lines.append(f"skill: {skill.strip()}")
+        fm_lines.append(f"skill: {_json.dumps(skill.strip())}")
     elif job_type == "workflow":
-        fm_lines.append(f"workflow: {workflow.strip()}")
+        fm_lines.append(f"workflow: {_json.dumps(workflow.strip())}")
     if job_type in ("skill", "workflow") and params:
         fm_lines.append(f"params: {_json.dumps(params)}")
     if jitter_int > 0:

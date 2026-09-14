@@ -16,6 +16,7 @@ from work_buddy.knowledge.validate import (
     _check_skill_op_resolution,
     _check_directions_workflow_resolution,
     _check_placeholder_duplicates,
+    _check_workflow_identity,
     _check_workflow_delegation_resolution,
     _check_workflow_step_consistency,
     _check_workflow_step_dag,
@@ -171,6 +172,137 @@ def _wf(path: str, steps: list[dict], instructions: dict | None = None) -> Workf
         path=path, name=path, description="d", workflow_name=path.replace("/", "-"),
         steps=steps, step_instructions=instructions or {},
     )
+
+
+class TestWorkflowIdentityCheck:
+    """Stable Workflow identities and every invocable address are unambiguous."""
+
+    @staticmethod
+    def _workflow(
+        path: str,
+        workflow_id: str,
+        *,
+        workflow_name: str | None = None,
+        workflow_aliases: object = None,
+    ) -> WorkflowUnit:
+        return WorkflowUnit(
+            path=path,
+            name=path,
+            description="d",
+            workflow_name=workflow_name or path,
+            workflow_id=workflow_id,
+            workflow_aliases=(
+                [] if workflow_aliases is None else workflow_aliases
+            ),  # type: ignore[arg-type]
+        )
+
+    def test_valid_unique_identity_is_clean(self):
+        workflow = self._workflow("alpha", "wfd_" + "1" * 32)
+
+        assert _check_workflow_identity({"alpha": workflow}) == []
+
+    def test_missing_workflow_id_is_error(self):
+        workflow = self._workflow("alpha", "")
+
+        errors = _check_workflow_identity({"alpha": workflow})
+
+        assert any(
+            error["path"] == "alpha"
+            and error["message"] == "WorkflowUnit missing stable 'workflow_id'"
+            for error in errors
+        )
+
+    def test_invalid_workflow_id_is_error(self):
+        workflow = self._workflow("alpha", "wfd_NOT_LOWERCASE_HEX")
+
+        errors = _check_workflow_identity({"alpha": workflow})
+
+        assert any(
+            "invalid workflow_id 'wfd_NOT_LOWERCASE_HEX'" in error["message"]
+            for error in errors
+        )
+
+    def test_duplicate_workflow_id_reports_second_owner(self):
+        workflow_id = "wfd_" + "2" * 32
+        first = self._workflow("alpha", workflow_id)
+        second = self._workflow("beta", workflow_id)
+
+        errors = _check_workflow_identity({"beta": second, "alpha": first})
+
+        assert any(
+            error["path"] == "beta"
+            and error["message"]
+            == f"duplicate workflow_id {workflow_id!r}; also used by 'alpha'"
+            for error in errors
+        )
+
+    def test_workflow_aliases_must_be_a_list(self):
+        workflow = self._workflow(
+            "alpha",
+            "wfd_" + "3" * 32,
+            workflow_aliases="former-alpha",
+        )
+
+        errors = _check_workflow_identity({"alpha": workflow})
+
+        assert any(
+            error["message"] == "workflow_aliases must be a list of non-empty strings"
+            for error in errors
+        )
+
+    def test_empty_whitespace_and_duplicate_aliases_are_errors(self):
+        workflow = self._workflow(
+            "alpha",
+            "wfd_" + "4" * 32,
+            workflow_aliases=["", " padded ", "former-alpha", "former-alpha"],
+        )
+
+        messages = {
+            error["message"] for error in _check_workflow_identity({"alpha": workflow})
+        }
+
+        assert "workflow_alias must be a non-empty string" in messages
+        assert "workflow_alias ' padded ' must not have surrounding whitespace" in messages
+        assert "duplicate workflow address 'former-alpha' on one definition" in messages
+
+    def test_workflow_address_cannot_equal_another_workflow_id(self):
+        first_id = "wfd_" + "5" * 32
+        first = self._workflow("alpha", first_id)
+        second = self._workflow(
+            "beta",
+            "wfd_" + "6" * 32,
+            workflow_name=first_id,
+        )
+
+        errors = _check_workflow_identity({"alpha": first, "beta": second})
+
+        assert any(
+            error["path"] == "beta"
+            and error["message"]
+            == f"workflow address {first_id!r} collides with stable ID owned by 'alpha'"
+            for error in errors
+        )
+
+    def test_skill_name_cannot_equal_workflow_id(self):
+        workflow_id = "wfd_" + "7" * 32
+        workflow = self._workflow("alpha", workflow_id)
+        skill = SkillUnit(
+            path="skills/conflict",
+            name="Conflict",
+            description="d",
+            skill_name=workflow_id,
+        )
+
+        errors = _check_workflow_identity(
+            {"alpha": workflow, "skills/conflict": skill}
+        )
+
+        assert any(
+            error["path"] == "alpha"
+            and error["message"]
+            == f"stable workflow_id {workflow_id!r} collides with Skill at 'skills/conflict'"
+            for error in errors
+        )
 
 
 class TestWorkflowStepDagCheck:
@@ -376,6 +508,22 @@ class TestWorkflowDelegationResolutionCheck:
         store = {"x": caller, "y": target, "y-dir": directions}
         assert _check_workflow_delegation_resolution(store) == []
 
+    @pytest.mark.parametrize("address_kind", ["alias", "workflow_id"])
+    def test_delegation_resolves_stable_workflow_addresses(self, address_kind):
+        target = _bare_reasoning_wf("y")
+        target.workflow_id = "wfd_" + "9" * 32
+        target.workflow_aliases = ["former-y"]
+        address = (
+            target.workflow_aliases[0]
+            if address_kind == "alias"
+            else target.workflow_id
+        )
+        caller = _wf_with_prose("x", f'wb_run("{address}")')
+
+        errors = _check_workflow_delegation_resolution({"x": caller, "y": target})
+        assert len(errors) == 1
+        assert "reasoning steps" in errors[0]["message"]
+
     def test_delegation_into_self_documented_workflow_is_silent(self):
         # target's reasoning step has an inline instruction -> not bare -> fine.
         caller = _wf_with_prose("x", 'wb_run("y")')
@@ -415,6 +563,23 @@ class TestWorkflowDelegationResolutionCheck:
         errs = _check_workflow_delegation_resolution({"x": caller, "y": target})
         assert len(errs) == 1
         assert "y" in errs[0]["message"]
+
+    def test_dangling_structural_workflow_ref_is_error(self):
+        caller = _wf(
+            "x",
+            [{
+                "id": "delegate",
+                "step_type": "reasoning",
+                "depends_on": [],
+                "workflow_ref": "missing_flow",
+            }],
+            {"delegate": "delegate through the compiled Workflow reference"},
+        )
+
+        errors = _check_workflow_delegation_resolution({"x": caller})
+
+        assert len(errors) == 1
+        assert "missing_flow" in errors[0]["message"]
 
     # --- param-contract checks (caller passes keys the callee must declare) ---
 

@@ -3,6 +3,7 @@ name: Stress Test
 kind: workflow
 description: Subprocess isolation validation workflow (developer tool). The `compute-primes` step runs in a subprocess to exercise the gateway's subprocess execution path.
 workflow_name: stress-test
+workflow_id: wfd_2bf77078f2b14b79b1ea0b7a608d75a3
 execution: main
 steps:
 - id: compute-primes

@@ -198,6 +198,29 @@ def load_store(
                 # repository-owned unit.
                 patch_data = _normalize_local_unit_input(patch_data)
                 if path in raw:
+                    # A local overlay may customize a tracked Workflow, but it
+                    # must not replace that definition's durable identity.
+                    # Older overlays predate ``workflow_id`` and merge as-is;
+                    # an explicitly stale/conflicting ID is ignored with a
+                    # visible warning. Local-only Workflows own their own ID.
+                    base_workflow_id = (
+                        raw[path].get("workflow_id")
+                        if raw[path].get("kind") == "workflow"
+                        else None
+                    )
+                    if (
+                        base_workflow_id
+                        and "workflow_id" in patch_data
+                        and patch_data.get("workflow_id") != base_workflow_id
+                    ):
+                        logger.warning(
+                            "Ignoring local workflow_id override for %s; "
+                            "tracked definition identity remains %s",
+                            path,
+                            base_workflow_id,
+                        )
+                        patch_data = dict(patch_data)
+                        patch_data.pop("workflow_id", None)
                     raw[path] = _deep_merge(raw[path], patch_data)
                     logger.debug("Applied local patch to %s", path)
                 else:

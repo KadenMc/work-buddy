@@ -158,7 +158,11 @@ Child stdout/stderr: redirected to `<data_root>/runtime/service_logs/<service>.l
 
 Job file format: .md files in either jobs directory with YAML frontmatter (schedule, recurring, type, skill/params, enabled, spawn_mode, optional jitter_seconds). Each loaded `Job` carries a `source` field (`"system"` or `"user"`) that propagates through `JobState` into `sidecar_state.json` and is used by the dashboard's Jobs tab to group entries.
 
-Job types: skill (calls registered MCP gateway skill directly), workflow (triggers registered workflow), prompt (freeform text — spawns claude -p agent session, consent-gated).
+Job types: skill (dispatches a canonical registered Skill), workflow (resolves a canonical Workflow name, executable alias, or stable `wfd_*` ID and invokes it through `WorkflowService`), prompt (freeform text — spawns a headless agent session, consent-gated).
+
+### Scheduled Workflow facilities and admission
+
+The sidecar does not call the conductor directly. Its Workflow adapter constructs a headless `WorkflowInvocationContext` and advertises the facilities it can actually provide: program execution and subagent spawning. It does **not** advertise a calling-agent reasoning facility. `WorkflowService` applies the same registry resolution, address-first authorization, structured admission, strict param validation, and stable-ID/revision start guard used by the MCP adapter. The MCP adapter supplies the interactive consent coordinator; the sidecar instead relies on the conductor-minted run grant in its isolated headless session, with a six-hour safety ceiling. If a Step needs a missing facility—or a required preference, component, context, or mode fails—the request returns a structured denial and no run is created. Dependencies reachable only through optional Steps do not inflate the compiled required-component set.
 
 Agent spawn modes for prompt jobs: headless_ephemeral (default, --print --no-session-persistence), headless_persistent (--print only, registered in `<data_root>/runtime/agent_registry.json`), interactive_persistent (deferred).
 

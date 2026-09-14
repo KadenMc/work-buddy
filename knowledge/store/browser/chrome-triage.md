@@ -3,6 +3,7 @@ name: Chrome Triage
 kind: workflow
 description: 'Triage currently-open Chrome tabs through the unified source pipeline: collect tabs, attach cached Haiku summaries + tag signals, embedding-fused cluster (Louvain over embedding+tag+window-gated proximity), Sonnet-refine cluster boundaries + propose a per-cluster action (close all tabs / group in Chrome / route to tasks / etc.), and spawn a group umbrella thread + group sub-threads with the tabs as ContextItems. The user reviews and approves via the dashboard column grid + per-column action chip.'
 workflow_name: chrome-triage
+workflow_id: wfd_7745267a857b40d3bb04e67a5364497c
 execution: main
 allow_override: false
 steps:

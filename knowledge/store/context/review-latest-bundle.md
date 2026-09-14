@@ -3,6 +3,7 @@ name: Review Latest Bundle
 kind: workflow
 description: Read the most recent existing context bundle without re-collecting. Faster than collect-and-orient when a recent bundle already exists.
 workflow_name: review-latest-bundle
+workflow_id: wfd_0d180b00cb4b445ca1606ed1c6c75b8a
 execution: main
 steps:
 - id: find-bundle

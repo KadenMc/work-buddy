@@ -198,10 +198,17 @@ def test_registered_dashboard_evidence_executes_and_stays_visible_at_commit(fake
     from work_buddy.mcp_server import conductor, registry
     from work_buddy.workflow import WorkflowDAG
 
-    raw = read_unit(dev_commit.repo_root() / "knowledge/store", "dev/dev-pr")
-    unit = unit_from_dict("dev/dev-pr", raw)
-    monkeypatch.setattr("work_buddy.knowledge.store.load_store", lambda: {unit.path: unit})
-    definition, = registry._discover_workflows_from_store()
+    store_root = dev_commit.repo_root() / "knowledge/store"
+    units = {
+        path: unit_from_dict(path, read_unit(store_root, path))
+        for path in ("dev/dev-pr", "dev/dev-document")
+    }
+    monkeypatch.setattr("work_buddy.knowledge.store.load_store", lambda: units)
+    definition = next(
+        workflow
+        for workflow in registry._discover_workflows_from_store()
+        if workflow.name == "dev-pr"
+    )
     review = next(step for step in definition.steps if step.id == "dashboard_evidence")
     evidence = {"surfaces_run": ["python"], "ux_review_ref": None}
     fake_git["tracked"] = ["dashboard-react/src/apps/cowork/CoworkApp.tsx"]

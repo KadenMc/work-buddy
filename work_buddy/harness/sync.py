@@ -196,6 +196,7 @@ def _instructions_for_harness(body: str, harness_id: str) -> str:
         'mcp__work-buddy__wb_init(session_id="<your CODEX_THREAD_ID>", '
         'harness_id="codexcli")',
     )
+    projected = projected.replace("WORK_BUDDY_SESSION_ID", "CODEX_THREAD_ID")
     return projected
 
 

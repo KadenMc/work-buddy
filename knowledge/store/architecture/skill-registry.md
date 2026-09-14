@@ -1,8 +1,8 @@
 ---
 name: Skill Registry
 kind: concept
-description: How skills are registered, probed for tool availability, disabled when a probe fails, and recovered cheaply via per-skill re-probe (CP-A3) instead of a full registry rebuild. Authoritative reference for the heavy-vs-light recovery decision.
-summary: 'The registry has two maps: _REGISTRY (active) and _DISABLED_SKILL_REGISTRY (probe failed at build time). Refresh paths: reload_skill_data (data-only rebuild, no sys.modules purge, so declarations/workflows/param schemas go live without a restart); a Ctrl+R restart for Op code or new modules; and recheck_disabled_skill(name) (per-tool, 30s cool-down, in-place restore) for transient probe failures. The heavy mcp_registry_reload was retired — its purge silently did nothing in the long-lived FastMCP gateway.'
+description: How Skills and Workflow definitions are registered, how Workflows resolve by stable identity and executable aliases, and how probe-disabled Skills recover without a module reload.
+summary: 'The shared gateway registry stores active Skills and canonical Workflow names in _REGISTRY, stable Workflow identities and aliases in secondary indexes, and probe-failed Skills in _DISABLED_SKILL_REGISTRY. reload_skill_data rebuilds declarations, Workflow definitions, aliases, references, revisions, and parameter schemas without purging modules; transient Skill probe failures recover through per-Skill re-probe.'
 tags:
 - skill
 - registry
@@ -56,7 +56,14 @@ dev_notes: |-
 
 ## What
 
-The skill registry (`work_buddy/mcp_server/registry.py`) holds two maps: `_REGISTRY` (active skills, directly callable via the MCP gateway) and `_DISABLED_SKILL_REGISTRY` (skills whose `requires=[...]` tool probe failed at build time, stashed but not callable). At build time, the registry filter pass moves any skill whose tool probe failed from `_REGISTRY` to `_DISABLED_SKILL_REGISTRY` and adds a row to `work_buddy.tools.DISABLED_SKILLS` listing the missing tools.
+The shared registry in `work_buddy/mcp_server/registry.py` has distinct lookup roles:
+
+- `_REGISTRY` contains active Skills under Skill names and Workflows under their canonical `workflow_name`.
+- `_WORKFLOW_ID_INDEX` resolves stable `workflow_id` values.
+- `_WORKFLOW_ALIAS_INDEX` resolves canonical and historical `workflow_aliases` addresses.
+- `_DISABLED_SKILL_REGISTRY` holds Skills removed from active dispatch because a build-time tool probe failed.
+
+At build time, the requirements filter moves a Skill whose probe failed from `_REGISTRY` to `_DISABLED_SKILL_REGISTRY` and adds a row to `work_buddy.tools.DISABLED_SKILLS` listing the missing tools. Workflows are not moved into the disabled-Skill map: their modes, preferences, component requirements, executor facilities, and authorization are evaluated for each invocation by `WorkflowAdmission`.
 
 **The Obsidian-bridge tool family is the one exception.** When the bridge itself is down, the filter skips not just `obsidian` but every tool that transitively depends on it in the probe graph — the in-Obsidian plugins `datacore`, `google_calendar` (`work_buddy.tools.obsidian_backed_tools()`). The bridge is a transiently-flaky shared dependency, not a genuinely-absent one, so those skills stay admitted and are governed at runtime by a circuit breaker on gateway dispatch (see `architecture/resilience` and `work_buddy/mcp_server/dispatch_resilience.py`): they fail fast per call while the bridge is down and recover the instant it returns — no session-long disable, no reload. This carve-out is **transitive-only**: it applies *only* when the bridge itself is down. If the bridge is up but a plugin is genuinely missing (e.g. `datacore` not installed), that plugin's skills still hard-disable here. The build-time disable below therefore applies to genuinely-absent dependencies (a missing plugin while the bridge is up, hindsight, thunderbird, ...).
 
@@ -71,6 +78,19 @@ Disabled state is cached. A skill disabled by a transient probe failure (e.g. th
 - `op_id: str | None` — set when the skill was resolved from an inert declaration rather than instantiated directly (see "Declaration-based skills" below); `None` for directly registered skills.
 - `effects: list[EffectSpec]` — manifest of externally-visible effects for skills that produce more than one. When non-empty, the post-write-verify recovery path uses `verify_post_write_effects` (walks every declared effect; can return `partial`) instead of single-effect verify. Skills with declared effects MUST be idempotent under retry. Schema lives at `work_buddy.obsidian.effects.EffectSpec`; recovery semantics in `architecture/retry-queue`.
 - `timeout_seconds: float | None | Callable[[params], float | None]` — the wall-time budget for one gateway dispatch, owned by the operation (never the caller). The gateway timeout is **opt-in**: a scalar is a fixed ceiling, a callable derives the budget from the actual params (for operations whose runtime scales with input), and unset (`None`) is **unbounded** — the gateway imposes no cap. No flat default is applied: skills that deliberately block or run long (human-in-the-loop `request_send`/`request_poll`, the `obsidian_retry`/`retry` wrappers, `llm_submit`) would be wrongly cut off by a too-low default, so a real default must be calibrated from observed dispatch p99 and paired with explicit exemptions. Resolved at dispatch in `work_buddy/mcp_server/dispatch_resilience.py`; a skill that declares a finite budget and overruns it gets `error_kind="mcp_gateway_timeout"`.
+
+## Compiled Workflow identity
+
+A compiled `WorkflowDefinition` carries:
+
+- stable `workflow_id` and deterministic `workflow_revision`;
+- canonical `name`, human-facing `display_name`, and executable `aliases`;
+- the full transitive `requires` closure;
+- `required_components`, which omits dependencies reachable only through optional Steps.
+
+`get_entry(address)` resolves a canonical Workflow name, executable alias, or stable ID. Exact `search_registry` lookups use the same resolver and return identity, revision, display name, aliases, and Step target metadata.
+
+Registry construction rejects duplicate definition IDs, duplicate executable addresses, addresses in the reserved `wfd_` namespace, Workflow address/ID collisions, and collisions between Workflow addresses or IDs and Skill names. An authored Workflow reference is compiled from its source address to `WorkflowStep.target_workflow_id`. Dependency compilation follows Skill `invokes` chains and referenced Workflows transitively, including dependencies of disabled Skills, so filtering a child Skill cannot hide a required component from Workflow admission.
 
 ## Two recovery paths — use the right one
 
@@ -90,7 +110,7 @@ Used by:
 
 **`reload_skill_data`** skill (calls `reload_skill_data()` in `registry.py`) resets the knowledge-store cache and clears `_REGISTRY`, then rebuilds in place via `get_registry()` — WITHOUT purging `sys.modules`. Because no module is re-imported, `Skill` / `WorkflowDefinition` class identity stays stable and the long-lived FastMCP gateway reads the rebuilt registry directly. It costs about 6–8 seconds because `_build_registry` re-probes every tool.
 
-Use when you edited or added a skill **declaration** (including its `parameters` schema) or a **workflow** unit and want it live without a restart. It also re-enables a skill whose tool just came back (the rebuild re-probes and re-runs the requirements filter).
+Use when you edited or added a Skill **declaration** or a **Workflow** unit and want it live without a restart. For Workflows the rebuild refreshes canonical entries, stable-ID and alias indexes, compiled references, dependency closures, revisions, and parameter schemas. It also re-enables a Skill whose tool just came back because the rebuild re-probes and re-runs the requirements filter.
 
 It does NOT pick up edited Op **code** or a brand-new Op **module** — re-importing Python is what a process restart (Ctrl+R) does safely.
 
@@ -119,9 +139,12 @@ Not every skill is a `Skill(...)` instance written directly in `registry.py`. A 
 
 ## Key files
 
-- `work_buddy/mcp_server/registry.py` — `_REGISTRY`, `_DISABLED_SKILL_REGISTRY`, `Skill` dataclass, `get_registry`, `get_disabled_skill_registry`, `invalidate_registry`
+- `work_buddy/mcp_server/registry.py` — shared Skill/Workflow registry, stable-ID and alias indexes, compiled Workflow references and dependencies
 - `work_buddy/mcp_server/op_registry.py` — Op registry backing declaration-based skills (see `architecture/data-first-skills`)
 - `work_buddy/knowledge/skill_loader.py` — resolves skill declarations against the Op registry
+- `work_buddy/workflows/identity.py` — definition-ID grammar, generation, read-compat derivation, and deterministic revision hashing
+- `work_buddy/workflows/admission.py` — invocation-time Workflow policy
+- `work_buddy/workflows/service.py` — application façade used by driving adapters
 - `work_buddy/recovery.py` — `recheck_disabled_skill`, `recheck_tool`, `_RECOVERY_LOCK`, `_LAST_RECHECK_AT`
 - `work_buddy/obsidian/effects.py` — `EffectSpec` schema for the `Skill.effects` manifest
 - `work_buddy/obsidian/post_write_verify.py` — `verify_post_write_effects` walker

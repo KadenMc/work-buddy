@@ -3,6 +3,7 @@ name: Dev PR
 kind: workflow
 description: Commit work-buddy code changes with test verification, chained doc update, PII scan, cleanup review, and commit metadata recording. Replaces the prose /wb-commit directions.
 workflow_name: dev-pr
+workflow_id: wfd_98fccfad2dc34744ad43bdd74f8c7baa
 execution: main
 allow_override: false
 steps:

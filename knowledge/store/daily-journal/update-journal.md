@@ -3,6 +3,7 @@ name: Update Journal
 kind: workflow
 description: Append activity-detected Log entries to an Obsidian journal file.
 workflow_name: update-journal
+workflow_id: wfd_babe897f52724aa8a05cce482d14882a
 execution: main
 params_schema:
   target:
