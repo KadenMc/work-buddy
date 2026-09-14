@@ -165,3 +165,27 @@ The hourly journal-triage cron was spawning a fresh "Daily note: <date>" umbrell
 **Compatibility boundary:** old capability-shaped data is normalized only at explicit legacy-read edges (notably `knowledge/store.local`, persisted job/activity data, and cached MCP clients). New serialization and authored declarations emit only skill-shaped forms. The old `reload_capability_data` operation remains a narrow alias for `reload_skill_data`; it is not the documented surface.
 
 **Scope:** historical changelogs, prior decision/design records, reviews, and fidelity fixtures retain their original wording. Ordinary uses of “capability” for host features, model abilities, protocol traits, and lease/object capabilities also remain because they are not Work Buddy skill identifiers.
+
+---
+
+## 2026-09-13 — Workflow is the universal execution abstraction
+
+**Supersedes:** the 2026-09-12 decision only where it models a directly callable `Skill` and a multi-step `Workflow` as separate runtime types. Its terminology cleanup, explicit legacy-read boundaries, and preservation of historical language remain valid.
+
+**Decision:** every executable behavior definition is a `Workflow`, including deterministic one-step behaviors. A `Step` is a local orchestration node fulfilled by exactly one executor: `program`, `calling_agent`, `model`, `subagent`, `user`, or `workflow`. The `workflow` executor is the declaration for structural child-Workflow composition; an agent or program using another Skill while doing its own work is not automatically structural composition.
+
+A `Skill` is a reusable Workflow classified for direct agent invocation as a complete behavior. Skill is a semantic/catalog view, not an agent-exclusive runtime type: the same Skill may also be invoked by a scheduler, FSM, dashboard, another Workflow, or another authorized adapter.
+
+Every Workflow receives a stable definition-level `workflow_id` that survives human-name and knowledge-path changes. Each invocation receives a distinct `workflow_run_id`. Human-friendly names remain aliases that resolve to stable identity.
+
+`WorkflowService` is the application boundary for invoke, advance, cancel, status, and step-result operations. MCP, sidecar, scheduler, dashboard, FSM, and composition adapters converge on that boundary. Invocation admission and effect-level consent remain distinct policy decisions coordinated there. A one-step `program` fast path is permitted as an implementation optimization, but it must preserve the same identity, admission, observability, and result semantics rather than becoming a second execution model.
+
+Reusable authored execution context is an `InstructionUnit`, resolved through one reference parser/resolver; inline Step instructions remain valid. Existing Directions content is migrated by meaning, not retained as a competing instruction system.
+
+The domain concepts `Op`, `auto_run`, an exclusive `reasoning` Step type, and separate direct-Skill versus Workflow drivers are retired from the canonical model. Useful operation-handler mechanics may be rehomed as internal `program` executor infrastructure. Durable old shapes may persist only at explicit legacy-read boundaries; new authored and serialized forms use the canonical Workflow model.
+
+**Compatibility treatment:** preserve correct public `Skill` terminology, projections, tests, and narrow compatibility readers while structurally replacing the split runtime/catalog model. Preserve historical records and ordinary non-domain uses of “capability.”
+
+**Test-safety condition:** broad or focused test runs must establish a process-level temporary data root before collection so task, session, and knowledge writes cannot reach native user state.
+
+**Implementation order:** first inventory and classify the migration; then introduce stable identity and WorkflowService seams; then migrate Step executors, composition, Instructions, and Skill catalog semantics. Compatibility deletion follows canonical writer/read convergence rather than preceding it.

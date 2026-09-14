@@ -17,6 +17,8 @@ from work_buddy.cutover_maintenance import (
 )
 from work_buddy.sources import ActorRef, SourceStore, TrustedIngressContext
 
+pytestmark = pytest.mark.usefixtures("_preserve_native_cutover_authorities")
+
 
 def _context() -> TrustedIngressContext:
     tenant = "tenant-contract-import-test"

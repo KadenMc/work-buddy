@@ -19,6 +19,8 @@ from work_buddy.knowledge.personal.provider import SQLitePersonalKnowledgeProvid
 from work_buddy.knowledge.personal.service import PersonalKnowledgeService
 from work_buddy.sources import ActorRef, SourceStore, TrustedIngressContext
 
+pytestmark = pytest.mark.usefixtures("_preserve_native_cutover_authorities")
+
 
 def _write_note(root: Path, relative: str = "work_patterns/focus.md") -> Path:
     path = root / relative
