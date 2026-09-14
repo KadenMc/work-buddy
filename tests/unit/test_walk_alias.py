@@ -19,6 +19,14 @@ from work_buddy.summarization import Provenance, SummaryNode
 from work_buddy.summarization.stores import DurableSummaryStore
 
 
+@pytest.fixture(autouse=True)
+def _ensure_builtin_ops_loaded():
+    """Make these registry tests independent of other tests clearing global ops."""
+    from work_buddy.mcp_server.op_registry import load_builtin_ops
+
+    load_builtin_ops()
+
+
 @pytest.fixture
 def tmp_summarization_db(monkeypatch, tmp_path):
     from work_buddy.summarization import db as db_mod
