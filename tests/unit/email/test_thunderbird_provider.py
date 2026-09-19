@@ -225,6 +225,21 @@ def test_health_round_trip(tmp_path, monkeypatch):
     assert state.requests[0]["path"] == "/health"
 
 
+def test_local_bridge_bypasses_environment_proxy(tmp_path, monkeypatch):
+    """Authenticated localhost IPC must not send its bearer token to a proxy."""
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+    state = _BridgeState()
+
+    with _running_bridge(state, tmp_path, monkeypatch):
+        provider = tb_mod.ThunderbirdEmailProvider()
+        assert provider.health()["ok"] is True
+
+    assert state.requests == [{"method": "GET", "path": "/health"}]
+
+
 def test_recent_messages_maps_to_summary_with_stable_key(tmp_path, monkeypatch):
     state = _BridgeState()
     with _running_bridge(state, tmp_path, monkeypatch):

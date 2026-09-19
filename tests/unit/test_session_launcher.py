@@ -1,6 +1,7 @@
 """Unit tests for session_launcher — command construction and remote_control flag."""
 
-from unittest.mock import patch, MagicMock
+import shlex
+from unittest.mock import patch
 
 import pytest
 
@@ -158,6 +159,31 @@ class TestDoResumeCommandConstruction:
 
         assert mock_launch.call_args[0][0] == ["codex", "resume", "codex-thread"]
         assert result["status"] == "ok"
+
+
+@pytest.mark.unit
+class TestMacOSLauncher:
+    """The generated AppleScript must never contain command input."""
+
+    @patch("work_buddy.session_launcher.subprocess.Popen")
+    def test_passes_command_as_data_via_environment(self, mock_popen):
+        from work_buddy.session_launcher import _launch_macos
+
+        mock_popen.return_value.pid = 123
+        prompt = 'hello" & do shell script "touch /tmp/injected" & "'
+
+        result = _launch_macos(["claude", prompt], "/tmp/quoted path")
+
+        assert result == 123
+        popen_argv = mock_popen.call_args.args[0]
+        script = popen_argv[2]
+        env = mock_popen.call_args.kwargs["env"]
+        assert prompt not in script
+        assert "WORK_BUDDY_LAUNCH_COMMAND" in script
+        assert env["WORK_BUDDY_LAUNCH_COMMAND"] == (
+            f"cd {shlex.quote('/tmp/quoted path')} && "
+            f"claude {shlex.quote(prompt)}"
+        )
 
 
 @pytest.mark.unit

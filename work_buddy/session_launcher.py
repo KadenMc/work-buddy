@@ -165,13 +165,23 @@ def _launch_macos(argv: list[str], cwd: str) -> int:
     # Build a shell command that cd's and runs the command
     escaped_argv = " ".join(_shell_quote(a) for a in argv)
     escaped_cwd = _shell_quote(cwd)
+    command = f"cd {escaped_cwd} && {escaped_argv}"
+
+    # Keep untrusted argv/cwd data out of the AppleScript source.  Shell
+    # quoting protects the command that Terminal eventually runs, but it does
+    # not escape an AppleScript string literal; embedding the command directly
+    # allowed a quote in a prompt to inject additional AppleScript statements.
+    # ``system attribute`` returns the value as data, so quotes, backslashes,
+    # and newlines cannot alter the script's structure.
+    env = _clean_env()
+    env["WORK_BUDDY_LAUNCH_COMMAND"] = command
     script = (
-        f'tell application "Terminal" to do script '
-        f'"cd {escaped_cwd} && {escaped_argv}"'
+        'set launchCommand to system attribute "WORK_BUDDY_LAUNCH_COMMAND"\n'
+        'tell application "Terminal" to do script launchCommand'
     )
     proc = subprocess.Popen(
         ["osascript", "-e", script],
-        env=_clean_env(),
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
