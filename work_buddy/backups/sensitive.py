@@ -8,7 +8,6 @@ backup API.  It is never uploaded by :mod:`work_buddy.backups.remote`.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -728,24 +727,15 @@ foreach ($child in $children) {
 }
 Assert-UserOnlyAcl $target
 """
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    from work_buddy.process import powershell_argv, run_tool
+
     environment = os.environ.copy()
     environment["WORK_BUDDY_SENSITIVE_DIRECTORY"] = str(path.resolve())
     try:
-        completed = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                encoded,
-            ],
-            capture_output=True,
-            text=True,
+        completed = run_tool(
+            powershell_argv(script, encode=True),
             timeout=20,
             env=environment,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise SensitiveBackupError(

@@ -6,7 +6,6 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -321,32 +320,26 @@ def test_restore_rehearsal_requires_explicit_operational_state_authorization(
 
 def test_windows_private_acl_uses_current_user_only_and_hides_path_from_command(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    recording_runner,
 ):
     target = tmp_path / "sensitive checkpoint"
     target.mkdir()
-    captured = {}
 
-    def run(command, **kwargs):
-        captured["command"] = command
-        captured.update(kwargs)
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(sensitive.subprocess, "run", run)
+    recording_runner.script(["powershell.exe"], returncode=0)
 
     sensitive._restrict_windows_directory(target)
 
-    assert captured["command"][:4] == [
+    [launch] = recording_runner.launches
+    command = list(launch.argv)
+    assert command[:4] == [
         "powershell.exe",
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
     ]
-    assert str(target) not in " ".join(captured["command"])
-    assert captured["env"]["WORK_BUDDY_SENSITIVE_DIRECTORY"] == str(
-        target.resolve()
-    )
-    encoded = captured["command"][-1]
+    assert str(target) not in " ".join(command)
+    assert launch.env["WORK_BUDDY_SENSITIVE_DIRECTORY"] == str(target.resolve())
+    encoded = command[-1]
     script = base64.b64decode(encoded).decode("utf-16le")
     assert "SetAccessRuleProtection($true, $false)" in script
     assert "WindowsIdentity]::GetCurrent()" in script
@@ -355,15 +348,11 @@ def test_windows_private_acl_uses_current_user_only_and_hides_path_from_command(
 
 def test_windows_private_acl_fails_closed_when_verification_fails(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    recording_runner,
 ):
     target = tmp_path / "sensitive"
     target.mkdir()
-    monkeypatch.setattr(
-        sensitive.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
-    )
+    recording_runner.script(["powershell.exe"], returncode=1)
 
     with pytest.raises(SensitiveBackupError, match="verify"):
         sensitive._restrict_windows_directory(target)

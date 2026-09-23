@@ -434,11 +434,10 @@ def _run_gh(
     Classifies common failure modes (gh missing, auth failure, network)
     so callers + the health check can surface actionable errors.
     """
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=60,
-        )
+        proc = run_tool(cmd, timeout=60)
     except FileNotFoundError:
         return {"status": "gh_missing",
                 "error": "gh CLI not installed or not on PATH",
@@ -560,11 +559,10 @@ def probe_gh() -> dict[str, Any]:
 
     Returns ``{installed, authenticated, account?, host?, error?}``.
     """
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True, text=True, timeout=10,
-        )
+        proc = run_tool(["gh", "auth", "status"], timeout=10)
     except FileNotFoundError:
         return {"installed": False, "authenticated": False,
                 "error": "gh CLI not installed or not on PATH"}
