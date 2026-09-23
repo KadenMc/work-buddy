@@ -218,12 +218,35 @@ def save_state(state: SidecarState, *, _retries: int = 4) -> None:
         raise
 
 
+_READ_RETRY_DELAYS_S = (0.02, 0.05, 0.1, 0.2)
+
+
+def _read_state_data() -> Any:
+    """Read and parse the state file, riding out the daemon's own writes.
+
+    The daemon replaces the file atomically, several times a minute. On
+    Windows, a read that lands while the replacement is in flight fails with
+    ``PermissionError``, and the non-atomic fallback in :func:`save_state` can
+    briefly expose a partial file. Both clear within milliseconds, so a read
+    retries them before giving up. A reader that gave up at once would see no
+    state and could classify a healthy daemon as wedged.
+    """
+    for delay in (*_READ_RETRY_DELAYS_S, None):
+        try:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except (PermissionError, json.JSONDecodeError):
+            if delay is None:
+                raise
+            time.sleep(delay)
+    return None  # pragma: no cover - the loop always returns or raises
+
+
 def load_state() -> SidecarState | None:
     """Load state from disk, or return None if not present."""
     if not STATE_FILE.exists():
         return None
     try:
-        data = json.loads(STATE_FILE.read_text())
+        data = _read_state_data()
         state = SidecarState(
             started_at=data.get("started_at", 0),
             pid=data.get("pid", 0),
@@ -241,6 +264,10 @@ def load_state() -> SidecarState | None:
         state.events = data.get("events", [])
         state.host = HostRecord.from_dict(data.get("host"))
         return state
+    except FileNotFoundError:
+        # Removed between the existence check and the read: the daemon
+        # cleans the file up on shutdown. That is "no state", not an error.
+        return None
     except Exception as exc:
         logger.warning("Failed to load sidecar state: %s", exc)
         return None
