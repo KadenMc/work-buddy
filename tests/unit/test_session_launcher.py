@@ -278,14 +278,14 @@ class TestVisibleTerminalLaunch:
         monkeypatch.setattr(policy, "is_windows", lambda platform=None: False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
 
-        pid = _launch_macos(["claude", "hello there"], "/Users/me/repo")
+        pid = _launch_macos(["claude", "hello there"], "/work/repo")
 
         [launch] = recording_runner.launches
         assert launch.intent is Intent.VISIBLE_TERMINAL
         assert launch.argv[0] == "osascript"
         assert launch.argv[1] == "-e"
         assert "Terminal" in launch.argv[2]
-        assert "/Users/me/repo" in launch.argv[2]
+        assert "/work/repo" in launch.argv[2]
         assert "ANTHROPIC_API_KEY" not in launch.env
         assert pid == recording_runner.processes[0].pid
 
@@ -297,12 +297,12 @@ class TestVisibleTerminalLaunch:
         monkeypatch.setattr(policy, "is_windows", lambda platform=None: False)
         monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
 
-        pid = _launch_linux(["claude", "hello"], "/home/me/repo")
+        pid = _launch_linux(["claude", "hello"], "/work/repo")
 
         [launch] = recording_runner.launches
         assert launch.intent is Intent.VISIBLE_TERMINAL
         assert launch.argv[0] == "gnome-terminal"
-        assert launch.argv[1] == "--working-directory=/home/me/repo"
+        assert launch.argv[1] == "--working-directory=/work/repo"
         assert pid == recording_runner.processes[0].pid
 
     def test_linux_falls_back_to_the_next_emulator(self, monkeypatch, recording_runner):
@@ -315,7 +315,7 @@ class TestVisibleTerminalLaunch:
             lambda name: "/usr/bin/xterm" if name == "xterm" else None,
         )
 
-        _launch_linux(["claude", "hello"], "/home/me/repo")
+        _launch_linux(["claude", "hello"], "/work/repo")
 
         [launch] = recording_runner.launches
         assert launch.argv[0] == "xterm"
@@ -327,6 +327,6 @@ class TestVisibleTerminalLaunch:
         monkeypatch.setattr("shutil.which", lambda name: None)
 
         with pytest.raises(RuntimeError, match="No terminal emulator found"):
-            _launch_linux(["claude", "hello"], "/home/me/repo")
+            _launch_linux(["claude", "hello"], "/work/repo")
 
         assert recording_runner.launches == []
