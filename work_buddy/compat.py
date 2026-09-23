@@ -1,29 +1,16 @@
 """Cross-platform compatibility helpers.
 
-Centralizes platform detection and provides OS-appropriate
-implementations for subprocess management, path resolution,
-and process utilities.
+Centralizes platform detection and OS-appropriate path resolution. Starting
+and ending processes belongs to ``work_buddy.process``.
 """
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
-
-
-def subprocess_creation_flags() -> int:
-    """Return subprocess creation flags appropriate for the current OS.
-
-    On Windows, returns CREATE_NO_WINDOW to suppress console windows.
-    On Unix, returns 0 (no special flags needed).
-    """
-    if IS_WINDOWS:
-        return subprocess.CREATE_NO_WINDOW
-    return 0
 
 
 def obsidian_log_path() -> Path:

@@ -81,3 +81,30 @@ jobs:
 
       - name: Build dashboard production assets
         run: npm run build
+
+  process-windows:
+    # Console behaviour only exists on Windows: whether a launch opens a
+    # window, and how a host with no console gets one. The Ubuntu job checks
+    # the launch policy on paper. This job checks what Windows actually does.
+    runs-on: windows-2025
+    timeout-minutes: 30
+
+    env:
+      WORK_BUDDY_SESSION_ID: ci-test-00000000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          # Keep in sync with packaging/vendor_uv.py and release.yml UV_VERSION.
+          version: "0.11.26"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies (uv provisions Python 3.11 per requires-python)
+        run: uv sync
+
+      - name: Run process tests on Windows
+        run: uv run pytest tests/process_windows tests/unit/process tests/unit/architecture -q --tb=short
