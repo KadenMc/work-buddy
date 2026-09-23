@@ -36,6 +36,7 @@ from work_buddy.tasks.migration import (
     LegacyManifestEntry,
     canonical_sha256,
 )
+from work_buddy.process import Scripted
 import work_buddy.tasks.production_cutover as production_cutover_module
 from work_buddy.tasks.production_cutover import (
     CANCEL_RETRIES_CONFIRMATION,
@@ -1135,7 +1136,7 @@ def test_local_link_collision_aborts_activation_and_root_is_disabled(tmp_path):
 
 
 def test_acl_probe_requires_explicit_descendant_and_frozen_parent_denies(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, recording_runner
 ):
     frozen_parent = tmp_path / "_frozen"
     root = frozen_parent / "work-buddy-task-tree-test"
@@ -1162,13 +1163,13 @@ def test_acl_probe_requires_explicit_descendant_and_frozen_parent_denies(
     }
     observed = {}
 
-    def fake_run(command, **_kwargs):
-        script = command[-1]
+    def fake_respond(launch):
+        script = launch.argv[-1]
         observed["script"] = script
-        return type("Completed", (), {"stdout": json.dumps(payload)})()
+        return Scripted(stdout=json.dumps(payload))
 
     monkeypatch.setattr(production_cutover_module.sys, "platform", "win32")
-    monkeypatch.setattr(production_cutover_module.subprocess, "run", fake_run)
+    recording_runner.script(respond=fake_respond)
 
     evidence = ProductionTaskCutover._probe_windows_acl(root)
     script = observed["script"]

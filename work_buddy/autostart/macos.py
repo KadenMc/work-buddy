@@ -14,8 +14,13 @@ from pathlib import Path
 
 from work_buddy.autostart import AGENT_LABEL
 from work_buddy.logging_config import get_logger
+from work_buddy.process import run_tool
 
 logger = get_logger(__name__)
+
+# launchctl bootout only unloads an existing agent and returns well within
+# a second. Bootstrap, which loads and starts the daemon, gets 30 seconds.
+_BOOTOUT_TIMEOUT_S = 10
 
 
 def _plist_path(label: str | None = None) -> Path:
@@ -57,6 +62,18 @@ def _write_plist(
     return path
 
 
+def _bootout(uid: int, label: str) -> None:
+    """Unload the agent if it is loaded.
+
+    Best effort: nothing may be loaded, and a launchctl that fails or hangs
+    here is reported by the bootstrap that follows, not by this call.
+    """
+    try:
+        run_tool(["launchctl", "bootout", f"gui/{uid}/{label}"], timeout=_BOOTOUT_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def register(
     *,
     python_exe: str,
@@ -75,14 +92,11 @@ def register(
     )
     uid = os.getuid()
     # Bootout any prior instance so bootstrap does not fail on a stale label.
-    subprocess.run(
-        ["launchctl", "bootout", f"gui/{uid}/{label}"],
-        capture_output=True, text=True,
-    )
+    _bootout(uid, label)
     try:
-        r = subprocess.run(
+        r = run_tool(
             ["launchctl", "bootstrap", f"gui/{uid}", str(path)],
-            capture_output=True, text=True, timeout=30,
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "detail": f"launchctl did not run: {exc}"}
@@ -93,11 +107,7 @@ def register(
 
 def unregister(*, name: str | None = None) -> dict:
     label = name or AGENT_LABEL
-    uid = os.getuid()
-    subprocess.run(
-        ["launchctl", "bootout", f"gui/{uid}/{label}"],
-        capture_output=True, text=True,
-    )
+    _bootout(os.getuid(), label)
     _plist_path(label).unlink(missing_ok=True)
     return {"ok": True, "detail": f"Unloaded and removed LaunchAgent {label} (if present)"}
 

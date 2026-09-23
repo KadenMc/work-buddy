@@ -42,6 +42,7 @@ from work_buddy import paths
 from work_buddy.cowork.local_files import LocalFileLinkRegistry
 from work_buddy.document_kernel.causality import DocumentCausalityStore
 from work_buddy.markdown_db.storage_helpers import atomic_write_text, file_lock
+from work_buddy.process import powershell_argv, run_tool
 from work_buddy.sources import ActorRef, SourceStore
 from work_buddy.tasks.documents import TaskDocumentStoreManager
 from work_buddy.truth import documents, ydoc_store
@@ -1470,12 +1471,10 @@ class ProductionTaskCutover:
                 "Select-Object Name,ProcessId,ParentProcessId,CommandLine,ExecutablePath | "
                 "ConvertTo-Json -Compress -Depth 3"
             )
-            completed = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                check=True,
-                capture_output=True,
-                text=True,
+            completed = run_tool(
+                powershell_argv(script),
                 timeout=30,
+                check=True,
             )
             decoded = json.loads(completed.stdout or "[]")
             values = decoded if isinstance(decoded, list) else [decoded]
@@ -2405,12 +2404,10 @@ $ownerSid = (New-Object Security.Principal.NTAccount($rootAcl.Owner)).Translate(
             item for item in (str(winps_modules), inherited_modules) if item
         )
         try:
-            completed = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                check=True,
-                capture_output=True,
-                text=True,
+            completed = run_tool(
+                powershell_argv(script),
                 timeout=120,
+                check=True,
                 env=environment,
             )
             value = json.loads(completed.stdout)

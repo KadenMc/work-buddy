@@ -13,6 +13,7 @@ from pathlib import Path
 
 from work_buddy.autostart import UNIT_NAME
 from work_buddy.logging_config import get_logger
+from work_buddy.process import run_tool
 
 logger = get_logger(__name__)
 
@@ -47,12 +48,7 @@ def _unit_path(unit: str | None = None) -> Path:
 
 
 def _systemctl(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["systemctl", "--user", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    return run_tool(["systemctl", "--user", *args], timeout=timeout)
 
 
 def register(
