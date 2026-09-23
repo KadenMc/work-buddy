@@ -6,7 +6,7 @@ turns that into concrete ``Popen`` arguments (a :class:`ResolvedLaunch`):
 
 | Intent | Windows | POSIX | stdin | Environment | Timeout |
 |---|---|---|---|---|---|
-| Tool run | ``CREATE_NO_WINDOW`` | new session, except in a terminal's foreground job | ``DEVNULL`` unless input is given | inherited or supplied, plus the non-interactive overlay | required, clamped to the caller's deadline |
+| Tool run | ``CREATE_NO_WINDOW`` when this process has no console, else its console | new session, except in a terminal's foreground job | ``DEVNULL`` unless input is given | inherited or supplied, plus the non-interactive overlay | required, clamped to the caller's deadline |
 | Detached worker | ``CREATE_NO_WINDOW`` | new session on request | ``DEVNULL`` unless a pipe is requested | supplied or inherited | none, the owner terminates it |
 | Owned host | ``CREATE_NO_WINDOW`` (see ``host.py``) | new session for detached starts | ``DEVNULL`` | per host role | none |
 | Visible terminal | ``CREATE_NEW_CONSOLE`` | the platform terminal emulator | the new terminal's | supplied | none |
@@ -208,6 +208,31 @@ class WorkerSpec:
         object.__setattr__(self, "cwd", _normalize_cwd(self.cwd))
 
 
+def process_has_console() -> bool:
+    """Windows: whether this process is attached to a console.
+
+    A console child inherits its parent's console by default, and that console
+    either has no window (every background host establishes one) or is a
+    terminal the user already has open. Either way, inheriting it opens no
+    window. Only a process with no console, such as one running under
+    ``pythonw.exe``, makes Windows create a new, visible console for a console
+    child, which is what ``CREATE_NO_WINDOW`` prevents. Checked at every launch,
+    because a host can gain a console after it starts.
+
+    Opening ``CONOUT$`` succeeds exactly when a console is attached. It costs
+    a fraction of a millisecond and needs no ``ctypes`` import, which matters
+    on hot paths that start one process per call.
+    """
+    if not is_windows():
+        return True
+    try:
+        fd = os.open("CONOUT$", os.O_RDWR)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
 def in_terminal_foreground() -> bool:
     """True when this process is the foreground job of a terminal.
 
@@ -259,15 +284,23 @@ def resolve_tool(
     base_env: Mapping[str, str] | None = None,
     foreground_terminal: bool | None = None,
     deadline_remaining: float | None = None,
+    has_console: bool | None = None,
 ) -> ResolvedLaunch:
     """Apply the tool-run policy.
 
-    ``platform``, ``base_env``, ``foreground_terminal`` and
-    ``deadline_remaining`` exist for tests. Left out, they come from this
-    process: ``sys.platform``, ``os.environ``, :func:`in_terminal_foreground`
-    and :func:`ambient_deadline_remaining`.
+    On Windows a tool run gets ``CREATE_NO_WINDOW`` only when this process has
+    no console. Otherwise it shares this process's console, which opens no
+    window either, and saves starting a console host for every call.
+
+    ``platform``, ``base_env``, ``foreground_terminal``, ``deadline_remaining``
+    and ``has_console`` exist for tests. Left out, they come from this
+    process: ``sys.platform``, ``os.environ``, :func:`in_terminal_foreground`,
+    :func:`ambient_deadline_remaining` and :func:`process_has_console`. A
+    simulated Windows on another platform counts as having no console.
     """
     windows = is_windows(platform)
+    if has_console is None:
+        has_console = process_has_console() if windows and is_windows() else False
     source = spec.env if spec.env is not None else (
         base_env if base_env is not None else os.environ
     )
@@ -287,7 +320,7 @@ def resolve_tool(
         text=spec.text,
         encoding=spec.encoding,
         errors=spec.errors,
-        creationflags=CREATE_NO_WINDOW if windows else 0,
+        creationflags=CREATE_NO_WINDOW if windows and not has_console else 0,
         start_new_session=not windows and not foreground_terminal,
         timeout=clamp_timeout(float(spec.timeout), deadline_remaining),
         input=spec.input,

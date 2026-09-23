@@ -35,8 +35,10 @@ def _tool(**overrides) -> ToolRun:
 # -- tool runs --------------------------------------------------------------
 
 
-def test_tool_run_on_windows_has_no_window_and_no_prompt() -> None:
-    launch = policy.resolve_tool(_tool(), platform=WINDOWS, base_env={}, deadline_remaining=None)
+def test_tool_run_from_a_host_with_no_console_gets_one_without_a_window() -> None:
+    launch = policy.resolve_tool(
+        _tool(), platform=WINDOWS, base_env={}, deadline_remaining=None, has_console=False,
+    )
 
     assert launch.intent is Intent.TOOL
     assert launch.creationflags == CREATE_NO_WINDOW
@@ -46,6 +48,26 @@ def test_tool_run_on_windows_has_no_window_and_no_prompt() -> None:
     assert launch.stdout == subprocess.PIPE
     assert launch.stderr == subprocess.PIPE
     assert launch.env == NON_INTERACTIVE_ENV
+
+
+def test_tool_run_from_a_host_with_a_console_shares_it() -> None:
+    """A console child inherits its parent's console, which has no window
+    (a background host) or is a terminal already open (the CLI), so neither
+    opens a window, and sharing it saves a console host per call."""
+    launch = policy.resolve_tool(
+        _tool(), platform=WINDOWS, base_env={}, deadline_remaining=None, has_console=True,
+    )
+
+    assert launch.creationflags == 0
+    assert not launch.creationflags & (CREATE_NEW_CONSOLE | DETACHED_PROCESS)
+
+
+def test_a_simulated_windows_counts_as_having_no_console(monkeypatch) -> None:
+    monkeypatch.setattr(policy.sys, "platform", "linux")
+
+    launch = policy.resolve_tool(_tool(), platform=WINDOWS, base_env={}, deadline_remaining=None)
+
+    assert launch.creationflags == CREATE_NO_WINDOW
 
 
 @pytest.mark.parametrize(
@@ -246,7 +268,9 @@ def test_visible_terminal_is_the_only_intent_that_opens_a_window() -> None:
     assert posix.creationflags == 0
     assert posix.stdin == posix.stdout == posix.stderr == subprocess.DEVNULL
     for launch in (
-        policy.resolve_tool(_tool(), platform=WINDOWS, base_env={}, deadline_remaining=None),
+        policy.resolve_tool(
+            _tool(), platform=WINDOWS, base_env={}, deadline_remaining=None, has_console=False,
+        ),
         policy.resolve_worker(WorkerSpec(argv=("x",)), platform=WINDOWS),
         policy.resolve_host_launch(["x"], cwd=None, env={}, stdout=None, stderr=None,
                                    detached=True, platform=WINDOWS),
