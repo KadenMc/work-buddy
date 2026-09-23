@@ -54,6 +54,7 @@ from work_buddy.sidecar.pid import (
 )
 from work_buddy.sidecar.state import (
     STATE_FILE,
+    HostRecord,
     SidecarState,
     ServiceHealth,
     cleanup_state_file,
@@ -1006,6 +1007,22 @@ def run(foreground: bool = True) -> None:
         "Children will spawn with: %s (daemon sys.executable=%s)",
         resolved_python, sys.executable,
     )
+    # Record the runtime context this daemon actually has, once, so status
+    # and health can report drift without guessing from logs.
+    try:
+        from work_buddy.process import describe_host_context
+
+        state.host = HostRecord.from_dict(describe_host_context(cfg))
+        if state.host is not None:
+            logger.info(
+                "Host runtime: %s, console %s via %s, services on %s",
+                state.host.executable, state.host.console,
+                state.host.mechanism, state.host.child_python,
+            )
+            for warning in state.host.warnings():
+                logger.warning("Host runtime drift: %s", warning)
+    except Exception:
+        logger.exception("Could not record the host runtime context")
 
     # --- OS-enforced hard-kill reaping (Windows) ---
     # Create the kill-on-close Job Object before spawning any child so each

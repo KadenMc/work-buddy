@@ -123,6 +123,16 @@ _register(ComponentDef(
                 "messaging will be unavailable."
             ),
         ),
+        CheckStep(
+            description="Sidecar runtime context keeps console programs windowless",
+            check_fn="work_buddy.health.checks.check_sidecar_runtime_context",
+            on_fail=(
+                "The sidecar is running without the console its role requires, "
+                "so programs it starts can open terminal windows. Restart it "
+                "with 'wbuddy restart'. If services run on pythonw.exe, point "
+                "sidecar.python_executable at python.exe instead."
+            ),
+        ),
     ],
 ))
 

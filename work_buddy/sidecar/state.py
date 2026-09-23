@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,63 @@ class JobState:
 
 
 @dataclass
+class HostRecord:
+    """The runtime context the daemon runs with, recorded once at boot.
+
+    Written from ``work_buddy.process.describe_host_context``. ``console`` is
+    ``allocated`` (the daemon created a console with no window), ``hidden``
+    (it inherited one), ``attached`` (it runs in a terminal), ``none``, or
+    ``not_applicable`` (POSIX). ``mechanism`` says how the console came
+    about: ``inherited``, ``allocate_api``, ``relaunch``, ``foreground`` or
+    ``none``. ``child_python`` and ``child_image`` are what the daemon's
+    services run on.
+    """
+
+    role: str = ""
+    executable: str = ""
+    image: str = ""
+    console: str = ""
+    mechanism: str = ""
+    child_python: str = ""
+    child_image: str = ""
+    pin: str | None = None
+    pin_outside_project: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "HostRecord | None":
+        """Rebuild a record, ignoring keys a newer daemon may have added."""
+        if not isinstance(data, dict):
+            return None
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+    def window_risks(self) -> list[str]:
+        """Drift that makes console programs open visible windows."""
+        risks = []
+        if self.console == "none":
+            risks.append(
+                "the sidecar has no console, so console programs it starts "
+                "without the no-window flag open windows"
+            )
+        if self.child_image == "gui":
+            risks.append(
+                "services would run on pythonw.exe, which has no console to "
+                "pass to the programs they start"
+            )
+        return risks
+
+    def warnings(self) -> list[str]:
+        """Everything ``wbuddy status`` warns about."""
+        warnings = self.window_risks()
+        if self.pin_outside_project:
+            warnings.append(
+                f"sidecar.python_executable points outside the project ({self.pin}), "
+                "so services may run different code than the sidecar"
+            )
+        return warnings
+
+
+@dataclass
 class SidecarState:
     """Top-level sidecar state written to ``sidecar_state.json``.
 
@@ -86,6 +143,9 @@ class SidecarState:
     dispatch_phase: str = ""
     dispatch_phase_since: float = 0.0
     dispatch_job: str = ""
+    # The daemon's runtime context, recorded once before its loops start.
+    # ``None`` in state files written by a daemon that predates the record.
+    host: HostRecord | None = None
 
     def update_service(self, name: str, **kwargs: Any) -> None:
         if name in self.services:
@@ -179,6 +239,7 @@ def load_state() -> SidecarState | None:
         for j in data.get("jobs", []):
             state.jobs.append(JobState(**j))
         state.events = data.get("events", [])
+        state.host = HostRecord.from_dict(data.get("host"))
         return state
     except Exception as exc:
         logger.warning("Failed to load sidecar state: %s", exc)

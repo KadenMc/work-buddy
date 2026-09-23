@@ -189,6 +189,7 @@ def cmd_status(args) -> int:
     # health == "up": the state file names this pid and is fresh.
     uptime = _fmt_duration(time.time() - st.started_at) if st.started_at else "?"
     print(f"Sidecar running (pid={pid}, uptime={uptime})")
+    _print_runtime(st)
     if st.services:
         print("Services:")
         for name, svc in sorted(st.services.items()):
@@ -199,6 +200,37 @@ def cmd_status(args) -> int:
         print(f"Last tick: {_fmt_duration(time.time() - st.last_tick_at)} ago")
     _print_dispatch_status(st)
     return EXIT_OK
+
+
+_CONSOLE_PHRASES = {
+    "allocated": "console allocated without window",
+    "hidden": "hidden console",
+    "attached": "attached to a terminal",
+    "none": "NO console",
+}
+
+
+def runtime_summary(host) -> str:
+    """One line on what the daemon runs on, and what its services run on."""
+    executable = Path(host.executable).name or "?"
+    console = _CONSOLE_PHRASES.get(host.console)
+    head = f"{executable}, {console}" if console else executable
+    services = host.child_python or "?"
+    source = "pinned" if host.pin else "sidecar interpreter"
+    return f"{head} | services: {services} ({source})"
+
+
+def _print_runtime(st) -> None:
+    """The daemon's runtime context, and a warning for each kind of drift.
+
+    State files written by a daemon without the record print nothing.
+    """
+    host = getattr(st, "host", None)
+    if host is None:
+        return
+    print(f"Runtime: {runtime_summary(host)}")
+    for warning in host.warnings():
+        _err(f"Warning: {warning}. Run 'wbuddy restart' after fixing it.")
 
 
 def _print_dispatch_status(st) -> None:

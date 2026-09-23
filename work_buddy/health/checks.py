@@ -418,6 +418,30 @@ def check_sidecar_heartbeat() -> dict[str, Any]:
     return {"ok": True, "detail": f"sidecar alive (pid {pid}, tick age {int(age)}s)"}
 
 
+def check_sidecar_runtime_context() -> dict[str, Any]:
+    """The daemon's recorded runtime context, as ``wbuddy status`` shows it.
+
+    Fails only on drift that makes console programs open windows: a daemon
+    with no console, or services on a GUI interpreter. A pin outside the
+    project is reported in the detail but does not fail the check, because a
+    user can pin a different environment on purpose. A daemon that has not
+    recorded its context (older code, or still booting) passes.
+    """
+    from work_buddy.sidecar.state import load_state
+
+    state = load_state()
+    host = state.host if state is not None else None
+    if host is None:
+        return {"ok": True, "detail": "no runtime context recorded"}
+    risks = host.window_risks()
+    if risks:
+        return {"ok": False, "detail": ". ".join(risks)}
+    detail = f"console {host.console} via {host.mechanism}, services on {host.child_python}"
+    if host.pin_outside_project:
+        detail += f" (pinned outside the project: {host.pin})"
+    return {"ok": True, "detail": detail}
+
+
 # ---------------------------------------------------------------------------
 # Tailscale
 # ---------------------------------------------------------------------------
