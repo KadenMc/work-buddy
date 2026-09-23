@@ -471,6 +471,8 @@ def _process_table() -> list[tuple[int, int, str]]:
     """``(pid, ppid, command_line)`` for candidate Python processes. Never raises."""
     import subprocess
 
+    from work_buddy.process import powershell_argv, run_tool
+
     if sys.platform == "win32":
         # The separator is ``[char]9`` rather than a backtick-t escape: this is
         # a single-quoted PowerShell string, where backtick is literal, so
@@ -481,24 +483,16 @@ def _process_table() -> list[tuple[int, int, str]]:
             "'{0}{3}{1}{3}{2}' -f $_.ProcessId, $_.ParentProcessId, "
             "$_.CommandLine, [char]9 }"
         )
-        argv = ["powershell.exe", "-NoProfile", "-Command", script]
+        argv = powershell_argv(script)
         sep = "\t"
     else:
         argv = ["ps", "-eo", "pid=,ppid=,args="]
         sep = None
 
-    from work_buddy.compat import subprocess_creation_flags
-
     try:
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=20,
-            # CREATE_NO_WINDOW on Windows: a background diagnostic must never
-            # put a console window on the user's screen.
-            creationflags=subprocess_creation_flags(),
-        )
+        # A background diagnostic must never put a console window on the
+        # user's screen. run_tool never opens one.
+        result = run_tool(argv, timeout=20, text=True)
     except (OSError, subprocess.SubprocessError):
         return []
     if result.returncode != 0:

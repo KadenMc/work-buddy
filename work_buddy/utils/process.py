@@ -76,12 +76,13 @@ def process_start_token(pid: int) -> str | None:
     # constant for a process lifetime and includes second-level resolution;
     # PID reuse within the same second is possible in theory, so callers still
     # pair this token with an explicit process-kind check before termination.
+    from work_buddy.process import run_tool
+
     try:
-        result = subprocess.run(
+        result = run_tool(
             ["ps", "-p", str(pid), "-o", "lstart="],
-            capture_output=True,
-            text=True,
             timeout=5,
+            text=True,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
