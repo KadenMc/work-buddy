@@ -201,8 +201,9 @@ Windows, for a background role:
 Then it assigns the role's identity. `wbuddy start --foreground` calls it with
 `foreground=True`, which keeps the terminal's console but still gives the
 daemon its own sidecar identity, so a foreground daemon uses the sidecar's
-consent database like every other start path. The tray's entry point calls it
-for the identity alone.
+consent database like every other start path. `start_host` gives the tray
+its identity in its environment, because importing the tray package may
+already need one, and the tray's entry point claims it again.
 
 The interpreter pin (`sidecar.python_executable`) keeps its semantics:
 `resolve_child_python` returns the pin when it names an existing file, else

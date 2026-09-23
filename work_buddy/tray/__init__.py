@@ -22,11 +22,15 @@ force-kill only when the process outlives the grace window.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import time
 
-from work_buddy.logging_config import get_logger
-
-logger = get_logger(__name__)
+# A plain module logger, not logging_config.get_logger: `python -m
+# work_buddy.tray` imports this package before the tray's entry point runs,
+# and configuring logging here would require a session identity the tray has
+# not claimed yet. Records reach work-buddy's handlers once anything has
+# configured logging.
+logger = logging.getLogger(__name__)
 
 
 def qt_available() -> bool:

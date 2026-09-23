@@ -55,7 +55,8 @@ class TestEnsureRunning:
         launch = no_spawn[0]
         assert launch.intent is Intent.HOST
         assert list(launch.argv[-2:]) == ["-m", "work_buddy.tray"]
-        assert "WORK_BUDDY_SESSION_ID" not in launch.env
+        # The tray starts with its own identity, never the caller's.
+        assert launch.env["WORK_BUDDY_SESSION_ID"] == "wbuddy-cli"
         assert launch.stdout == subprocess.DEVNULL
 
     def test_never_raises(self, monkeypatch, recording_runner):
@@ -90,3 +91,26 @@ class TestStopRunning:
         res = tray.stop_running(wait_seconds=0.5)
         assert withdrew == [True]
         assert res["ok"] and res["stopped"] and res["pid"] == 4242
+
+
+def test_the_tray_package_imports_without_a_session_identity(tmp_path):
+    """`python -m work_buddy.tray` imports the package before the tray's entry
+    point claims its identity, as its login item starts it with none."""
+    import os
+    import subprocess
+    import sys
+
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("WORK_BUDDY_SESSION_ID", "CODEX_THREAD_ID")
+    }
+    env["WORK_BUDDY_DATA_DIR"] = str(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", "import work_buddy.tray"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+    assert completed.returncode == 0, completed.stderr

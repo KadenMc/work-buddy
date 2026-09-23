@@ -206,8 +206,9 @@ def host_env(
 ) -> dict[str, str]:
     """The environment a host of ``role`` starts with.
 
-    Roles that never inherit an identity get none, and assign their own at
-    their entry point.
+    Roles that never inherit an identity get none of their launcher's. The
+    sidecar assigns its own at its entry point, and the tray starts with its
+    own.
     """
     spec = ROLE_SPECS[role]
     if base_env is not None:
@@ -219,6 +220,10 @@ def host_env(
     if not spec.inherits_identity:
         for name in IDENTITY_VARIABLES:
             env.pop(name, None)
+    if role is HostRole.TRAY:
+        # The tray's own identity, set before it starts: importing the tray
+        # package may already need one.
+        env["WORK_BUDDY_SESSION_ID"] = CLI_SESSION_ID
     if extra_env:
         env.update(extra_env)
     return env

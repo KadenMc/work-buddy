@@ -59,7 +59,7 @@ def test_the_tray_starts_on_the_gui_image(monkeypatch, venv, recording_runner) -
 
     [launch] = recording_runner.launches
     assert launch.argv == (str(venv / "pythonw.exe"), "-m", "work_buddy.tray")
-    assert "WORK_BUDDY_SESSION_ID" not in launch.env
+    assert launch.env["WORK_BUDDY_SESSION_ID"] == host.CLI_SESSION_ID
     assert launch.env["PYTHONUTF8"] == "1"
 
 
