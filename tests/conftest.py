@@ -194,6 +194,21 @@ def authenticate_dashboard_client(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def recording_runner():
+    """Record every process launch for the test instead of starting it.
+
+    Yields a :class:`work_buddy.process.RecordingRunner`. Script its answers
+    with ``recording_runner.script(argv_prefix, stdout=..., returncode=...)``
+    and assert on ``recording_runner.launches``.
+    """
+    from work_buddy.process import RecordingRunner, use_runner
+
+    runner = RecordingRunner()
+    with use_runner(runner):
+        yield runner
+
+
+@pytest.fixture
 def declared_thread_action_registry(monkeypatch):
     """Use shipped action schemas without host preferences or registry caches.
 

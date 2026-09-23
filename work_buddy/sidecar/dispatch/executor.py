@@ -761,9 +761,9 @@ def _terminate_owned_process_handle(
 
     if os.name == "nt":
         try:
-            from work_buddy.compat import _force_kill_pid
+            from work_buddy.process import terminate_tree
 
-            kill_requested = _force_kill_pid(pid)
+            kill_requested = terminate_tree(pid)
         except (ProcessLookupError, PermissionError, OSError):
             kill_requested = False
 

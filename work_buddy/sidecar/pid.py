@@ -110,19 +110,12 @@ def _process_description(pid: int) -> tuple[str, str] | None:
             "| ConvertTo-Json -Compress}"
         )
         try:
-            from work_buddy.compat import subprocess_creation_flags
+            from work_buddy.process import powershell_argv, run_tool
 
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-Command", script],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                # CREATE_NO_WINDOW. Without it every call flashes a console
-                # window, and this runs on the tray's 2500 ms status poll
-                # whenever the identity record cannot be matched, which would
-                # mean a console window every 2.5 seconds.
-                creationflags=subprocess_creation_flags(),
-            )
+            # This can run on the tray's 2.5 second status poll whenever the
+            # identity record cannot be matched, so it must never open a
+            # window: run_tool guarantees that.
+            result = run_tool(powershell_argv(script), timeout=15)
             if result.returncode != 0 or not result.stdout.strip():
                 return None
             value = json.loads(result.stdout)
@@ -145,12 +138,9 @@ def _process_description(pid: int) -> tuple[str, str] | None:
         pass
 
     try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "comm=", "-o", "command="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        from work_buddy.process import run_tool
+
+        result = run_tool(["ps", "-p", str(pid), "-o", "comm=", "-o", "command="], timeout=5)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
     output = result.stdout.strip()
@@ -363,7 +353,7 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> Takeove
     """
     import time as _time
 
-    from work_buddy.compat import _force_kill_pid, find_child_pids  # type: ignore[attr-defined]
+    from work_buddy.process import find_child_pids, terminate_tree
 
     # Capture the process lifetime before validating the persisted record.
     # Rechecking this token after validation closes the gap where the recorded
@@ -426,7 +416,7 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> Takeove
             len(children), sorted(children),
         )
         for child_pid in children:
-            _force_kill_pid(child_pid)
+            terminate_tree(child_pid)
 
     if process_start_token(pid) != expected_start:
         _remove_pid_file()
@@ -454,7 +444,7 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> Takeove
                 _remove_pid_file()
                 logger.info("Previous sidecar (pid=%d) terminated.", pid)
                 return TakeoverResult(True, "terminated")
-            _force_kill_pid(pid)
+            terminate_tree(pid)
 
     if process_start_token(pid) == expected_start:
         logger.error(

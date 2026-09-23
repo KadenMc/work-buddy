@@ -345,19 +345,17 @@ def test_status_wedged_reports_and_fails(capsys, monkeypatch):
 # Lifecycle helpers (sidecar plumbing mocked)
 # ---------------------------------------------------------------------------
 
-def test_start_is_idempotent_when_healthy(monkeypatch):
+def test_start_is_idempotent_when_healthy(monkeypatch, recording_runner):
     # A daemon that is alive AND publishing fresh state must not be restarted.
     st = SidecarState(pid=999, started_at=time.time(), last_tick_at=time.time())
     monkeypatch.setattr(lifecycle._pid, "check_existing_daemon", lambda: 999)
     monkeypatch.setattr(lifecycle._state, "load_state", lambda: st)
-    popen = Mock()
-    monkeypatch.setattr(lifecycle.subprocess, "Popen", popen)
     res = lifecycle.start_sidecar()
     assert res["already_running"] is True and res["pid"] == 999
-    popen.assert_not_called()
+    assert recording_runner.launches == []
 
 
-def test_start_takes_over_wedged_daemon(monkeypatch):
+def test_start_takes_over_wedged_daemon(monkeypatch, recording_runner):
     # A pid file naming an alive-but-wedged daemon must not block start: spawn a
     # fresh daemon (which takes the wedged one over) instead of refusing. This
     # is the bug the pid-liveness-only check had: it reported "already running"
@@ -368,16 +366,14 @@ def test_start_takes_over_wedged_daemon(monkeypatch):
         lifecycle._pid, "check_existing_daemon", lambda: next(seq, 26756)
     )
     monkeypatch.setattr(lifecycle._state, "load_state", lambda: None)
-    popen = Mock()
-    monkeypatch.setattr(lifecycle.subprocess, "Popen", popen)
     monkeypatch.setattr(lifecycle.time, "sleep", lambda _s: None)
     res = lifecycle.start_sidecar(wait_seconds=2.0)
     assert res["started"] is True and res["already_running"] is False
     assert res["pid"] == 26756
-    popen.assert_called_once()
+    assert len(recording_runner.launches) == 1
 
 
-def test_start_ignores_dying_zombie_pid(monkeypatch):
+def test_start_ignores_dying_zombie_pid(monkeypatch, recording_runner):
     # Mid-takeover the old pid can still read as alive for a moment. The confirm
     # loop must skip it and latch only onto the new daemon's pid.
     monkeypatch.setattr(lifecycle, "_daemon_health", lambda *a: "wedged")
@@ -386,29 +382,26 @@ def test_start_ignores_dying_zombie_pid(monkeypatch):
         lifecycle._pid, "check_existing_daemon", lambda: next(seq, 26756)
     )
     monkeypatch.setattr(lifecycle._state, "load_state", lambda: None)
-    monkeypatch.setattr(lifecycle.subprocess, "Popen", Mock())
     monkeypatch.setattr(lifecycle.time, "sleep", lambda _s: None)
     res = lifecycle.start_sidecar(wait_seconds=2.0)
     assert res["pid"] == 26756 and res["started"] is True
 
 
-def test_start_spawns_when_absent(monkeypatch):
+def test_start_spawns_when_absent(monkeypatch, recording_runner):
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "agent-123")
     seq = iter([None, 555])  # initial existing-check, then the loop poll
     monkeypatch.setattr(lifecycle._pid, "check_existing_daemon", lambda: next(seq, 555))
     # State file deliberately empty: start must confirm on the pid file alone,
     # because the daemon rewrites the state file only on its first tick.
     monkeypatch.setattr(lifecycle._state, "load_state", lambda: None)
-    popen = Mock()
-    monkeypatch.setattr(lifecycle.subprocess, "Popen", popen)
     monkeypatch.setattr(lifecycle.time, "sleep", lambda _s: None)
     res = lifecycle.start_sidecar(wait_seconds=2.0)
     assert res["started"] is True and res["pid"] == 555
-    popen.assert_called_once()
+    [launch] = recording_runner.launches
+    assert list(launch.argv[-2:]) == ["-m", "work_buddy.sidecar"]
     # The daemon must self-assign its own sidecar consent principal, so wb must
     # not leak its WORK_BUDDY_SESSION_ID into the spawned daemon's environment.
-    child_env = popen.call_args.kwargs["env"]
-    assert "WORK_BUDDY_SESSION_ID" not in child_env
+    assert "WORK_BUDDY_SESSION_ID" not in launch.env
 
 
 def test_stop_when_not_running(monkeypatch):

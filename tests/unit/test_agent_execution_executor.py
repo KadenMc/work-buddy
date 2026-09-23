@@ -272,7 +272,7 @@ def test_terminate_detached_process_validates_pid_and_uses_windows_tree_kill(
         return True
 
     monkeypatch.setattr(
-        "work_buddy.compat._force_kill_pid",
+        "work_buddy.process.terminate_tree",
         _kill,
     )
 
@@ -363,7 +363,7 @@ def test_failed_termination_retains_owned_handle_for_a_retry(
     def _fail_to_kill(_pid: int) -> None:
         raise OSError("access denied")
 
-    monkeypatch.setattr("work_buddy.compat._force_kill_pid", _fail_to_kill)
+    monkeypatch.setattr("work_buddy.process.terminate_tree", _fail_to_kill)
 
     assert executor.terminate_detached_process(
         9876,
@@ -377,22 +377,15 @@ def test_failed_termination_retains_owned_handle_for_a_retry(
 
 def test_taskkill_nonzero_retains_owned_handle_for_a_retry(
     monkeypatch,
+    recording_runner,
 ) -> None:
-    from work_buddy import compat
+    from work_buddy.process import tree
 
     process = _Process(pid=9876)
     executor._OWNED_DETACHED_PROCESSES[(9876, "generation-a")] = process
     monkeypatch.setattr(executor.os, "name", "nt")
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-
-    class _TaskkillFailure:
-        returncode = 5
-
-    monkeypatch.setattr(
-        compat.subprocess,
-        "run",
-        lambda *_args, **_kwargs: _TaskkillFailure(),
-    )
+    monkeypatch.setattr(tree, "IS_WINDOWS", True)
+    recording_runner.script(["taskkill"], returncode=5)
 
     assert executor.terminate_detached_process(
         9876,
@@ -411,7 +404,7 @@ def test_taskkill_success_without_observed_exit_retains_owned_handle(
     executor._OWNED_DETACHED_PROCESSES[(9876, "generation-a")] = process
     monkeypatch.setattr(executor.os, "name", "nt")
     monkeypatch.setattr(
-        "work_buddy.compat._force_kill_pid",
+        "work_buddy.process.terminate_tree",
         lambda _pid: True,
     )
 
@@ -468,7 +461,7 @@ def test_stale_owner_token_cannot_kill_reused_pid(
         return True
 
     monkeypatch.setattr(
-        "work_buddy.compat._force_kill_pid",
+        "work_buddy.process.terminate_tree",
         _kill,
     )
 

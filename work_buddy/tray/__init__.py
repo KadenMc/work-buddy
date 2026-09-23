@@ -22,7 +22,6 @@ force-kill only when the process outlives the grace window.
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import time
 
 from work_buddy.logging_config import get_logger
@@ -76,28 +75,11 @@ def ensure_running() -> dict:
                     "tray extra (uv sync --extra tray)"
                 ),
             }
-        from work_buddy import paths
-        from work_buddy.compat import (
-            build_child_env,
-            detached_process_kwargs,
-            pythonw_variant,
-            resolve_child_python,
-        )
+        from work_buddy.process import HostRole, start_host
 
-        exe = pythonw_variant(resolve_child_python())
-        env = build_child_env()
-        # The tray must not inherit an agent session identity (same rule as
-        # the sidecar spawn in cli.lifecycle).
-        env.pop("WORK_BUDDY_SESSION_ID", None)
-        subprocess.Popen(
-            [exe, "-m", "work_buddy.tray"],
-            cwd=str(paths.repo_root()),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **detached_process_kwargs(),
-        )
+        # The tray host role: the GUI image of the pinned interpreter, no
+        # console, stdio detached, and no inherited agent session identity.
+        start_host(HostRole.TRAY, "work_buddy.tray")
         return {"ok": True, "running": True, "spawned": True, "detail": "tray spawned"}
     except Exception as exc:  # a tray problem must never break the caller
         logger.warning("tray ensure_running failed: %s", exc)
@@ -130,9 +112,9 @@ def stop_running(*, wait_seconds: float = 8.0) -> dict:
                     "detail": f"tray stopped (pid={pid})",
                 }
             time.sleep(0.25)
-        from work_buddy.compat import _force_kill_pid  # type: ignore[attr-defined]
+        from work_buddy.process import terminate_tree
 
-        _force_kill_pid(pid)
+        terminate_tree(pid)
         time.sleep(0.5)
         alive = is_process_alive(pid)
         return {

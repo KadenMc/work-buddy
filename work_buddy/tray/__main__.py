@@ -34,4 +34,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # The tray runs lifecycle operations under the CLI's identity, never one
+    # inherited from whoever started it. A GUI host has no console to set up.
+    from work_buddy.process import HostRole, establish_host_context
+
+    establish_host_context(HostRole.TRAY)
     sys.exit(main())

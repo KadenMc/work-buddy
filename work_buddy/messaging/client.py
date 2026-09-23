@@ -5,7 +5,6 @@ running when work-buddy calls it.
 """
 
 import json
-import subprocess
 import time
 from typing import Any
 from urllib.error import URLError
@@ -37,20 +36,18 @@ def _ensure_service_running() -> bool:
 
     logger.info("Messaging service not running, auto-starting...")
     try:
-        from work_buddy.compat import (
-            build_child_env,
-            detached_process_kwargs,
-            resolve_child_python,
-        )
+        from work_buddy.paths import data_dir
+        from work_buddy.process import HostRole, start_host
 
-        cmd = [resolve_child_python(), "-u", "-m", "work_buddy.messaging.service"]
-        subprocess.Popen(
-            cmd,
-            cwd=str(_REPO_ROOT),
-            env=build_child_env(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **detached_process_kwargs(),
+        # The same service host the sidecar supervises, logging to the same
+        # file, but detached: it must outlive the process that needed it.
+        start_host(
+            HostRole.SERVICE,
+            "work_buddy.messaging.service",
+            log_path=data_dir("runtime/service_logs") / "messaging.log",
+            name="messaging",
+            cwd=_REPO_ROOT,
+            detached=True,
         )
     except OSError as exc:
         logger.warning("Failed to auto-start messaging service: %s", exc)

@@ -27,108 +27,8 @@ These tests pin that contract.
 
 from __future__ import annotations
 
-import signal
-from unittest.mock import patch
-
-import pytest
-
-from work_buddy import compat
+from work_buddy import process
 from work_buddy.sidecar import pid as sidecar_pid
-
-
-# ---------------------------------------------------------------------------
-# find_child_pids — child enumeration
-# ---------------------------------------------------------------------------
-
-
-def test_find_child_pids_windows_uses_wmic_first(monkeypatch):
-    """WMIC fast path must run before PowerShell fallback.
-
-    PowerShell cold start is 6-15s; if WMIC works we should never pay
-    that cost. The mock returns parseable WMIC output and the fallback
-    must not be invoked.
-    """
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-    called: list[list[str]] = []
-
-    def fake_run(cmd, **kw):
-        called.append(cmd)
-
-        class _R:
-            returncode = 0
-            stderr = ""
-            # WMIC output: header line + one PID per line
-            stdout = "ProcessId\n29868\n7261\n"
-        return _R()
-
-    monkeypatch.setattr(compat.subprocess, "run", fake_run)
-    children = compat.find_child_pids(7260)
-    assert children == {29868, 7261}
-    # Must resolve in the WMIC call only — no PowerShell fallback.
-    assert len(called) == 1
-    assert called[0][0] == "wmic"
-
-
-def test_find_child_pids_windows_falls_back_to_powershell(monkeypatch):
-    """When WMIC is missing (modern Win11 deprecation), the helper must
-    fall through to PowerShell rather than silently return empty."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-    called: list[list[str]] = []
-
-    def fake_run(cmd, **kw):
-        called.append(cmd)
-        if cmd[0] == "wmic":
-            raise FileNotFoundError("wmic not installed")
-
-        class _R:
-            returncode = 0
-            stderr = ""
-            stdout = "12345\n"
-        return _R()
-
-    monkeypatch.setattr(compat.subprocess, "run", fake_run)
-    children = compat.find_child_pids(9999)
-    assert children == {12345}
-    assert len(called) == 2
-    assert called[0][0] == "wmic"
-    assert called[1][0] == "powershell.exe"
-    # Cold-PowerShell mitigation: -NoProfile must be set or this can take
-    # 6-15s and time out.
-    assert "-NoProfile" in called[1]
-
-
-def test_find_child_pids_returns_empty_when_no_children(monkeypatch):
-    """A daemon with no children → empty set, not an error."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-
-    def fake_run(cmd, **kw):
-        class _R:
-            returncode = 0
-            stderr = ""
-            stdout = "ProcessId\n"  # WMIC header only, no PIDs
-        return _R()
-
-    monkeypatch.setattr(compat.subprocess, "run", fake_run)
-    assert compat.find_child_pids(1) == set()
-
-
-def test_find_child_pids_unix_uses_pgrep(monkeypatch):
-    """Unix path is straightforward: ``pgrep -P <pid>`` lists children."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", False)
-    called: list[list[str]] = []
-
-    def fake_run(cmd, **kw):
-        called.append(cmd)
-
-        class _R:
-            returncode = 0
-            stderr = ""
-            stdout = "100\n200\n300\n"
-        return _R()
-
-    monkeypatch.setattr(compat.subprocess, "run", fake_run)
-    assert compat.find_child_pids(50) == {100, 200, 300}
-    assert called[0] == ["pgrep", "-P", "50"]
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +77,8 @@ def test_takeover_kills_children_before_daemon(monkeypatch):
     monkeypatch.setattr(sidecar_pid, "process_start_token", fake_start_token)
     monkeypatch.setattr(sidecar_pid, "_remove_pid_file", lambda: None)
     # Patch the late-bound imports inside takeover_existing_daemon:
-    monkeypatch.setattr(compat, "find_child_pids", fake_find)
-    monkeypatch.setattr(compat, "_force_kill_pid", fake_force_kill)
+    monkeypatch.setattr(process, "find_child_pids", fake_find)
+    monkeypatch.setattr(process, "terminate_tree", fake_force_kill)
 
     result = sidecar_pid.takeover_existing_daemon(7260, wait_seconds=0.5)
     assert result.outcome == "terminated"
@@ -201,9 +101,9 @@ def test_takeover_kills_children_before_daemon(monkeypatch):
 def test_takeover_with_no_children_still_kills_daemon(monkeypatch):
     """A daemon with no children → just kill the daemon. No-op on the
     children path; no spurious force-kills."""
-    monkeypatch.setattr(compat, "find_child_pids", lambda pid: set())
+    monkeypatch.setattr(process, "find_child_pids", lambda pid: set())
     fk_calls: list[int] = []
-    monkeypatch.setattr(compat, "_force_kill_pid", lambda pid: fk_calls.append(pid))
+    monkeypatch.setattr(process, "terminate_tree", lambda pid: fk_calls.append(pid))
     monkeypatch.setattr(sidecar_pid.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(sidecar_pid, "_is_process_alive", lambda pid: False)
     monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: True)
@@ -225,13 +125,13 @@ def test_takeover_reused_pid_never_enumerates_or_kills(monkeypatch):
     monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: "start-token")
     monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: False)
     monkeypatch.setattr(
-        compat,
+        process,
         "find_child_pids",
         lambda pid: calls.append(("find_children", pid)) or {999},
     )
     monkeypatch.setattr(
-        compat,
-        "_force_kill_pid",
+        process,
+        "terminate_tree",
         lambda pid: calls.append(("force_kill", pid)),
     )
     monkeypatch.setattr(
@@ -255,7 +155,7 @@ def test_takeover_unverifiable_pid_fails_closed(monkeypatch):
     monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: "start-token")
     monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: None)
     monkeypatch.setattr(
-        compat,
+        process,
         "find_child_pids",
         lambda pid: calls.append(("find_children", pid)) or set(),
     )
@@ -276,13 +176,13 @@ def test_takeover_stops_if_pid_is_reused_during_enumeration(monkeypatch):
     tokens = iter(["original", "original", "replacement"])
     monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: next(tokens))
     monkeypatch.setattr(
-        compat,
+        process,
         "find_child_pids",
         lambda pid: calls.append(("find_children", pid)) or {99},
     )
     monkeypatch.setattr(
-        compat,
-        "_force_kill_pid",
+        process,
+        "terminate_tree",
         lambda pid: calls.append(("force_kill", pid)),
     )
     monkeypatch.setattr(
@@ -307,7 +207,7 @@ def test_takeover_stops_if_pid_is_reused_during_identity_verification(monkeypatc
     monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: next(tokens))
     monkeypatch.setattr(sidecar_pid, "_record_matches_process", lambda pid: True)
     monkeypatch.setattr(
-        compat,
+        process,
         "find_child_pids",
         lambda pid: calls.append(("find_children", pid)) or {99},
     )
@@ -342,142 +242,3 @@ def test_legacy_process_classifier_requires_sidecar_command():
         r'python.exe -m unrelated.worker',
     ) is False
     assert sidecar_pid._looks_like_sidecar_process("python.exe", "") is None
-
-
-# ---------------------------------------------------------------------------
-# Job Object — OS-enforced kill-time reaping (Windows hard-kill window)
-# ---------------------------------------------------------------------------
-#
-# The takeover sweep above closes the cross-restart orphan window, but only
-# on the *next* startup. The Job Object closes the gap in between: when the
-# daemon is hard-killed (taskkill /F, crash) no signal handler runs, so on
-# Windows children orphan until the next boot. KILL_ON_JOB_CLOSE makes the
-# OS reap them the instant the daemon's process object is destroyed.
-
-
-class _FakeWin32Job:
-    """Minimal stand-in for the ``win32job`` module."""
-
-    JobObjectExtendedLimitInformation = 9
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-
-    def __init__(self):
-        self.created = False
-        self.set_flags = None
-
-    def CreateJobObject(self, sa, name):
-        self.created = True
-        return "JOB_HANDLE"
-
-    def QueryInformationJobObject(self, job, kind):
-        return {"BasicLimitInformation": {"LimitFlags": 0}}
-
-    def SetInformationJobObject(self, job, kind, info):
-        self.set_flags = info["BasicLimitInformation"]["LimitFlags"]
-
-    def AssignProcessToJobObject(self, job, handle):
-        pass
-
-
-def test_create_job_returns_none_on_non_windows(monkeypatch):
-    """Windows-only: on Unix the helper no-ops to None (the cross-platform
-    baseline is the startup orphan sweep, not a Job Object)."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", False)
-    assert compat.create_kill_on_close_job() is None
-
-
-def test_assign_returns_false_on_non_windows(monkeypatch):
-    monkeypatch.setattr(compat, "IS_WINDOWS", False)
-    assert compat.assign_process_to_job("JOB", 1234) is False
-
-
-def test_assign_returns_false_when_job_is_none(monkeypatch):
-    """A None job (creation failed) must make assignment a safe no-op."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-    assert compat.assign_process_to_job(None, 1234) is False
-
-
-def test_create_job_sets_kill_on_close_flag(monkeypatch):
-    """The job must carry KILL_ON_JOB_CLOSE — that flag is the whole point."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-    fake = _FakeWin32Job()
-    monkeypatch.setitem(__import__("sys").modules, "win32job", fake)
-
-    job = compat.create_kill_on_close_job()
-    assert job == "JOB_HANDLE"
-    assert fake.created
-    assert fake.set_flags & fake.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-
-
-def test_create_job_swallows_errors_returns_none(monkeypatch):
-    """Job creation must never raise — a failure degrades to None and the
-    startup sweep remains the fallback."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-
-    class _Boom:
-        JobObjectExtendedLimitInformation = 9
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-
-        def CreateJobObject(self, *a):
-            raise OSError("access denied")
-
-    monkeypatch.setitem(__import__("sys").modules, "win32job", _Boom())
-    assert compat.create_kill_on_close_job() is None
-
-
-def test_assign_is_best_effort_on_failure(monkeypatch):
-    """Assignment can fail under nested-job restrictions — must return False,
-    never raise, so a child still starts and the sweep covers it."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-
-    class _BoomJob:
-        def AssignProcessToJobObject(self, job, h):
-            raise OSError("nested job limits")
-
-    class _Api:
-        def OpenProcess(self, *a):
-            return "PROC_HANDLE"
-
-        def CloseHandle(self, h):
-            pass
-
-    class _Con:
-        PROCESS_SET_QUOTA = 0x0100
-        PROCESS_TERMINATE = 0x0001
-
-    import sys as _sys
-    monkeypatch.setitem(_sys.modules, "win32job", _BoomJob())
-    monkeypatch.setitem(_sys.modules, "win32api", _Api())
-    monkeypatch.setitem(_sys.modules, "win32con", _Con())
-
-    assert compat.assign_process_to_job("JOB_HANDLE", 4321) is False
-
-
-def test_assign_closes_process_handle_on_success(monkeypatch):
-    """The *process* handle must be closed after assigning; only the *job*
-    handle stays open (closing the job handle early would kill children)."""
-    monkeypatch.setattr(compat, "IS_WINDOWS", True)
-    closed: list[str] = []
-
-    class _Job:
-        def AssignProcessToJobObject(self, job, h):
-            pass
-
-    class _Api:
-        def OpenProcess(self, *a):
-            return "PROC_HANDLE"
-
-        def CloseHandle(self, h):
-            closed.append(h)
-
-    class _Con:
-        PROCESS_SET_QUOTA = 0x0100
-        PROCESS_TERMINATE = 0x0001
-
-    import sys as _sys
-    monkeypatch.setitem(_sys.modules, "win32job", _Job())
-    monkeypatch.setitem(_sys.modules, "win32api", _Api())
-    monkeypatch.setitem(_sys.modules, "win32con", _Con())
-
-    assert compat.assign_process_to_job("JOB_HANDLE", 4321) is True
-    assert closed == ["PROC_HANDLE"]

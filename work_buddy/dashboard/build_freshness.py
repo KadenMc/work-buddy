@@ -614,22 +614,13 @@ def _terminate_build_process(proc: subprocess.Popen[str]) -> None:
 
     if proc.poll() is not None:
         return
-    if os.name == "nt":
-        from work_buddy.compat import _force_kill_pid
+    from work_buddy.process import terminate_tree
 
-        _force_kill_pid(proc.pid)
-    else:
-        import signal
-
+    if not terminate_tree(proc):
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+            proc.kill()
         except OSError:
-            try:
-                proc.kill()
-            except OSError:
-                pass
+            pass
     try:
         proc.wait(timeout=5.0)
     except (OSError, subprocess.TimeoutExpired):
