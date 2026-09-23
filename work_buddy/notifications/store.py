@@ -326,6 +326,7 @@ def _dispatch_session_resume(
     import subprocess
     from work_buddy.logging_config import get_logger
     from work_buddy import paths
+    from work_buddy.process import run_tool
 
     logger = get_logger(__name__)
     repo_root = paths.repo_root()
@@ -355,13 +356,10 @@ def _dispatch_session_resume(
         # Update agent registry if this session is tracked
         _mark_agent_resumed(session_id)
 
-        result = subprocess.run(
+        result = run_tool(
             cmd,
-            capture_output=True,
-            text=True,
             timeout=timeout,
             cwd=str(repo_root),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return {
             "type": "session_resume",

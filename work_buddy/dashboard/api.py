@@ -1241,6 +1241,8 @@ def _load_pr_meta_for_repos(
     """
     import subprocess
 
+    from work_buddy.process import run_tool
+
     out: dict[tuple[str, int], dict[str, Any]] = {}
     for repo in repos:
         cached = _PR_META_CACHE.get(repo)
@@ -1249,13 +1251,13 @@ def _load_pr_meta_for_repos(
         else:
             by_num = {}
             try:
-                proc = subprocess.run(
+                proc = run_tool(
                     [
                         "gh", "pr", "list", "--repo", repo,
                         "--state", "all", "--limit", "400",
                         "--json", "number,title,state",
                     ],
-                    capture_output=True, text=True, timeout=15,
+                    timeout=15,
                 )
                 if proc.returncode == 0:
                     for pr in json.loads(proc.stdout or "[]"):
