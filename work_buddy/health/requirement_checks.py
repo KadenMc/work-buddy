@@ -802,10 +802,14 @@ def check_pg_scheduled_task() -> dict[str, Any]:
     if platform.system() != "Windows":
         return {"ok": True, "detail": "Not Windows — skipping scheduled task check"}
     try:
-        result = subprocess.run(
-            ["powershell.exe", "-Command",
-             "Get-ScheduledTask -TaskName 'Hindsight-PostgreSQL' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty TaskName"],
-            capture_output=True, text=True, timeout=10,
+        from work_buddy.process import powershell_argv, run_tool
+
+        result = run_tool(
+            powershell_argv(
+                "Get-ScheduledTask -TaskName 'Hindsight-PostgreSQL' -ErrorAction "
+                "SilentlyContinue | Select-Object -ExpandProperty TaskName"
+            ),
+            timeout=10,
         )
         if "Hindsight-PostgreSQL" in result.stdout:
             return {"ok": True, "detail": "Windows scheduled task 'Hindsight-PostgreSQL' exists"}
@@ -1027,11 +1031,10 @@ def check_tailscale_serve_configured() -> dict[str, Any]:
 
 def check_gh_cli_installed() -> dict[str, Any]:
     """Probe for ``gh`` on PATH via ``gh --version``."""
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
-            ["gh", "--version"],
-            capture_output=True, text=True, timeout=5,
-        )
+        proc = run_tool(["gh", "--version"], timeout=5)
     except FileNotFoundError:
         return {"ok": False, "detail": "gh CLI not found on PATH"}
     except subprocess.TimeoutExpired:
@@ -1089,11 +1092,10 @@ def check_backup_repo_configured() -> dict[str, Any]:
     # Probe existence with `gh repo view <repo>`. Doesn't fetch anything
     # heavy — just confirms the repo is reachable to the authenticated
     # account.
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
-            ["gh", "repo", "view", repo, "--json", "name"],
-            capture_output=True, text=True, timeout=15,
-        )
+        proc = run_tool(["gh", "repo", "view", repo, "--json", "name"], timeout=15)
     except FileNotFoundError:
         return {"ok": False,
                 "detail": f"gh not installed; can't verify repo {repo}"}

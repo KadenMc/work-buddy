@@ -483,16 +483,14 @@ def get_tailscale_status(force: bool = False) -> dict[str, Any]:
     ):
         return cached
 
-    import subprocess
     import json as _json
+
+    from work_buddy.process import run_tool
 
     result: dict[str, Any] = {"installed": False, "running": False, "serve": None}
 
     try:
-        proc = subprocess.run(
-            ["tailscale", "status", "--json"],
-            capture_output=True, text=True, timeout=10,
-        )
+        proc = run_tool(["tailscale", "status", "--json"], timeout=10)
         if proc.returncode != 0:
             result["installed"] = True
             result["error"] = proc.stderr.strip()[:200]
@@ -531,10 +529,7 @@ def get_tailscale_status(force: bool = False) -> dict[str, Any]:
         return result
 
     try:
-        serve_proc = subprocess.run(
-            ["tailscale", "serve", "status", "--json"],
-            capture_output=True, text=True, timeout=5,
-        )
+        serve_proc = run_tool(["tailscale", "serve", "status", "--json"], timeout=5)
         if serve_proc.returncode == 0 and serve_proc.stdout.strip():
             result["serve"] = _json.loads(serve_proc.stdout)
         else:
