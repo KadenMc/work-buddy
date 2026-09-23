@@ -1168,6 +1168,7 @@ def _committed_files_per_session(
     import subprocess
 
     from work_buddy.collectors.git_collector import _discover_repos
+    from work_buddy.process import run_tool
 
     commits = session_commits(days=days)
     if not commits["commits"]:
@@ -1187,11 +1188,9 @@ def _committed_files_per_session(
     for repo_path in _discover_repos(repos_root):
         for h in list(all_hashes):
             try:
-                proc = subprocess.run(
+                proc = run_tool(
                     ["git", "show", "--name-only", "--format=", h],
                     cwd=repo_path,
-                    capture_output=True,
-                    text=True,
                     timeout=5,
                 )
                 if proc.returncode != 0:

@@ -1,6 +1,6 @@
 """Phase-5 unit tests — ContextCollector / ContextCurator + wave-1 sources.
 
-Source tests monkeypatch the underlying stores / subprocess calls so
+Source tests monkeypatch the underlying stores / process launches so
 they don't require a live vault, project DB, or git repo. Focus is on
 the glue: does the collector respect cache + is_stale, does the
 curator honor depth, do the sources shape items correctly, and does
@@ -9,10 +9,9 @@ the ``build_triage_context`` retrofit preserve the legacy dict shape?
 
 from __future__ import annotations
 
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -346,16 +345,9 @@ class TestProjectsSource:
 
 
 class TestGitSource:
-    def _fake_subprocess(self, *, stdout, returncode=0):
-        def _run(args, **kwargs):
-            result = MagicMock()
-            result.stdout = stdout
-            result.stderr = ""
-            result.returncode = returncode
-            return result
-        return _run
-
-    def test_collect_parses_commits(self, tmp_cache_root, clean_registry, tmp_path):
+    def test_collect_parses_commits(
+        self, tmp_cache_root, clean_registry, tmp_path, recording_runner,
+    ):
         from work_buddy.context.sources.git import GitSource
 
         sample = (
@@ -363,15 +355,12 @@ class TestGitSource:
             "def456fullsha\x1fdef456\x1f2026-04-20T11:00:00+00:00\x1fBob\x1fsecond commit\n"
         )
         # GitSource default path: git log + git rev-parse HEAD per repo.
-        call_sequence = [
-            MagicMock(stdout=sample, stderr="", returncode=0),
-            MagicMock(stdout="abc123fullsha\n", stderr="", returncode=0),
-        ]
+        recording_runner.script(["git", "log"], stdout=sample)
+        recording_runner.script(["git", "rev-parse", "HEAD"], stdout="abc123fullsha\n")
         # Force single-repo scope via custom.repo_path so the test doesn't
         # depend on load_config's repos_root discovery.
         req = ContextRequest(custom={"git": {"repo_path": str(tmp_path)}})
-        with patch("subprocess.run", side_effect=call_sequence):
-            section = GitSource().collect(req)
+        section = GitSource().collect(req)
 
         assert len(section.items) == 2
         # Multi-repo sorts by date desc so the newer commit surfaces first.
@@ -381,25 +370,23 @@ class TestGitSource:
         # Multi-repo schema: head lives per-repo under metadata["repos"].
         assert section.metadata["repos"][0]["head"] == "abc123fullsha"
 
-    def test_is_stale_when_head_moved(self, tmp_cache_root, clean_registry):
+    def test_is_stale_when_head_moved(
+        self, tmp_cache_root, clean_registry, recording_runner,
+    ):
         from work_buddy.context.sources.git import GitSource
 
         cached = ContextSection(source="git", items=[], metadata={"head": "old_sha"})
-        with patch(
-            "subprocess.run",
-            return_value=MagicMock(stdout="new_sha\n", stderr="", returncode=0),
-        ):
-            assert GitSource().is_stale(cached, ContextRequest()) is True
+        recording_runner.script(["git", "rev-parse", "HEAD"], stdout="new_sha\n")
+        assert GitSource().is_stale(cached, ContextRequest()) is True
 
-    def test_is_stale_false_when_head_matches(self, tmp_cache_root, clean_registry):
+    def test_is_stale_false_when_head_matches(
+        self, tmp_cache_root, clean_registry, recording_runner,
+    ):
         from work_buddy.context.sources.git import GitSource
 
         cached = ContextSection(source="git", items=[], metadata={"head": "same_sha"})
-        with patch(
-            "subprocess.run",
-            return_value=MagicMock(stdout="same_sha\n", stderr="", returncode=0),
-        ):
-            assert GitSource().is_stale(cached, ContextRequest()) is False
+        recording_runner.script(["git", "rev-parse", "HEAD"], stdout="same_sha\n")
+        assert GitSource().is_stale(cached, ContextRequest()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +395,7 @@ class TestGitSource:
 
 
 class TestBuildTriageContextRetrofit:
-    def test_returns_expected_dict_shape(self, tmp_cache_root):
+    def test_returns_expected_dict_shape(self, tmp_cache_root, recording_runner):
         from work_buddy.clarify.recommend import build_triage_context
 
         with patch(
@@ -424,17 +411,13 @@ class TestBuildTriageContextRetrofit:
             "work_buddy.contracts.active_contracts",
             return_value=[{"title": "C", "status": "active", "deadline": "", "claim": ""}],
         ), patch(
-            # Constrain GitSource to a single repo so the subprocess mock
-            # sequence matches (1 git log + 1 rev-parse HEAD).
+            # Constrain GitSource to a single repo so the scripted launches
+            # match (1 git log + 1 rev-parse HEAD).
             "work_buddy.context.sources.git._resolve_repos",
             return_value=[Path("/fake/repo")],
-        ), patch(
-            "subprocess.run",
-            side_effect=[
-                MagicMock(stdout="s1sha\x1fs1\x1f2026-04-20\x1fa\x1fm1", stderr="", returncode=0),
-                MagicMock(stdout="s1sha\n", stderr="", returncode=0),
-            ],
         ):
+            recording_runner.script(["git", "log"], stdout="s1sha\x1fs1\x1f2026-04-20\x1fa\x1fm1")
+            recording_runner.script(["git", "rev-parse", "HEAD"], stdout="s1sha\n")
             result = build_triage_context()
 
         # Shape is preserved for backward compat.
@@ -449,7 +432,7 @@ class TestBuildTriageContextRetrofit:
         # pre-refactor `git log --oneline` shape.
         assert result["recent_commits"] == ["s1 m1"]
 
-    def test_max_tasks_cap_is_honored(self, tmp_cache_root):
+    def test_max_tasks_cap_is_honored(self, tmp_cache_root, recording_runner):
         from work_buddy.clarify.recommend import build_triage_context
 
         with patch(
@@ -470,13 +453,9 @@ class TestBuildTriageContextRetrofit:
         ), patch(
             "work_buddy.contracts.active_contracts",
             return_value=[],
-        ), patch(
-            "subprocess.run",
-            side_effect=[
-                MagicMock(stdout="", stderr="", returncode=0),
-                MagicMock(stdout="", stderr="", returncode=0),
-            ],
         ):
+            recording_runner.script(["git", "log"], stdout="")
+            recording_runner.script(["git", "rev-parse", "HEAD"], stdout="")
             result = build_triage_context(max_tasks=5)
 
         assert len(result["active_tasks"]) == 5

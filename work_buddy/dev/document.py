@@ -65,13 +65,12 @@ _QUERY_EMBED_TIMEOUT_S = 25
 
 def _run_git(*args: str) -> list[str]:
     """Run a git command in the repo root; return stdout lines (no blanks)."""
+    from work_buddy.process import run_tool
+
     try:
-        out = subprocess.run(
+        out = run_tool(
             ["git", *args],
             cwd=str(repo_root()),
-            check=False,
-            capture_output=True,
-            text=True,
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError) as exc:

@@ -175,14 +175,13 @@ def _recently_checked(session_id: str, cooldown: float = 5.0) -> bool:
 
 
 def _project_name(cwd: str) -> str:
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
+        proc = run_tool(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=cwd,
-            text=True,
-            capture_output=True,
             timeout=3,
-            check=False,
         )
         if proc.returncode == 0 and proc.stdout.strip():
             return Path(proc.stdout.strip()).name

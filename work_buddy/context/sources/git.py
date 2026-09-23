@@ -45,7 +45,7 @@ from work_buddy.context.types import (
 from work_buddy.context import registry as _registry
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import repo_root
-from work_buddy.compat import subprocess_creation_flags
+from work_buddy.process import run_tool
 
 logger = get_logger(__name__)
 
@@ -306,15 +306,12 @@ def _log_commits(
     if until:
         args.append(f"--until={until.isoformat()}")
     try:
-        result = subprocess.run(
+        # GitSource fans out git across every repo. Each call runs through
+        # run_tool, which keeps it windowless.
+        result = run_tool(
             args,
-            capture_output=True,
-            text=True,
             cwd=str(repo),
             timeout=_GIT_TIMEOUT,
-            # Windowless on Windows: GitSource fans out git across every repo, so
-            # under a console-less sidecar each call would flash a terminal.
-            creationflags=subprocess_creation_flags(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.debug("git source: git log failed in %s: %s", repo, exc)
@@ -362,11 +359,10 @@ def _diff_stat(repo: Path) -> str:
 
 def _git_capture(repo: Path, args: list[str]) -> str:
     try:
-        out = subprocess.run(
+        out = run_tool(
             ["git", *args],
-            capture_output=True, text=True, cwd=str(repo),
+            cwd=str(repo),
             timeout=_GIT_TIMEOUT,
-            creationflags=subprocess_creation_flags(),
         )
     except (subprocess.TimeoutExpired, OSError):
         return ""
@@ -377,11 +373,10 @@ def _git_capture(repo: Path, args: list[str]) -> str:
 
 def _git_show(repo: Path, args: list[str]) -> str | None:
     try:
-        out = subprocess.run(
+        out = run_tool(
             ["git", "show", *args],
-            capture_output=True, text=True, cwd=str(repo),
+            cwd=str(repo),
             timeout=_GIT_TIMEOUT,
-            creationflags=subprocess_creation_flags(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.debug("git source: git show failed in %s: %s", repo, exc)
