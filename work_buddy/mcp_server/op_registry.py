@@ -57,6 +57,11 @@ _OPTIONAL_DEP_WHITELIST: dict[str, set[str]] = {
     "memory_ops": {"hindsight_client"},
 }
 _builtins_loaded = False
+# The op module ``load_builtin_ops`` is reloading, while it reloads. A reload
+# re-runs the module's registrations, and its earlier ones may still be
+# present, so during the reload a registration replaces them instead of
+# colliding with itself.
+_reloading: str | None = None
 
 
 def is_valid_op_id(op_id: str) -> bool:
@@ -77,7 +82,7 @@ def register_op(op_id: str, fn: Callable, *, replace: bool = False) -> None:
         )
     if not callable(fn):
         raise ValueError(f"Op {op_id!r} target is not callable: {fn!r}")
-    if op_id in _OPS and not replace:
+    if op_id in _OPS and not replace and _reloading is None:
         raise ValueError(
             f"Op {op_id!r} is already registered. Pass replace=True to override."
         )
@@ -129,8 +134,10 @@ def load_builtin_ops() -> None:
     """Import the built-in ops package so each module registers its ops.
 
     Idempotent within a process: a module guard runs the import side effects
-    once. If a prior ``clear_ops`` reset the guard while the op modules are
-    still cached in ``sys.modules``, they are reloaded so registration re-runs.
+    once. Op modules already cached in ``sys.modules`` are reloaded so their
+    registration re-runs, which restores their ops after a ``clear_ops``. A
+    module imported directly before this call still has its ops registered,
+    so its reload replaces them rather than raising a duplicate error.
 
     A ``ModuleNotFoundError`` whose missing module is whitelisted for the op
     module being loaded (see ``_OPTIONAL_DEP_WHITELIST``) is logged and
@@ -140,7 +147,7 @@ def load_builtin_ops() -> None:
     crashes the gateway boot, so a genuine regression in an op module
     surfaces immediately instead of masquerading as safe degradation.
     """
-    global _builtins_loaded
+    global _builtins_loaded, _reloading
     if _builtins_loaded:
         return
 
@@ -154,7 +161,11 @@ def load_builtin_ops() -> None:
         full_name = f"{_ops_pkg.__name__}.{mod.name}"
         try:
             if full_name in sys.modules:
-                importlib.reload(sys.modules[full_name])
+                _reloading = full_name
+                try:
+                    importlib.reload(sys.modules[full_name])
+                finally:
+                    _reloading = None
             else:
                 importlib.import_module(full_name)
         except ModuleNotFoundError as exc:

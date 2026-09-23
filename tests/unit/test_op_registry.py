@@ -97,6 +97,32 @@ class TestBuiltinOps:
         op_registry.load_builtin_ops()  # second call must not raise
         assert op_registry.list_ops() == first
 
+    def test_a_module_imported_directly_does_not_collide_with_itself(self):
+        """Importing an op module directly registers its ops without marking
+        the built-ins loaded. Loading them afterwards reloads that module,
+        which re-runs its registrations: they replace its own earlier ones
+        instead of raising a duplicate error."""
+        import importlib
+        import sys
+
+        name = "work_buddy.mcp_server.ops.sidecar_ops"
+        if name in sys.modules:
+            importlib.reload(sys.modules[name])
+        else:
+            importlib.import_module(name)
+        assert op_registry.get_op("op.wb.sidecar_status") is not None
+
+        op_registry.load_builtin_ops()
+
+        assert op_registry.get_op("op.wb.sidecar_status") is not None
+        assert op_registry.get_op("op.wb.task_read") is not None
+
+    def test_a_duplicate_outside_a_reload_still_raises(self):
+        op_registry.load_builtin_ops()
+
+        with pytest.raises(ValueError, match="already registered"):
+            op_registry.register_op("op.wb.sidecar_status", _noop)
+
 
 class TestOptionalDependencyWhitelist:
     """``load_builtin_ops`` skips an op module only when its failure matches
