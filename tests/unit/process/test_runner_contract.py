@@ -8,6 +8,7 @@ and results that production code sees.
 
 from __future__ import annotations
 
+import pathlib
 import subprocess
 import sys
 import time
@@ -28,6 +29,20 @@ from work_buddy.process import (
 
 def _py(code: str) -> list[str]:
     return [sys.executable, "-c", code]
+
+
+def _ended(pid: int) -> bool:
+    """True once ``pid`` has exited. A killed process whose parent has not
+    reaped it yet (a Linux zombie) has exited too."""
+    from work_buddy.utils.process import is_process_alive
+
+    if not is_process_alive(pid):
+        return True
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[-1].split()[0] == "Z"
 
 
 @pytest.fixture(params=["real", "fake"])
@@ -158,12 +173,10 @@ def test_timeout_ends_the_whole_process_tree(tmp_path) -> None:
         run_tool(_py(parent), timeout=5.0, runner=SubprocessRunner())
 
     grandchild_pid = int(marker.read_text())
-    from work_buddy.utils.process import is_process_alive
-
     deadline = time.monotonic() + 10
-    while is_process_alive(grandchild_pid) and time.monotonic() < deadline:
+    while not _ended(grandchild_pid) and time.monotonic() < deadline:
         time.sleep(0.1)
-    assert not is_process_alive(grandchild_pid)
+    assert _ended(grandchild_pid)
 
 
 def test_passed_deadline_starts_nothing() -> None:

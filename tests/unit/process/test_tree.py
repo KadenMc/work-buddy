@@ -7,6 +7,7 @@ on bind while an old one keeps serving stale code, and nothing looks wrong.
 
 from __future__ import annotations
 
+import pathlib
 import signal
 import subprocess
 import sys
@@ -15,6 +16,21 @@ import time
 import pytest
 
 from work_buddy.process import ProcessResult, tree
+
+
+def _ended(pid: int) -> bool:
+    """True once ``pid`` has exited. A killed process whose parent has not
+    reaped it yet (a Linux zombie) has exited too."""
+    from work_buddy.utils.process import is_process_alive
+
+    if not is_process_alive(pid):
+        return True
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[-1].split()[0] == "Z"
+
 
 # ---------------------------------------------------------------------------
 # kill_process_on_port
@@ -233,7 +249,6 @@ def test_terminate_tree_leaves_an_exited_handle_alone(recording_runner) -> None:
 
 def test_terminate_tree_ends_a_real_process_and_its_child(tmp_path) -> None:
     from work_buddy.process import SubprocessRunner, spawn_worker
-    from work_buddy.utils.process import is_process_alive
 
     marker = tmp_path / "child.pid"
     parent = (
@@ -253,9 +268,9 @@ def test_terminate_tree_ends_a_real_process_and_its_child(tmp_path) -> None:
     assert tree.terminate_tree(handle) is True
     handle.wait(timeout=10)
     deadline = time.monotonic() + 10
-    while is_process_alive(child_pid) and time.monotonic() < deadline:
+    while not _ended(child_pid) and time.monotonic() < deadline:
         time.sleep(0.1)
-    assert not is_process_alive(child_pid)
+    assert _ended(child_pid)
 
 
 # ---------------------------------------------------------------------------
