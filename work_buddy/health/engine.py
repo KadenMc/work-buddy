@@ -78,9 +78,9 @@ class HealthEngine:
         # Sidecar state (written by sidecar daemon)
         if _SIDECAR_STATE_FILE.exists():
             try:
-                data = json.loads(
-                    _SIDECAR_STATE_FILE.read_text(encoding="utf-8")
-                )
+                from work_buddy.sidecar.state import read_state_json
+
+                data = read_state_json(_SIDECAR_STATE_FILE)
                 self._sidecar_services = data.get("services", {})
 
                 # Synthetic "sidecar" entry — the daemon itself is not in

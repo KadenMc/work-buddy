@@ -56,8 +56,10 @@ def _read_sidecar_service(service_name: str) -> dict[str, Any]:
     state_file = resolve("runtime/sidecar-state")
     if not state_file.exists():
         return {"ok": False, "detail": "sidecar_state.json not found — sidecar not running?"}
+    from work_buddy.sidecar.state import read_state_json
+
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = read_state_json(state_file)
         svc = data.get("services", {}).get(service_name)
         if svc is None:
             return {"ok": False, "detail": f"Service '{service_name}' not in sidecar state"}
@@ -392,15 +394,15 @@ def check_sidecar_heartbeat() -> dict[str, Any]:
     is considered healthy. An older timestamp, missing file, or missing
     pid means the daemon is not running or has become unresponsive.
     """
-    import json as _json
     import time as _time
     from work_buddy.paths import resolve as _resolve
+    from work_buddy.sidecar.state import read_state_json
 
     state_file = _resolve("runtime/sidecar-state")
     if not state_file.exists():
         return {"ok": False, "detail": "sidecar_state.json missing — daemon not started"}
     try:
-        data = _json.loads(state_file.read_text(encoding="utf-8"))
+        data = read_state_json(state_file)
     except Exception as exc:
         return {"ok": False, "detail": f"sidecar_state.json unreadable: {exc}"}
 

@@ -221,7 +221,7 @@ def save_state(state: SidecarState, *, _retries: int = 4) -> None:
 _READ_RETRY_DELAYS_S = (0.02, 0.05, 0.1, 0.2)
 
 
-def _read_state_data() -> Any:
+def read_state_json(path: Path | None = None) -> Any:
     """Read and parse the state file, riding out the daemon's own writes.
 
     The daemon replaces the file atomically, several times a minute. On
@@ -230,10 +230,15 @@ def _read_state_data() -> Any:
     briefly expose a partial file. Both clear within milliseconds, so a read
     retries them before giving up. A reader that gave up at once would see no
     state and could classify a healthy daemon as wedged.
+
+    Every reader of the state file goes through this. ``path`` defaults to
+    :data:`STATE_FILE`. Raises ``FileNotFoundError`` when there is no file,
+    and the last error when the file stays unreadable.
     """
+    target = STATE_FILE if path is None else path
     for delay in (*_READ_RETRY_DELAYS_S, None):
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return json.loads(target.read_text(encoding="utf-8"))
         except (PermissionError, json.JSONDecodeError):
             if delay is None:
                 raise
@@ -246,7 +251,7 @@ def load_state() -> SidecarState | None:
     if not STATE_FILE.exists():
         return None
     try:
-        data = _read_state_data()
+        data = read_state_json()
         state = SidecarState(
             started_at=data.get("started_at", 0),
             pid=data.get("pid", 0),

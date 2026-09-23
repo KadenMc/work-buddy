@@ -100,9 +100,13 @@ def _maybe_refresh_probes() -> None:
 
 def _read_sidecar_state() -> dict[str, Any]:
     """Read sidecar_state.json, return empty dict on failure."""
+    from work_buddy.sidecar.state import read_state_json
+
     try:
         if _STATE_FILE.exists():
-            return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+            return read_state_json(_STATE_FILE)
+    except FileNotFoundError:
+        pass
     except Exception as exc:
         logger.warning("Failed to read sidecar state: %s", exc)
     return {}
