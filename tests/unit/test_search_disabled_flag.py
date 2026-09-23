@@ -53,7 +53,17 @@ class TestDisabledReasonEnriched:
     probe-still-failing, probe-now-passing-but-stale-registry, no-probe-data.
     """
 
-    def test_probe_still_failing_includes_reason_and_age(self):
+    def test_probe_still_failing_includes_reason_and_age(self, tmp_path, monkeypatch):
+        # Point the probe-age source at a real file with a known mtime, the
+        # same way TestProbeAgeFormat below does. Without this the assertion
+        # would depend on some *other* test having written the real
+        # tool_status.json into the shared test data root first, so its result
+        # would depend on test ordering and on which pytest-xdist worker it
+        # lands on.
+        status_file = tmp_path / "tool_status.json"
+        status_file.write_text("{}")
+        monkeypatch.setattr("work_buddy.tools._TOOL_STATUS_FILE", status_file)
+
         with patch(
             "work_buddy.tools.DISABLED_SKILLS",
             {"journal_write": ["obsidian"]},
