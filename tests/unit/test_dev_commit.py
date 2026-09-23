@@ -187,15 +187,17 @@ def test_dev_pr_records_dashboard_evidence_with_auto_run():
     assert "Dashboard verification rationale:" in instructions["record"]
 
 
-def test_registered_dashboard_evidence_executes_and_stays_visible_at_commit(fake_git, tmp_path, monkeypatch):
+def test_registered_dashboard_evidence_executes_and_stays_visible_at_commit(
+    fake_git, tmp_path, monkeypatch, recording_runner,
+):
     import importlib
     import json
     from dataclasses import asdict
-    from subprocess import CompletedProcess
 
     from work_buddy.knowledge.file_store import read_unit
     from work_buddy.knowledge.model import unit_from_dict
     from work_buddy.mcp_server import conductor, registry
+    from work_buddy.process import Scripted
     from work_buddy.workflow import WorkflowDAG
 
     store_root = dev_commit.repo_root() / "knowledge/store"
@@ -213,14 +215,14 @@ def test_registered_dashboard_evidence_executes_and_stays_visible_at_commit(fake
     evidence = {"surfaces_run": ["python"], "ux_review_ref": None}
     fake_git["tracked"] = ["dashboard-react/src/apps/cowork/CoworkApp.tsx"]
 
-    def run_declared_callable(command, **kwargs):
-        payload = json.loads(kwargs["input"])
+    def run_declared_callable(launch):
+        payload = json.loads(launch.input)
         assert payload["kwargs"] == {"test_result": evidence}
         module_name, function_name = payload["callable"].rsplit(".", 1)
         value = getattr(importlib.import_module(module_name), function_name)(**payload["kwargs"])
-        return CompletedProcess(command, 0, json.dumps({"success": True, "value": value}), "")
+        return Scripted(stdout=json.dumps({"success": True, "value": value}))
 
-    monkeypatch.setattr(conductor.subprocess, "run", run_declared_callable)
+    recording_runner.script(respond=run_declared_callable)
     result = conductor._execute_auto_run(review.id, asdict(review.auto_run), {"test": evidence})
     assert result["success"] is True
     warning = result["value"]

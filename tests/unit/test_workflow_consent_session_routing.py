@@ -236,11 +236,11 @@ def test_advance_workflow_updates_dag_session_pin(cross_session_state):
 # ---------------------------------------------------------------------------
 
 
-def test_execute_auto_run_payload_includes_agent_session(monkeypatch, cross_session_state):
+def test_execute_auto_run_payload_includes_agent_session(recording_runner, cross_session_state):
     """``_execute_auto_run`` passes the DAG-pinned agent session id to
     the subprocess, NOT the env-var bootstrap session.
 
-    We intercept ``subprocess.run`` so the test doesn't actually spawn a
+    We intercept the process launch so the test doesn't actually spawn a
     process — only the payload shape matters. Assert that the JSON
     payload's ``session_id`` field carries the agent's session id we
     threaded through.
@@ -251,24 +251,11 @@ def test_execute_auto_run_payload_includes_agent_session(monkeypatch, cross_sess
     subprocess resolve to the wrong DB.
     """
     import json
-    import subprocess as _sub
     from work_buddy.mcp_server import conductor as cmod
 
     AGENT_SID = "autorun1-payload-test-agent"
-    captured = {}
 
-    class _FakeProc:
-        returncode = 0
-        stdout = '{"success": true, "value": null}'
-        stderr = ""
-
-    def _fake_run(cmd, *, input=None, **kwargs):
-        captured["input"] = input
-        captured["cmd"] = cmd
-        return _FakeProc()
-
-    monkeypatch.setattr(_sub, "run", _fake_run)
-    monkeypatch.setattr(cmod.subprocess, "run", _fake_run)
+    recording_runner.script(stdout='{"success": true, "value": null}')
 
     spec = {
         "callable": "work_buddy.consent.list_consents",
@@ -283,8 +270,8 @@ def test_execute_auto_run_payload_includes_agent_session(monkeypatch, cross_sess
         initial_params=None,
     )
 
-    assert "input" in captured, "subprocess.run was not invoked"
-    payload = json.loads(captured["input"])
+    assert recording_runner.launches, "run_tool was not invoked"
+    payload = json.loads(recording_runner.launches[-1].input)
     assert payload.get("session_id") == AGENT_SID, (
         f"regression: subprocess payload session_id={payload.get('session_id')!r} "
         f"!= passed agent_session_id={AGENT_SID!r}. The bootstrap env-var "

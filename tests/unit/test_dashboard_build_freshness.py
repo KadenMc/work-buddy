@@ -305,32 +305,18 @@ def test_build_timeout_is_typed_and_preserves_last_good_dist(tmp_path, monkeypat
 
 
 def test_build_runner_reaps_owned_process_when_shutdown_is_requested(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, recording_runner,
 ):
     root = tmp_path / "dashboard-react"
     root.mkdir()
     captured: dict[str, object] = {}
 
-    class FakeProcess:
-        pid = 4321
-        returncode = None
-
-        def poll(self):
-            return self.returncode
-
-    process = FakeProcess()
-
-    def popen(command, **kwargs):
-        captured["command"] = command
-        captured["kwargs"] = kwargs
-        return process
-
     def terminate(owned):
         captured["terminated"] = owned.pid
         owned.returncode = -1
 
-    monkeypatch.setattr(freshness.subprocess, "Popen", popen)
     monkeypatch.setattr(freshness, "_terminate_build_process", terminate)
+    recording_runner.script(running=True)
     started: list[int] = []
 
     with pytest.raises(freshness._BuildCancelled):
@@ -344,29 +330,22 @@ def test_build_runner_reaps_owned_process_when_shutdown_is_requested(
             started.append,
         )
 
-    assert started == [4321]
-    assert captured["terminated"] == 4321
-    assert captured["kwargs"]["shell"] is False
+    [launch] = recording_runner.launches
+    [process] = recording_runner.processes
+    assert started == [process.pid]
+    assert captured["terminated"] == process.pid
+    assert launch.argv == ("npm", "run", "build")
+    assert launch.popen_kwargs()["shell"] is False
 
 
 def test_build_runner_reaps_process_when_start_callback_raises(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, recording_runner,
 ):
     root = tmp_path / "dashboard-react"
     root.mkdir()
     terminated: list[int] = []
 
-    class FakeProcess:
-        pid = 9876
-        returncode = None
-
-        def poll(self):
-            return self.returncode
-
-    process = FakeProcess()
-    monkeypatch.setattr(
-        freshness.subprocess, "Popen", lambda *_args, **_kwargs: process,
-    )
+    recording_runner.script(running=True)
 
     def terminate(owned):
         terminated.append(owned.pid)
@@ -387,7 +366,8 @@ def test_build_runner_reaps_process_when_start_callback_raises(
             ),
         )
 
-    assert terminated == [9876]
+    [process] = recording_runner.processes
+    assert terminated == [process.pid]
 
 
 def test_interrupted_swap_recovery_restores_last_good_backup(tmp_path, monkeypatch):
