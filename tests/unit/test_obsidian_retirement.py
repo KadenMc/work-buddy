@@ -141,7 +141,7 @@ def test_contract_skills_require_no_obsidian_and_name_sqlite_authority():
 
 
 def test_retirement_manifest_is_complete_enough_to_audit():
-    path = REPO / "docs" / "architecture" / "obsidian-retirement-manifest.yaml"
+    path = REPO / "tests" / "fixtures" / "obsidian-retirement-manifest.yaml"
     manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "work-buddy/obsidian-retirement-manifest/v1"
     allowed = set(manifest["decisions"])
