@@ -66,9 +66,19 @@ def setup_logging(level: int = logging.INFO) -> None:
     root_logger = logging.getLogger("work_buddy")
     root_logger.setLevel(level)
 
-    # File handler — detailed, all levels
+    # File handler: detailed, all levels.
+    #
+    # ``%(process)d`` is not decoration. Session directories are keyed on
+    # ``session_id[:8]`` (agent_session.get_session_dir), and the sidecar's
+    # synthetic id is ``sidecar-`` plus 8 random hex, so the truncation discards
+    # exactly the discriminating part: every sidecar instance shares one
+    # directory and one log file, and the same holds for the ``wbuddy-`` CLI and
+    # tray session. Without the pid, lines from two concurrent writers are
+    # indistinguishable, and a duplicate daemon shows up only as every
+    # scheduled job appearing twice. With it, two writers are obvious at a
+    # glance.
     file_formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        "%(asctime)s | %(levelname)-8s | pid=%(process)-6d | %(name)s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
     # RotatingFileHandler so long-lived sessions (e.g. the sidecar's

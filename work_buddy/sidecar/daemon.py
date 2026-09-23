@@ -3,7 +3,8 @@
 Entry point: ``python -m work_buddy.sidecar``
 
 The daemon:
-1. Checks for an existing instance (PID file)
+1. Claims the single-instance lock (``admit_single_instance``, the first
+   effectful statement of ``run()``) and exits if another daemon holds it
 2. Starts supervised child services (messaging, embedding)
 3. Supervisor loop (main thread): evaluates cached health probes,
    restarts failed children, and writes sidecar_state.json every tick
@@ -42,11 +43,11 @@ from work_buddy.compat import (
 )
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
+from work_buddy.sidecar import instance_lock
 from work_buddy.sidecar.pid import (
     PID_FILE,
-    check_existing_daemon,
     cleanup_pid_file,
-    takeover_existing_daemon,
+    reconcile_pid_file,
     write_pid_file,
 )
 from work_buddy.sidecar.state import (
@@ -761,6 +762,13 @@ _shutdown_signal_count = 0
 _shutdown_requested_at: float = 0.0  # set when _shutdown_requested flips to True
 _force_kill_children: list[Any] = []  # populated in run() so the signal handler can reach them
 _SHUTDOWN_WATCHDOG_TIMEOUT = 15.0  # seconds: if graceful shutdown exceeds this, force-exit
+
+# Distinct exit codes so a launcher (Task Scheduler, the tray's Popen, a
+# supervisor) can tell "correctly declined, another daemon owns this host" from
+# "could not establish the invariant" from a genuine crash. A bare 1 would make
+# the first case indistinguishable from the third.
+_EXIT_ALREADY_RUNNING = 3
+_EXIT_LOCK_UNAVAILABLE = 4
 # Windows Job Object (KILL_ON_JOB_CLOSE) created in run(); every child is
 # assigned to it so the OS reaps them when this daemon dies by ANY means —
 # including a hard kill where no signal handler / atexit hook runs. Kept as
@@ -833,6 +841,69 @@ def _signal_handler(signum: int, _frame: Any) -> None:
         _shutdown_requested_at = time.time()
 
 
+def admit_single_instance() -> instance_lock.InstanceLock:
+    """Claim the single-instance lock, or terminate this process.
+
+    Called as the first effectful statement of :func:`run`. Returns the held
+    lock on success; otherwise calls ``sys.exit`` and does not return.
+
+    Exiting is the correct behaviour, not a degradation. Taking over whatever
+    the PID file names would only be sound if the PID file were a reliable
+    census of running daemons, and it is not one. Replacement belongs to the
+    operator-driven path (``wbuddy restart``, the tray's Restart), which stops
+    the incumbent and verifies it stopped *before* launching a successor. A
+    daemon that finds the lock held has, by definition, nothing to replace
+    that it can prove anything about.
+
+    After winning, this also emits a duplicate scan. The lock makes duplicates
+    impossible, so a non-empty scan means something got past it (a stale build
+    on an older code path, a second data root, a manually launched module),
+    and that deserves a loud line in the log rather than silently
+    double-executing every scheduled job.
+    """
+    try:
+        lock = instance_lock.acquire()
+    except instance_lock.InstanceLockHeld as exc:
+        owner = exc.owner or {}
+        logger.error(
+            "Another work-buddy sidecar is already running (instance lock at "
+            "%s is held%s). Not starting a second one. Use 'wbuddy restart' to "
+            "cycle the running daemon, or 'wbuddy stop' first.",
+            instance_lock.LOCK_FILE,
+            f"; recorded owner pid={owner['pid']}" if owner.get("pid") else "",
+        )
+        sys.exit(_EXIT_ALREADY_RUNNING)
+    except instance_lock.InstanceLockUnavailable as exc:
+        logger.error(
+            "Refusing to start: the sidecar's single-instance lock could not "
+            "be established (%s). Starting without it risks a second daemon, "
+            "which silently double-executes every scheduled job.",
+            exc,
+        )
+        sys.exit(_EXIT_LOCK_UNAVAILABLE)
+
+    # The lock is ours, so no other daemon can be mid-write on the PID file.
+    # This is the one moment at which removing a stale record is safe.
+    reconciled = reconcile_pid_file()
+    if reconciled:
+        logger.info("Reconciled a stale PID file at boot (%s).", reconciled)
+
+    try:
+        duplicates = instance_lock.find_sidecar_processes()
+    except Exception as exc:  # never let a diagnostic scan block boot
+        logger.debug("Duplicate-sidecar scan failed: %s", exc)
+        duplicates = []
+    if duplicates:
+        logger.error(
+            "DUPLICATE SIDECAR PROCESSES DETECTED despite holding the instance "
+            "lock: %s. Every scheduled job may be running more than once. "
+            "Investigate before trusting this daemon's output.",
+            duplicates,
+        )
+
+    return lock
+
+
 def run(foreground: bool = True) -> None:
     """Main daemon entry point.
 
@@ -840,6 +911,19 @@ def run(foreground: bool = True) -> None:
         foreground: If True, run in the current process (blocking).
     """
     global _shutdown_requested
+
+    # --- Single-instance admission: FIRST, before any other work ---
+    # This must be the first statement with an effect. Everything above it is a
+    # window in which a second launcher can also decide it is the only sidecar,
+    # and several launchers exist: the logon task, the tray's Start and Restart,
+    # ``wbuddy start``, and provisioning. Config loading and the bootstraps
+    # below take real time, so admission must come before all of them.
+    #
+    # ``admit_single_instance`` narrows that window to a single locking
+    # syscall and exits the process if it loses. It is deliberately not
+    # recoverable: a sidecar that cannot prove it is the only one has nothing
+    # useful to do.
+    admit_single_instance()
 
     cfg = load_config()
     sidecar_cfg = cfg.get("sidecar", {})
@@ -883,20 +967,10 @@ def run(foreground: bool = True) -> None:
             "requests will pile up untouched: %s", e,
         )
 
-    # --- Check for existing daemon — if one's alive, take it over ---
-    # We enforce single-instance by replacement, not refusal: the user
-    # may be intentionally restarting in a visible terminal to regain
-    # control of a sidecar launched silently at login.
-    existing = check_existing_daemon()
-    if existing:
-        if not takeover_existing_daemon(existing):
-            logger.error(
-                "Sidecar already running (pid=%d) and could not be "
-                "terminated. Aborting.", existing,
-            )
-            sys.exit(1)
-
     # --- Write PID file + register signal handlers ---
+    # Single-instance was settled by ``admit_single_instance()`` at the top of
+    # this function, under an OS lock. The PID file is written here and never
+    # consulted: it records which daemon won, it does not decide.
     write_pid_file()
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
@@ -1394,5 +1468,11 @@ def _shutdown(children: list[ChildService], state: SidecarState) -> None:
             raise
 
     cleanup_pid_file()
+    # Release the instance lock last, after the children are down and the PID
+    # file is gone, so the host is never briefly startable while this daemon's
+    # ports are still occupied. Skipping this is safe, because the kernel drops
+    # the lock when the process dies, so it is an optimisation for the graceful
+    # path, not a correctness requirement.
+    instance_lock.release()
     # Don't remove state file — leave it for observability (shows "stopped")
     logger.info("Sidecar shutdown complete.")

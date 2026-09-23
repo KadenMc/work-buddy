@@ -36,6 +36,28 @@ dev_notes: |-
 
   Note the daemon now closes its *own* copy of the child log handle after `Popen` (in a `finally`); the child keeps its inherited dup. Leaving the parent copy open leaked a handle per restart and, on Windows, would pin the file against the next startup roll.
 
+  ## Single instance: an OS lock, not a PID file
+
+  Exactly one sidecar runs per data root, and the enforcer is the operating system. `work_buddy/sidecar/instance_lock.py` holds an exclusive advisory lock on `<data_root>/runtime/sidecar.lock` for the process's whole lifetime: a one-byte range via `msvcrt.locking` on Windows, the whole file via `fcntl.flock` elsewhere. `daemon.admit_single_instance()` claims it as the **first effectful statement** of `run()` and exits (code 3, `_EXIT_ALREADY_RUNNING`) if it loses; code 4 means locking itself was unavailable, which also refuses to start, because an invariant that cannot be enforced is worse than a refusal.
+
+  Three properties are why this is a lock and not a file:
+
+  - **Acquisition is atomic.** One syscall picks the winner, so there is no check-then-act window regardless of how slow a loser's boot is. Position matters as much as existence: the gate must stay the first statement of `run()`, and `tests/unit/test_sidecar_single_instance.py` asserts that by parsing `run`'s AST. Anything inserted above it re-opens the window.
+  - **Release is the kernel's job.** The lock belongs to an open handle, so it drops on `TerminateProcess`, a crash, or power loss. This is load-bearing on Windows, where `SIGTERM` *is* `TerminateProcess` and the daemon's own handlers never run. `instance_lock.release()` on graceful shutdown is an optimisation, never a correctness requirement.
+  - **Deleting the lock file does not let a second instance in.** Windows refuses to unlink an open handle. POSIX does allow the unlink, and a newcomer opening the path with `O_CREAT` would create a *fresh inode* and lock that, so on Linux a second layer closes the gap: an abstract-namespace `AF_UNIX` name derived from the resolved lock path, which lives in the kernel with no directory entry to delete and is released when the holder dies. macOS and the BSDs have no abstract namespace, so there the file lock stands alone and the residual exposure is "something deletes `runtime/sidecar.lock` while a daemon runs". Nothing does: unlike the PID file, this file has no remover except its owner's `release()`. `_verify_same_inode` additionally refuses a lock whose file was replaced mid-acquisition.
+
+  **The PID file is a record, not the invariant.** `sidecar.pid` plus its identity companion are the human- and tool-readable answer to *which* daemon is running: what `wbuddy status` prints, what the tray shows, what `stop` aims at. They do not prevent a second instance (the lock does), and that separation is what makes them safe to be wrong about. Two consequences are contractual:
+
+  - **Reads never mutate.** `check_existing_daemon` and `probe_pid_file` are pure. Stale-file cleanup is `reconcile_pid_file`, and its only caller is `admit_single_instance`, which holds the lock. That is the one moment at which no other daemon can be mid-write, and therefore the only moment at which a delete is safe. Never call it from a status path: the tray polls status every 2500 ms, and a mutating status check is how a live daemon's registration gets deleted.
+  - **Absent is not corrupt.** `_read_pid_record` returns `absent` / `corrupt` / `unreadable` / `ok`. A file that vanished between `exists()` and `read_text()` is an ordinary race with a concurrent writer; only an unparseable file justifies removal.
+
+  `takeover_existing_daemon` returns a `TakeoverResult`, truthy when it is safe for the caller to proceed, with an `outcome` of `terminated` / `already_gone` / `not_ours` / `refused`. Truthiness and `terminated` are different facts, since `not_ours` is safe to proceed past and killed nothing, so `stop` must read `outcome`, never the bool.
+
+  **Stop verifies.** `cli/lifecycle.stop_sidecar` asks the kernel whether any daemon still holds the lock after the takeover (`_wait_for_lock_release`, 5 s for handle teardown) and reports failure naming the survivors if one does. `_daemon_health` consults the lock too, so a live daemon with a missing or unidentifiable PID file classifies as `booting`/`wedged` and never `down`, and `start_sidecar` refuses to spawn beside a locked incumbent. When a spawn has not confirmed through its PID file in time but the lock is held, `start_sidecar` reports the sidecar as running, since it only spawns when the lock was free and the holder is therefore most likely the daemon it just launched. Replacement belongs to the operator path (`wbuddy restart`, the tray's Restart), which stops the incumbent and verifies it stopped before launching a successor.
+
+  **Detectability, as defence in depth.** The lock makes duplicates impossible, so `instance_lock.find_sidecar_processes()` finding one at boot is logged at ERROR. That scan excludes the caller's whole process tree: on Windows a uv/virtualenv `python.exe` is a trampoline that re-execs the real interpreter, so one logical sidecar appears in the process table as two processes carrying the same `-m work_buddy.sidecar` command line: a ~3 MB parent and the real ~280 MB child. Reporting an ancestor or descendant would fire the alarm on every boot. The file log format also carries `pid=%(process)d` on every line, because sidecar instances share one log file (`agent_session.get_session_dir` keys on `session_id[:8]`, and the synthetic `sidecar-<8 hex>` id truncates to the constant `"sidecar-"`), so the pid is what makes two writers legible.
+
+
   ## Child-process insulation: takeover + interpreter pin
 
   Two defenses, layered. Both exist because Windows makes the obvious approach impossible.
@@ -134,16 +156,16 @@ dev_notes: |-
 
   The supervisor's stall warning (`_dispatch_stall_message`) is pure classification; the emit is deduplicated by remembering `dispatch_phase_since` — one warning per stall, not one per supervisor tick. `TickFailureTracker` has two instances, one per loop, so a sustained dispatch failure and a sustained supervisor failure escalate independently.
 
-  `cleanup_pid_file` only deletes the pid file when it records the calling process's own pid. `write_pid_file` registers it via atexit, and that hook can fire after a takeover replaced the file with the successor's pid — an unguarded delete erases the live daemon's pid file. Stale-foreign-pid removal stays in `check_existing_daemon`.
+  `cleanup_pid_file` only deletes the pid file when it records the calling process's own pid. `write_pid_file` registers it via atexit, and that hook can fire after a takeover replaced the file with the successor's pid, and an unguarded delete erases the live daemon's pid file. Stale-foreign-pid removal belongs to `reconcile_pid_file`, called only under the instance lock.
 
-  Tests must never touch the real runtime files: the autouse `_isolate_sidecar_runtime_files` fixture in `tests/conftest.py` redirects `pid.PID_FILE` and `state.STATE_FILE` to per-test temp paths (opt out with `@pytest.mark.real_sidecar_runtime_files`). Test code must reference the module attributes (`pid_mod.PID_FILE`), not by-value imports, or the redirection is invisible to the assertions.
+  Tests must never touch the real runtime files: the autouse `_isolate_sidecar_runtime_files` fixture in `tests/conftest.py` redirects `pid.PID_FILE`, `instance_lock.LOCK_FILE` and `state.STATE_FILE` to per-test temp paths (opt out with `@pytest.mark.real_sidecar_runtime_files`). Test code must reference the module attributes (`pid_mod.PID_FILE`), not by-value imports, or the redirection is invisible to the assertions.
 ---
 
 A single long-lived Python process that replaces multiple independent Windows Task Scheduler entries with a unified process supervisor, cron/heartbeat scheduler, and message-driven job dispatcher.
 
 Starting: uv run python -m work_buddy.sidecar
 
-Manages its own lifecycle via PID file (`<data_root>/runtime/sidecar.pid`), process-identity companion (`sidecar.pid.identity.json`), and state file (`<data_root>/runtime/sidecar_state.json`).
+Single-instance is enforced by an OS lock on `<data_root>/runtime/sidecar.lock`, held for the daemon's lifetime and released by the kernel on death. The PID file (`<data_root>/runtime/sidecar.pid`), its process-identity companion (`sidecar.pid.identity.json`) and the state file (`<data_root>/runtime/sidecar_state.json`) record *which* daemon is running; they do not gate whether a second one may start.
 
 Two loops split the daemon's work by blocking behavior. The **supervisor loop** (main thread) evaluates cached health probes, restarts failed children, and writes `sidecar_state.json` every tick — everything on it is fast and bounded, so the state file's freshness is a true daemon-liveness signal (`wbuddy status` classifies ~90s of staleness as wedged). The **dispatch loop** (a background thread) runs scheduler cron ticks, message-driven dispatch, and retry sweeps — the phases that execute jobs and replays inline and can legitimately block for minutes (agent spawns, index rebuilds, local-LLM leases). A slow job therefore reads as a busy dispatch phase in the state file, never as a hung daemon, and can never delay child restarts.
 

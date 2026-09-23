@@ -180,7 +180,8 @@ def test_takeover_kills_children_before_daemon(monkeypatch):
     monkeypatch.setattr(compat, "find_child_pids", fake_find)
     monkeypatch.setattr(compat, "_force_kill_pid", fake_force_kill)
 
-    assert sidecar_pid.takeover_existing_daemon(7260, wait_seconds=0.5) is True
+    result = sidecar_pid.takeover_existing_daemon(7260, wait_seconds=0.5)
+    assert result.outcome == "terminated"
 
     # Children were force-killed before any os.kill on the daemon.
     force_kill_calls = [c for c in call_order if c[0] == "force_kill"]
@@ -212,7 +213,8 @@ def test_takeover_with_no_children_still_kills_daemon(monkeypatch):
     monkeypatch.setattr(sidecar_pid, "process_start_token", lambda pid: next(tokens))
     monkeypatch.setattr(sidecar_pid, "_remove_pid_file", lambda: None)
 
-    assert sidecar_pid.takeover_existing_daemon(7260, wait_seconds=0.3) is True
+    result = sidecar_pid.takeover_existing_daemon(7260, wait_seconds=0.3)
+    assert result.outcome == "terminated"
     # No children → no force-kill calls during the children-reap step.
     assert fk_calls == []
 
@@ -243,7 +245,8 @@ def test_takeover_reused_pid_never_enumerates_or_kills(monkeypatch):
         lambda: calls.append(("remove", 4242)),
     )
 
-    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is True
+    result = sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1)
+    assert result.outcome == "not_ours"
     assert calls == [("remove", 4242)]
 
 
@@ -262,7 +265,8 @@ def test_takeover_unverifiable_pid_fails_closed(monkeypatch):
         lambda pid, sig: calls.append(("os_kill", pid)),
     )
 
-    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is False
+    result = sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1)
+    assert result.outcome == "refused"
     assert calls == []
 
 
@@ -292,7 +296,8 @@ def test_takeover_stops_if_pid_is_reused_during_enumeration(monkeypatch):
         lambda: calls.append(("remove", 4242)),
     )
 
-    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is True
+    result = sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1)
+    assert result.outcome == "already_gone"
     assert calls == [("find_children", 4242), ("remove", 4242)]
 
 
@@ -317,7 +322,8 @@ def test_takeover_stops_if_pid_is_reused_during_identity_verification(monkeypatc
         lambda: calls.append(("remove", 4242)),
     )
 
-    assert sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1) is True
+    result = sidecar_pid.takeover_existing_daemon(4242, wait_seconds=0.1)
+    assert result.outcome == "already_gone"
     assert calls == [("remove", 4242)]
 
 

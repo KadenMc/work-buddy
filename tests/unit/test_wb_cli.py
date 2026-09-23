@@ -418,12 +418,16 @@ def test_stop_when_not_running(monkeypatch):
 
 
 def test_stop_calls_takeover(monkeypatch):
+    from work_buddy.sidecar.pid import TakeoverResult
+
     monkeypatch.setattr(lifecycle._pid, "check_existing_daemon", lambda: 555)
     seen = {}
-    monkeypatch.setattr(
-        lifecycle._pid, "takeover_existing_daemon",
-        lambda pid: seen.setdefault("pid", pid) is None or True,
-    )
+
+    def _fake_takeover(pid, **_kw):
+        seen["pid"] = pid
+        return TakeoverResult(True, "terminated")
+
+    monkeypatch.setattr(lifecycle._pid, "takeover_existing_daemon", _fake_takeover)
     res = lifecycle.stop_sidecar()
     assert res["stopped"] is True and seen["pid"] == 555
 

@@ -48,8 +48,8 @@ Installed as a console script (`wbuddy`) via pyproject, also runnable as `python
 
 ## Verbs
 
-- `wbuddy start [--foreground]` -- start the sidecar. Detached by default (no console window), `--foreground` runs it in the current terminal. Idempotent for a healthy sidecar: an already-running (or still-booting) sidecar is reported, not duplicated, while a wedged one is taken over. A successful detached start then attempts the trusted dashboard-identity recovery described below.
-- `wbuddy stop` -- stop the running sidecar and its child services.
+- `wbuddy start [--foreground]` -- start the sidecar. Detached by default (no console window), `--foreground` runs it in the current terminal. Never starts a second sidecar: if one holds the single-instance lock (running, booting, or wedged), it is reported instead, and a wedged one is replaced with `wbuddy restart`, not `start`. A successful detached start then attempts the trusted dashboard-identity recovery described below.
+- `wbuddy stop` -- stop the running sidecar and its child services, then confirm that no sidecar still holds the single-instance lock. It fails, naming any surviving processes, if one does.
 - `wbuddy restart` -- stop then start, then attempt trusted dashboard-identity recovery after the app is ready.
 - `wbuddy status [--json]` -- sidecar liveness, uptime, and per-service health, read from the sidecar state file. Distinguishes booting from wedged; exits non-zero when not running or wedged. Also reports the daemon's dispatch loop: a phase busy past ~2 minutes prints as busy with the running job's name (scheduled work is queued behind it, supervision unaffected), otherwise the time since the last completed dispatch cycle.
 - `wbuddy doctor [<component>] [--json]` -- render the setup wizard's status, or one component's diagnosis: bootstrap, requirements, health.
