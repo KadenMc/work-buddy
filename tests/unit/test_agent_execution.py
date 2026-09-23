@@ -52,6 +52,7 @@ from work_buddy.agent_execution.models import (
     UnknownProviderError,
 )
 from work_buddy.agent_execution.registry import ProviderRegistry
+from work_buddy.process import RecordingRunner, Scripted
 
 
 def test_claude_execution_identity_uses_only_toolsearch_for_bootstrap(
@@ -219,33 +220,28 @@ def test_probe_cache_reuses_then_refreshes() -> None:
 
 def test_claude_probe_is_cached_and_strips_api_billing_keys(
     monkeypatch: pytest.MonkeyPatch,
+    recording_runner: RecordingRunner,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "do-not-pass")
     monkeypatch.setenv("SubAgent_Anthropic_Api_Key", "do-not-pass-either")
-    calls: list[dict[str, object]] = []
+    recording_runner.script(
+        stdout=(
+            '{"loggedIn":true,"authMethod":"claude.ai",'
+            '"apiProvider":"firstParty","subscriptionType":"max",'
+            '"email":"private@example.test"}'
+        ),
+    )
 
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append({"command": command, **kwargs})
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                '{"loggedIn":true,"authMethod":"claude.ai",'
-                '"apiProvider":"firstParty","subscriptionType":"max",'
-                '"email":"private@example.test"}'
-            ),
-            stderr="",
-        )
-
-    provider = ClaudeCodeProvider(command_runner=run)
+    provider = ClaudeCodeProvider(runner=recording_runner)
     first = provider.probe()
     second = provider.probe()
 
     assert first is second
     assert first.availability is ProviderAvailability.READY
     assert [model.id for model in first.models] == ["sonnet", "opus"]
-    assert len(calls) == 1
-    assert calls[0]["command"] == [
+    assert len(recording_runner.launches) == 1
+    launch = recording_runner.launches[0]
+    assert launch.argv == (
         "claude",
         "--setting-sources",
         "",
@@ -253,9 +249,8 @@ def test_claude_probe_is_cached_and_strips_api_billing_keys(
         "{}",
         "auth",
         "status",
-    ]
-    assert calls[0]["shell"] is False
-    child_env = calls[0]["env"]
+    )
+    child_env = launch.env
     assert isinstance(child_env, dict)
     assert all(
         key.casefold()
@@ -265,16 +260,12 @@ def test_claude_probe_is_cached_and_strips_api_billing_keys(
     assert "private@example.test" not in json.dumps(first.to_dict())
 
 
-def test_claude_probe_auth_required_and_allowlist_validation() -> None:
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command,
-            1,
-            stdout='{"loggedIn":false}',
-            stderr="",
-        )
+def test_claude_probe_auth_required_and_allowlist_validation(
+    recording_runner: RecordingRunner,
+) -> None:
+    recording_runner.script(returncode=1, stdout='{"loggedIn":false}')
 
-    provider = ClaudeCodeProvider(command_runner=run)
+    provider = ClaudeCodeProvider(runner=recording_runner)
     descriptor = provider.probe()
 
     assert descriptor.availability is ProviderAvailability.AUTH_REQUIRED
@@ -315,16 +306,11 @@ def test_claude_probe_auth_required_and_allowlist_validation() -> None:
 )
 def test_claude_probe_rejects_non_subscription_auth_without_identity(
     payload: dict[str, object],
+    recording_runner: RecordingRunner,
 ) -> None:
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(payload),
-            stderr="",
-        )
+    recording_runner.script(stdout=json.dumps(payload))
 
-    descriptor = ClaudeCodeProvider(command_runner=run).probe()
+    descriptor = ClaudeCodeProvider(runner=recording_runner).probe()
 
     assert descriptor.availability is ProviderAvailability.UNAVAILABLE
     assert descriptor.unavailable_reason == (
@@ -335,34 +321,30 @@ def test_claude_probe_rejects_non_subscription_auth_without_identity(
     assert "Private Organization" not in public
 
 
-def test_claude_probe_never_trusts_non_json_logged_in_text() -> None:
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout="Logged in and authenticated with some credential.",
-            stderr="",
-        )
+def test_claude_probe_never_trusts_non_json_logged_in_text(
+    recording_runner: RecordingRunner,
+) -> None:
+    recording_runner.script(
+        stdout="Logged in and authenticated with some credential."
+    )
 
-    descriptor = ClaudeCodeProvider(command_runner=run).probe()
+    descriptor = ClaudeCodeProvider(runner=recording_runner).probe()
 
     assert descriptor.availability is ProviderAvailability.UNKNOWN
     assert descriptor.available is False
 
 
-def test_claude_rejects_model_outside_allowlist() -> None:
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                '{"loggedIn":true,"authMethod":"claude.ai",'
-                '"apiProvider":"firstParty","subscriptionType":"max"}'
-            ),
-            stderr="",
-        )
+def test_claude_rejects_model_outside_allowlist(
+    recording_runner: RecordingRunner,
+) -> None:
+    recording_runner.script(
+        stdout=(
+            '{"loggedIn":true,"authMethod":"claude.ai",'
+            '"apiProvider":"firstParty","subscriptionType":"max"}'
+        ),
+    )
 
-    provider = ClaudeCodeProvider(command_runner=run)
+    provider = ClaudeCodeProvider(runner=recording_runner)
     with pytest.raises(UnknownModelError):
         provider.validate_selection(
             AgentExecutionSelection("claude-code", "haiku")
@@ -372,22 +354,19 @@ def test_claude_rejects_model_outside_allowlist() -> None:
 def test_claude_start_passes_exact_model_and_account_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    recording_runner: RecordingRunner,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-in-child")
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "inherited-bootstrap-id")
     source_config = tmp_path / "claude-source"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(source_config))
 
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                '{"loggedIn":true,"authMethod":"claude.ai",'
-                '"apiProvider":"firstParty","subscriptionType":"max"}'
-            ),
-            stderr="",
-        )
+    recording_runner.script(
+        stdout=(
+            '{"loggedIn":true,"authMethod":"claude.ai",'
+            '"apiProvider":"firstParty","subscriptionType":"max"}'
+        ),
+    )
 
     captured: dict[str, object] = {}
 
@@ -399,7 +378,7 @@ def test_claude_start_passes_exact_model_and_account_environment(
         "work_buddy.sidecar.dispatch.executor.spawn_detached_process_authorized",
         spawn,
     )
-    provider = ClaudeCodeProvider(command_runner=run)
+    provider = ClaudeCodeProvider(runner=recording_runner)
     outcome = provider.start_detached(
         AgentSpawnRequest(
             name="document",
@@ -447,6 +426,7 @@ def test_claude_start_passes_exact_model_and_account_environment(
 def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    recording_runner: RecordingRunner,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-in-claude")
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "inherited-bootstrap-id")
@@ -473,17 +453,14 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
         encoding="utf-8",
     )
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(source_config))
-    calls: dict[str, object] = {}
     isolated_config_paths: list[Path] = []
 
-    def run(command: list[str], **kwargs: object) -> object:
-        calls["command"] = command
-        calls.update(kwargs)
-        host_cwd = Path(kwargs["cwd"])
+    def check_launch(launch) -> Scripted:
+        host_cwd = Path(launch.cwd)
         assert host_cwd.is_dir()
         assert list(host_cwd.iterdir()) == []
         assert host_cwd != tmp_path.resolve()
-        child_env = kwargs["env"]
+        child_env = launch.env
         assert isinstance(child_env, dict)
         isolated_config = Path(child_env["CLAUDE_CONFIG_DIR"])
         isolated_config_paths.append(isolated_config)
@@ -502,19 +479,23 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
             "claudeAiOauth": {"accessToken": "account-backed"}
         }
         assert "mcpOAuth" not in isolated_credentials
-        return SimpleNamespace(returncode=0)
+        return Scripted(returncode=0)
+
+    recording_runner.script(respond=check_launch)
 
     result = run_claude_worker(
         model="opus",
         prompt="private brief",
         session_id="claude-generation-cowork",
         max_budget_usd=3.5,
-        command_runner=run,
+        runner=recording_runner,
     )
 
     assert result == 0
-    argv = calls["command"]
-    assert isinstance(argv, list)
+    [launch] = recording_runner.launches
+    [process] = recording_runner.processes
+    argv = launch.argv
+    assert isinstance(argv, tuple)
     assert argv[argv.index("--model") + 1] == "opus"
     assert argv[argv.index("--max-budget-usd") + 1] == "3.5"
     assert "--setting-sources" not in argv
@@ -546,17 +527,17 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
             }
         }
     }
-    assert calls["input"] == "private brief"
-    assert calls["shell"] is False
-    assert isinstance(calls["stdout"], int)
-    assert calls["stdout"] >= 0
-    assert calls["stderr"] is subprocess.DEVNULL
-    assert calls["encoding"] == "utf-8"
-    assert calls["errors"] == "strict"
-    assert not Path(calls["cwd"]).exists()
+    assert process.stdin.getvalue() == "private brief"
+    assert launch.stdin == subprocess.PIPE
+    assert isinstance(launch.stdout, int)
+    assert launch.stdout >= 0
+    assert launch.stderr is subprocess.DEVNULL
+    assert launch.encoding == "utf-8"
+    assert launch.errors == "strict"
+    assert not Path(launch.cwd).exists()
     assert len(isolated_config_paths) == 1
     assert not isolated_config_paths[0].exists()
-    child_env = calls["env"]
+    child_env = launch.env
     assert isinstance(child_env, dict)
     assert "ANTHROPIC_API_KEY" not in child_env
     assert child_env["CLAUDE_CODE_DISABLE_ATTACHMENTS"] == "1"
@@ -722,9 +703,7 @@ def test_claude_worker_rejects_unsafe_direct_identity() -> None:
             prompt="brief",
             session_id="unsafe\nheader",
             max_budget_usd=1.0,
-            command_runner=lambda *_args, **_kwargs: pytest.fail(
-                "Claude must not start"
-            ),
+            runner=RecordingRunner(strict=True),
         )
         == 2
     )
@@ -822,12 +801,12 @@ def test_codex_sdk_probe_rejects_api_key_without_leaking_details() -> None:
 
 def test_codex_provider_parses_redacted_probe_and_caches(
     monkeypatch: pytest.MonkeyPatch,
+    recording_runner: RecordingRunner,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "not-in-probe")
     monkeypatch.setenv("CODEX_API_KEY", "also-not-in-probe")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.test")
     monkeypatch.setenv("CODEX_MODEL_PROVIDER", "custom-provider")
-    calls: list[list[str]] = []
     payload = {
         "availability": "ready",
         "auth_mode": "chatgpt",
@@ -844,27 +823,24 @@ def test_codex_provider_parses_redacted_probe_and_caches(
         "state_key": "safe-key",
     }
 
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        assert kwargs["shell"] is False
-        child_env = kwargs["env"]
+    def check_launch(launch) -> Scripted:
+        child_env = launch.env
         assert isinstance(child_env, dict)
         assert "OPENAI_API_KEY" not in child_env
         assert "CODEX_API_KEY" not in child_env
         assert "OPENAI_BASE_URL" not in child_env
         assert "CODEX_MODEL_PROVIDER" not in child_env
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(payload),
-            stderr="account@example.test",
+        return Scripted(
+            stdout=json.dumps(payload), stderr="account@example.test"
         )
 
-    provider = CodexProvider(command_runner=run)
+    recording_runner.script(respond=check_launch)
+
+    provider = CodexProvider(runner=recording_runner)
     descriptor = provider.probe()
     assert provider.probe() is descriptor
 
-    assert calls == [
+    assert recording_runner.argvs() == [
         [
             sys.executable,
             "-m",
@@ -888,6 +864,7 @@ def test_codex_provider_parses_redacted_probe_and_caches(
 def test_codex_start_uses_worker_stdin_exact_model_and_no_api_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    recording_runner: RecordingRunner,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "not-in-child")
     monkeypatch.setenv("CODEX_API_KEY", "also-not-in-child")
@@ -905,13 +882,7 @@ def test_codex_start_uses_worker_stdin_exact_model_and_no_api_key(
         ],
     }
 
-    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(probe_payload),
-            stderr="",
-        )
+    recording_runner.script(stdout=json.dumps(probe_payload))
 
     captured: dict[str, object] = {}
 
@@ -923,7 +894,7 @@ def test_codex_start_uses_worker_stdin_exact_model_and_no_api_key(
         "work_buddy.sidecar.dispatch.executor.spawn_detached_process_authorized",
         spawn,
     )
-    provider = CodexProvider(command_runner=run)
+    provider = CodexProvider(runner=recording_runner)
     outcome = provider.start_detached(
         AgentSpawnRequest(
             name="document",

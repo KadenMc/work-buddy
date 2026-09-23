@@ -7,11 +7,12 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from work_buddy.config import load_config
+from work_buddy.process import ProcessRunner
 
 from .cache import ProbeCache
 from .identity import prompt_with_execution_identity
@@ -265,11 +266,11 @@ class ClaudeCodeProvider:
     def __init__(
         self,
         *,
-        command_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        runner: ProcessRunner | None = None,
         timeout_seconds: float = 15.0,
         cache: ProbeCache[ProviderDescriptor] | None = None,
     ) -> None:
-        self._run = command_runner
+        self._runner = runner
         self._timeout_seconds = timeout_seconds
         self._cache = cache or ProbeCache(ttl_seconds=30.0)
 
@@ -287,22 +288,18 @@ class ClaudeCodeProvider:
         availability = ProviderAvailability.UNKNOWN
         reason = "Claude Code couldn't be checked."
         try:
-            from work_buddy.compat import subprocess_creation_flags
+            from work_buddy.process import run_tool
 
-            result = self._run(
+            result = run_tool(
                 [
                     "claude",
                     *_isolated_setting_args(),
                     "auth",
                     "status",
                 ],
-                capture_output=True,
-                text=True,
                 timeout=self._timeout_seconds,
-                check=False,
                 env=claude_account_environment(),
-                creationflags=subprocess_creation_flags(),
-                shell=False,
+                runner=self._runner,
             )
         except FileNotFoundError:
             availability = ProviderAvailability.UNAVAILABLE

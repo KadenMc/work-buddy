@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import itertools
 import threading
 from pathlib import Path
 
 import pytest
 
+from work_buddy.process import ExecutableNotFound, FakeProcess
 from work_buddy.sidecar.dispatch import executor
 
 
@@ -70,16 +72,24 @@ def _clear_owned_processes():
 def test_generic_detached_spawn_uses_fixed_argv_no_shell_and_stdin(
     monkeypatch,
     tmp_path: Path,
+    recording_runner,
 ) -> None:
-    captured: dict[str, object] = {}
-    process = _Process()
+    delivered: list[str] = []
+    real_deliver = executor._deliver_detached_stdin
 
-    def popen(command: list[str], **kwargs: object) -> _Process:
-        captured["command"] = command
-        captured.update(kwargs)
-        return process
+    def observed_deliver(proc, stdin_text, *, timeout_seconds):
+        delivered.append(stdin_text)
+        return real_deliver(proc, stdin_text, timeout_seconds=timeout_seconds)
 
-    monkeypatch.setattr(executor.subprocess, "Popen", popen)
+    monkeypatch.setattr(executor, "_deliver_detached_stdin", observed_deliver)
+    # Unlike the hand-rolled fakes elsewhere in this file, FakeProcess
+    # implements wait(), so the real reaper would race to deregister it the
+    # instant it is started. Disable it here since this test is about the
+    # spawn call itself, not natural-exit reaping (covered separately below).
+    monkeypatch.setattr(
+        executor, "_start_detached_process_reaper", lambda proc, owner: None
+    )
+
     result = executor._spawn_detached_process_unchecked(
         name="codex-worker",
         argv=["python", "-m", "worker", "--model", "exact"],
@@ -89,27 +99,28 @@ def test_generic_detached_spawn_uses_fixed_argv_no_shell_and_stdin(
         session_name="daemon:codex-worker",
     )
 
+    [launch] = recording_runner.launches
+    [process] = recording_runner.processes
     assert result == {
         "status": "ok",
-        "pid": 123,
+        "pid": process.pid,
         "session_name": "daemon:codex-worker",
         "process_owner": "daemon:codex-worker",
     }
-    assert captured["command"] == [
+    assert launch.argv == (
         "python",
         "-m",
         "worker",
         "--model",
         "exact",
-    ]
-    assert captured["shell"] is False
-    assert captured["start_new_session"] is (executor.os.name != "nt")
-    assert captured["cwd"] == str(tmp_path)
-    assert captured["env"] == {"SAFE": "yes"}
-    assert process.stdin.value == "private prompt"
+    )
+    assert launch.start_new_session is (executor.os.name != "nt")
+    assert launch.cwd == str(tmp_path)
+    assert launch.env == {"SAFE": "yes"}
+    assert delivered == ["private prompt"]
     assert process.stdin.closed
     assert (
-        executor._owned_detached_process(123, "daemon:codex-worker")
+        executor._owned_detached_process(process.pid, "daemon:codex-worker")
         is process
     )
 
@@ -117,27 +128,16 @@ def test_generic_detached_spawn_uses_fixed_argv_no_shell_and_stdin(
 def test_generic_detached_spawn_bounds_stdin_delivery(
     monkeypatch,
     tmp_path: Path,
+    recording_runner,
 ) -> None:
-    release = threading.Event()
-    process = _Process(pid=456)
     terminated: list[int] = []
 
-    def blocked_write(_value: str) -> None:
-        release.wait(1)
+    def deliver_times_out(proc, stdin_text, *, timeout_seconds):
+        return False, True
 
-    process.stdin.write = blocked_write
-    monkeypatch.setattr(
-        executor.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: process,
-    )
-    monkeypatch.setattr(
-        executor,
-        "_DETACHED_STDIN_TIMEOUT_SECONDS",
-        0.01,
-    )
+    monkeypatch.setattr(executor, "_deliver_detached_stdin", deliver_times_out)
 
-    def terminate(proc: _Process, owner_token: str) -> bool:
+    def terminate(proc, owner_token: str) -> bool:
         terminated.append(proc.pid)
         executor._forget_owned_detached_process(
             proc.pid,
@@ -154,40 +154,29 @@ def test_generic_detached_spawn_bounds_stdin_delivery(
         stdin_text="private prompt",
         session_name="blocked-owner",
     )
-    release.set()
 
+    [process] = recording_runner.processes
     assert result == {
         "status": "error",
         "error_code": "spawn_input_timeout",
         "error": "Agent process could not start.",
     }
-    assert terminated == [456]
-    assert executor._owned_detached_process(456, "blocked-owner") is None
+    assert terminated == [process.pid]
+    assert executor._owned_detached_process(process.pid, "blocked-owner") is None
 
 
 def test_failed_stdin_delivery_keeps_reaper_and_cleanup_retry(
     monkeypatch,
     tmp_path: Path,
+    recording_runner,
 ) -> None:
-    release = threading.Event()
-    process = _Process(pid=457)
     reaped: list[tuple[int, str]] = []
     retried: list[tuple[int, str]] = []
 
-    def blocked_write(_value: str) -> None:
-        release.wait(1)
+    def deliver_times_out(proc, stdin_text, *, timeout_seconds):
+        return False, True
 
-    process.stdin.write = blocked_write
-    monkeypatch.setattr(
-        executor.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: process,
-    )
-    monkeypatch.setattr(
-        executor,
-        "_DETACHED_STDIN_TIMEOUT_SECONDS",
-        0.01,
-    )
+    monkeypatch.setattr(executor, "_deliver_detached_stdin", deliver_times_out)
     monkeypatch.setattr(
         executor,
         "_start_detached_process_reaper",
@@ -211,26 +200,25 @@ def test_failed_stdin_delivery_keeps_reaper_and_cleanup_retry(
         stdin_text="private prompt",
         session_name="blocked-owner",
     )
-    release.set()
 
+    [process] = recording_runner.processes
     assert result["status"] == "error"
     assert result["error_code"] == "spawn_input_timeout"
-    assert reaped == [(457, "blocked-owner")]
-    assert retried == [(457, "blocked-owner")]
+    assert reaped == [(process.pid, "blocked-owner")]
+    assert retried == [(process.pid, "blocked-owner")]
     assert (
-        executor._owned_detached_process(457, "blocked-owner")
+        executor._owned_detached_process(process.pid, "blocked-owner")
         is process
     )
 
 
 def test_generic_detached_spawn_returns_safe_missing_runtime_error(
-    monkeypatch,
     tmp_path: Path,
+    recording_runner,
 ) -> None:
-    def popen(*_args: object, **_kwargs: object) -> object:
-        raise FileNotFoundError("private executable path")
-
-    monkeypatch.setattr(executor.subprocess, "Popen", popen)
+    recording_runner.script(
+        raises=ExecutableNotFound(2, "private executable path", "missing-runtime")
+    )
     result = executor._spawn_detached_process_unchecked(
         name="worker",
         argv=["missing-runtime"],
@@ -558,14 +546,25 @@ def test_owned_completion_poll_failure_is_unknown(monkeypatch, error_type) -> No
 def test_new_registration_clears_same_identity_completion(
     monkeypatch,
     tmp_path: Path,
+    recording_runner,
 ) -> None:
     old = _Process(pid=9876, returncode=3)
     executor._OWNED_DETACHED_PROCESSES[(old.pid, "generation-a")] = old
     executor._forget_owned_detached_process(old.pid, "generation-a", old)
-    replacement = _Process(pid=9876)
+    # Force the next recorded launch's fake process onto the exact pid this
+    # test needs to collide with, since a real OS can hand out that same pid
+    # again once it is free.
+    monkeypatch.setattr(FakeProcess, "_pids", itertools.count(old.pid))
+    # FakeProcess implements wait(), unlike the hand-rolled fakes elsewhere in
+    # this file, so the real reaper would race to deregister the replacement
+    # immediately. This test is about registration clearing stale completion
+    # data, not about reaping, so keep the registry under its own control.
     monkeypatch.setattr(
-        executor.subprocess, "Popen", lambda *_args, **_kwargs: replacement
+        executor, "_start_detached_process_reaper", lambda proc, owner: None
     )
+    # The replacement is still running, like the original _Process(pid=9876)
+    # fake it replaces (default returncode=None), not already exited.
+    recording_runner.script(running=True)
 
     result = executor._spawn_detached_process_unchecked(
         name="replacement-worker",
@@ -574,6 +573,8 @@ def test_new_registration_clears_same_identity_completion(
         session_name="generation-a",
     )
 
+    [replacement] = recording_runner.processes
+    assert replacement.pid == old.pid
     assert result["status"] == "ok"
     assert (old.pid, "generation-a") not in executor._DETACHED_PROCESS_COMPLETIONS
     assert executor.owned_detached_process_exit_code(

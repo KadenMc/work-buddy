@@ -18,6 +18,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from work_buddy import logging_config
+from work_buddy.process import ExecutableNotFound, Scripted
 
 _WORKERS = ("claude_worker", "codex_worker")
 _SESSION_ID = "diagnostic-generation-assisted-draft"
@@ -179,6 +180,7 @@ def test_claude_module_entry_logs_only_child_exit_code(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     worker_log: Path,
+    recording_runner,
     runtime_exit: int,
     runtime_stdout: str,
     worker_exit: int,
@@ -193,18 +195,12 @@ def test_claude_module_entry_logs_only_child_exit_code(
     )
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(source_config))
     monkeypatch.setattr(claude_code, "_work_buddy_mcp_config", lambda _session: "{}")
-    calls: list[dict[str, object]] = []
 
-    def runtime(_command: list[str], **kwargs: object) -> object:
-        calls.append(kwargs)
-        os.write(kwargs["stdout"], runtime_stdout.encode("utf-8"))
-        return SimpleNamespace(
-            returncode=runtime_exit,
-            stdout=None,
-            stderr=_PRIVATE_ERROR,
-        )
+    def respond(launch) -> Scripted:
+        os.write(launch.stdout, runtime_stdout.encode("utf-8"))
+        return Scripted(returncode=runtime_exit)
 
-    monkeypatch.setattr(subprocess, "run", runtime)
+    recording_runner.script(respond=respond)
     with io.TextIOWrapper(
         io.BytesIO(_PRIVATE_BRIEF.encode("utf-8")),
         encoding="cp1252",
@@ -212,13 +208,14 @@ def test_claude_module_entry_logs_only_child_exit_code(
         _module_entry("claude_worker", monkeypatch, stdin=stdin)
 
     assert stopped.value.code == worker_exit
-    assert len(calls) == 1
-    assert calls[0]["input"] == _PRIVATE_BRIEF
-    assert isinstance(calls[0]["stdout"], int)
-    assert calls[0]["stdout"] >= 0
-    assert calls[0]["stderr"] is subprocess.DEVNULL
-    assert calls[0]["encoding"] == "utf-8"
-    assert calls[0]["errors"] == "strict"
+    [launch] = recording_runner.launches
+    [process] = recording_runner.processes
+    assert process.stdin.getvalue() == _PRIVATE_BRIEF
+    assert isinstance(launch.stdout, int)
+    assert launch.stdout >= 0
+    assert launch.stderr is subprocess.DEVNULL
+    assert launch.encoding == "utf-8"
+    assert launch.errors == "strict"
     content = _read_worker_log(worker_log, "claude_worker")
     assert "stage=run_runtime" in content
     if runtime_exit:
@@ -283,6 +280,7 @@ def test_codex_module_entry_logs_sdk_startup_exception_safely(
 @pytest.mark.parametrize("extra_bytes", [0, 1, 128 * 1024])
 def test_claude_stdout_pipe_drains_and_rejects_output_above_memory_cap(
     worker_log: Path,
+    recording_runner,
     extra_bytes: int,
 ) -> None:
     from work_buddy.agent_execution.claude_worker import _run_with_bounded_stdout
@@ -290,12 +288,16 @@ def test_claude_stdout_pipe_drains_and_rejects_output_above_memory_cap(
 
     payload = b"x" * (MAX_WORKER_RESULT_BYTES + extra_bytes)
 
-    def runtime(_command: list[str], *, stdout: int) -> object:
-        with os.fdopen(os.dup(stdout), "wb") as output:
+    def respond(launch) -> Scripted:
+        with os.fdopen(os.dup(launch.stdout), "wb") as output:
             output.write(payload)
-        return SimpleNamespace(returncode=1)
+        return Scripted(returncode=1)
 
-    result, captured = _run_with_bounded_stdout(runtime, ["fixture-cli"])
+    recording_runner.script(respond=respond)
+
+    result, captured = _run_with_bounded_stdout(
+        ["fixture-cli"], prompt="", runner=recording_runner
+    )
 
     assert result.returncode == 1
     assert captured == (payload if extra_bytes == 0 else None)
@@ -304,6 +306,7 @@ def test_claude_stdout_pipe_drains_and_rejects_output_above_memory_cap(
 def test_claude_stdout_pipe_closes_both_descriptors_after_child_start_failure(
     monkeypatch: pytest.MonkeyPatch,
     worker_log: Path,
+    recording_runner,
 ) -> None:
     from work_buddy.agent_execution import claude_worker
 
@@ -315,12 +318,14 @@ def test_claude_stdout_pipe_closes_both_descriptors_after_child_start_failure(
         descriptors.extend(pair)
         return pair
 
-    def failed_runtime(_command: list[str], *, stdout: int) -> object:
-        raise FileNotFoundError(_PRIVATE_ERROR)
-
     monkeypatch.setattr(claude_worker.os, "pipe", observed_pipe)
+    recording_runner.script(
+        raises=ExecutableNotFound(2, _PRIVATE_ERROR, "fixture-cli")
+    )
     with pytest.raises(FileNotFoundError):
-        claude_worker._run_with_bounded_stdout(failed_runtime, ["fixture-cli"])
+        claude_worker._run_with_bounded_stdout(
+            ["fixture-cli"], prompt="", runner=recording_runner
+        )
 
     assert len(descriptors) == 2
     for descriptor in descriptors:
@@ -331,6 +336,7 @@ def test_claude_stdout_pipe_closes_both_descriptors_after_child_start_failure(
 def test_claude_stdout_pipe_read_failure_is_not_classified(
     monkeypatch: pytest.MonkeyPatch,
     worker_log: Path,
+    recording_runner,
 ) -> None:
     from work_buddy.agent_execution import claude_worker
 
@@ -338,9 +344,9 @@ def test_claude_stdout_pipe_read_failure_is_not_classified(
         raise OSError(_PRIVATE_ERROR)
 
     monkeypatch.setattr(claude_worker.os, "read", failed_read)
+    recording_runner.script(returncode=1)
     result, captured = claude_worker._run_with_bounded_stdout(
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
-        ["fixture-cli"],
+        ["fixture-cli"], prompt="", runner=recording_runner
     )
 
     assert result.returncode == 1
@@ -350,6 +356,7 @@ def test_claude_stdout_pipe_read_failure_is_not_classified(
 def test_claude_stdout_pipe_does_not_wait_for_descendant_held_handle(
     monkeypatch: pytest.MonkeyPatch,
     worker_log: Path,
+    recording_runner,
 ) -> None:
     from work_buddy.agent_execution import claude_worker
 
@@ -370,20 +377,23 @@ def test_claude_stdout_pipe_does_not_wait_for_descendant_held_handle(
             read_finished.set()
         return chunk
 
-    def runtime(_command: list[str], *, stdout: int) -> object:
-        held_descriptors.append(os.dup(stdout))
-        os.write(stdout, b'{"type":"result"}')
+    def respond(launch) -> Scripted:
+        held_descriptors.append(os.dup(launch.stdout))
+        os.write(launch.stdout, b'{"type":"result"}')
         ready.set()
-        return SimpleNamespace(returncode=1)
+        return Scripted(returncode=1)
 
     def call_worker() -> None:
         try:
             output.append(
-                claude_worker._run_with_bounded_stdout(runtime, ["fixture-cli"])
+                claude_worker._run_with_bounded_stdout(
+                    ["fixture-cli"], prompt="", runner=recording_runner
+                )
             )
         finally:
             finished.set()
 
+    recording_runner.script(respond=respond)
     monkeypatch.setattr(claude_worker.os, "read", observed_read)
     caller = threading.Thread(target=call_worker, daemon=True)
     caller.start()

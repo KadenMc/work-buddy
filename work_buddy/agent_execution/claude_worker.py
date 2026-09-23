@@ -15,8 +15,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from work_buddy.compat import subprocess_creation_flags
 from work_buddy.logging_config import get_logger
+from work_buddy.process import ProcessRunner, spawn_worker
 from work_buddy.sidecar.dispatch.executor import _build_headless_agent_argv
 
 from .claude_code import (
@@ -45,9 +45,12 @@ _STDOUT_JOIN_TIMEOUT_SECONDS = 1.0
 
 
 def _run_with_bounded_stdout(
-    command_runner: Callable[..., Any],
     argv: list[str],
-    **kwargs: Any,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    prompt: str,
+    runner: ProcessRunner | None = None,
 ) -> tuple[Any, bytes | None]:
     """Drain CLI output in memory without changing the process-runner seam.
 
@@ -94,15 +97,34 @@ def _run_with_bounded_stdout(
         os.close(write_fd)
         raise
     try:
-        result = command_runner(argv, stdout=write_fd, **kwargs)
+        handle = spawn_worker(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=write_fd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            runner=runner,
+        )
+        try:
+            handle.communicate(input=prompt)
+        except BaseException:
+            # As subprocess.run does: never leave the CLI running behind an
+            # interrupted wait.
+            handle.kill()
+            handle.wait()
+            raise
     finally:
         try:
             os.close(write_fd)
         finally:
             reader.join(timeout=_STDOUT_JOIN_TIMEOUT_SECONDS)
     if reader.is_alive() or not complete or oversized:
-        return result, None
-    return result, bytes(captured)
+        return handle, None
+    return handle, bytes(captured)
 
 
 def _claude_config_source(environment: Mapping[str, str]) -> Path:
@@ -244,7 +266,7 @@ def run_worker(
     prompt: str,
     session_id: str,
     max_budget_usd: float,
-    command_runner: Callable[..., Any] = subprocess.run,
+    runner: ProcessRunner | None = None,
 ) -> int:
     """Run Claude with user customizations disabled in a neutral directory.
 
@@ -296,18 +318,11 @@ def run_worker(
                 stage = "run_runtime"
                 logger.info("Claude hosted worker starting: stage=%s", stage)
                 result, stdout = _run_with_bounded_stdout(
-                    command_runner,
                     argv,
                     cwd=str(Path(host_directory).resolve()),
                     env=child_env,
-                    input=prompt,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                    encoding="utf-8",
-                    errors="strict",
-                    check=False,
-                    shell=False,
-                    creationflags=subprocess_creation_flags(),
+                    prompt=prompt,
+                    runner=runner,
                 )
                 stage = "cleanup_workspace"
             stage = "cleanup_account"

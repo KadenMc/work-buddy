@@ -507,19 +507,16 @@ def _spawn_detached_process_unchecked(
         len(command),
     )
     try:
-        from work_buddy.compat import subprocess_creation_flags
+        from work_buddy.process import spawn_worker
 
-        proc = subprocess.Popen(
+        proc = spawn_worker(
             list(command),
             stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             cwd=str(cwd),
             env=dict(env) if env is not None else None,
-            creationflags=subprocess_creation_flags(),
-            start_new_session=os.name != "nt",
-            close_fds=True,
-            shell=False,
+            new_session=True,
             text=stdin_text is not None,
             encoding="utf-8" if stdin_text is not None else None,
         )
@@ -937,16 +934,8 @@ def _spawn_headless_agent_detached_unchecked(
     )
 
     try:
-        from work_buddy.compat import subprocess_creation_flags
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(_REPO_ROOT),
-            creationflags=subprocess_creation_flags(),
-            close_fds=True,
-        )
+        from work_buddy.process import spawn_worker
+        proc = spawn_worker(cmd, cwd=str(_REPO_ROOT))
     except FileNotFoundError:
         logger.error(
             "claude CLI not found on PATH. Ensure Claude Code is installed."
@@ -1034,8 +1023,11 @@ def _spawn_agent(
 
     Consent-gated: requires a valid grant for ``sidecar:agent_spawn``.
 
-    On Windows, uses ``CREATE_NO_WINDOW`` (not ``DETACHED_PROCESS``)
-    so the child dies when the sidecar dies.
+    Runs as a tool run, so the agent never opens a window, and waits for
+    it to exit under its own timeout, ending its whole process tree if it
+    runs over. Where this module starts a child it does not wait for, the
+    executor's ownership registry holds that child and explicit termination
+    ends it.
 
     All sessions are tagged with ``--name daemon:<job-name>`` so they
     are distinguishable from user-initiated sessions.  This is critical
@@ -1134,14 +1126,11 @@ def _spawn_agent(
     # --- Execute ---
     start_time = time.time()
     try:
-        from work_buddy.compat import subprocess_creation_flags
-        result = subprocess.run(
+        from work_buddy.process import run_tool
+        result = run_tool(
             cmd,
-            capture_output=True,
-            text=True,
             timeout=timeout_seconds,
             cwd=str(_REPO_ROOT),
-            creationflags=subprocess_creation_flags(),
         )
 
         elapsed = time.time() - start_time
