@@ -13,15 +13,17 @@ def sidecar_status() -> dict:
     """Check whether the sidecar daemon is running and return its state."""
     from dataclasses import asdict
 
+    from work_buddy.sidecar import instance_lock
     from work_buddy.sidecar.pid import check_existing_daemon
     from work_buddy.sidecar.state import load_state
 
     state = load_state()
     if state is None:
         return {"running": False, "message": "Sidecar state file not found."}
-    alive = check_existing_daemon() is not None
+    # The PID file can be absent or stale while a daemon runs, so liveness is
+    # "the PID file names a live daemon OR the instance lock is held".
     data = asdict(state)
-    data["running"] = alive
+    data["running"] = check_existing_daemon() is not None or instance_lock.is_locked()
     return data
 
 

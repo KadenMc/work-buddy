@@ -440,9 +440,10 @@ def _isolate_journal_authority_fence(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_sidecar_runtime_files(tmp_path, monkeypatch, request):
-    """Redirect the sidecar PID and state files to per-test temp paths.
+    """Redirect the sidecar PID, instance-lock and state files to temp paths.
 
-    ``work_buddy.sidecar.pid.PID_FILE`` and
+    ``work_buddy.sidecar.pid.PID_FILE``,
+    ``work_buddy.sidecar.instance_lock.LOCK_FILE`` and
     ``work_buddy.sidecar.state.STATE_FILE`` resolve to the real
     ``.data/runtime/`` files at import time. Tests that exercise the
     write/cleanup/check helpers against those module globals would
@@ -452,22 +453,39 @@ def _isolate_sidecar_runtime_files(tmp_path, monkeypatch, request):
     status`` reporting a healthy daemon as not running until the next
     restart. (The state file self-heals on the next supervisor tick.)
 
+    The instance lock needs the redirection for a different reason: a test
+    that acquired the REAL lock would be told "another sidecar is running"
+    whenever one is, and would report the live daemon's owner metadata as
+    its own. Worse, a test that acquired it successfully would hold the
+    host's single-instance lock for the duration of the suite, so a sidecar
+    starting mid-run would correctly refuse to boot.
+
     The helpers read the module globals at call time, so patching the
     attributes covers them; tests must reference the patched values via
     the modules, not by-value imports. Opt out per-test with
     ``@pytest.mark.real_sidecar_runtime_files``.
     """
     if request.node.get_closest_marker("real_sidecar_runtime_files") is not None:
+        yield
         return
     try:
+        import work_buddy.sidecar.instance_lock as lock_mod
         import work_buddy.sidecar.pid as pid_mod
         import work_buddy.sidecar.state as state_mod
     except Exception:  # pragma: no cover - defensive
+        yield
         return
     monkeypatch.setattr(pid_mod, "PID_FILE", tmp_path / "sidecar.pid")
+    monkeypatch.setattr(lock_mod, "LOCK_FILE", tmp_path / "sidecar.lock")
     monkeypatch.setattr(
         state_mod, "STATE_FILE", tmp_path / "sidecar_state.json",
     )
+    # A leaked ``_held`` from an earlier test would make ``is_locked()`` report
+    # True for every later test in the process, and its fd would outlive the
+    # temp directory it points into.
+    monkeypatch.setattr(lock_mod, "_held", None)
+    yield
+    lock_mod.release()
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,30 @@
 """PID file management for the sidecar daemon.
 
 Ported from ClaudeClaw's pid.ts — adapted for Python/Windows.
+
+**This module does not enforce single-instance.** ``sidecar/instance_lock.py``
+does, with an OS lock. What lives here is the human- and tool-readable record
+of *which* daemon is running: what ``wbuddy status`` prints, what the tray
+displays, and what ``stop`` aims at.
+
+The record is deliberately not the invariant. Several code paths can delete a
+file, and the process-identity check that reads it can legitimately answer
+"cannot tell", so an invariant resting on this file could be broken by any
+caller that is wrong about it. Status surfaces also read it constantly (the
+tray every 2.5 seconds), which makes every observer a participant in any race
+with the daemon writing its record.
+
+Two rules keep the record trustworthy, and both are load-bearing:
+
+1. **Reads never mutate.** :func:`check_existing_daemon` and
+   :func:`probe_pid_file` are pure. Only two things remove the record, and both
+   have earned the right to: :func:`reconcile_pid_file`, whose one caller holds
+   the instance lock, and :func:`takeover_existing_daemon`, which removes the
+   record of the daemon it has just proven dead. A status surface cannot delete
+   anything.
+2. **Absent is not corrupt.** A file that vanished between ``exists()`` and
+   ``read_text()`` is a race with a concurrent writer, not damage, and must not
+   provoke a delete. :func:`_read_pid_record` distinguishes the two.
 """
 
 import atexit
@@ -11,6 +35,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from work_buddy.logging_config import get_logger
@@ -31,11 +56,43 @@ def _identity_file() -> Path:
     return PID_FILE.with_name(PID_FILE.name + ".identity.json")
 
 
-def _read_pid() -> int | None:
+def _read_pid_record() -> tuple[str, int | None]:
+    """Read the PID file as ``(state, pid)``.
+
+    ``state`` is one of:
+
+    - ``"ok"``: ``pid`` is the recorded integer.
+    - ``"absent"``: no file. Includes the file disappearing between an
+      ``exists()`` check and this read, which is an ordinary race against a
+      concurrent writer (the daemon's own ``os.replace``, or a reconcile).
+    - ``"corrupt"``: the file is there but does not parse.
+    - ``"unreadable"``: an I/O error, so ownership is unknowable.
+
+    Collapsing ``absent`` into ``corrupt`` would let a status poll delete a
+    live daemon's registration while the daemon is writing it, so the
+    distinction is the point of the function, not an embellishment.
+    """
     try:
-        return int(PID_FILE.read_text().strip())
-    except (FileNotFoundError, ValueError, OSError):
-        return None
+        raw = PID_FILE.read_text()
+    except FileNotFoundError:
+        return "absent", None
+    except OSError:
+        return "unreadable", None
+    try:
+        return "ok", int(raw.strip())
+    except ValueError:
+        return "corrupt", None
+
+
+def _read_pid() -> int | None:
+    """Recorded pid, or ``None`` for absent/corrupt/unreadable.
+
+    For callers that only need the integer. Anything that
+    might *act* on the answer must use :func:`_read_pid_record` instead, so it
+    can tell a race from damage.
+    """
+    state, pid = _read_pid_record()
+    return pid if state == "ok" else None
 
 
 def _process_description(pid: int) -> tuple[str, str] | None:
@@ -53,11 +110,18 @@ def _process_description(pid: int) -> tuple[str, str] | None:
             "| ConvertTo-Json -Compress}"
         )
         try:
+            from work_buddy.compat import subprocess_creation_flags
+
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-Command", script],
                 capture_output=True,
                 text=True,
                 timeout=15,
+                # CREATE_NO_WINDOW. Without it every call flashes a console
+                # window, and this runs on the tray's 2500 ms status poll
+                # whenever the identity record cannot be matched, which would
+                # mean a console window every 2.5 seconds.
+                creationflags=subprocess_creation_flags(),
             )
             if result.returncode != 0 or not result.stdout.strip():
                 return None
@@ -159,44 +223,125 @@ def _record_matches_process(pid: int) -> bool | None:
 
 
 def check_existing_daemon() -> int | None:
-    """Check if a daemon is already running.
+    """Return the pid of the recorded daemon if it is alive, else ``None``.
 
-    Returns the PID if alive, ``None`` otherwise.
-    Cleans up stale PID files automatically.
+    **Pure: this never writes or deletes anything.** The tray polls it every
+    2.5 seconds, so any cleanup here would race the daemon writing its own
+    record and could delete a live daemon's freshly written PID file. Cleanup
+    belongs to :func:`reconcile_pid_file`, whose one caller holds the
+    instance lock.
+
+    A live pid whose identity cannot be *disproven* is reported as the daemon.
+    Reporting it is the safe direction for every caller: status shows something
+    running, and ``start`` declines to spawn. Nothing destructive keys off this
+    return value: :func:`takeover_existing_daemon` re-proves identity itself
+    before it terminates anything.
     """
-    if not PID_FILE.exists():
+    state, pid = _read_pid_record()
+    if state != "ok" or pid is None:
         return None
+    if not _is_process_alive(pid):
+        return None
+    if _record_matches_process(pid) is False:
+        return None
+    return pid
 
-    pid = _read_pid()
-    if pid is None:
-        logger.warning("Corrupt PID file — removing: %s", PID_FILE)
+
+def probe_pid_file() -> dict:
+    """Read-only description of the PID file, for status surfaces and diagnosis.
+
+    Returns ``{"state", "pid", "alive", "identity"}`` where ``state`` comes
+    from :func:`_read_pid_record`, ``alive`` is process liveness, and
+    ``identity`` is ``True``/``False``/``None`` for proven / disproven /
+    unprovable. Exists so a caller can *render* "the PID file is corrupt"
+    without the act of looking having repaired it.
+    """
+    state, pid = _read_pid_record()
+    if state != "ok" or pid is None:
+        return {"state": state, "pid": None, "alive": False, "identity": None}
+    alive = _is_process_alive(pid)
+    return {
+        "state": state,
+        "pid": pid,
+        "alive": alive,
+        "identity": _record_matches_process(pid) if alive else None,
+    }
+
+
+def reconcile_pid_file() -> str | None:
+    """Remove a PID file that no longer describes a running sidecar.
+
+    **Only call this while holding the instance lock, or when the lock is
+    provably free.** Holding the lock means no other daemon can be mid-write,
+    which is precisely the condition under which deleting this file is safe.
+    Outside that condition a delete is a coin flip against a concurrent writer,
+    and the losing side of that flip is a duplicate sidecar.
+
+    Returns a short reason string when something was removed, else ``None``.
+    Never terminates a process: an unidentified live process is left strictly
+    alone, and only the *record* naming it is dropped.
+    """
+    state, pid = _read_pid_record()
+    if state == "absent":
+        return None
+    if state == "unreadable":
+        # Ownership unknowable. Leaving a possibly-live record in place is the
+        # conservative error; the lock, not this file, is what gates starting.
+        logger.warning("PID file is unreadable; leaving it in place: %s", PID_FILE)
+        return None
+    if state == "corrupt":
+        logger.warning("Corrupt PID file; removing: %s", PID_FILE)
         _remove_pid_file()
-        return None
+        return "corrupt"
 
-    if _is_process_alive(pid):
-        matches = _record_matches_process(pid)
-        if matches is False:
-            logger.warning(
-                "Stale PID file names a different process (pid=%d); "
-                "removing it without terminating that process.",
-                pid,
-            )
-            _remove_pid_file()
-            return None
-        if matches is None:
-            logger.warning(
-                "Could not verify whether live pid=%d is the recorded sidecar; "
-                "leaving the PID file in place.",
-                pid,
-            )
-        return pid
+    assert pid is not None
+    if not _is_process_alive(pid):
+        logger.info("Stale PID file (pid=%d not alive); removing.", pid)
+        _remove_pid_file()
+        return "dead"
 
-    logger.info("Stale PID file (pid=%d not alive) — removing.", pid)
-    _remove_pid_file()
+    if _record_matches_process(pid) is False:
+        logger.warning(
+            "Stale PID file names a different process (pid=%d); removing it "
+            "without terminating that process.",
+            pid,
+        )
+        _remove_pid_file()
+        return "reused"
     return None
 
 
-def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
+@dataclass(frozen=True)
+class TakeoverResult:
+    """Outcome of a takeover attempt.
+
+    Truthy exactly when it is safe for the caller to proceed, so callers can
+    write ``if not takeover_existing_daemon(pid):``. The ``outcome`` field
+    exists because "safe to proceed" and "a sidecar was terminated" are
+    different facts, and a stop that conflated them could report success
+    without stopping anything:
+
+    - ``"terminated"``: we killed the recorded daemon. The only outcome that
+      means work-buddy was actually stopped.
+    - ``"already_gone"``: the recorded process had exited on its own.
+    - ``"not_ours"``: the pid names something that is provably not our
+      sidecar. Safe to proceed; **nothing was killed**.
+    - ``"refused"``: identity unprovable, or the kill did not take. Falsy.
+    """
+
+    ok: bool
+    outcome: str
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+    @property
+    def terminated(self) -> bool:
+        """``True`` only when a running sidecar was actually terminated."""
+        return self.outcome == "terminated"
+
+
+def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> TakeoverResult:
     """Terminate an existing sidecar process so a new one can take over.
 
     On Windows, ``os.kill(pid, SIGTERM)`` is ``TerminateProcess`` — a
@@ -213,7 +358,8 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
     the supervisor avoids it triggering its own restart logic, and
     means even a hard-killed daemon never leaks orphans.
 
-    Returns True once the daemon PID is confirmed dead.
+    Returns a :class:`TakeoverResult`. Truthy means "safe to proceed"; only
+    ``outcome == "terminated"`` means a sidecar was actually killed.
     """
     import time as _time
 
@@ -226,30 +372,30 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
     if expected_start is None:
         if not _is_process_alive(pid):
             _remove_pid_file()
-            return True
+            return TakeoverResult(True, "already_gone")
         logger.error(
             "Refusing to terminate pid=%d because its process-start identity "
             "could not be read.",
             pid,
         )
-        return False
+        return TakeoverResult(False, "refused")
 
     matches = _record_matches_process(pid)
     if matches is False:
         logger.warning(
             "Refusing to terminate pid=%d because it is not the recorded "
-            "sidecar; removing the stale PID file.",
+            "sidecar; removing the stale PID file. NOTHING WAS TERMINATED.",
             pid,
         )
         _remove_pid_file()
-        return True
+        return TakeoverResult(True, "not_ours")
     if matches is None:
         logger.error(
             "Refusing to terminate pid=%d because its sidecar identity "
             "could not be verified.",
             pid,
         )
-        return False
+        return TakeoverResult(False, "refused")
 
     if process_start_token(pid) != expected_start:
         logger.info(
@@ -258,7 +404,7 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
             pid,
         )
         _remove_pid_file()
-        return True
+        return TakeoverResult(True, "already_gone")
 
     logger.info("Taking over existing sidecar (pid=%d)...", pid)
 
@@ -273,7 +419,7 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
             pid,
         )
         _remove_pid_file()
-        return True
+        return TakeoverResult(True, "already_gone")
     if children:
         logger.info(
             "Reaping %d child process(es) of old daemon: %s",
@@ -284,7 +430,7 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
 
     if process_start_token(pid) != expected_start:
         _remove_pid_file()
-        return True
+        return TakeoverResult(True, "already_gone")
     try:
         os.kill(pid, signal.SIGTERM)
     except (OSError, ProcessLookupError):
@@ -296,7 +442,7 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
         if process_start_token(pid) != expected_start:
             _remove_pid_file()
             logger.info("Previous sidecar (pid=%d) terminated.", pid)
-            return True
+            return TakeoverResult(True, "terminated")
         _time.sleep(0.2)
         if not escalated and _time.monotonic() > (deadline - wait_seconds / 2):
             escalated = True
@@ -306,7 +452,8 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
             )
             if process_start_token(pid) != expected_start:
                 _remove_pid_file()
-                return True
+                logger.info("Previous sidecar (pid=%d) terminated.", pid)
+                return TakeoverResult(True, "terminated")
             _force_kill_pid(pid)
 
     if process_start_token(pid) == expected_start:
@@ -314,9 +461,9 @@ def takeover_existing_daemon(pid: int, *, wait_seconds: float = 10.0) -> bool:
             "Could not terminate existing sidecar (pid=%d) within %.0fs.",
             pid, wait_seconds,
         )
-        return False
+        return TakeoverResult(False, "refused")
     _remove_pid_file()
-    return True
+    return TakeoverResult(True, "terminated")
 
 
 def write_pid_file() -> None:

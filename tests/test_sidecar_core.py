@@ -85,11 +85,19 @@ def test_check_existing_daemon_none():
 
 
 def test_check_existing_daemon_stale():
-    # Write a bogus PID
+    # A dead recorded pid reports "no daemon" but does NOT clean up: the check
+    # is a pure read, because status surfaces poll it and a mutating read
+    # races the daemon writing its record. Removal belongs to
+    # reconcile_pid_file, whose caller holds the instance lock. See
+    # tests/unit/test_sidecar_single_instance.py.
     pid_mod.PID_FILE.write_text("99999999\n")
     result = check_existing_daemon()
     assert result is None
-    assert not pid_mod.PID_FILE.exists()  # Should auto-clean stale
+    assert pid_mod.PID_FILE.exists()
+
+    # Reconcile is where the cleanup happens.
+    assert pid_mod.reconcile_pid_file() == "dead"
+    assert not pid_mod.PID_FILE.exists()
 
 
 def test_check_existing_daemon_rejects_reused_live_pid(monkeypatch):
@@ -97,7 +105,13 @@ def test_check_existing_daemon_rejects_reused_live_pid(monkeypatch):
     monkeypatch.setattr(pid_mod, "_is_process_alive", lambda _pid: True)
     monkeypatch.setattr(pid_mod, "_record_matches_process", lambda _pid: False)
 
+    # Reported as "not our daemon" without touching the file. The recorded pid
+    # is a live process we have no authority over, and deleting the record is a
+    # decision for the lock holder, not for a reader.
     assert check_existing_daemon() is None
+    assert pid_mod.PID_FILE.exists()
+
+    assert pid_mod.reconcile_pid_file() == "reused"
     assert not pid_mod.PID_FILE.exists()
 
 

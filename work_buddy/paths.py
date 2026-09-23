@@ -38,6 +38,12 @@ from typing import Any
 RESOURCES: dict[str, str] = {
     # Runtime state — ephemeral, regenerated on each sidecar start
     "runtime/sidecar-pid":       "runtime/sidecar.pid",
+    # The single-instance lock is NOT ephemeral in the same sense: it is held
+    # open by the running daemon, so it must never be swept with the rest of
+    # runtime/. Deleting it while a daemon lives cannot release the lock, but
+    # it can strand the invariant on an orphaned inode (see
+    # sidecar/instance_lock.py, _verify_same_inode).
+    "runtime/sidecar-lock":      "runtime/sidecar.lock",
     "runtime/sidecar-state":     "runtime/sidecar_state.json",
     "runtime/tool-status":       "runtime/tool_status.json",
     "runtime/agent-registry":    "runtime/agent_registry.json",

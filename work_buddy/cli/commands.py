@@ -142,7 +142,14 @@ def cmd_status(args) -> int:
     health = res.get("health", "down")
 
     if _want_json(args):
-        out = {"running": res["running"], "health": health, "pid": pid}
+        out = {
+            "running": res["running"],
+            "health": health,
+            "pid": pid,
+            "instance_locked": res.get("instance_locked"),
+        }
+        if res.get("pid_file") is not None:
+            out["pid_file"] = res["pid_file"]
         if st is not None:
             out["state"] = asdict(st)
         print(json.dumps(out, indent=2))
@@ -151,6 +158,17 @@ def cmd_status(args) -> int:
     if health == "down":
         print("Sidecar not running.")
         return EXIT_FAIL
+
+    # The lock and the PID file should never disagree. If they do, the PID
+    # file is the one that is wrong, and saying so is more useful than
+    # rendering a confident "pid=None".
+    if res.get("pid_file") is not None:
+        probe = res["pid_file"]
+        _err(
+            "A sidecar holds the instance lock but the PID file does not "
+            f"identify it (pid file: {probe.get('state')}). "
+            "'wbuddy stop' cannot target it safely. Please report this."
+        )
 
     # A wedged daemon holds the pid file but has stopped ticking: its children
     # never came up (or died), so it is alive-but-not-serving. Say so plainly
