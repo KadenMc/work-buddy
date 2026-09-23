@@ -631,7 +631,12 @@ def _build_vectors_for_projection(
             existing_vectors, existing_ids = vdata
 
     existing_id_set = set(existing_ids)
-    keep_mask = [i for i, eid in enumerate(existing_ids) if eid in {d["doc_id"] for d in docs}]
+    # Built once, outside the comprehension below. Inside its filter clause it
+    # would be rebuilt for every element of `existing_ids`, which is quadratic
+    # in corpus size, and this runs before the `up_to_date` early return, so
+    # even a tick with no new documents would pay for it.
+    live_doc_ids = {d["doc_id"] for d in docs}
+    keep_mask = [i for i, eid in enumerate(existing_ids) if eid in live_doc_ids]
     if existing_vectors is not None and len(keep_mask) < len(existing_ids):
         existing_vectors = existing_vectors[keep_mask]
         existing_ids = [existing_ids[i] for i in keep_mask]
