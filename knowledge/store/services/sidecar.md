@@ -70,19 +70,19 @@ dev_notes: |-
 
   `work_buddy/sidecar/pid.py:takeover_existing_daemon` first proves that the recorded PID still names the sidecar instance which wrote it. `write_pid_file` keeps the human-readable integer in `sidecar.pid` and writes a companion `sidecar.pid.identity.json` containing the PID plus an OS process-start token (Windows creation `FILETIME`, Linux `/proc` start ticks, or the POSIX `ps` start value). A live PID with a different start token is PID reuse, not a daemon; its stale records are removed without enumerating or terminating that process. Historical integer-only PID files are accepted through a one-time process-name/command-line check. An unreadable identity fails closed: takeover refuses instead of treating liveness as authority to kill.
 
-  Once identity is proven, takeover enumerates the old daemon's direct children via `compat.find_child_pids(old_pid)` and force-kills each **before** killing the daemon. The process-start token is checked again after child enumeration, before the parent signal, and throughout termination polling, closing the PID-reuse race around those slower operations. The new daemon doesn't depend on the old daemon's cleanup at all — it has the OS authority to kill verified sidecar processes itself, so it does.
+  Once identity is proven, takeover enumerates the old daemon's direct children via `process.find_child_pids(old_pid)` and force-kills each **before** killing the daemon. The process-start token is checked again after child enumeration, before the parent signal, and throughout termination polling, closing the PID-reuse race around those slower operations. The new daemon doesn't depend on the old daemon's cleanup at all: it has the OS authority to kill verified sidecar processes itself, so it does.
 
   **Order is load-bearing**: kill children first, then the daemon. Once the parent dies its children reparent (PPID=1 on Unix, orphaned on Windows) and enumeration via the original PID returns empty — you lose the only handle you had on them. Don't "simplify" by reordering.
 
-  `compat.find_child_pids`: Windows uses WMIC (~100ms, deprecated but ships) with `Get-CimInstance -NoProfile` fallback (~6-15s cold). Unix uses `pgrep -P`. Best-effort — returns `set()` on enumeration failure; the supervisor's per-port clean-up in `_start_child` (`_kill_process_on_port`) is the secondary backstop.
+  `process.find_child_pids`: Windows uses WMIC (~100ms, deprecated but ships) with `Get-CimInstance -NoProfile` fallback (~6-15s cold). Unix uses `pgrep -P`. Best-effort: returns `set()` on enumeration failure, and the supervisor's per-port clean-up in `_start_child` (`_kill_process_on_port`) is the secondary backstop.
 
   ### Defense 1b — OS-enforced kill-time reaping (Windows Job Object)
 
   Defense 1 only runs on the *next* startup, and every signal-handler / watchdog / `_shutdown` layer only runs if the dying daemon's own code runs. A **hard kill** (`taskkill /F`, `kill -9`, crash, power loss) vaporizes the daemon mid-instruction — no code runs, and on Windows children do **not** die with their parent. That leaves a window (hard-kill → next boot) where an orphan keeps holding its port and serving stale bytecode.
 
-  `compat.create_kill_on_close_job()` creates a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; `daemon.py:run()` creates it once (module global `_kill_job`, kept alive for the daemon's whole life) before spawning children, and `_start_child` assigns each child via `compat.assign_process_to_job(_kill_job, pid)` right after `Popen`. When the daemon's process object is destroyed by any means, the **OS** — not our code — kills everything in the job. This is the only mechanism that closes the hard-kill case.
+  `process.create_kill_on_close_job()` creates a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `daemon.py:run()` creates it once (module global `_kill_job`, kept alive for the daemon's whole life) before starting children, and `_start_child` assigns each child via `process.assign_process_to_job(_kill_job, pid)` right after `start_host` returns. When the daemon's process object is destroyed by any means, the **OS**, not our code, kills everything in the job. This is the only mechanism that closes the hard-kill case.
 
-  **Handle lifetime is the rule**: the kill fires when the job's *last* handle closes, so `_kill_job` must be a module global, never a local that can be GC'd. After assigning, the per-child *process* handle is closed (`win32api.CloseHandle`); only the *job* handle stays open.
+  **Handle lifetime is the rule**: the kill fires when the job's *last* handle closes, so `_kill_job` must be a module global, never a local that can be GC'd. After assigning, the per-child *process* handle is closed. Only the *job* handle stays open, and it is never closed.
 
   **Best-effort assignment**: `AssignProcessToJobObject` can fail when the daemon is itself nested inside another restrictive job (some VS Code terminals / scheduled-task wrappers). A failed assign is logged and non-fatal — Defense 1's startup sweep is the fallback.
 
@@ -90,19 +90,19 @@ dev_notes: |-
 
   ### Defense 2 — children spawn under a pinned interpreter
 
-  `work_buddy/compat.py:resolve_child_python(cfg)` is the single chokepoint for which Python children get spawned with: `cfg['sidecar']['python_executable']` if set and existing, else `sys.executable`. Shared by the sidecar daemon and the messaging client's auto-start.
+  `work_buddy/process/host.py:resolve_child_python(cfg)` is the single chokepoint for which Python children get spawned with: `cfg['sidecar']['python_executable']` if set and existing, else `sys.executable`. Shared by the sidecar daemon and the messaging client's auto-start.
 
   **Why a config pin and not a startup guard**: `sys.executable` is locked in by the launch context (scheduled task, shell activation, etc.) — the daemon can't change it once it's running. What the daemon *can* control is which interpreter its children inherit. Moving the pin from "how the daemon launched" to "what the daemon spawns" puts it inside our authority. A parent accidentally launched on the wrong interpreter (e.g. a Windows login task started on the base env in a headless context) still spawns children on the right one.
 
   Mismatch between pin and `sys.executable` logs a WARNING; missing pinned file logs an ERROR and falls back. **Warn-only, not refuse-to-start** — hard-stop would brick boot for users who haven't opted in. Easy to escalate to `raise` if you want fail-closed.
 
-  Do not bypass `resolve_child_python` by reading `sys.executable` directly in `_start_child`. The config pin is the user's only knob for fixing a misconfigured launch context; bypassing it silently invalidates the knob.
+  Do not bypass `resolve_child_python` by reading `sys.executable` for a service. `start_host(HostRole.SERVICE, ...)` calls it, then selects `python.exe` from the same directory, so a pin that names `pythonw.exe` still gives services a console image. The config pin is the user's only knob for fixing a misconfigured launch context, and bypassing it silently invalidates the knob.
 
   ## Child-process encoding: PYTHONUTF8 chokepoint
 
   A third spawn-time invariant, sibling to the interpreter pin in Defense 2 above. The class of bug is `UnicodeEncodeError` from `logging.StreamHandler` — children on Windows wrap their `sys.stdout`/`sys.stderr` in a `TextIOWrapper(encoding="cp1252")` at interpreter init, and any non-Latin-1 codepoint reaching a log line raises. Python's logging module catches the exception and falls back to a `--- Logging error ---` stack trace, so the function completes but the log file fills with noise. The bug recurs anywhere a `logger.*` call interpolates non-ASCII data — vault content, task descriptions, log glyphs (`→`, `—`, `×`).
 
-  `work_buddy/compat.py:build_child_env()` is the chokepoint that fixes this by setting `PYTHONUTF8=1` in the child's env before `Popen`, flipping the child interpreter into UTF-8 mode (every stream — std, subprocess pipes, file ops — encodes via UTF-8). Lives adjacent to `resolve_child_python` so the two spawn invariants are obviously paired.
+  `work_buddy/process/host.py:build_child_env()` is the chokepoint that fixes this by setting `PYTHONUTF8=1` in the child's env before the child starts, flipping the child interpreter into UTF-8 mode (every stream, whether std, subprocess pipes or file ops, encodes via UTF-8). Lives adjacent to `resolve_child_python` so the two spawn invariants are obviously paired.
 
   **`setdefault` semantics.** An explicit user override (`PYTHONUTF8=0` to debug a bytes-vs-str regression) is preserved. The helper adds, it doesn't clobber.
 
@@ -112,7 +112,7 @@ dev_notes: |-
 
   **Layer 2 fallback in `work_buddy/logging_config.py:setup_logging()`.** Layer 1 (the env injection) only covers sidecar-spawned children. Standalone launches (`python -m work_buddy.<service>` directly, tests, dev one-offs) bypass the sidecar path. As a fallback, `setup_logging()` calls `sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")` (and same for stderr) at first invocation. `errors="backslashreplace"` is the never-crash policy: any unencodable codepoint becomes `→` text instead of raising. Class-level regression sentinel: `tests/unit/test_logging_config.py::test_log_with_non_ascii_under_cp1252_does_not_crash` installs a cp1252 stream and proves the bug class is dead.
 
-  Do not bypass `build_child_env` by passing `env=os.environ.copy()` directly in the `Popen` call. Same rule as `resolve_child_python`: the chokepoint is the single knob; bypassing it silently invalidates future env additions.
+  Do not bypass `build_child_env` by building a service's environment by hand. `start_host` applies it for the `SERVICE` and `TRAY` roles. Same rule as `resolve_child_python`: the chokepoint is the single knob, and bypassing it silently invalidates future env additions.
 
   ## Scheduler jitter: pending-fire layer
 
@@ -176,7 +176,7 @@ Three subsystems:
 
 Shutdown: First Ctrl+C / SIGTERM requests graceful shutdown; a watchdog thread force-exits after 15s if the main thread is stuck in a blocking syscall, so shutdown is always bounded. A second Ctrl+C force-kills children immediately. The `JobsWatcher` observer thread is stopped and joined alongside the HealthMonitor in the cleanup path; the dispatch thread is a daemon thread, briefly joined and abandoned if mid-job. The pid file is removed on shutdown only when it still records the exiting process's own pid — the atexit hook can fire after a takeover has replaced the file, and deleting the successor's pid file would make a healthy daemon read as not running.
 
-Child stdout/stderr: redirected to `<data_root>/runtime/service_logs/<service>.log` so a silent or crashing child is always observable — Popen inheritance with CREATE_NO_WINDOW can otherwise drop output on Windows. At child launch the daemon rolls an oversized live log (>16 MiB) aside to a timestamped backup (`_roll_oversize_log`); the `service-logs` artifact then reaps rolled backups older than 7 days on the twice-daily cleanup tick (pinning the live log). See the rotation dev-note above.
+Child stdout/stderr: redirected to `<data_root>/runtime/service_logs/<service>.log`, after a start banner, so a silent or crashing child is always observable. `start_host` opens the log, hands it to the child, and closes its own copy. At child launch the daemon rolls an oversized live log (>16 MiB) aside to a timestamped backup (`_roll_oversize_log`), and the `service-logs` artifact then reaps rolled backups older than 7 days on the twice-daily cleanup tick (pinning the live log). See the rotation dev-note above.
 
 Job file format: .md files in either jobs directory with YAML frontmatter (schedule, recurring, type, skill/params, enabled, spawn_mode, optional jitter_seconds). Each loaded `Job` carries a `source` field (`"system"` or `"user"`) that propagates through `JobState` into `sidecar_state.json` and is used by the dashboard's Jobs tab to group entries.
 
@@ -207,3 +207,9 @@ Observability fields ``next_at`` (raw cron eligibility) and ``effective_at`` (ne
 Config (sidecar: section in config.yaml): health_check_interval (cadence of both loops: supervisor restart-decision evaluation and dispatch cycles), health_probe_interval (HealthMonitor cadence), health_probe_timeout, health_failure_threshold, max_service_crashes, restart_backoff_base, dispatch_stall_warn_seconds (default 600 — warn when the dispatch loop sits in one phase this long), services (with module/port/enabled per service), jobs_dir (system jobs, defaults to `sidecar_jobs`), user_jobs_dir (user jobs override; empty = `<data_root>/user_jobs/`), heartbeat, message_poll_interval.
 
 Observability: The supervisor writes `<data_root>/runtime/sidecar_state.json` every tick regardless of what the dispatch loop is doing. Alongside services/jobs/events, the state carries dispatch-loop fields: `dispatch_phase` (scheduler_tick | message_poll | retry_sweep | idle), `dispatch_phase_since`, `dispatch_job` (the job currently executing inline, if any), and `last_dispatch_at` (end of the most recent dispatch cycle). A phase held past dispatch_stall_warn_seconds emits a `dispatch_stalled` event (once per stall) naming the phase and job; `wbuddy status` prints a busy line for a phase held past ~2 minutes. Query via sidecar_status or sidecar_jobs skills. Per-service child logs at `<data_root>/runtime/service_logs/*.log` (rotated as described above). Dashboard subscribes to `cron.hot_reload` events on the bus to refresh its Jobs tab on every actual reload.
+
+## Runtime context
+
+The daemon and its services are hosts in the sense of `architecture/process-execution`. The first statement of `python -m work_buddy.sidecar` is `establish_host_context(HostRole.SIDECAR)`, which gives a daemon started under `pythonw.exe` (the logon task, a desktop shortcut) a console with no window, and gives every daemon a fresh `sidecar-` session id. `wbuddy start`, provisioning, the tray and the desktop launcher start it through `start_host(HostRole.SIDECAR, ...)`, which starts `python.exe` with `CREATE_NO_WINDOW`. Services start through `start_host(HostRole.SERVICE, ...)`. Either way, the console programs the daemon and its services run inherit a console with no window. Every launch the daemon makes goes through `work_buddy.process`.
+
+At boot the daemon records the context it actually has in the `host` field of the state file. `wbuddy status` prints it as a `Runtime:` line and warns on drift, and the sidecar health component's runtime-context step checks the same record.

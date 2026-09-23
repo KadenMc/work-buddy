@@ -32,7 +32,7 @@ dev_notes: |-
   Keep this boundary intact on Windows. Calling `model.encode` from a fresh request thread can leave that thread's native OpenMP team resident after the Python thread exits, causing native workers to accumulate across requests. New in-service SentenceTransformer encode paths should go through `_brokered_encode` rather than calling `model.encode` directly.
 
   `work_buddy.__init__` sets `OPENBLAS_NUM_THREADS=1` before NumPy can initialize,
-  and `compat.build_child_env` gives supervised children the same default. This is a
+  and `process.build_child_env` gives supervised children the same default. This is a
   process-wide memory policy, not an encode-batch knob: OpenBLAS otherwise creates a
   native worker team per Python service and reserves a large amount of private commit.
   Both sites use `setdefault`, so an explicit operator override is preserved.
