@@ -216,3 +216,117 @@ class TestBeginSessionDispatch:
 
         assert result["status"] == "error"
         assert "Remote control" in result["error"]
+
+
+@pytest.mark.unit
+class TestVisibleTerminalLaunch:
+    """Verify the platform launchers hand the right argv to the process package.
+
+    Each one opens its terminal through
+    ``work_buddy.process.open_visible_terminal`` rather than ``subprocess``
+    directly, so the recording runner captures the resolved launch instead of
+    a real terminal window opening.
+    """
+
+    def test_windows_wraps_argv_in_powershell_and_strips_claude_env(
+        self, monkeypatch, recording_runner,
+    ):
+        from work_buddy.process import policy
+        from work_buddy.process.policy import CREATE_NEW_CONSOLE, Intent
+        from work_buddy.session_launcher import _launch_windows
+
+        monkeypatch.setattr(policy, "is_windows", lambda platform=None: True)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+
+        pid = _launch_windows(["claude", "hello there"], "C:/repo")
+
+        [launch] = recording_runner.launches
+        assert launch.intent is Intent.VISIBLE_TERMINAL
+        assert launch.argv[0] == "powershell.exe"
+        assert launch.argv[1] == "-NoExit"
+        assert launch.argv[2] == "-Command"
+        assert launch.argv[3] == "cd 'C:/repo'; & 'claude' 'hello there'"
+        assert launch.creationflags == CREATE_NEW_CONSOLE
+        assert "ANTHROPIC_API_KEY" not in launch.env
+        assert "CLAUDE_CODE_ENTRYPOINT" not in launch.env
+        assert pid == recording_runner.processes[0].pid
+
+    def test_windows_prefers_pwsh_when_installed(self, monkeypatch, recording_runner):
+        from work_buddy.process import policy
+        from work_buddy.session_launcher import _launch_windows
+
+        monkeypatch.setattr(policy, "is_windows", lambda platform=None: True)
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name: "C:/tools/pwsh.exe" if name == "pwsh" else None,
+        )
+
+        _launch_windows(["claude"], "C:/repo")
+
+        [launch] = recording_runner.launches
+        assert launch.argv[0] == "C:/tools/pwsh.exe"
+
+    def test_macos_wraps_argv_in_osascript_and_strips_claude_env(
+        self, monkeypatch, recording_runner,
+    ):
+        from work_buddy.process import policy
+        from work_buddy.process.policy import Intent
+        from work_buddy.session_launcher import _launch_macos
+
+        monkeypatch.setattr(policy, "is_windows", lambda platform=None: False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+
+        pid = _launch_macos(["claude", "hello there"], "/Users/me/repo")
+
+        [launch] = recording_runner.launches
+        assert launch.intent is Intent.VISIBLE_TERMINAL
+        assert launch.argv[0] == "osascript"
+        assert launch.argv[1] == "-e"
+        assert "Terminal" in launch.argv[2]
+        assert "/Users/me/repo" in launch.argv[2]
+        assert "ANTHROPIC_API_KEY" not in launch.env
+        assert pid == recording_runner.processes[0].pid
+
+    def test_linux_prefers_gnome_terminal_when_available(self, monkeypatch, recording_runner):
+        from work_buddy.process import policy
+        from work_buddy.process.policy import Intent
+        from work_buddy.session_launcher import _launch_linux
+
+        monkeypatch.setattr(policy, "is_windows", lambda platform=None: False)
+        monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+
+        pid = _launch_linux(["claude", "hello"], "/home/me/repo")
+
+        [launch] = recording_runner.launches
+        assert launch.intent is Intent.VISIBLE_TERMINAL
+        assert launch.argv[0] == "gnome-terminal"
+        assert launch.argv[1] == "--working-directory=/home/me/repo"
+        assert pid == recording_runner.processes[0].pid
+
+    def test_linux_falls_back_to_the_next_emulator(self, monkeypatch, recording_runner):
+        from work_buddy.process import policy
+        from work_buddy.session_launcher import _launch_linux
+
+        monkeypatch.setattr(policy, "is_windows", lambda platform=None: False)
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name: "/usr/bin/xterm" if name == "xterm" else None,
+        )
+
+        _launch_linux(["claude", "hello"], "/home/me/repo")
+
+        [launch] = recording_runner.launches
+        assert launch.argv[0] == "xterm"
+        assert launch.argv[1] == "-e"
+
+    def test_linux_raises_when_no_emulator_found(self, monkeypatch, recording_runner):
+        from work_buddy.session_launcher import _launch_linux
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        with pytest.raises(RuntimeError, match="No terminal emulator found"):
+            _launch_linux(["claude", "hello"], "/home/me/repo")
+
+        assert recording_runner.launches == []
