@@ -12,7 +12,6 @@ import os
 import re
 import sqlite3
 import stat
-import subprocess
 import sys
 import uuid
 from dataclasses import asdict, dataclass, replace
@@ -35,6 +34,7 @@ from work_buddy.cowork.folder_api import (
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.project_store import FolderLifecycleError
 from work_buddy.dashboard import local_identity_api
+from work_buddy.process import spawn_worker
 from work_buddy.security.local_identity import LocalIdentityError
 from work_buddy.truth import documents
 from work_buddy.truth.registry import TruthStoreRegistry
@@ -145,14 +145,7 @@ class DefaultLocalFileOsActions:
     @staticmethod
     def _spawn(argv: list[str]) -> None:
         try:
-            subprocess.Popen(  # noqa: S603 - argv is fixed and shell is disabled
-                argv,
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
+            spawn_worker(argv)  # argv is fixed and no shell is ever involved
         except OSError as exc:
             raise LocalFileLinkError(
                 "local_file_action_failed",

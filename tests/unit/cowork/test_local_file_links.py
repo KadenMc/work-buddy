@@ -475,24 +475,23 @@ def test_proxy_markers_deny_activation_even_from_loopback(tmp_path: Path) -> Non
 
 
 def test_default_windows_helper_uses_fixed_argv_without_shell(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recording_runner
 ) -> None:
     from work_buddy.cowork import local_files
 
-    calls: list[tuple[list[str], dict[str, Any]]] = []
     monkeypatch.setattr(local_files.sys, "platform", "win32")
-    monkeypatch.setattr(
-        local_files.subprocess,
-        "Popen",
-        lambda argv, **kwargs: calls.append((list(argv), dict(kwargs))),
-    )
     pdf = tmp_path / "throwaway.pdf"
     ppk = tmp_path / "throwaway.ppk"
     helper = DefaultLocalFileOsActions()
     helper.open_pdf(pdf)
     helper.reveal(ppk)
-    assert calls[0][0] == ["explorer.exe", str(pdf)]
-    assert calls[1][0] == ["explorer.exe", "/select,", str(ppk)]
-    assert all(call[1]["shell"] is False for call in calls)
+    assert recording_runner.argvs() == [
+        ["explorer.exe", str(pdf)],
+        ["explorer.exe", "/select,", str(ppk)],
+    ]
+    assert all(
+        launch.popen_kwargs()["shell"] is False
+        for launch in recording_runner.launches
+    )
     with pytest.raises(LocalFileLinkError):
         helper.open_pdf(ppk)

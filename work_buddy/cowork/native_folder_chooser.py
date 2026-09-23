@@ -82,20 +82,15 @@ def _run_dialog(
     empty_is_none: bool = True,
     selection_label: str = "folder",
 ) -> str | None:
-    kwargs: dict[str, object] = {
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "timeout": _DIALOG_TIMEOUT_SECONDS,
-        "check": False,
-        "shell": False,
-        "stdin": subprocess.DEVNULL,
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    from work_buddy.process import run_tool
+
     try:
-        completed = subprocess.run(command, **kwargs)
+        completed = run_tool(
+            command,
+            timeout=_DIALOG_TIMEOUT_SECONDS,
+            encoding="utf-8",
+            errors="replace",
+        )
     except subprocess.TimeoutExpired as exc:
         raise NativeFolderChooserError(
             f"The {selection_label} picker took too long to respond.",

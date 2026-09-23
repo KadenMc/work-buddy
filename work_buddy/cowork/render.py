@@ -30,8 +30,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from work_buddy.compat import subprocess_creation_flags
 from work_buddy.cowork.materialization import MAX_RENDERED_BYTES
+from work_buddy.process import run_tool
 
 
 RENDER_TIMEOUT_SECONDS = 120
@@ -115,12 +115,7 @@ def _probe(command: list[str]) -> bool:
     if shutil.which(command[0]) is None:
         return False
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            timeout=20,
-            creationflags=subprocess_creation_flags(),
-        )
+        completed = run_tool(command, timeout=20, text=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return completed.returncode == 0
@@ -150,13 +145,12 @@ def available_formats() -> list[dict[str, object]]:
 
 def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
     try:
-        completed = subprocess.run(
+        completed = run_tool(
             command,
             cwd=str(cwd),
-            capture_output=True,
             timeout=RENDER_TIMEOUT_SECONDS,
-            creationflags=subprocess_creation_flags(),
             env=env,
+            text=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise RenderError(
@@ -184,12 +178,7 @@ def _pandoc_base(fmt: str) -> list[str]:
 
 def _sandbox_supported() -> bool:
     try:
-        completed = subprocess.run(
-            ["pandoc", "--help"],
-            capture_output=True,
-            timeout=20,
-            creationflags=subprocess_creation_flags(),
-        )
+        completed = run_tool(["pandoc", "--help"], timeout=20, text=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return b"--sandbox" in completed.stdout

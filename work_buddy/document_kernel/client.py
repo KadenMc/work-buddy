@@ -12,7 +12,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from work_buddy.compat import subprocess_creation_flags
 from work_buddy.document_kernel.protocol import (
     PROTOCOL_VERSION,
     RUNTIME_VERSION,
@@ -29,6 +28,7 @@ from work_buddy.document_kernel.protocol import (
     sha256_bytes,
     structured_head_sha256,
 )
+from work_buddy.process import spawn_worker
 
 
 _EOF = object()
@@ -68,7 +68,7 @@ class DocumentKernelClient:
             raise KernelUnavailable()
         self._responses = queue.Queue()
         try:
-            process = subprocess.Popen(
+            process = spawn_worker(
                 [self.node_binary, str(self.runtime_path)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -76,7 +76,6 @@ class DocumentKernelClient:
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
-                creationflags=subprocess_creation_flags(),
             )
         except OSError as exc:
             raise KernelUnavailable() from exc
