@@ -21,6 +21,7 @@ expire (Testing mode expires sensitive-scope refresh tokens after 7 days).
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -71,8 +72,29 @@ def _client_secret_path(cfg: dict[str, Any] | None) -> Path | None:
 
 
 def _persist(creds, token_path: Path) -> None:
+    """Atomically persist OAuth credentials with owner-only permissions."""
     token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(creds.to_json(), encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{token_path.name}.",
+        suffix=".tmp",
+        dir=token_path.parent,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(creds.to_json())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, token_path)
+        if os.name != "nt":
+            os.chmod(token_path, 0o600)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        tmp_path.unlink(missing_ok=True)
 
 
 def load_credentials(cfg: dict[str, Any] | None = None):
