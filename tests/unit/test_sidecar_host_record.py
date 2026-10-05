@@ -18,13 +18,15 @@ from work_buddy.sidecar.state import HostRecord, SidecarState
 
 
 def _record(**overrides) -> HostRecord:
+    # Forward slashes, so status parses these paths the same way on the
+    # Linux runners as on Windows.
     fields = {
         "role": "sidecar",
-        "executable": r"C:\wb\.venv\Scripts\python.exe",
+        "executable": "C:/wb/.venv/Scripts/python.exe",
         "image": "console",
         "console": "allocated",
         "mechanism": "allocate_api",
-        "child_python": r"C:\wb\.venv\Scripts\python.exe",
+        "child_python": "C:/wb/.venv/Scripts/python.exe",
         "child_image": "console",
         "pin": None,
         "pin_outside_project": False,
@@ -105,8 +107,8 @@ def test_status_prints_the_runtime_line(monkeypatch, capsys) -> None:
 
     out, err = capsys.readouterr()
     assert (
-        r"Runtime: python.exe, console allocated without window | services: "
-        r"C:\wb\.venv\Scripts\python.exe (sidecar interpreter)"
+        "Runtime: python.exe, console allocated without window | services: "
+        "C:/wb/.venv/Scripts/python.exe (sidecar interpreter)"
     ) in out
     assert err == ""
 
@@ -115,8 +117,8 @@ def test_status_warns_on_drift(monkeypatch, capsys) -> None:
     from work_buddy.cli import commands, lifecycle
 
     host = _record(
-        executable=r"C:\wb\.venv\Scripts\pythonw.exe", image="gui", console="none",
-        mechanism="none", pin=r"C:\wb\.venv\Scripts\python.exe",
+        executable="C:/wb/.venv/Scripts/pythonw.exe", image="gui", console="none",
+        mechanism="none", pin="C:/wb/.venv/Scripts/python.exe",
     )
     state = SidecarState(pid=4242, started_at=time.time(), last_tick_at=time.time(), host=host)
     monkeypatch.setattr(
