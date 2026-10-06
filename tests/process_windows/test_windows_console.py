@@ -62,7 +62,7 @@ def _wait_for(path: Path, timeout: float = 60.0) -> dict:
 
 
 def _alive(pid: int) -> bool:
-    from work_buddy.utils.process import is_process_alive
+    from work_buddy.process import is_process_alive
 
     return is_process_alive(pid)
 

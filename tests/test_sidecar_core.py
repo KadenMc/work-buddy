@@ -28,7 +28,7 @@ from work_buddy.sidecar.pid import (
     write_pid_file,
     cleanup_pid_file,
 )
-from work_buddy.utils.process import process_start_token
+from work_buddy.process import process_start_token
 from work_buddy.sidecar.scheduler.jobs import (
     Job,
     create_user_job_file,

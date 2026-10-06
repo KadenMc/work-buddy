@@ -102,7 +102,7 @@ def stop_running(*, wait_seconds: float = 8.0) -> dict:
     """
     try:
         from work_buddy.tray import pidfile
-        from work_buddy.utils.process import is_process_alive
+        from work_buddy.process import is_process_alive
 
         pid = pidfile.check_existing_tray()
         if not pid:

@@ -291,7 +291,7 @@ def test_terminate_detached_process_refuses_live_unowned_pid(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "work_buddy.utils.process.is_process_alive",
+        "work_buddy.process.is_process_alive",
         lambda pid: True,
     )
     assert executor.terminate_detached_process(
@@ -304,7 +304,7 @@ def test_terminate_detached_process_treats_gone_process_as_stopped(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "work_buddy.utils.process.is_process_alive",
+        "work_buddy.process.is_process_alive",
         lambda pid: False,
     )
     assert executor.terminate_detached_process(
@@ -516,7 +516,7 @@ def test_owned_completion_never_probes_unowned_or_reused_pid(monkeypatch) -> Non
     def unexpected_probe(_pid: int) -> bool:
         pytest.fail("Completion lookup must not probe a PID without its owned handle")
 
-    monkeypatch.setattr("work_buddy.utils.process.is_process_alive", unexpected_probe)
+    monkeypatch.setattr("work_buddy.process.is_process_alive", unexpected_probe)
     assert executor.owned_detached_process_exit_code(
         9876, owner_token="generation-old"
     ) == 3

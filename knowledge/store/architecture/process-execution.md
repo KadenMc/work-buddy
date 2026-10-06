@@ -9,6 +9,7 @@ entry_points:
 - work_buddy.process.policy
 - work_buddy.process.host
 - work_buddy.process.tree
+- work_buddy.process.liveness
 - work_buddy.process.runner
 tags:
 - process
@@ -162,6 +163,12 @@ on POSIX), `kill_process_on_port` (frees a port and reports truthfully whether
 it is free, refusing rather than guessing when the owner lookup fails),
 `find_child_pids`, and the kill-on-close Job Object helpers
 `create_kill_on_close_job` and `assign_process_to_job`.
+
+`work_buddy.process.liveness` holds the pid checks. `is_process_alive(pid)`
+says whether a pid names a running process, and `process_start_token(pid)`
+fingerprints one lifetime of it, so code that recorded a process (a PID
+file, a lock, a dispatched run) can tell it from a later process that reused
+the number.
 
 ## Host roles and the console model
 

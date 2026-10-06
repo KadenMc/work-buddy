@@ -27,7 +27,7 @@ from work_buddy.utils.npz_io import (
     pid_from_temp_name,
     safe_load_npz,
 )
-from work_buddy.utils.process import is_process_alive
+from work_buddy.process import is_process_alive
 
 logger = get_logger(__name__)
 

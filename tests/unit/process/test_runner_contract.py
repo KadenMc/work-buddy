@@ -34,7 +34,7 @@ def _py(code: str) -> list[str]:
 def _ended(pid: int) -> bool:
     """True once ``pid`` has exited. A killed process whose parent has not
     reaped it yet (a Linux zombie) has exited too."""
-    from work_buddy.utils.process import is_process_alive
+    from work_buddy.process import is_process_alive
 
     if not is_process_alive(pid):
         return True

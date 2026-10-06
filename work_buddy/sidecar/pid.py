@@ -40,14 +40,14 @@ from pathlib import Path
 
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import resolve
-from work_buddy.utils.process import is_process_alive, process_start_token
+from work_buddy.process import is_process_alive, process_start_token
 
 logger = get_logger(__name__)
 
 PID_FILE = resolve("runtime/sidecar-pid")
 
-# Process-liveness lives in work_buddy.utils.process (shared with the IR vector
-# store's orphan-temp sweep). Kept under the private name for internal callers.
+# Process liveness lives in work_buddy.process, shared with every other place
+# that records a pid. Kept under the private name for internal callers.
 _is_process_alive = is_process_alive
 
 

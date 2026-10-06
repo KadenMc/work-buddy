@@ -85,7 +85,7 @@ class TestStopRunning:
         monkeypatch.setattr(pidfile, "check_existing_tray", lambda: 4242)
         monkeypatch.setattr(pidfile, "withdraw", lambda: withdrew.append(True))
         # Process "exits" as soon as the signal lands: alive returns False.
-        import work_buddy.utils.process as proc
+        import work_buddy.process as proc
 
         monkeypatch.setattr(proc, "is_process_alive", lambda pid: False)
         res = tray.stop_running(wait_seconds=0.5)

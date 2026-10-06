@@ -48,7 +48,7 @@ from work_buddy.tasks.documents import TaskDocumentStoreManager
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.export import import_store
 from work_buddy.truth.registry import TruthStoreRegistry
-from work_buddy.utils.process import is_process_alive
+from work_buddy.process import is_process_alive
 
 from .import_legacy import (
     ACTIVATION_CONFIRMATION,

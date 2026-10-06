@@ -305,7 +305,7 @@ def _write_owner(pid: int) -> None:
     Failure is tolerable by design: this file informs error messages and
     nothing decides on it. The lock is already held by the time we get here.
     """
-    from work_buddy.utils.process import process_start_token
+    from work_buddy.process import process_start_token
 
     payload = {
         "pid": pid,

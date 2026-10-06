@@ -11,7 +11,8 @@ behaviour on its own:
 
 Hosts call :func:`establish_host_context` first thing, so they have their
 role's runtime context however they were started. Owners end processes with
-:func:`terminate_tree`.
+:func:`terminate_tree`, and check on a recorded pid with
+:func:`is_process_alive` and :func:`process_start_token`.
 
 Tests install a :class:`RecordingRunner` with :func:`use_runner` and assert
 the resolved launches, without starting anything.
@@ -30,6 +31,7 @@ from work_buddy.process.host import (
     start_host,
 )
 from work_buddy.process.launch import open_visible_terminal, run_tool, spawn_worker
+from work_buddy.process.liveness import is_process_alive, process_start_token
 from work_buddy.process.policy import Intent, ResolvedLaunch, powershell_argv
 from work_buddy.process.runner import (
     ExecutableNotFound,
@@ -79,6 +81,9 @@ __all__ = [
     "find_child_pids",
     "create_kill_on_close_job",
     "assign_process_to_job",
+    # liveness
+    "is_process_alive",
+    "process_start_token",
     # the runner seam
     "Intent",
     "ResolvedLaunch",

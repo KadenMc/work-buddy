@@ -881,7 +881,7 @@ def terminate_detached_process(
     if proc is not None:
         return _terminate_owned_process_handle(proc, normalized_owner)
 
-    from work_buddy.utils.process import is_process_alive
+    from work_buddy.process import is_process_alive
 
     if not is_process_alive(pid):
         return True
