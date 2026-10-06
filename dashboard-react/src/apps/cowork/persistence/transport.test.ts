@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { InMemoryCoworkYdocTransport } from "./InMemoryCoworkYdocTransport";
 import { sha256Hex } from "./hashing";
+import { structuredHeadSha256 } from "./structuredHead";
 
 describe("InMemoryCoworkYdocTransport", () => {
   it("pushes an opaque batch and pulls it back byte-for-byte", async () => {
@@ -119,6 +120,8 @@ describe("InMemoryCoworkYdocTransport", () => {
         },
       }),
     ).rejects.toThrow(/re-hash/);
+    // The rejected request does not hold up the next one.
+    expect((await transport.pull({})).batches).toEqual([]);
   });
 
   it("serves a caller behind the snapshot boundary a full pull", async () => {
@@ -144,5 +147,75 @@ describe("InMemoryCoworkYdocTransport", () => {
     // The caller's old offset now predates the snapshot boundary, so it gets a full pull.
     const pulled = await transport.pull({ sinceOffset: staleOffset });
     expect(pulled.snapshot).toEqual(snapshot);
+  });
+
+  it("applies overlapping pushes from one base one at a time", async () => {
+    const transport = new InMemoryCoworkYdocTransport();
+    const base = await transport.pull({});
+    const push = (byte: number) =>
+      transport.push({
+        batch: new Uint8Array([byte]),
+        baseSha256: base.docSha256,
+        baseYdocGeneration: base.ydocGeneration,
+      });
+
+    const [first, second] = await Promise.all([push(1), push(2)]);
+
+    expect(first.ok).toBe(true);
+    expect(second).toMatchObject({ ok: false, error: "stale_base" });
+    expect((await transport.pull({})).batches).toEqual([new Uint8Array([1])]);
+  });
+
+  it("keeps its fingerprint on the stored blobs when hashes settle out of order", async () => {
+    // Deliver each digest only when released, newest first, so wherever two hashes are in
+    // flight together the older one settles last.
+    const subtle = globalThis.crypto.subtle;
+    const digest = subtle.digest.bind(subtle);
+    const held: { release: () => void; settled: Promise<ArrayBuffer> }[] = [];
+    const spy = vi.spyOn(subtle, "digest").mockImplementation((algorithm, data) => {
+      const settled = digest(algorithm, data);
+      return new Promise<ArrayBuffer>((resolve, reject) => {
+        held.push({ release: () => void settled.then(resolve, reject), settled });
+      });
+    });
+    const releaseNewest = async (): Promise<boolean> => {
+      const newest = held.pop();
+      if (newest === undefined) return false;
+      newest.release();
+      await newest.settled;
+      return true;
+    };
+    const nextTurn = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const batch = new Uint8Array([7]);
+    const transport = new InMemoryCoworkYdocTransport();
+    try {
+      let finished = false;
+      const markFinished = () => {
+        finished = true;
+      };
+      const pushed = transport.pull({}).then((base) =>
+        transport.push({
+          batch,
+          baseSha256: base.docSha256,
+          baseYdocGeneration: base.ydocGeneration,
+        }),
+      );
+      void pushed.then(markFinished, markFinished);
+      await nextTurn();
+      while (!finished) {
+        if (!(await releaseNewest())) throw new Error("A request stalled without a hash");
+        await nextTurn();
+      }
+      // Any hash still in flight now lands after the requests have finished.
+      while (held.length > 0) await releaseNewest();
+      await nextTurn();
+      expect((await pushed).ok).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect((await transport.pull({})).docSha256).toBe(
+      await structuredHeadSha256(new Uint8Array(0), [batch]),
+    );
   });
 });

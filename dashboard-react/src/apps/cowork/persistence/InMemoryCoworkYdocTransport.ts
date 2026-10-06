@@ -23,6 +23,11 @@ let nextGeneration = 0;
  * stand-in for the server content hash, so the optimistic-concurrency `stale_base` path
  * is exercisable: a push whose `baseSha256` does not match the current server state is
  * rejected without appending.
+ *
+ * Like the server, which handles each request while holding the document's lock, it serves
+ * requests one at a time. Hashing is asynchronous, so overlapping requests could otherwise
+ * compare against a fingerprint that no longer describes the stored blobs, or let an older
+ * hash settle after a newer one.
  */
 export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
   #snapshot: Uint8Array | null = null;
@@ -32,15 +37,33 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
   #baseOffset = 0;
   #docSha256 = "";
   readonly #ydocGeneration: string;
+  /** Settles when the most recently queued request has finished. */
+  #queue: Promise<void> = Promise.resolve();
 
   constructor() {
     nextGeneration += 1;
     this.#ydocGeneration = `cowork-ydoc-generation/v1:memory:${String(nextGeneration)}`;
-    // The empty-store fingerprint, so a first push can base against a known hash.
-    void this.#recomputeDocSha256();
   }
 
-  async pull(request: CoworkYdocPullRequest): Promise<CoworkYdocPull> {
+  pull(request: CoworkYdocPullRequest): Promise<CoworkYdocPull> {
+    return this.#serialized(() => this.#pull(request));
+  }
+
+  push(request: CoworkYdocPushRequest): Promise<CoworkYdocPushResult> {
+    return this.#serialized(() => this.#push(request));
+  }
+
+  #serialized<T>(request: () => Promise<T>): Promise<T> {
+    const run = this.#queue.then(request);
+    // A rejected request must not stop the requests queued behind it.
+    this.#queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  async #pull(request: CoworkYdocPullRequest): Promise<CoworkYdocPull> {
     await this.#ensureFingerprint();
     const nextOffset = String(this.#baseOffset + this.#log.length);
     if (request.sinceOffset === undefined) {
@@ -84,7 +107,7 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
     };
   }
 
-  async push(request: CoworkYdocPushRequest): Promise<CoworkYdocPushResult> {
+  async #push(request: CoworkYdocPushRequest): Promise<CoworkYdocPushResult> {
     await this.#ensureFingerprint();
     const base = request.baseStructuredHeadSha256 ?? request.baseSha256;
     if (
@@ -176,6 +199,10 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
     return this.#snapshot !== null;
   }
 
+  /**
+   * The first request computes the empty store's fingerprint, so a first push can base
+   * against a known hash.
+   */
   async #ensureFingerprint(): Promise<void> {
     if (this.#docSha256 === "") {
       await this.#recomputeDocSha256();
