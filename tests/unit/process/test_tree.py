@@ -190,6 +190,31 @@ def test_windows_termination_reports_a_missing_taskkill(monkeypatch, recording_r
     assert tree.terminate_pid(12345) is False
 
 
+@pytest.mark.parametrize(
+    "remaining_s",
+    [None, 0.5],
+    ids=["deadline-passed", "deadline-nearly-spent"],
+)
+def test_windows_termination_is_not_bound_by_the_caller_deadline(
+    monkeypatch, recording_runner, remaining_s,
+) -> None:
+    """Ending a process is cleanup, which usually runs after a timeout, once
+    the caller's deadline has passed. The kill still starts, with its own
+    limit rather than what is left of the deadline."""
+    from work_buddy.resilience import Deadline, ResilienceContext, use_context
+
+    monkeypatch.setattr(tree, "IS_WINDOWS", True)
+    recording_runner.script(["taskkill"], returncode=0)
+    deadline = Deadline(at=0.0) if remaining_s is None else Deadline.after(remaining_s)
+
+    with use_context(ResilienceContext(operation_key="test", deadline=deadline)):
+        assert tree.terminate_pid(12345) is True
+
+    [launch] = recording_runner.launches
+    assert list(launch.argv) == ["taskkill", "/F", "/T", "/PID", "12345"]
+    assert launch.timeout == tree._TASKKILL_TIMEOUT_S
+
+
 def test_posix_termination_sends_sigkill_to_a_plain_process(monkeypatch) -> None:
     monkeypatch.setattr(tree, "IS_WINDOWS", False)
     monkeypatch.setattr(tree.os, "getpgid", lambda pid: 1, raising=False)
@@ -271,6 +296,25 @@ def test_terminate_tree_ends_a_real_process_and_its_child(tmp_path) -> None:
     while not _ended(child_pid) and time.monotonic() < deadline:
         time.sleep(0.1)
     assert _ended(child_pid)
+
+
+def test_terminate_tree_ends_a_real_process_after_the_caller_deadline_passed() -> None:
+    from work_buddy.process import SubprocessRunner, spawn_worker
+    from work_buddy.resilience import Deadline, ResilienceContext, use_context
+
+    handle = spawn_worker(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        new_session=True, runner=SubprocessRunner(),
+    )
+    expired = ResilienceContext(operation_key="test", deadline=Deadline(at=0.0))
+
+    try:
+        with use_context(expired):
+            assert tree.terminate_tree(handle) is True
+        handle.wait(timeout=10)
+    finally:
+        if handle.poll() is None:
+            handle.kill()
 
 
 # ---------------------------------------------------------------------------

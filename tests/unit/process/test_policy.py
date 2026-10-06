@@ -162,6 +162,20 @@ def test_tool_run_timeout_is_clamped_to_the_caller_deadline(remaining, effective
     assert launch.timeout == effective
 
 
+@pytest.mark.parametrize(
+    "remaining",
+    [None, 2.5, -1.0],
+    ids=["no-deadline", "deadline-shorter", "deadline-passed"],
+)
+def test_a_run_not_bound_by_the_caller_deadline_keeps_its_timeout(remaining) -> None:
+    launch = policy.resolve_tool(
+        _tool(timeout=5.0, bound_by_caller_deadline=False), platform=POSIX, base_env={},
+        foreground_terminal=False, deadline_remaining=remaining,
+    )
+
+    assert launch.timeout == 5.0
+
+
 def test_ambient_deadline_comes_from_a_bound_resilience_context() -> None:
     from work_buddy.resilience import Deadline, ResilienceContext, use_context
 

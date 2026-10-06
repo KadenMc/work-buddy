@@ -98,8 +98,11 @@ dev_notes: |-
   direct child if taskkill fails. On POSIX it kills the process group when the
   run has a session of its own, and only the direct child otherwise, as for a
   run started from a terminal's foreground job. The public `terminate_tree` runs
-  `taskkill` as an ordinary tool run instead, so tests of an owner's
-  cancellation path see it in the recording runner.
+  `taskkill` as a tool run instead, so tests of an owner's cancellation path
+  see it in the recording runner. That run is not bound by the caller's
+  resilience deadline (`ToolRun.bound_by_caller_deadline=False`, run through
+  `launch.run_tool_spec`): cleanup usually runs after a timeout, once the
+  deadline has passed, so the kill keeps its own 10-second limit.
 
   ## Windows runtime tests
 
@@ -169,7 +172,9 @@ Results and errors stay compatible with existing handlers:
 started: `taskkill /F /T` on Windows, and on POSIX a `SIGKILL` to the
 target's process group when it leads its own group, otherwise to the target
 alone. So on POSIX a worker's children are ended only when it was started
-with `new_session=True`. `kill_process_on_port` frees a port and reports
+with `new_session=True`. The caller's resilience deadline never stops or
+shortens the kill, because cleanup usually runs after that deadline has
+passed. `kill_process_on_port` frees a port and reports
 truthfully whether it is free, refusing rather than guessing when the owner
 lookup fails. `find_child_pids` and the kill-on-close Job Object helpers
 `create_kill_on_close_job` and `assign_process_to_job` complete the set.

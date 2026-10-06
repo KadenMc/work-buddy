@@ -66,15 +66,29 @@ def run_tool(
         encoding=encoding,
         errors=errors,
     )
+    result = run_tool_spec(spec, runner=runner)
+    if check:
+        result.check_returncode()
+    return result
+
+
+def run_tool_spec(
+    spec: policy.ToolRun,
+    *,
+    runner: ProcessRunner | None = None,
+) -> ProcessResult:
+    """Run a tool-run specification that package code built itself.
+
+    :func:`run_tool` is the way in for everyone else. Package code uses this
+    when it needs a field ``run_tool`` does not expose, as termination does to
+    keep its run out of the caller's deadline.
+    """
     launch = policy.resolve_tool(spec)
     if not launch.timeout:
         # The caller's deadline has already passed. Starting a program it can
         # no longer wait for would only leave work behind.
         raise ProcessTimeout(list(launch.argv), 0.0)
-    result = (runner or current_runner()).run(launch)
-    if check:
-        result.check_returncode()
-    return result
+    return (runner or current_runner()).run(launch)
 
 
 def spawn_worker(

@@ -26,8 +26,8 @@ import sys
 import time
 from typing import Any
 
-from work_buddy.process.launch import run_tool
-from work_buddy.process.policy import powershell_argv
+from work_buddy.process.launch import run_tool, run_tool_spec
+from work_buddy.process.policy import ToolRun, powershell_argv
 from work_buddy.process.runner import ProcessHandle
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,9 @@ def terminate_pid(pid: int) -> bool:
     Windows: ``taskkill /F /T``, which works across processes where
     ``os.kill`` does not. Returns ``True`` only when ``taskkill`` succeeded,
     which means the request was accepted, not that the process has exited.
+    The caller's resilience deadline does not bound it: ending a process is
+    cleanup, which usually runs after a timeout, once that deadline has
+    passed. ``taskkill`` keeps its own limit instead.
 
     POSIX: ``SIGKILL`` to the whole process group when ``pid`` leads one
     (and it is not this process's own group), otherwise to ``pid`` alone.
@@ -51,11 +54,12 @@ def terminate_pid(pid: int) -> bool:
     """
     if IS_WINDOWS:
         try:
-            completed = run_tool(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
+            completed = run_tool_spec(ToolRun(
+                argv=("taskkill", "/F", "/T", "/PID", str(pid)),
                 timeout=_TASKKILL_TIMEOUT_S,
                 text=False,
-            )
+                bound_by_caller_deadline=False,
+            ))
         except (OSError, subprocess.SubprocessError):
             return False
         return completed.returncode == 0

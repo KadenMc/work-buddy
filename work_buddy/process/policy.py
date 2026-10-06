@@ -168,6 +168,10 @@ class ToolRun:
     text: bool = True
     encoding: str | None = None
     errors: str | None = None
+    bound_by_caller_deadline: bool = True
+    """Whether the caller's resilience deadline bounds this run. Only ending a
+    process opts out: that is cleanup, which usually runs once the deadline
+    has passed, so the kill keeps its own timeout instead."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argv", normalize_argv(self.argv))
@@ -297,6 +301,9 @@ def resolve_tool(
     process: ``sys.platform``, ``os.environ``, :func:`in_terminal_foreground`,
     :func:`ambient_deadline_remaining` and :func:`process_has_console`. A
     simulated Windows on another platform counts as having no console.
+
+    A spec with ``bound_by_caller_deadline=False`` keeps its own timeout,
+    whatever the deadline.
     """
     windows = is_windows(platform)
     if has_console is None:
@@ -307,7 +314,9 @@ def resolve_tool(
     env = {**source, **NON_INTERACTIVE_ENV}
     if foreground_terminal is None:
         foreground_terminal = False if windows else in_terminal_foreground()
-    if deadline_remaining is None:
+    if not spec.bound_by_caller_deadline:
+        deadline_remaining = None
+    elif deadline_remaining is None:
         deadline_remaining = ambient_deadline_remaining()
     return ResolvedLaunch(
         intent=Intent.TOOL,
