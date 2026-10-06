@@ -180,6 +180,7 @@ work-buddy enforces a Developer Certificate of Origin: **every commit must be si
 - **Don't run operational workflows** — you're here to build, not to operate.
 - **Don't guess at imports** — `mcp__work-buddy__wb_search()` first, then check the code.
 - **Don't add features without slash commands** — every user-facing skill needs one.
+- **Don't start processes yourself.** Use `work_buddy.process` (`run_tool`, `spawn_worker`, `start_host` or `open_visible_terminal`), never `subprocess`, `os.system`, `os.startfile` or `creationflags`, and fake launches in tests with the `recording_runner` fixture. `tests/unit/architecture/test_process_boundary.py` fails otherwise. See `architecture/process-execution`.
 - **Don't double-run doc hygiene** — `/wb-dev-pr` already runs `/wb-dev-document` as a chained step, so never tell the user (or yourself) to "run /wb-dev-document then /wb-dev-pr." Run `/wb-dev-document` standalone only to *preview* doc edits before the PR flow.
 - **Reconcile after a direct file edit** — a raw `Edit` of a unit's `.md` is fine, but run `agent_docs_rebuild` (or use the `docs_edit` workflow, which does it for you) so the store cache and search index pick up the change. If the unit is a Skill declaration or Workflow definition, follow with `reload_skill_data` after the editing Workflow completes so the executable registry is not stale.
 - **Don't commit unrelated files** — stage only what you changed.

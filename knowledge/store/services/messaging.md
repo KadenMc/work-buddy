@@ -24,6 +24,8 @@ Flask HTTP API backed by SQLite for exchanging messages between Claude Code agen
 
 Starting: uv run python -m work_buddy.messaging.service
 
+If the service is unreachable, the Python client (`work_buddy.messaging.client`) starts it itself: detached, on `python.exe` with no window, with its output appended to `<data_root>/runtime/service_logs/messaging.log`, the same file the sidecar's supervised start writes to.
+
 Hooks (global, in ~/.claude/settings.json):
 - SessionStart (startup/resume/compact) — shows pending messages + send/reply/resolve instructions
 - UserPromptSubmit (every prompt) — shows pending messages only (no instructions, saves context)

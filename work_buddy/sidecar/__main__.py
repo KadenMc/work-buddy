@@ -1,8 +1,8 @@
 """python -m work_buddy.sidecar — start the sidecar daemon."""
 
 # First, before anything can start a process: give the daemon its host
-# context. Started by the logon task or a desktop shortcut, the daemon runs
-# under pythonw.exe with no console, and every console program it later ran
+# context. Started by the logon task, or by a hand-made shortcut, the daemon
+# runs under pythonw.exe with no console, and every console program it later ran
 # without the no-window flag would open a window. This gives it a console
 # with no window, and a sidecar-owned session id of its own. That id is the
 # sidecar principal's consent session, and it is never inherited from

@@ -2,7 +2,7 @@
 name: Process Execution
 kind: system
 description: How work-buddy starts operating-system processes. One package, work_buddy.process, owns every launch through four intents (tool run, worker, host, visible terminal), fixes the runtime context of work-buddy's own processes through host roles (console, interpreter image, identity), records that context for status and health, and an architecture test keeps every launch inside the package.
-summary: 'Every process launch goes through work_buddy.process. Callers state an intent (run_tool, spawn_worker, start_host, open_visible_terminal) and the policy module decides window, console, stdin, environment, timeout and cleanup. Host roles (SIDECAR, SERVICE, TRAY) give work-buddy''s own processes the same runtime context on every start path: background hosts run on python.exe with a console that has no window, which their console children inherit, and the sidecar establishes that console at its entry point when its launcher could not. The daemon records its context in the state file, wbuddy status shows it, and tests/unit/architecture/test_process_boundary.py fails any launch outside the package.'
+summary: 'Every process launch goes through work_buddy.process. Callers state an intent (run_tool, spawn_worker, start_host, open_visible_terminal) and the package decides window, console, stdin, environment, timeout and cleanup. Host roles (SIDECAR, SERVICE, TRAY) give work-buddy''s own processes the same runtime context on every start path: background hosts run with a console that has no window, which their console children inherit. start_host gives them that console, and the sidecar establishes it at its entry point when its launcher could not, as when the logon task starts it under pythonw.exe. The daemon records its context in the state file, wbuddy status shows it, and tests/unit/architecture/test_process_boundary.py fails any launch outside the package.'
 entry_points:
 - work_buddy.process
 - work_buddy.process.launch
@@ -92,9 +92,12 @@ dev_notes: |-
   ## Tool-run termination never recurses
 
   On timeout, or any exception while waiting (including `KeyboardInterrupt`),
-  the real runner ends the whole tree. On Windows it runs `taskkill /F /T`
-  directly (`runner.taskkill_tree`), not through a runner, so a hung taskkill
-  can never start another termination. The public `terminate_tree` runs
+  the real runner ends the process and what it started. On Windows it runs
+  `taskkill /F /T` directly (`runner.taskkill_tree`), not through a runner, so
+  a hung taskkill can never start another termination, and it kills the
+  direct child if taskkill fails. On POSIX it kills the process group when the
+  run has a session of its own, and only the direct child otherwise, as for a
+  run started from a terminal's foreground job. The public `terminate_tree` runs
   `taskkill` as an ordinary tool run instead, so tests of an owner's
   cancellation path see it in the recording runner.
 
@@ -130,15 +133,17 @@ A tool run shares this process's console when it has one: that console has
 no window (every background host establishes one) or is a terminal the user
 already has open, so sharing it opens nothing, and it saves starting a console
 host for every call. Only a process with no console, such as the tray or
-anything under `pythonw.exe`, gives the tool run `CREATE_NO_WINDOW`. Workers
-and hosts always get a console of their own, so they never depend on a
-terminal staying open.
+anything under `pythonw.exe`, gives the tool run `CREATE_NO_WINDOW`. Console
+programs started as workers or hosts get a console of their own with no
+window, so they never depend on a terminal staying open. A GUI program, such
+as the tray, has no console.
 
 Tool runs never go through a shell and never wait on a prompt. stdin is closed
 unless `input=` is given, and the environment gets a non-interactive overlay:
 `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, `GIT_OPTIONAL_LOCKS=0` and
 `GH_PROMPT_DISABLED=1`. `env=`, when given, is the child's complete
-environment, as with `subprocess.run`. Output decodes exactly as
+environment, as with `subprocess.run`, and the overlay still applies on top
+of it. Output decodes exactly as
 `subprocess.run(..., text=True)` does unless `text=False`, `encoding=` or
 `errors=` say otherwise. `powershell_argv(script)` builds a PowerShell argv
 that always carries `-NoProfile -NonInteractive`, and `encode=True` passes the
@@ -147,7 +152,9 @@ script as `-EncodedCommand`.
 A tool run without a finite, positive timeout is rejected. When the caller
 holds a `work_buddy.resilience` deadline, the shorter of the two applies, and a
 deadline that has already passed raises before anything starts. On timeout the
-whole process tree is ended, not only the direct child.
+whole process tree is ended, not only the direct child. The exception is a
+POSIX tool run started from a terminal's foreground job, which shares the
+terminal's process group, so only the direct child is killed.
 
 Results and errors stay compatible with existing handlers:
 
@@ -157,12 +164,15 @@ Results and errors stay compatible with existing handlers:
 - `ProcessTimeout` is both a `subprocess.TimeoutExpired` and a `TimeoutError`,
   so the resilience framework classifies it as a timeout.
 
-`work_buddy.process.tree` holds the process-tree primitives:
-`terminate_tree(handle_or_pid)` (`taskkill /F /T` on Windows, the process group
-on POSIX), `kill_process_on_port` (frees a port and reports truthfully whether
-it is free, refusing rather than guessing when the owner lookup fails),
-`find_child_pids`, and the kill-on-close Job Object helpers
-`create_kill_on_close_job` and `assign_process_to_job`.
+`work_buddy.process.tree` holds the process-tree primitives.
+`terminate_tree(target)` force-ends a process handle or a pid and what it
+started: `taskkill /F /T` on Windows, and on POSIX a `SIGKILL` to the
+target's process group when it leads its own group, otherwise to the target
+alone. So on POSIX a worker's children are ended only when it was started
+with `new_session=True`. `kill_process_on_port` frees a port and reports
+truthfully whether it is free, refusing rather than guessing when the owner
+lookup fails. `find_child_pids` and the kill-on-close Job Object helpers
+`create_kill_on_close_job` and `assign_process_to_job` complete the set.
 
 `work_buddy.process.liveness` holds the pid checks. `is_process_alive(pid)`
 says whether a pid names a running process, and `process_start_token(pid)`
@@ -181,20 +191,23 @@ no console and launch every child through the policy instead.
 
 | Role | Interpreter | Windows image | Windows console | Identity |
 |---|---|---|---|---|
-| `SIDECAR` | The launcher's own (`sys.executable`) | `python.exe` | Its own, with no window | A fresh `sidecar-` session id, never inherited |
+| `SIDECAR` | The launcher's own (`sys.executable`) | `python.exe`, or `pythonw.exe` when the logon task starts it | Its own, with no window | A fresh `sidecar-` session id, never inherited |
 | `SERVICE` | The pinned child interpreter | `python.exe` | Hidden, from `CREATE_NO_WINDOW` | The sidecar's, inherited |
 | `TRAY` | The pinned child interpreter | `pythonw.exe` | None, by design | The CLI's (`wbuddy-cli`), never inherited |
 
 `start_host` applies the role: it selects the role's image from the same
 directory as the interpreter (`host.sibling_image`, which never changes which
 environment runs), builds the role's environment, and starts the host with
-`CREATE_NO_WINDOW`. A service's stdout and stderr go to its log file after a
-start banner, and every other host's stdio is discarded.
+`CREATE_NO_WINDOW`. Given `log_path=`, it appends the host's stdout and stderr
+to that file after a start banner, as the sidecar does for each service and
+the messaging auto-start does for itself. Without one, the host's stdio is
+discarded.
 
 `establish_host_context(role)` is the first statement of
-`work_buddy/sidecar/__main__.py`, so it runs under every launcher, including a
-logon task or shortcut that starts `pythonw.exe`, which has no console. On
-Windows, for a background role:
+`work_buddy/sidecar/__main__.py`, so it runs under every launcher, including
+the logon task, or a hand-made shortcut, that starts `pythonw.exe`, which has
+no console. Such a daemon keeps the `pythonw.exe` image and gets its console
+in place. On Windows, for a background role:
 
 1. A console is already attached: nothing to do.
 2. Otherwise, on Windows 11 24H2 and Windows Server 2025 and later, the process
@@ -212,31 +225,33 @@ consent database like every other start path. `start_host` gives the tray
 its identity in its environment, because importing the tray package may
 already need one, and the tray's entry point claims it again.
 
-The interpreter pin (`sidecar.python_executable`) keeps its semantics:
-`resolve_child_python` returns the pin when it names an existing file, else
-`sys.executable`, and warns when they differ. A pin that names `pythonw.exe`
-still yields `python.exe` for services, from the same directory.
-`build_child_env` gives Python children `PYTHONUTF8=1` and
-`OPENBLAS_NUM_THREADS=1`, each with `setdefault`.
+The interpreter pin (`sidecar.python_executable`) keeps its semantics.
+`resolve_child_python`, in `work_buddy.process.host`, returns the pin when it
+names an existing file, else `sys.executable`, and warns when they differ. A
+pin that names `pythonw.exe` still yields `python.exe` for services, from the
+same directory. `build_child_env`, also in `process.host`, gives Python
+children `PYTHONUTF8=1` and `OPENBLAS_NUM_THREADS=1`, each with `setdefault`.
 
 ## The runtime record
 
 At boot the daemon stores `describe_host_context()` in the `host` field of the
 sidecar state file (`sidecar.state.HostRecord`): its executable and image, its
 console (`allocated`, `hidden`, `attached`, `none` or `not_applicable`) and the
-mechanism behind it (`inherited`, `allocate_api`, `relaunch`, `foreground` or
-`none`), the interpreter and image its services run on, the pin, and whether
-the pin points outside the project. `wbuddy status` prints it as one line, for
-example:
+mechanism behind it (`inherited`, `allocate_api`, `relaunch`, `foreground`,
+`none` or `not_applicable`), the interpreter and image its services run on,
+the pin, and whether the pin points outside the project. `wbuddy status`
+prints it as one line. For a daemon that `wbuddy start` started:
 
 ```text
-Runtime: python.exe, console allocated without window | services: C:\work-buddy\.venv\Scripts\python.exe (sidecar interpreter)
+Runtime: python.exe, hidden console | services: C:\work-buddy\.venv\Scripts\python.exe (sidecar interpreter)
 ```
 
-It warns when the daemon has no console on Windows, when services would run on
-`pythonw.exe`, and when the pin points outside the project. The sidecar health
-component's "runtime context" step reads the same record and fails on the two
-kinds of drift that let console programs open windows.
+A daemon the logon task started shows `pythonw.exe, console allocated without
+window` instead. Status warns when the daemon has no console on Windows, when
+services would run on `pythonw.exe`, and when the pin points outside the
+project. The sidecar health component's step "Sidecar starts programs without
+opening windows" reads the same record and fails on the two kinds of drift
+that let console programs open windows.
 
 ## Testing
 
@@ -250,9 +265,10 @@ winning. Spawned workers come back as `FakeProcess` handles. The
 threads the code under test starts. Code that takes an injected runner, such
 as the agent-execution providers, passes it on as `runner=`.
 
-Patching `subprocess.run` or `subprocess.Popen` intercepts nothing: the
-package's own runner starts processes. Retarget such a test to the recording
-runner.
+Patching `subprocess.run` at a call site intercepts nothing, because call
+sites no longer call it. Patching `subprocess.Popen` still reaches the real
+runner, but it skips the launch policy, so the test no longer checks what
+production does. Retarget such a test to the recording runner.
 
 ## The boundary rule
 

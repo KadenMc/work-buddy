@@ -62,9 +62,9 @@ class HostRecord:
     ``allocated`` (the daemon created a console with no window), ``hidden``
     (it inherited one), ``attached`` (it runs in a terminal), ``none``, or
     ``not_applicable`` (POSIX). ``mechanism`` says how the console came
-    about: ``inherited``, ``allocate_api``, ``relaunch``, ``foreground`` or
-    ``none``. ``child_python`` and ``child_image`` are what the daemon's
-    services run on.
+    about: ``inherited``, ``allocate_api``, ``relaunch``, ``foreground``,
+    ``none``, or ``not_applicable`` (POSIX). ``child_python`` and
+    ``child_image`` are what the daemon's services run on.
     """
 
     role: str = ""
