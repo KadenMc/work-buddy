@@ -123,6 +123,33 @@ class TestBuiltinOps:
         with pytest.raises(ValueError, match="already registered"):
             op_registry.register_op("op.wb.sidecar_status", _noop)
 
+    def test_a_reload_replaces_a_function_it_registers_again(self, monkeypatch):
+        """A reload re-creates each function: the same module and name in a new
+        object. Registering it again replaces the earlier entry."""
+        import types
+
+        op_registry.register_op("op.wb.sample", _noop)
+        reloaded = types.FunctionType(_noop.__code__, _noop.__globals__)
+        monkeypatch.setattr(op_registry, "_reloading", __name__)
+
+        op_registry.register_op("op.wb.sample", reloaded)
+
+        assert op_registry.get_op("op.wb.sample") is reloaded
+
+    def test_a_reload_cannot_take_another_modules_op(self, monkeypatch):
+        """During a reload, a different function under an existing ID is a
+        duplicate like any other."""
+        def impostor(**kwargs):
+            return None
+
+        op_registry.register_op("op.wb.sample", _noop)
+        monkeypatch.setattr(
+            op_registry, "_reloading", "work_buddy.mcp_server.ops.other_ops",
+        )
+
+        with pytest.raises(ValueError, match="already registered"):
+            op_registry.register_op("op.wb.sample", impostor)
+
 
 class TestOptionalDependencyWhitelist:
     """``load_builtin_ops`` skips an op module only when its failure matches
