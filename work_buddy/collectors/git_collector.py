@@ -5,24 +5,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from work_buddy.compat import subprocess_creation_flags
+from work_buddy.process import run_tool
 from work_buddy.timefmt import to_local_naive
 
 
 def _run_git(repo_path: Path, *args: str, timeout: int = 15) -> str:
     """Run a git command in a repo and return stdout, or empty string on failure."""
     try:
-        result = subprocess.run(
+        # Runs through the shared tool-run policy: no window, no interactive
+        # prompt, and the whole process tree ends if it outlives its timeout.
+        result = run_tool(
             ["git", *args],
             cwd=repo_path,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            # Windowless on Windows. This collector fans out git across every
-            # repo, so if the sidecar is ever launched without a console (a
-            # future launch path), each call would otherwise flash a console
-            # window. Defense in depth alongside the daemon's hidden console.
-            creationflags=subprocess_creation_flags(),
         )
         return result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

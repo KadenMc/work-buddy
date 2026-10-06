@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,63 @@ class JobState:
 
 
 @dataclass
+class HostRecord:
+    """The runtime context the daemon runs with, recorded once at boot.
+
+    Written from ``work_buddy.process.describe_host_context``. ``console`` is
+    ``allocated`` (the daemon created a console with no window), ``hidden``
+    (it inherited one), ``attached`` (it runs in a terminal), ``none``, or
+    ``not_applicable`` (POSIX). ``mechanism`` says how the console came
+    about: ``inherited``, ``allocate_api``, ``relaunch``, ``foreground``,
+    ``none``, or ``not_applicable`` (POSIX). ``child_python`` and
+    ``child_image`` are what the daemon's services run on.
+    """
+
+    role: str = ""
+    executable: str = ""
+    image: str = ""
+    console: str = ""
+    mechanism: str = ""
+    child_python: str = ""
+    child_image: str = ""
+    pin: str | None = None
+    pin_outside_project: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "HostRecord | None":
+        """Rebuild a record, ignoring keys a newer daemon may have added."""
+        if not isinstance(data, dict):
+            return None
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+    def window_risks(self) -> list[str]:
+        """Drift that makes console programs open visible windows."""
+        risks = []
+        if self.console == "none":
+            risks.append(
+                "the sidecar has no console, so console programs it starts "
+                "without the no-window flag open windows"
+            )
+        if self.child_image == "gui":
+            risks.append(
+                "services would run on pythonw.exe, which has no console to "
+                "pass to the programs they start"
+            )
+        return risks
+
+    def warnings(self) -> list[str]:
+        """Everything ``wbuddy status`` warns about."""
+        warnings = self.window_risks()
+        if self.pin_outside_project:
+            warnings.append(
+                f"sidecar.python_executable points outside the project ({self.pin}), "
+                "so services may run different code than the sidecar"
+            )
+        return warnings
+
+
+@dataclass
 class SidecarState:
     """Top-level sidecar state written to ``sidecar_state.json``.
 
@@ -86,6 +143,9 @@ class SidecarState:
     dispatch_phase: str = ""
     dispatch_phase_since: float = 0.0
     dispatch_job: str = ""
+    # The daemon's runtime context, recorded once before its loops start.
+    # ``None`` in state files written by a daemon that predates the record.
+    host: HostRecord | None = None
 
     def update_service(self, name: str, **kwargs: Any) -> None:
         if name in self.services:
@@ -158,12 +218,40 @@ def save_state(state: SidecarState, *, _retries: int = 4) -> None:
         raise
 
 
+_READ_RETRY_DELAYS_S = (0.02, 0.05, 0.1, 0.2)
+
+
+def read_state_json(path: Path | None = None) -> Any:
+    """Read and parse the state file, riding out the daemon's own writes.
+
+    The daemon replaces the file atomically, several times a minute. On
+    Windows, a read that lands while the replacement is in flight fails with
+    ``PermissionError``, and the non-atomic fallback in :func:`save_state` can
+    briefly expose a partial file. Both clear within milliseconds, so a read
+    retries them before giving up. A reader that gave up at once would see no
+    state and could classify a healthy daemon as wedged.
+
+    Every reader of the state file goes through this. ``path`` defaults to
+    :data:`STATE_FILE`. Raises ``FileNotFoundError`` when there is no file,
+    and the last error when the file stays unreadable.
+    """
+    target = STATE_FILE if path is None else path
+    for delay in (*_READ_RETRY_DELAYS_S, None):
+        try:
+            return json.loads(target.read_text(encoding="utf-8"))
+        except (PermissionError, json.JSONDecodeError):
+            if delay is None:
+                raise
+            time.sleep(delay)
+    return None  # pragma: no cover - the loop always returns or raises
+
+
 def load_state() -> SidecarState | None:
     """Load state from disk, or return None if not present."""
     if not STATE_FILE.exists():
         return None
     try:
-        data = json.loads(STATE_FILE.read_text())
+        data = read_state_json()
         state = SidecarState(
             started_at=data.get("started_at", 0),
             pid=data.get("pid", 0),
@@ -179,7 +267,12 @@ def load_state() -> SidecarState | None:
         for j in data.get("jobs", []):
             state.jobs.append(JobState(**j))
         state.events = data.get("events", [])
+        state.host = HostRecord.from_dict(data.get("host"))
         return state
+    except FileNotFoundError:
+        # Removed between the existence check and the read: the daemon
+        # cleans the file up on shutdown. That is "no state", not an error.
+        return None
     except Exception as exc:
         logger.warning("Failed to load sidecar state: %s", exc)
         return None

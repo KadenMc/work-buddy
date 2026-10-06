@@ -1,4 +1,4 @@
-"""Tests for ``compat.resolve_child_python``.
+"""Tests for ``host.resolve_child_python``.
 
 Children spawned by work-buddy inherit the parent's interpreter unless
 ``sidecar.python_executable`` is set. The pin matters most when the parent is
@@ -11,13 +11,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from work_buddy import compat
+from work_buddy.process import host
 
 
 def test_resolve_returns_sys_executable_when_unset():
     """No config field set: fall back to the current interpreter."""
-    assert compat.resolve_child_python(cfg={}) == sys.executable
-    assert compat.resolve_child_python(cfg={"sidecar": {}}) == sys.executable
+    assert host.resolve_child_python(cfg={}) == sys.executable
+    assert host.resolve_child_python(cfg={"sidecar": {}}) == sys.executable
 
 
 def test_resolve_uses_pinned_path_when_set_and_exists(tmp_path):
@@ -25,7 +25,7 @@ def test_resolve_uses_pinned_path_when_set_and_exists(tmp_path):
     fake_python = tmp_path / "python.exe"
     fake_python.write_bytes(b"")  # exists
     cfg = {"sidecar": {"python_executable": str(fake_python)}}
-    assert compat.resolve_child_python(cfg=cfg) == str(fake_python)
+    assert host.resolve_child_python(cfg=cfg) == str(fake_python)
 
 
 def test_resolve_falls_back_when_pinned_path_missing(tmp_path, caplog):
@@ -35,7 +35,7 @@ def test_resolve_falls_back_when_pinned_path_missing(tmp_path, caplog):
     bogus = tmp_path / "does-not-exist" / "python.exe"
     cfg = {"sidecar": {"python_executable": str(bogus)}}
     with caplog.at_level("ERROR"):
-        result = compat.resolve_child_python(cfg=cfg)
+        result = host.resolve_child_python(cfg=cfg)
     assert result == sys.executable
     messages = [rec.getMessage() for rec in caplog.records]
     # The logger uses %r which escapes backslashes on Windows, so compare
@@ -53,7 +53,7 @@ def test_resolve_warns_when_pinned_differs_from_sys_executable(tmp_path, caplog)
     fake_python.write_bytes(b"")
     cfg = {"sidecar": {"python_executable": str(fake_python)}}
     with caplog.at_level("WARNING"):
-        result = compat.resolve_child_python(cfg=cfg)
+        result = host.resolve_child_python(cfg=cfg)
     assert result == str(fake_python)
     messages = [rec.getMessage() for rec in caplog.records]
     assert any(
@@ -64,5 +64,5 @@ def test_resolve_warns_when_pinned_differs_from_sys_executable(tmp_path, caplog)
 def test_resolve_silent_when_pinned_matches_sys_executable():
     """Pin matches the current interpreter: no warning, return sys.executable."""
     cfg = {"sidecar": {"python_executable": sys.executable}}
-    result = compat.resolve_child_python(cfg=cfg)
+    result = host.resolve_child_python(cfg=cfg)
     assert Path(result).resolve() == Path(sys.executable).resolve()

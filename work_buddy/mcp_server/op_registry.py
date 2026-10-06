@@ -57,6 +57,12 @@ _OPTIONAL_DEP_WHITELIST: dict[str, set[str]] = {
     "memory_ops": {"hindsight_client"},
 }
 _builtins_loaded = False
+# The op module ``load_builtin_ops`` is reloading, while it reloads. A reload
+# re-runs the module's registrations, and its earlier ones may still be
+# present, so during the reload a function registered again replaces its own
+# earlier entry instead of colliding with itself. A different function under
+# an existing ID still raises.
+_reloading: str | None = None
 
 
 def is_valid_op_id(op_id: str) -> bool:
@@ -68,7 +74,9 @@ def register_op(op_id: str, fn: Callable, *, replace: bool = False) -> None:
     """Register an executable callable under a stable op ID.
 
     Raises ``ValueError`` on a malformed ID, a non-callable target, or a
-    duplicate registration (unless ``replace=True``).
+    duplicate registration, unless ``replace=True``. While
+    ``load_builtin_ops`` reloads a module, registering the same function again
+    replaces its earlier entry, and any other duplicate still raises.
     """
     if not is_valid_op_id(op_id):
         raise ValueError(
@@ -77,11 +85,34 @@ def register_op(op_id: str, fn: Callable, *, replace: bool = False) -> None:
         )
     if not callable(fn):
         raise ValueError(f"Op {op_id!r} target is not callable: {fn!r}")
-    if op_id in _OPS and not replace:
+    reregistered = (
+        _reloading is not None
+        and op_id in _OPS
+        and _same_function(_OPS[op_id], fn)
+    )
+    if op_id in _OPS and not replace and not reregistered:
         raise ValueError(
             f"Op {op_id!r} is already registered. Pass replace=True to override."
         )
     _OPS[op_id] = fn
+
+
+def _same_function(registered: Callable, candidate: Callable) -> bool:
+    """Whether ``candidate`` is ``registered`` as a module reload re-creates it.
+
+    A reload builds new function objects, so identity cannot decide this. The
+    defining module and qualified name can: they match for a reloaded function
+    or lambda, and for a function defined elsewhere that the reloaded module
+    registers again.
+    """
+    module = getattr(registered, "__module__", None)
+    qualname = getattr(registered, "__qualname__", None)
+    return (
+        module is not None
+        and qualname is not None
+        and module == getattr(candidate, "__module__", None)
+        and qualname == getattr(candidate, "__qualname__", None)
+    )
 
 
 def get_op(op_id: str) -> Callable | None:
@@ -129,8 +160,10 @@ def load_builtin_ops() -> None:
     """Import the built-in ops package so each module registers its ops.
 
     Idempotent within a process: a module guard runs the import side effects
-    once. If a prior ``clear_ops`` reset the guard while the op modules are
-    still cached in ``sys.modules``, they are reloaded so registration re-runs.
+    once. Op modules already cached in ``sys.modules`` are reloaded so their
+    registration re-runs, which restores their ops after a ``clear_ops``. A
+    module imported directly before this call still has its ops registered,
+    so its reload replaces them rather than raising a duplicate error.
 
     A ``ModuleNotFoundError`` whose missing module is whitelisted for the op
     module being loaded (see ``_OPTIONAL_DEP_WHITELIST``) is logged and
@@ -140,7 +173,7 @@ def load_builtin_ops() -> None:
     crashes the gateway boot, so a genuine regression in an op module
     surfaces immediately instead of masquerading as safe degradation.
     """
-    global _builtins_loaded
+    global _builtins_loaded, _reloading
     if _builtins_loaded:
         return
 
@@ -154,7 +187,11 @@ def load_builtin_ops() -> None:
         full_name = f"{_ops_pkg.__name__}.{mod.name}"
         try:
             if full_name in sys.modules:
-                importlib.reload(sys.modules[full_name])
+                _reloading = full_name
+                try:
+                    importlib.reload(sys.modules[full_name])
+                finally:
+                    _reloading = None
             else:
                 importlib.import_module(full_name)
         except ModuleNotFoundError as exc:

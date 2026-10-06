@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import yaml
@@ -86,35 +85,26 @@ def test_build_rulesync_input_tolerates_unquoted_colon_in_short(tmp_path, monkey
     assert body == "Run release."
 
 
-def test_rulesync_backend_uses_json_generate_and_feature_union(monkeypatch, tmp_path):
-    calls = {}
-
-    def fake_run(argv, text, capture_output, check):
-        calls["argv"] = argv
-        return subprocess.CompletedProcess(
-            argv,
-            0,
-            stdout=json.dumps(
-                {
-                    "success": True,
-                    "data": {
-                        "features": {
-                            "rules": {"count": 1, "paths": ["AGENTS.md"]},
-                            "mcp": {"count": 1, "paths": [".codex/config.toml"]},
-                            "skills": {
-                                "count": 1,
-                                "paths": [".agents/skills/wb-dev-pr/SKILL.md"],
-                            },
+def test_rulesync_backend_uses_json_generate_and_feature_union(tmp_path, recording_runner):
+    recording_runner.script(
+        stdout=json.dumps(
+            {
+                "success": True,
+                "data": {
+                    "features": {
+                        "rules": {"count": 1, "paths": ["AGENTS.md"]},
+                        "mcp": {"count": 1, "paths": [".codex/config.toml"]},
+                        "skills": {
+                            "count": 1,
+                            "paths": [".agents/skills/wb-dev-pr/SKILL.md"],
                         },
-                        "hasDiff": True,
-                        "totalFiles": 3,
                     },
-                }
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+                    "hasDiff": True,
+                    "totalFiles": 3,
+                },
+            }
+        ),
+    )
     backend = RulesyncBackend(command=["rulesync"])
     result = backend.generate(
         input_root=tmp_path / "input",
@@ -132,7 +122,7 @@ def test_rulesync_backend_uses_json_generate_and_feature_union(monkeypatch, tmp_
         dry_run=True,
     )
 
-    argv = calls["argv"]
+    argv = recording_runner.argvs()[0]
     assert argv[:3] == ["rulesync", "--json", "generate"]
     assert "--simulate-skills" in argv
     assert "--simulate-commands" not in argv
@@ -192,24 +182,18 @@ def test_rulesync_backend_reports_missing_executable(tmp_path):
     assert "not found" in result.error
 
 
-def test_rulesync_backend_treats_json_stderr_error_as_failure(monkeypatch, tmp_path):
-    def fake_run(argv, text, capture_output, check):
-        return subprocess.CompletedProcess(
-            argv,
-            0,
-            stdout="",
-            stderr=json.dumps(
-                {
-                    "success": False,
-                    "error": {
-                        "code": "UNKNOWN_ERROR",
-                        "message": "Failed to load a Rulesync MCP file",
-                    },
-                }
-            ),
-        )
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+def test_rulesync_backend_treats_json_stderr_error_as_failure(tmp_path, recording_runner):
+    recording_runner.script(
+        stderr=json.dumps(
+            {
+                "success": False,
+                "error": {
+                    "code": "UNKNOWN_ERROR",
+                    "message": "Failed to load a Rulesync MCP file",
+                },
+            }
+        ),
+    )
     backend = RulesyncBackend(command=["rulesync"])
     result = backend.generate(
         input_root=tmp_path / "input",
@@ -501,26 +485,30 @@ def test_harness_selection_preserves_playwright_version_override(monkeypatch):
     assert local["harness"]["playwright_mcp"]["version"] == "1.2.3"
 
 
-def test_rulesync_multi_target_projection_filters_mcp_before_rendering(tmp_path, monkeypatch):
+def test_rulesync_multi_target_projection_filters_mcp_before_rendering(
+    tmp_path, monkeypatch, recording_runner
+):
     from work_buddy.harness.registry import get_harness
+    from work_buddy.process import Scripted
 
     monkeypatch.setattr("work_buddy.paths.asset_root", lambda: tmp_path / "assets")
     input_root = tmp_path / "input"
     build_rulesync_input(input_root, ("claudecode", "codexcli"))
     observed = {}
 
-    def fake_run(argv, **kwargs):
+    def fake_respond(launch):
+        argv = launch.argv
         target = argv[argv.index("--targets") + 1]
         root = Path(argv[argv.index("--input-root") + 1])
         observed[target] = json.loads((root / ".rulesync/mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         assert "--check" in argv
         path = ".mcp.json" if target == "claudecode" else ".codex/config.toml"
-        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({
+        return Scripted(stdout=json.dumps({
             "success": True,
             "data": {"features": {"mcp": {"count": 1, "paths": [path]}}, "hasDiff": target == "codexcli"},
-        }), stderr="")
+        }))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    recording_runner.script(respond=fake_respond)
     result = RulesyncBackend(command=["rulesync"]).generate(
         input_root=input_root, output_root=tmp_path / "output",
         targets=[get_harness("claudecode"), get_harness("codexcli")], check=True,

@@ -12,20 +12,12 @@ import subprocess
 import pytest
 
 from work_buddy import tray
+from work_buddy.process import Intent
 
 
 @pytest.fixture
-def no_spawn(monkeypatch):
-    calls: list[dict] = []
-
-    def fake_popen(cmd, **kw):
-        calls.append({"cmd": cmd, **kw})
-        class _P:  # noqa: N801 - minimal Popen stand-in
-            pid = 99999
-        return _P()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    return calls
+def no_spawn(recording_runner):
+    return recording_runner.launches
 
 
 class TestEnsureRunning:
@@ -60,20 +52,19 @@ class TestEnsureRunning:
         res = tray.ensure_running()
         assert res["ok"] and res["spawned"]
         assert len(no_spawn) == 1
-        call = no_spawn[0]
-        assert call["cmd"][-2:] == ["-m", "work_buddy.tray"]
-        assert "WORK_BUDDY_SESSION_ID" not in call["env"]
-        assert call["stdout"] is subprocess.DEVNULL
+        launch = no_spawn[0]
+        assert launch.intent is Intent.HOST
+        assert list(launch.argv[-2:]) == ["-m", "work_buddy.tray"]
+        # The tray starts with its own identity, never the caller's.
+        assert launch.env["WORK_BUDDY_SESSION_ID"] == "wbuddy-cli"
+        assert launch.stdout == subprocess.DEVNULL
 
-    def test_never_raises(self, monkeypatch):
+    def test_never_raises(self, monkeypatch, recording_runner):
         monkeypatch.setattr(tray, "is_enabled", lambda: True)
         monkeypatch.setattr(tray, "running_pid", lambda: None)
         monkeypatch.setattr(tray, "qt_available", lambda: True)
+        recording_runner.script(raises=OSError("no such interpreter"))
 
-        def boom(*a, **k):
-            raise OSError("no such interpreter")
-
-        monkeypatch.setattr(subprocess, "Popen", boom)
         res = tray.ensure_running()
         assert not res["ok"]
         assert "failed" in res["detail"]
@@ -94,9 +85,32 @@ class TestStopRunning:
         monkeypatch.setattr(pidfile, "check_existing_tray", lambda: 4242)
         monkeypatch.setattr(pidfile, "withdraw", lambda: withdrew.append(True))
         # Process "exits" as soon as the signal lands: alive returns False.
-        import work_buddy.utils.process as proc
+        import work_buddy.process as proc
 
         monkeypatch.setattr(proc, "is_process_alive", lambda pid: False)
         res = tray.stop_running(wait_seconds=0.5)
         assert withdrew == [True]
         assert res["ok"] and res["stopped"] and res["pid"] == 4242
+
+
+def test_the_tray_package_imports_without_a_session_identity(tmp_path):
+    """`python -m work_buddy.tray` imports the package before the tray's entry
+    point claims its identity, as its login item starts it with none."""
+    import os
+    import subprocess
+    import sys
+
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("WORK_BUDDY_SESSION_ID", "CODEX_THREAD_ID")
+    }
+    env["WORK_BUDDY_DATA_DIR"] = str(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-c", "import work_buddy.tray"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+    assert completed.returncode == 0, completed.stderr

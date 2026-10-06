@@ -21,7 +21,6 @@ typed-exception contract.
 import hashlib
 import json
 import platform
-import subprocess
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -298,17 +297,16 @@ def _probe_port_open(timeout: float = 0.5) -> bool:
 def is_obsidian_running() -> bool:
     """Fast process-level check (~60ms) for whether Obsidian is open.
 
-    Uses ctypes on Windows for speed (no subprocess overhead).
-    Falls back to subprocess pgrep on other platforms.
+    Uses ctypes on Windows for speed (no process launch overhead).
+    Falls back to a pgrep check on other platforms.
     """
     try:
         if platform.system() == "Windows":
             return _check_process_windows("Obsidian.exe")
         else:
-            result = subprocess.run(
-                ["pgrep", "-xi", "obsidian"],
-                capture_output=True, timeout=5,
-            )
+            from work_buddy.process import run_tool
+
+            result = run_tool(["pgrep", "-xi", "obsidian"], timeout=5, text=False)
             return result.returncode == 0
     except Exception:
         # Fail safe.  Treat an inconclusive process probe as unavailable so

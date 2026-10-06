@@ -1,13 +1,18 @@
-"""Process utilities for work-buddy.
+"""Process liveness: whether a process is running, and whether it is the same one.
 
-A cross-platform process-liveness primitive, shared by the sidecar's PID-file
-management and the IR vector store's orphan-temp recovery sweep.
+:func:`is_process_alive` says whether a pid names a running process.
+:func:`process_start_token` fingerprints one lifetime of a pid, so a caller
+that recorded a process can tell it apart from a later one that reused the
+number. Code that records a pid and checks on it later relies on both: PID
+files, locks, orphan-temp sweeps and dispatched runs.
 """
 
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from work_buddy.process.launch import run_tool
 
 
 def is_process_alive(pid: int) -> bool:
@@ -30,7 +35,7 @@ def is_process_alive(pid: int) -> bool:
             exit_code = ctypes.c_ulong()
             if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return exit_code.value == 259  # STILL_ACTIVE
-            return False  # couldn't query — treat as dead
+            return False  # couldn't query, so treat it as dead
         finally:
             kernel32.CloseHandle(handle)
     else:
@@ -77,11 +82,10 @@ def process_start_token(pid: int) -> str | None:
     # PID reuse within the same second is possible in theory, so callers still
     # pair this token with an explicit process-kind check before termination.
     try:
-        result = subprocess.run(
+        result = run_tool(
             ["ps", "-p", str(pid), "-o", "lstart="],
-            capture_output=True,
-            text=True,
             timeout=5,
+            text=True,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None

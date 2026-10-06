@@ -27,6 +27,8 @@ The generated harness surface is intentionally disposable. `wbuddy harness sync`
 - `codexcli`: `AGENTS.md`, `.codex/config.toml`, `.codex/hooks.json`, and `.agents/skills/*/SKILL.md`.
 - `claudecode`: rules, MCP config, lifecycle hooks, and `.claude/commands/*`.
 
+Generation is bounded at 120 seconds, because rulesync may first be downloaded through `npx`. A run that times out comes back as a failed sync result, not an exception.
+
 Rulesync is pinned by version. Installer provisioning downloads the matching standalone release binary into `<data_root>/tools/rulesync/<version>/`, verifies it against the release `SHA256SUMS`, and executes it directly. An exact-version PATH binary is accepted; pinned `npx` remains a development fallback.
 
 `HarnessTarget.browser_surface` declares the interactive browser surface: `native-pane` for Claude Code, `mcp-playwright` for Codex, and `none` by default. This field describes tool availability. It does not determine which dashboard data a browser may touch. `dev/dashboard/verification-directions` defines the environment and authentication rules.

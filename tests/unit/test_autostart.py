@@ -115,12 +115,11 @@ def test_linux_is_registered(monkeypatch, tmp_path):
 
 # --- macOS (launchd) ------------------------------------------------------
 
-def test_macos_register_writes_plist(monkeypatch, tmp_path):
+def test_macos_register_writes_plist(monkeypatch, tmp_path, recording_runner):
     plist = tmp_path / "com.workbuddy.sidecar.plist"
     monkeypatch.setattr(macos, "_plist_path", lambda *a, **k: plist)
     monkeypatch.setattr(macos, "_log_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(macos.os, "getuid", lambda: 501, raising=False)
-    monkeypatch.setattr(macos.subprocess, "run", lambda *a, **k: _fake_cp())
     res = macos.register(python_exe="/venv/bin/python", home_dir="/srv/work-buddy", data_dir="/data")
     assert res["ok"] is True
     with open(plist, "rb") as fh:

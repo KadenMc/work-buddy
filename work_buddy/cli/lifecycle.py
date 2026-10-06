@@ -13,18 +13,15 @@ Reused, not reimplemented:
 - ``sidecar.pid.check_existing_daemon`` / ``takeover_existing_daemon`` to learn
   *which* daemon is running and to terminate it.
 - ``sidecar.state.load_state`` for the observability snapshot.
-- ``compat.detached_process_kwargs`` for the no-console detached launch.
+- ``process.start_host`` for the detached launch, which gives the daemon a
+  console with no window however the caller was started.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import time
 
-from work_buddy import paths
-from work_buddy.compat import detached_process_kwargs
+from work_buddy.process import HostRole, establish_host_context, start_host
 from work_buddy.sidecar import instance_lock
 from work_buddy.sidecar import pid as _pid
 from work_buddy.sidecar import state as _state
@@ -172,6 +169,9 @@ def start_sidecar(*, foreground: bool = False, wait_seconds: float = 15.0) -> di
     to cycle or to replace a wedged daemon.
     """
     if foreground:
+        # The daemon runs in this terminal, but under its own sidecar
+        # identity rather than the CLI's, as on every other start path.
+        establish_host_context(HostRole.SIDECAR, foreground=True)
         from work_buddy.sidecar.daemon import run as _run
 
         _run(foreground=True)
@@ -217,23 +217,12 @@ def start_sidecar(*, foreground: bool = False, wait_seconds: float = 15.0) -> di
     # even if something else wins the race between here and there, the loser is
     # a short-lived process rather than a second sidecar.
     #
-    # Strip our own session id so the daemon's __main__ self-assigns a
-    # ``sidecar-`` id. That id is the sidecar consent principal and must be the
-    # daemon's own, never inherited (see sidecar/__main__.py).
-    child_env = {k: v for k, v in os.environ.items() if k != "WORK_BUDDY_SESSION_ID"}
-    # Detach stdio to a null sink. The daemon runs windowless with its own
-    # hidden console (see detached_process_kwargs) and logs to its own files, so
-    # it has no use for the launching shell's std handles. Pointing them at
-    # DEVNULL keeps it independent of that shell's lifetime.
-    subprocess.Popen(
-        [sys.executable, "-m", "work_buddy.sidecar"],
-        cwd=str(paths.repo_root()),
-        env=child_env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        **detached_process_kwargs(),
-    )
+    # The sidecar host role supplies everything else: the console image of
+    # this environment's interpreter, a console with no window that the
+    # daemon's own console children inherit, stdio detached from this shell,
+    # and no inherited session id, so the daemon assigns its own sidecar
+    # consent principal.
+    start_host(HostRole.SIDECAR, "work_buddy.sidecar")
 
     # Confirm on the pid file. The daemon writes it early in boot, but only
     # after taking over any prior pid, so we wait for a pid that is both live

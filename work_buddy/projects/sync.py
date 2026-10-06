@@ -328,18 +328,20 @@ def _read_git_repo_activity(
     if not (repo_path / ".git").exists():
         return None
 
+    from work_buddy.process import run_tool
+
     # One ``git log`` call returns every commit timestamp in the
     # broader score window. Both ``recent_commits`` (narrow window)
-    # and the score's per-commit decay are derived from it — avoids
-    # making two redundant scans per repo.
+    # and the score's per-commit decay are derived from it, which
+    # avoids making two redundant scans per repo.
     since = (
         datetime.now(timezone.utc) - timedelta(days=score_window_days)
     ).strftime("%Y-%m-%d")
 
     try:
-        raw = subprocess.run(
+        raw = run_tool(
             ["git", "log", f"--since={since}", "--format=%aI"],
-            cwd=repo_path, capture_output=True, text=True, timeout=15,
+            cwd=repo_path, timeout=15,
         )
         commit_dates = (
             [line.strip() for line in raw.stdout.splitlines() if line.strip()]
@@ -361,9 +363,9 @@ def _read_git_repo_activity(
             continue
 
     try:
-        raw = subprocess.run(
+        raw = run_tool(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=repo_path, capture_output=True, text=True, timeout=10,
+            cwd=repo_path, timeout=10,
         )
         branch = raw.stdout.strip() if raw.returncode == 0 else None
     except (subprocess.TimeoutExpired, OSError):

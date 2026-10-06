@@ -16,6 +16,7 @@ from work_buddy.cowork.folder_picker_helper import (
     PICKER_MODE_MARKDOWN,
     PICKER_PROTOCOL,
 )
+from work_buddy.process import ProcessTimeout
 
 
 def _selected(path: str, *, mode: str = PICKER_MODE_FOLDER) -> str:
@@ -31,47 +32,27 @@ def _windows_os_stub() -> SimpleNamespace:
     )
 
 
-def test_windows_picker_uses_the_fixed_python_helper_protocol(monkeypatch) -> None:
-    observed: list[tuple[list[str], dict[str, object]]] = []
-
-    def run(command, **kwargs):
-        observed.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=_selected("C:\\Vaults\\My Folder"),
-            stderr="",
-        )
-
-    monkeypatch.setattr(subprocess, "run", run)
+def test_windows_picker_uses_the_fixed_python_helper_protocol(recording_runner) -> None:
+    recording_runner.script(stdout=_selected("C:\\Vaults\\My Folder"))
 
     assert native_folder_chooser._choose_windows() == "C:\\Vaults\\My Folder"
-    command, kwargs = observed[0]
-    assert command == [
+    [launch] = recording_runner.launches
+    assert launch.argv == (
         sys.executable,
         "-I",
         "-m",
         "work_buddy.cowork.folder_picker_helper",
-    ]
-    assert kwargs["shell"] is False
-    assert kwargs["stdin"] == subprocess.DEVNULL
-    assert kwargs["timeout"] == native_folder_chooser._DIALOG_TIMEOUT_SECONDS
-    assert not any("powershell" in part.lower() for part in command)
+    )
+    assert launch.popen_kwargs()["shell"] is False
+    assert launch.stdin == subprocess.DEVNULL
+    assert launch.timeout == native_folder_chooser._DIALOG_TIMEOUT_SECONDS
+    assert not any("powershell" in part.lower() for part in launch.argv)
 
 
 def test_windows_json_protocol_accepts_one_transport_line_terminator(
-    monkeypatch,
+    recording_runner,
 ) -> None:
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=_selected("C:\\Vaults\\My Folder") + "\r\n",
-            stderr="",
-        ),
-    )
+    recording_runner.script(stdout=_selected("C:\\Vaults\\My Folder") + "\r\n")
 
     assert native_folder_chooser._choose_windows() == "C:\\Vaults\\My Folder"
 
@@ -85,31 +66,20 @@ def test_windows_json_protocol_accepts_one_transport_line_terminator(
     ],
 )
 def test_windows_scoped_pickers_pass_only_validated_bounded_arguments(
-    monkeypatch,
+    recording_runner,
     tmp_path,
     mode: str,
     selection: str,
 ) -> None:
-    observed: list[tuple[list[str], dict[str, object]]] = []
     target = tmp_path / selection
-
-    def run(command, **kwargs):
-        observed.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=_selected(str(target), mode=mode),
-            stderr="",
-        )
-
-    monkeypatch.setattr(subprocess, "run", run)
+    recording_runner.script(stdout=_selected(str(target), mode=mode))
 
     assert native_folder_chooser._choose_windows(
         mode=mode,
         start_directory=tmp_path,
     ) == str(target)
-    command, kwargs = observed[0]
-    assert command == [
+    [launch] = recording_runner.launches
+    assert launch.argv == (
         sys.executable,
         "-I",
         "-m",
@@ -118,45 +88,28 @@ def test_windows_scoped_pickers_pass_only_validated_bounded_arguments(
         mode,
         "--start",
         str(tmp_path.resolve()),
-    ]
-    assert kwargs["shell"] is False
-    assert kwargs["stdin"] == subprocess.DEVNULL
-    assert not any("powershell" in part.lower() for part in command)
+    )
+    assert launch.popen_kwargs()["shell"] is False
+    assert launch.stdin == subprocess.DEVNULL
+    assert not any("powershell" in part.lower() for part in launch.argv)
 
 
 def test_windows_scoped_picker_rejects_invalid_start_before_spawn(
-    monkeypatch,
+    recording_runner,
 ) -> None:
-    invoked = False
-
-    def run(*_args, **_kwargs):
-        nonlocal invoked
-        invoked = True
-
-    monkeypatch.setattr(subprocess, "run", run)
-
     with pytest.raises(native_folder_chooser.NativeFolderChooserError) as raised:
         native_folder_chooser._choose_windows(
             mode=PICKER_MODE_MARKDOWN,
             start_directory="relative",
         )
 
-    assert invoked is False
+    assert recording_runner.launches == []
     assert raised.value.code == "folder_chooser_failed"
     assert raised.value.retryable is False
 
 
-def test_windows_picker_cancel_is_not_an_error(monkeypatch) -> None:
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            PICKER_CANCELLED,
-            stdout="",
-            stderr="",
-        ),
-    )
+def test_windows_picker_cancel_is_not_an_error(recording_runner) -> None:
+    recording_runner.script(returncode=PICKER_CANCELLED, stdout="", stderr="")
 
     assert native_folder_chooser._choose_windows() is None
 
@@ -234,21 +187,12 @@ def test_windows_picker_cancel_is_not_an_error(monkeypatch) -> None:
     ],
 )
 def test_windows_picker_rejects_invalid_helper_protocol(
-    monkeypatch,
+    recording_runner,
     case: str,
     stdout: str,
 ) -> None:
     del case
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=stdout,
-            stderr="",
-        ),
-    )
+    recording_runner.script(stdout=stdout, stderr="")
 
     with pytest.raises(native_folder_chooser.NativeFolderChooserError) as raised:
         native_folder_chooser._choose_windows()
@@ -258,16 +202,11 @@ def test_windows_picker_rejects_invalid_helper_protocol(
     assert raised.value.retryable is False
 
 
-def test_native_picker_diagnostics_are_single_line_and_bounded(monkeypatch) -> None:
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            7,
-            stdout="",
-            stderr=("first line\r\nsecond line\t" + ("x" * 2000)),
-        ),
+def test_native_picker_diagnostics_are_single_line_and_bounded(recording_runner) -> None:
+    recording_runner.script(
+        returncode=7,
+        stdout="",
+        stderr=("first line\r\nsecond line\t" + ("x" * 2000)),
     )
 
     with pytest.raises(native_folder_chooser.NativeFolderChooserError) as raised:
@@ -281,20 +220,11 @@ def test_native_picker_diagnostics_are_single_line_and_bounded(monkeypatch) -> N
 
 @pytest.mark.parametrize("picker", ["macos", "zenity"])
 def test_posix_picker_transport_preserves_selected_path_whitespace(
-    monkeypatch,
+    recording_runner,
     picker: str,
 ) -> None:
     selected = "/tmp/selected folder \t"
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=selected + "\r\n",
-            stderr="",
-        ),
-    )
+    recording_runner.script(stdout=selected + "\r\n", stderr="")
 
     if picker == "macos":
         result = native_folder_chooser._choose_macos()
@@ -306,19 +236,10 @@ def test_posix_picker_transport_preserves_selected_path_whitespace(
 
 @pytest.mark.parametrize("picker", ["macos", "zenity"])
 def test_posix_picker_transport_rejects_multiline_output(
-    monkeypatch,
+    recording_runner,
     picker: str,
 ) -> None:
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            0,
-            stdout="/tmp/first\n/tmp/second\n",
-            stderr="",
-        ),
-    )
+    recording_runner.script(stdout="/tmp/first\n/tmp/second\n", stderr="")
 
     with pytest.raises(native_folder_chooser.NativeFolderChooserError) as raised:
         if picker == "macos":
@@ -330,11 +251,8 @@ def test_posix_picker_transport_rejects_multiline_output(
     assert raised.value.diagnostic == "Native picker output contained multiple lines."
 
 
-def test_native_picker_failure_is_typed(monkeypatch) -> None:
-    def fail(_command, **_kwargs):
-        raise OSError("missing host integration")
-
-    monkeypatch.setattr(subprocess, "run", fail)
+def test_native_picker_failure_is_typed(recording_runner) -> None:
+    recording_runner.script(raises=OSError("missing host integration"))
 
     with pytest.raises(native_folder_chooser.NativeFolderChooserError) as raised:
         native_folder_chooser._choose_windows()
@@ -343,18 +261,15 @@ def test_native_picker_failure_is_typed(monkeypatch) -> None:
     assert "OSError" in raised.value.diagnostic
 
 
-def test_native_picker_timeout_is_bounded_and_recoverable(monkeypatch) -> None:
-    observed: dict[str, object] = {}
-
-    def run(_command, **kwargs):
-        observed.update(kwargs)
-        raise subprocess.TimeoutExpired("picker", kwargs["timeout"])
-
-    monkeypatch.setattr(subprocess, "run", run)
+def test_native_picker_timeout_is_bounded_and_recoverable(recording_runner) -> None:
+    recording_runner.script(
+        raises=ProcessTimeout([], native_folder_chooser._DIALOG_TIMEOUT_SECONDS)
+    )
 
     with pytest.raises(native_folder_chooser.NativeFolderChooserError) as raised:
         native_folder_chooser._choose_windows()
-    assert observed["timeout"] == native_folder_chooser._DIALOG_TIMEOUT_SECONDS == 120
+    [launch] = recording_runner.launches
+    assert launch.timeout == native_folder_chooser._DIALOG_TIMEOUT_SECONDS == 120
     assert raised.value.code == "folder_chooser_timeout"
     assert raised.value.status == 504
 
@@ -528,23 +443,12 @@ def test_legacy_markdown_picker_keeps_a_markdown_only_filter(
     ],
 )
 def test_macos_cancel_uses_a_mode_bound_success_payload(
-    monkeypatch,
+    recording_runner,
     tmp_path,
     mode: str,
 ) -> None:
-    observed: list[tuple[list[str], dict[str, object]]] = []
     marker = native_folder_chooser._macos_cancel_marker(mode)
-
-    def run(command, **kwargs):
-        observed.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=marker,
-            stderr="",
-        )
-
-    monkeypatch.setattr(subprocess, "run", run)
+    recording_runner.script(stdout=marker, stderr="")
 
     call_kwargs = (
         {}
@@ -553,29 +457,20 @@ def test_macos_cancel_uses_a_mode_bound_success_payload(
     )
     assert native_folder_chooser._choose_macos(**call_kwargs) is None
 
-    command, kwargs = observed[0]
-    script = command[2]
+    [launch] = recording_runner.launches
+    script = launch.argv[2]
     assert f'return "{marker}"' in script
     assert "error number 2" not in script
-    assert kwargs["shell"] is False
+    assert launch.popen_kwargs()["shell"] is False
 
 
 def test_macos_cancel_marker_for_another_mode_is_not_cancel(
-    monkeypatch,
+    recording_runner,
 ) -> None:
     wrong_marker = native_folder_chooser._macos_cancel_marker(
         PICKER_MODE_MARKDOWN
     )
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=wrong_marker,
-            stderr="",
-        ),
-    )
+    recording_runner.script(stdout=wrong_marker, stderr="")
 
     with pytest.raises(native_folder_chooser.NativeFolderChooserError) as raised:
         native_folder_chooser._choose_macos()
@@ -594,19 +489,14 @@ def test_macos_cancel_marker_for_another_mode_is_not_cancel(
     ],
 )
 def test_macos_nonzero_exit_is_never_misclassified_as_cancel(
-    monkeypatch,
+    recording_runner,
     tmp_path,
     mode: str,
 ) -> None:
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            1,
-            stdout="",
-            stderr="execution error: picker failed (-1728)",
-        ),
+    recording_runner.script(
+        returncode=1,
+        stdout="",
+        stderr="execution error: picker failed (-1728)",
     )
 
     call_kwargs = (

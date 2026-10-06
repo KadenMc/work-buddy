@@ -17,7 +17,6 @@ These pin two data-safety failures in the GitHub Releases backup path:
 from __future__ import annotations
 
 import json
-import types
 
 import pytest
 
@@ -25,12 +24,6 @@ from work_buddy.backups import remote
 
 
 # ─── Fixtures / helpers ─────────────────────────────────────────────
-
-
-def _fake_proc(returncode: int, stdout: str = "", stderr: str = ""):
-    return types.SimpleNamespace(
-        returncode=returncode, stdout=stdout, stderr=stderr,
-    )
 
 
 def _hourly_tags(day: str, hours: range) -> list[str]:
@@ -158,7 +151,7 @@ def test_list_remote_snapshots_reports_published_at(monkeypatch):
 # ─── _run_gh transient classification ───────────────────────────────
 
 
-def test_run_gh_classifies_windows_dns_failure_as_network(monkeypatch):
+def test_run_gh_classifies_windows_dns_failure_as_network(recording_runner):
     """The observed Windows DNS fault must classify as gh_network."""
     dns_err = (
         'Post "https://uploads.github.com/repos/u/r/releases/1/assets": '
@@ -166,20 +159,16 @@ def test_run_gh_classifies_windows_dns_failure_as_network(monkeypatch):
         "The requested name is valid, but no data of the requested type "
         "was found."
     )
-    monkeypatch.setattr(
-        remote.subprocess, "run",
-        lambda *a, **k: _fake_proc(1, stderr=dns_err),
-    )
+    recording_runner.script(["gh"], returncode=1, stderr=dns_err)
     res = remote._run_gh(["gh"], op_label="push", repo="u/r", tag="t")
     assert res["status"] == "gh_network"
 
 
-def test_run_gh_keeps_auth_failure_permanent(monkeypatch):
+def test_run_gh_keeps_auth_failure_permanent(recording_runner):
     """An auth failure is not misclassified as a transient network fault."""
-    monkeypatch.setattr(
-        remote.subprocess, "run",
-        lambda *a, **k: _fake_proc(1, stderr="You are not logged into any "
-                                   "GitHub hosts."),
+    recording_runner.script(
+        ["gh"], returncode=1,
+        stderr="You are not logged into any GitHub hosts.",
     )
     res = remote._run_gh(["gh"], op_label="push", repo="u/r", tag="t")
     assert res["status"] == "gh_unauthenticated"

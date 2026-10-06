@@ -100,9 +100,13 @@ def _maybe_refresh_probes() -> None:
 
 def _read_sidecar_state() -> dict[str, Any]:
     """Read sidecar_state.json, return empty dict on failure."""
+    from work_buddy.sidecar.state import read_state_json
+
     try:
         if _STATE_FILE.exists():
-            return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+            return read_state_json(_STATE_FILE)
+    except FileNotFoundError:
+        pass
     except Exception as exc:
         logger.warning("Failed to read sidecar state: %s", exc)
     return {}
@@ -1241,6 +1245,8 @@ def _load_pr_meta_for_repos(
     """
     import subprocess
 
+    from work_buddy.process import run_tool
+
     out: dict[tuple[str, int], dict[str, Any]] = {}
     for repo in repos:
         cached = _PR_META_CACHE.get(repo)
@@ -1249,13 +1255,13 @@ def _load_pr_meta_for_repos(
         else:
             by_num = {}
             try:
-                proc = subprocess.run(
+                proc = run_tool(
                     [
                         "gh", "pr", "list", "--repo", repo,
                         "--state", "all", "--limit", "400",
                         "--json", "number,title,state",
                     ],
-                    capture_output=True, text=True, timeout=15,
+                    timeout=15,
                 )
                 if proc.returncode == 0:
                     for pr in json.loads(proc.stdout or "[]"):

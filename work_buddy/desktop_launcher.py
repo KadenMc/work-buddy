@@ -9,16 +9,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import traceback
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
-# A desktop click is not an agent-harness session.  Give any imported logging
-# code a stable synthetic identity, as work_buddy.cli does for ``wbuddy``.
-os.environ.setdefault("WORK_BUDDY_SESSION_ID", "desktop-launcher")
+DESKTOP_SESSION_ID = "desktop-launcher"
 
 
 def launcher_log_path() -> Path:
@@ -37,7 +34,9 @@ def _show_native_error(detail: str, log_path: Path) -> None:
         # MB_OK | MB_ICONERROR | MB_SETFOREGROUND
         ctypes.windll.user32.MessageBoxW(0, message, "work-buddy could not open", 0x10010)
     elif sys.platform == "darwin":
-        subprocess.run(
+        from work_buddy.process import run_tool
+
+        run_tool(
             [
                 "/usr/bin/osascript",
                 "-e", "on run argv",
@@ -45,16 +44,16 @@ def _show_native_error(detail: str, log_path: Path) -> None:
                 "-e", "end run",
                 message,
             ],
-            capture_output=True,
             timeout=15,
-            check=False,
+            text=False,
         )
     elif zenity := shutil.which("zenity"):
-        subprocess.run(
+        from work_buddy.process import run_tool
+
+        run_tool(
             [zenity, "--error", "--title=Work Buddy could not open", f"--text={message}"],
-            capture_output=True,
             timeout=15,
-            check=False,
+            text=False,
         )
 
 
@@ -97,4 +96,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A desktop click is not an agent-harness session. Give the launcher, and
+    # any logging code it imports, a synthetic identity of its own.
+    os.environ["WORK_BUDDY_SESSION_ID"] = DESKTOP_SESSION_ID
     raise SystemExit(main())

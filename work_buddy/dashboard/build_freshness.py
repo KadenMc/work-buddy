@@ -28,7 +28,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator
 
 from work_buddy import paths
-from work_buddy.compat import subprocess_creation_flags
 
 
 _MARKER_VERSION = 1
@@ -614,22 +613,13 @@ def _terminate_build_process(proc: subprocess.Popen[str]) -> None:
 
     if proc.poll() is not None:
         return
-    if os.name == "nt":
-        from work_buddy.compat import _force_kill_pid
+    from work_buddy.process import terminate_tree
 
-        _force_kill_pid(proc.pid)
-    else:
-        import signal
-
+    if not terminate_tree(proc):
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+            proc.kill()
         except OSError:
-            try:
-                proc.kill()
-            except OSError:
-                pass
+            pass
     try:
         proc.wait(timeout=5.0)
     except (OSError, subprocess.TimeoutExpired):
@@ -654,20 +644,19 @@ def _run_build_with_heartbeats(
 ) -> subprocess.CompletedProcess[str]:
     """Run npm responsively and reap its whole process tree on every exit."""
 
-    popen_kwargs: dict[str, Any] = {
-        "cwd": dashboard_root,
-        "env": os.environ.copy(),
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "shell": False,
-        "creationflags": subprocess_creation_flags(),
-    }
-    if os.name != "nt":
-        popen_kwargs["start_new_session"] = True
-    proc = subprocess.Popen(command, **popen_kwargs)
+    from work_buddy.process import spawn_worker
+
+    proc = spawn_worker(
+        command,
+        cwd=dashboard_root,
+        env=os.environ.copy(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        new_session=True,
+    )
     try:
         if process_started is not None:
             process_started(proc.pid)

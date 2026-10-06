@@ -1,21 +1,19 @@
 """python -m work_buddy.sidecar — start the sidecar daemon."""
 
-import os
-import sys
-import uuid
+# First, before anything can start a process: give the daemon its host
+# context. Started by the logon task, or by a hand-made shortcut, the daemon
+# runs under pythonw.exe with no console, and every console program it later ran
+# without the no-window flag would open a window. This gives it a console
+# with no window, and a sidecar-owned session id of its own. That id is the
+# sidecar principal's consent session, and it is never inherited from
+# whoever started the daemon. It must only be consulted for consent through
+# ``consent_principal.sidecar_self()``: see the ``notifications/consent``
+# knowledge unit, "The three consent principals".
+from work_buddy.process import HostRole, establish_host_context
 
-# The sidecar runs standalone (not inside a Claude Code session), so it needs
-# a synthetic session ID for work_buddy's logging system.
-#
-# IMPORTANT: this id is also the *sidecar principal's* consent session. It must
-# only be consulted for consent via ``consent_principal.sidecar_self()`` — never
-# read implicitly by ``ConsentCache`` as a process-default for an agent's check.
-# (An agent's consent must resolve against the AGENT's session DB; resolving it
-# against this sidecar session is the bug class the ConsentPrincipal model
-# eliminates. See the ``notifications/consent`` knowledge unit, "The three
-# consent principals".)
-if not os.environ.get("WORK_BUDDY_SESSION_ID"):
-    os.environ["WORK_BUDDY_SESSION_ID"] = f"sidecar-{uuid.uuid4().hex[:8]}"
+establish_host_context(HostRole.SIDECAR)
+
+import sys
 
 from work_buddy.sidecar.daemon import run
 

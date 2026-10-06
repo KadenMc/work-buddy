@@ -30,13 +30,13 @@ import json
 import os
 import platform
 import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from work_buddy.consent import ConsentCache
 from work_buddy.logging_config import get_logger
+from work_buddy.process import open_visible_terminal
 from work_buddy import paths
 
 logger = get_logger(__name__)
@@ -118,16 +118,8 @@ def _launch_windows(argv: list[str], cwd: str) -> int:
     # The user's profile, conda, and claude auth all live in PS7.
     ps_exe = shutil.which("pwsh") or "powershell.exe"
 
-    proc = subprocess.Popen(
-        [ps_exe, "-NoExit", "-Command", ps_command],
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
-        env=env,
-        # Don't capture stdio — it's a visible interactive terminal
-        stdin=None,
-        stdout=None,
-        stderr=None,
-    )
-    return proc.pid
+    handle = open_visible_terminal([ps_exe, "-NoExit", "-Command", ps_command], env=env)
+    return handle.pid
 
 
 def _clean_env() -> dict[str, str]:
@@ -169,17 +161,11 @@ def _launch_macos(argv: list[str], cwd: str) -> int:
         f'tell application "Terminal" to do script '
         f'"cd {escaped_cwd} && {escaped_argv}"'
     )
-    proc = subprocess.Popen(
-        ["osascript", "-e", script],
-        env=_clean_env(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    handle = open_visible_terminal(["osascript", "-e", script], env=_clean_env())
     # osascript returns quickly; the Terminal process is separate.
-    # We return osascript's PID as a proxy — the actual terminal PID
+    # We return osascript's PID as a proxy: the actual terminal PID
     # is not easily retrievable.
-    return proc.pid
+    return handle.pid
 
 
 def _launch_linux(argv: list[str], cwd: str) -> int:
@@ -198,14 +184,8 @@ def _launch_linux(argv: list[str], cwd: str) -> int:
 
     for name, cmd in terminals:
         if shutil.which(name):
-            proc = subprocess.Popen(
-                cmd,
-                env=_clean_env(),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return proc.pid
+            handle = open_visible_terminal(cmd, env=_clean_env())
+            return handle.pid
 
     raise RuntimeError(
         "No terminal emulator found. Tried: gnome-terminal, xterm, konsole. "

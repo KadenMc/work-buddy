@@ -99,7 +99,7 @@ steps:
 
 **When NOT to use auto_run:** The step requires LLM reasoning, user interaction, consent, or calls external services that may fail and need agent-mediated recovery.
 
-**Safety:** Only `work_buddy.*` import paths are allowed. Failed auto_run steps are marked FAILED with the error surfaced to the agent. A 30s default timeout prevents runaway calls.
+**Safety:** Only `work_buddy.*` import paths are allowed. Failed auto_run steps are marked FAILED with the error surfaced to the agent. Every auto_run step is bounded: `timeout` defaults to 30s, and a value that is zero, negative, null or not a number runs under that default with a logged warning instead of waiting forever. A step that outlives its timeout is ended along with the processes it started (see `architecture/process-execution`).
 
 **Transient-timeout retry:** Subprocess timeouts (`subprocess.TimeoutExpired`) are usually transient — cold imports, concurrent registry rebuilds, antivirus scans. The conductor retries the subprocess once before failing the step, so a single contended host doesn't surface a flake to the agent. Each attempt gets the full `timeout`; worst-case wall time is two attempts. Crashes and invalid-JSON failures never retry — they signal real bugs. Set `retry_on_timeout: false` for steps that mutate external state (git commits, outbound message sends, source-pipeline drives) where a second attempt would not be idempotent.
 

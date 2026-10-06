@@ -342,10 +342,12 @@ def _resolve_lms_bin() -> str | None:
 
 def _run_lms_json(lms_bin: str, args: list[str], timeout: float = 12.0) -> Any:
     """Run ``lms <args> --json`` and return parsed JSON, or None on any failure."""
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
+        proc = run_tool(
             [lms_bin, *args],
-            capture_output=True, text=True, timeout=timeout, check=False,
+            timeout=timeout,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.debug("lms %s failed: %s", " ".join(args), exc)

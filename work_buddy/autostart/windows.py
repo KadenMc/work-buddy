@@ -1,10 +1,12 @@
 """Windows auto-start backend: a per-user Task Scheduler task (no admin).
 
-Launches the sidecar windowless at logon under the provisioned venv's
-``pythonw.exe`` (a console-less interpreter), via ``Register-ScheduledTask`` with
-``-RunLevel Limited`` (per-user, no UAC). Task name ``WB-Sidecar``. The
-PowerShell calls themselves run with ``CREATE_NO_WINDOW`` so registration does
-not flash a console.
+Starts the sidecar at logon under the provisioned venv's ``pythonw.exe``, via
+``Register-ScheduledTask`` with ``-RunLevel Limited`` (per-user, no UAC). Task
+name ``WB-Sidecar``. ``pythonw.exe`` has no console, so logon shows no window.
+The daemon's entry point then gives itself a console with no window (see
+``work_buddy.process.establish_host_context``), so the console programs it
+runs stay invisible too. The PowerShell calls run as tool runs, so
+registration opens no window either.
 """
 
 from __future__ import annotations
@@ -12,25 +14,20 @@ from __future__ import annotations
 import subprocess
 
 from work_buddy.autostart import TASK_NAME
-from work_buddy.compat import pythonw_variant, subprocess_creation_flags
 from work_buddy.logging_config import get_logger
+from work_buddy.process import powershell_argv, run_tool
+from work_buddy.process.host import sibling_image
 
 logger = get_logger(__name__)
 
 
 def _pythonw(python_exe: str) -> str:
     """Prefer ``pythonw.exe`` (no console) next to ``python.exe``; else python.exe."""
-    return pythonw_variant(python_exe)
+    return sibling_image(python_exe, "gui")[0]
 
 
 def _run_ps(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        creationflags=subprocess_creation_flags(),
-    )
+    return run_tool(powershell_argv(script), timeout=timeout)
 
 
 def register(

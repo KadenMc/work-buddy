@@ -14,6 +14,7 @@ from urllib.request import urlopen
 
 from work_buddy import paths
 from work_buddy.harness.model import HarnessConfig
+from work_buddy.process import run_tool
 
 
 _RELEASE_ROOT = "https://github.com/dyoshikawa/rulesync/releases/download"
@@ -149,13 +150,7 @@ def _reports_version(command: list[str], expected: str) -> bool:
 
 def _read_version(command: list[str]) -> str:
     try:
-        proc = subprocess.run(
-            [*command, "--version"],
-            text=True,
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
+        proc = run_tool([*command, "--version"], timeout=15)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return ""
     if proc.returncode != 0:

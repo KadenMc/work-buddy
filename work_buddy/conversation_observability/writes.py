@@ -528,6 +528,7 @@ def _committed_files_for_sessions(
     import subprocess
 
     from work_buddy.collectors.git_collector import _discover_repos
+    from work_buddy.process import run_tool
 
     if not session_ids:
         return {}
@@ -577,11 +578,9 @@ def _committed_files_for_sessions(
         files: list[str] = []
         for repo_path in repos:
             try:
-                proc = subprocess.run(
+                proc = run_tool(
                     ["git", "show", "--name-only", "--format=", sha],
                     cwd=repo_path,
-                    capture_output=True,
-                    text=True,
                     timeout=5,
                 )
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

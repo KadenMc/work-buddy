@@ -56,8 +56,10 @@ def _read_sidecar_service(service_name: str) -> dict[str, Any]:
     state_file = resolve("runtime/sidecar-state")
     if not state_file.exists():
         return {"ok": False, "detail": "sidecar_state.json not found — sidecar not running?"}
+    from work_buddy.sidecar.state import read_state_json
+
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = read_state_json(state_file)
         svc = data.get("services", {}).get(service_name)
         if svc is None:
             return {"ok": False, "detail": f"Service '{service_name}' not in sidecar state"}
@@ -392,15 +394,15 @@ def check_sidecar_heartbeat() -> dict[str, Any]:
     is considered healthy. An older timestamp, missing file, or missing
     pid means the daemon is not running or has become unresponsive.
     """
-    import json as _json
     import time as _time
     from work_buddy.paths import resolve as _resolve
+    from work_buddy.sidecar.state import read_state_json
 
     state_file = _resolve("runtime/sidecar-state")
     if not state_file.exists():
         return {"ok": False, "detail": "sidecar_state.json missing — daemon not started"}
     try:
-        data = _json.loads(state_file.read_text(encoding="utf-8"))
+        data = read_state_json(state_file)
     except Exception as exc:
         return {"ok": False, "detail": f"sidecar_state.json unreadable: {exc}"}
 
@@ -416,6 +418,30 @@ def check_sidecar_heartbeat() -> dict[str, Any]:
             "detail": f"sidecar last tick was {int(age)}s ago (threshold 120s) — daemon likely frozen",
         }
     return {"ok": True, "detail": f"sidecar alive (pid {pid}, tick age {int(age)}s)"}
+
+
+def check_sidecar_runtime_context() -> dict[str, Any]:
+    """The daemon's recorded runtime context, as ``wbuddy status`` shows it.
+
+    Fails only on drift that makes console programs open windows: a daemon
+    with no console, or services on a GUI interpreter. A pin outside the
+    project is reported in the detail but does not fail the check, because a
+    user can pin a different environment on purpose. A daemon that has not
+    recorded its context (older code, or still booting) passes.
+    """
+    from work_buddy.sidecar.state import load_state
+
+    state = load_state()
+    host = state.host if state is not None else None
+    if host is None:
+        return {"ok": True, "detail": "no runtime context recorded"}
+    risks = host.window_risks()
+    if risks:
+        return {"ok": False, "detail": ". ".join(risks)}
+    detail = f"console {host.console} via {host.mechanism}, services on {host.child_python}"
+    if host.pin_outside_project:
+        detail += f" (pinned outside the project: {host.pin})"
+    return {"ok": True, "detail": detail}
 
 
 # ---------------------------------------------------------------------------
@@ -459,16 +485,14 @@ def get_tailscale_status(force: bool = False) -> dict[str, Any]:
     ):
         return cached
 
-    import subprocess
     import json as _json
+
+    from work_buddy.process import run_tool
 
     result: dict[str, Any] = {"installed": False, "running": False, "serve": None}
 
     try:
-        proc = subprocess.run(
-            ["tailscale", "status", "--json"],
-            capture_output=True, text=True, timeout=10,
-        )
+        proc = run_tool(["tailscale", "status", "--json"], timeout=10)
         if proc.returncode != 0:
             result["installed"] = True
             result["error"] = proc.stderr.strip()[:200]
@@ -507,10 +531,7 @@ def get_tailscale_status(force: bool = False) -> dict[str, Any]:
         return result
 
     try:
-        serve_proc = subprocess.run(
-            ["tailscale", "serve", "status", "--json"],
-            capture_output=True, text=True, timeout=5,
-        )
+        serve_proc = run_tool(["tailscale", "serve", "status", "--json"], timeout=5)
         if serve_proc.returncode == 0 and serve_proc.stdout.strip():
             result["serve"] = _json.loads(serve_proc.stdout)
         else:

@@ -123,6 +123,16 @@ _register(ComponentDef(
                 "messaging will be unavailable."
             ),
         ),
+        CheckStep(
+            description="Sidecar starts programs without opening windows",
+            check_fn="work_buddy.health.checks.check_sidecar_runtime_context",
+            on_fail=(
+                "The sidecar has no hidden console, so programs it starts can "
+                "open terminal windows. Restart it with 'wbuddy restart'. If "
+                "its services run on pythonw.exe, set "
+                "sidecar.python_executable to python.exe."
+            ),
+        ),
     ],
 ))
 

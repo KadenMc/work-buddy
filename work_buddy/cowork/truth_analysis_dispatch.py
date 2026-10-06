@@ -31,7 +31,7 @@ from work_buddy.sidecar.internal_operations import (
 )
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import TruthStore
-from work_buddy.utils.process import is_process_alive
+from work_buddy.process import is_process_alive
 
 
 class TruthAnalysisDispatchError(RuntimeError):

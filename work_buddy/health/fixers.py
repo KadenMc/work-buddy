@@ -658,12 +658,10 @@ def fix_tailscale_serve_configured() -> dict[str, Any]:
             "side_effects": side_effects,
         }
 
-    import subprocess
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
-            ["tailscale", "serve", "--bg", str(port)],
-            capture_output=True, text=True, timeout=15,
-        )
+        proc = run_tool(["tailscale", "serve", "--bg", str(port)], timeout=15)
     except FileNotFoundError:
         return {
             "ok": False,
@@ -723,6 +721,8 @@ def fix_backup_repo_configured(repo_name: str) -> dict[str, Any]:
     """
     import subprocess
 
+    from work_buddy.process import run_tool
+
     side_effects: list[str] = []
     if not repo_name or not repo_name.strip():
         return {"ok": False, "detail": "repo_name is empty",
@@ -742,9 +742,8 @@ def fix_backup_repo_configured(repo_name: str) -> dict[str, Any]:
 
     # Step 2: check whether the repo exists on GitHub.
     try:
-        proc = subprocess.run(
-            ["gh", "repo", "view", repo_name, "--json", "name"],
-            capture_output=True, text=True, timeout=15,
+        proc = run_tool(
+            ["gh", "repo", "view", repo_name, "--json", "name"], timeout=15,
         )
     except FileNotFoundError:
         return {
@@ -788,12 +787,12 @@ def fix_backup_repo_configured(repo_name: str) -> dict[str, Any]:
     # GitHub Releases require at least one commit / a default branch
     # to attach the tag to.
     try:
-        create = subprocess.run(
+        create = run_tool(
             ["gh", "repo", "create", repo_name,
              "--private",
              "--add-readme",
              "--description", "work-buddy data backups (auto-managed)"],
-            capture_output=True, text=True, timeout=30,
+            timeout=30,
         )
     except subprocess.TimeoutExpired:
         return {

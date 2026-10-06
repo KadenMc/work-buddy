@@ -18,7 +18,7 @@ aliases:
 parents:
 - operations
 - operations
-dev_notes: To spawn a work-buddy Python module OS-portably, resolve the interpreter with work_buddy.compat.resolve_child_python() (honors the sidecar.python_executable pin, else sys.executable) and run [python, '-u', '-m', module] with compat.build_child_env() and compat.detached_process_kwargs(). Never hardcode a shell activation wrapper (e.g. 'powershell.exe' or 'conda activate') in knowledge content or code; it breaks cross-platform. Prefer `uv run` at the shell, and the compat helpers in agent-facing code and docs.
+dev_notes: To spawn a work-buddy Python module OS-portably, use work_buddy.process.start_host(HostRole.SERVICE, module, detached=True). It resolves the interpreter with resolve_child_python() (honors the sidecar.python_executable pin, else sys.executable), runs [python, '-u', '-m', module] with build_child_env(), and starts it windowless. Any other program goes through run_tool or spawn_worker from the same package (see architecture/process-execution). Never hardcode a shell activation wrapper (e.g. 'powershell.exe' or 'conda activate') in knowledge content or code, because it breaks cross-platform. Prefer `uv run` at the shell, and work_buddy.process in agent-facing code and docs.
 ---
 
 WORK_BUDDY_SESSION_ID is set automatically by a SessionStart hook (.claude/hooks/session-init.sh). On Claude Code Desktop, the hook outputs it as context.

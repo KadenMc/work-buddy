@@ -9,12 +9,13 @@ own bootstrap session.
 from __future__ import annotations
 
 import json
-import subprocess
+import logging
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from work_buddy.mcp_server import conductor
+from work_buddy.process import ProcessTimeout, Scripted
 
 
 class _FakeCompletedProcess:
@@ -26,17 +27,11 @@ class _FakeCompletedProcess:
         self.returncode = returncode
 
 
-def test_execute_auto_run_uses_agent_session_when_provided(monkeypatch):
+def test_execute_auto_run_uses_agent_session_when_provided(monkeypatch, recording_runner):
     """When agent_session_id is given, it wins over the process env var."""
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "sidecar-xyz")
 
-    captured = {}
-
-    def _fake_run(cmd, input=None, **_kwargs):
-        captured["input"] = input
-        return _FakeCompletedProcess()
-
-    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+    recording_runner.script(stdout='{"success": true, "value": null}')
 
     result = conductor._execute_auto_run(
         step_id="dummy",
@@ -46,7 +41,8 @@ def test_execute_auto_run_uses_agent_session_when_provided(monkeypatch):
     )
 
     assert result["success"] is True
-    payload = json.loads(captured["input"])
+    [launch] = recording_runner.launches
+    payload = json.loads(launch.input)
     assert payload["session_id"] == "agent-abc123", (
         "subprocess payload must carry the agent's session id, not the "
         "MCP server's env-var session — this is the fix for the consent "
@@ -110,18 +106,12 @@ def test_workflow_blanket_grant_and_revoke_on_agent_db(monkeypatch, tmp_path):
     assert not rows, "revoke with session_id must remove from the agent's DB"
 
 
-def test_execute_auto_run_falls_back_to_env_when_no_session(monkeypatch):
+def test_execute_auto_run_falls_back_to_env_when_no_session(monkeypatch, recording_runner):
     """Legacy path: if no agent_session_id, fall back to env — preserves
     behavior for non-workflow callers that might adopt auto_run later."""
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "sidecar-xyz")
 
-    captured = {}
-
-    def _fake_run(cmd, input=None, **_kwargs):
-        captured["input"] = input
-        return _FakeCompletedProcess()
-
-    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+    recording_runner.script(stdout='{"success": true, "value": null}')
 
     result = conductor._execute_auto_run(
         step_id="dummy",
@@ -131,7 +121,8 @@ def test_execute_auto_run_falls_back_to_env_when_no_session(monkeypatch):
     )
 
     assert result["success"] is True
-    payload = json.loads(captured["input"])
+    [launch] = recording_runner.launches
+    payload = json.loads(launch.input)
     assert payload["session_id"] == "sidecar-xyz"
 
 
@@ -165,23 +156,23 @@ def _spec(retry_on_timeout: bool = True) -> dict:
     }
 
 
-def _timeout_exc(stderr: str = "") -> subprocess.TimeoutExpired:
-    return subprocess.TimeoutExpired(
-        cmd=["python", "-m", "subprocess_runner"], timeout=5, stderr=stderr,
+def _timeout_exc(stderr: str = "") -> ProcessTimeout:
+    return ProcessTimeout(
+        ["python", "-m", "subprocess_runner"], 5, stderr=stderr,
     )
 
 
-def test_execute_auto_run_retries_once_on_timeout(monkeypatch):
+def test_execute_auto_run_retries_once_on_timeout(recording_runner):
     """First attempt times out; second returns success — overall success."""
     calls = {"n": 0}
 
-    def _fake_run(cmd, input=None, **_kwargs):
+    def _respond(launch):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise _timeout_exc()
-        return _FakeCompletedProcess()
+            return Scripted(raises=_timeout_exc())
+        return Scripted(stdout='{"success": true, "value": null}')
 
-    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+    recording_runner.script(respond=_respond)
 
     result = conductor._execute_auto_run(
         step_id="dummy", spec=_spec(), step_results={},
@@ -191,21 +182,15 @@ def test_execute_auto_run_retries_once_on_timeout(monkeypatch):
     assert result["success"] is True
 
 
-def test_execute_auto_run_fails_after_second_timeout(monkeypatch):
+def test_execute_auto_run_fails_after_second_timeout(recording_runner):
     """Both attempts time out; step fails with a timeout error."""
-    calls = {"n": 0}
-
-    def _fake_run(cmd, input=None, **_kwargs):
-        calls["n"] += 1
-        raise _timeout_exc()
-
-    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+    recording_runner.script(raises=_timeout_exc())
 
     result = conductor._execute_auto_run(
         step_id="dummy", spec=_spec(), step_results={},
     )
 
-    assert calls["n"] == 2, "both attempts must run before the step fails"
+    assert len(recording_runner.launches) == 2, "both attempts must run before the step fails"
     assert result["success"] is False
     assert "timed out" in result["error"]
     assert "2 attempts" in result["error"], (
@@ -213,15 +198,9 @@ def test_execute_auto_run_fails_after_second_timeout(monkeypatch):
     )
 
 
-def test_execute_auto_run_respects_retry_on_timeout_false(monkeypatch):
+def test_execute_auto_run_respects_retry_on_timeout_false(recording_runner):
     """retry_on_timeout=false makes the timeout terminal on the first try."""
-    calls = {"n": 0}
-
-    def _fake_run(cmd, input=None, **_kwargs):
-        calls["n"] += 1
-        raise _timeout_exc()
-
-    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+    recording_runner.script(raises=_timeout_exc())
 
     result = conductor._execute_auto_run(
         step_id="dummy",
@@ -229,27 +208,56 @@ def test_execute_auto_run_respects_retry_on_timeout_false(monkeypatch):
         step_results={},
     )
 
-    assert calls["n"] == 1, "opt-out must skip the retry"
+    assert len(recording_runner.launches) == 1, "opt-out must skip the retry"
     assert result["success"] is False
     assert "timed out" in result["error"]
 
 
-def test_execute_auto_run_does_not_retry_on_crash(monkeypatch):
+def test_execute_auto_run_does_not_retry_on_crash(recording_runner):
     """A non-timeout failure (subprocess crash) is terminal — no retry."""
-    calls = {"n": 0}
-
-    def _fake_run(cmd, input=None, **_kwargs):
-        calls["n"] += 1
-        return _FakeCompletedProcess(
-            stdout="", stderr="Traceback (most recent call last):\nBoom", returncode=1,
-        )
-
-    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+    recording_runner.script(
+        returncode=1, stdout="", stderr="Traceback (most recent call last):\nBoom",
+    )
 
     result = conductor._execute_auto_run(
         step_id="dummy", spec=_spec(), step_results={},
     )
 
-    assert calls["n"] == 1, "crashes signal real bugs and must not retry"
+    assert len(recording_runner.launches) == 1, "crashes signal real bugs and must not retry"
     assert result["success"] is False
     assert "crashed" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Degenerate timeout fallback
+# ---------------------------------------------------------------------------
+#
+# run_tool requires a finite, positive timeout. A step's spec can carry
+# timeout 0 or an explicit null (YAML `null`), which run_tool would reject.
+# _execute_auto_run must keep launching those two cases the way it did
+# before it adopted run_tool for the normal case, instead of raising.
+
+
+@pytest.mark.parametrize("invalid_timeout", [0, None, -5, "30", True])
+def test_execute_auto_run_uses_the_default_for_an_invalid_timeout(
+    recording_runner, caplog, invalid_timeout,
+):
+    """Every auto_run step is bounded: a spec timeout that is not a positive
+    number runs under the default, with a warning, instead of failing."""
+    recording_runner.script(stdout='{"success": true, "value": null}')
+
+    with caplog.at_level(logging.WARNING, logger="work_buddy.mcp_server.conductor"):
+        result = conductor._execute_auto_run(
+            step_id="dummy",
+            spec={
+                "callable": "work_buddy.obsidian.tasks.store.counts_by_state",
+                "kwargs": {},
+                "timeout": invalid_timeout,
+            },
+            step_results={},
+        )
+
+    assert result["success"] is True
+    [launch] = recording_runner.launches
+    assert launch.timeout == conductor._AUTO_RUN_DEFAULT_TIMEOUT_S
+    assert "not a positive number of seconds" in caplog.text

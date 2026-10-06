@@ -83,7 +83,7 @@ dev_notes: |-
 
   10. Cross-platform process cleanup: os.kill(pid, SIGTERM) is
       UNRELIABLE on Windows for cross-process kills. It reports
-      success and silently does nothing. compat.kill_process_on_port
+      success and silently does nothing. process.kill_process_on_port
       escalates to `taskkill /F /T /PID` and polls until the port is
       actually free; it returns a bool, and sidecar `_start_child`
       refuses to spawn a doomed child when cleanup returns False.
@@ -291,7 +291,7 @@ conclusion. The distinct signals + explicit reason strings fix that.
   wb_init escape block, wb_run ACL enforcement, wb_search ACL filter
 - tests/unit/test_llm_with_tools.py, test_llm_with_tools_hygiene.py,
   test_llm_tool_call_trim.py, test_session_acl_escape_block.py,
-  test_search_disabled_flag.py, test_compat_port_cleanup.py
+  test_search_disabled_flag.py, tests/unit/process/test_tree.py
 
 ## Related
 

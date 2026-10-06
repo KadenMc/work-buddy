@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -1558,6 +1559,10 @@ def _resolve_input_map(
     return kwargs, None
 
 
+# The timeout, in seconds, of an auto_run step whose spec gives none.
+_AUTO_RUN_DEFAULT_TIMEOUT_S = 30
+
+
 def _execute_auto_run(
     step_id: str,
     spec: dict[str, Any],
@@ -1593,7 +1598,21 @@ def _execute_auto_run(
     """
     dotted_path = spec.get("callable", "")
     kwargs = dict(spec.get("kwargs") or {})
-    timeout = spec.get("timeout", 30)
+    timeout = spec.get("timeout", _AUTO_RUN_DEFAULT_TIMEOUT_S)
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        # Every auto_run step is bounded. A spec whose timeout is missing its
+        # value, zero, negative or not a number runs under the default.
+        logger.warning(
+            "auto_run[%s]: timeout %r is not a positive number of seconds, "
+            "so the step runs with the default of %ds.",
+            step_id, timeout, _AUTO_RUN_DEFAULT_TIMEOUT_S,
+        )
+        timeout = _AUTO_RUN_DEFAULT_TIMEOUT_S
     retry_on_timeout = spec.get("retry_on_timeout", True)
 
     # --- Safety: only allow work_buddy.* imports ---
@@ -1648,7 +1667,7 @@ def _execute_auto_run(
     cmd = [sys.executable, "-m", "work_buddy.mcp_server.subprocess_runner"]
 
     logger.info(
-        "auto_run[%s]: spawning subprocess for %s (timeout=%ds)",
+        "auto_run[%s]: spawning subprocess for %s (timeout=%ss)",
         step_id, dotted_path, timeout,
     )
 
@@ -1661,17 +1680,17 @@ def _execute_auto_run(
     #
     # Set ``retry_on_timeout: false`` on the AutoRun spec for steps that
     # mutate external state where a second attempt would not be idempotent.
+    from work_buddy.process import run_tool
+
     max_attempts = 2 if retry_on_timeout else 1
     proc = None
     last_timeout_exc: subprocess.TimeoutExpired | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            proc = subprocess.run(
+            proc = run_tool(
                 cmd,
-                input=json.dumps(payload),
-                capture_output=True,
-                text=True,
                 timeout=timeout,
+                input=json.dumps(payload),
                 cwd=str(repo_root),
             )
             break

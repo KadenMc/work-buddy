@@ -410,8 +410,12 @@ def test_project_operation_lock_is_cross_process(tmp_path: Path) -> None:
                 str(acquired_path),
             ]
         )
+        # The child creates the file before it writes to it, so wait for the
+        # content, not the file.
         deadline = time.monotonic() + 5
-        while not ready_path.exists() and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if ready_path.exists() and ready_path.read_text(encoding="utf-8") == "ready":
+                break
             time.sleep(0.01)
         assert ready_path.read_text(encoding="utf-8") == "ready"
         time.sleep(0.1)

@@ -62,7 +62,7 @@ Caching does not help the first (uncached) call, and an unbounded external depen
 - **Per-process "already did it" gate.** For idempotent-but-not-free setup (schema-ensure, migrations), run it once per resource per process via a module-level `set` keyed on the resource path.
 - **Share one connection, or batch the query.** For an N+1 over a store, thread one connection through the loop (heterogeneous reads) or collapse it to a single `WHERE id IN (...)` (homogeneous reads).
 - **Stale-while-revalidate + prewarm.** For expensive builds with no cheap change-signal (health/requirement sweeps, git-activity scans, system-state): serve the last snapshot immediately, refresh on a single-flight background thread, and pre-warm at startup. A plain TTL cache that *rebuilds synchronously on expiry* still stalls one request per cycle -- stale-while-revalidate does not.
-- **Deadline-bound external calls** so a slow dependency can't stall the handler.
+- **Deadline-bound external calls** so a slow dependency can't stall the handler. Programs start through `work_buddy.process.run_tool`, which requires a timeout and clamps it to the caller's resilience deadline (see `architecture/process-execution`).
 
 ## Current applications
 
@@ -85,3 +85,4 @@ Caching does not help the first (uncached) call, and an unbounded external depen
 - `architecture/migrations` -- the migration runner; its audit hash is memoized because `run()` is on the store hot path.
 - `architecture/event-bus` -- SSE push and the smart-refresh contract; the natural cache-invalidation channel.
 - `architecture/resilience` -- deadlines/timeouts for bounding external calls.
+- `architecture/process-execution` -- how external programs run: required timeouts, deadline clamping, and tree termination.

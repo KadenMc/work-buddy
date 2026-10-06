@@ -110,10 +110,10 @@ def _download_remote_snapshot(tag: str, repo: str | None = None) -> Path:
         "--dir", str(target_dir),
         "--clobber",
     ]
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300,
-        )
+        proc = run_tool(cmd, timeout=300)
     except FileNotFoundError:
         raise RestoreFailed("gh CLI not installed or not on PATH") from None
     except subprocess.TimeoutExpired:
@@ -194,10 +194,12 @@ def _current_known_max_schema_versions() -> dict[str, int]:
 
 def _current_commit() -> str | None:
     """Get the current code's HEAD commit, or None if unavailable."""
+    from work_buddy.process import run_tool
+
     try:
-        proc = subprocess.run(
+        proc = run_tool(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_root()), capture_output=True, text=True, timeout=5,
+            cwd=str(repo_root()), timeout=5,
         )
         return proc.stdout.strip() if proc.returncode == 0 else None
     except (subprocess.SubprocessError, FileNotFoundError):
@@ -223,11 +225,13 @@ def _validate_manifest(
             # Try git merge-base to see if the snapshot commit is an
             # ancestor of HEAD. If it's not in the repo at all, refuse.
             try:
-                proc = subprocess.run(
+                from work_buddy.process import run_tool
+
+                proc = run_tool(
                     ["git", "merge-base", "--is-ancestor",
                      manifest.work_buddy_commit, "HEAD"],
                     cwd=str(repo_root()),
-                    capture_output=True, text=True, timeout=5,
+                    timeout=5,
                 )
                 if proc.returncode == 0:
                     pass  # snapshot is ancestor of HEAD: safe

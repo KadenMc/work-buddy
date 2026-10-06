@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Iterator
 
 from work_buddy.logging_config import get_logger
-from work_buddy.utils.process import is_process_alive
+from work_buddy.process import is_process_alive
 
 logger = get_logger(__name__)
 

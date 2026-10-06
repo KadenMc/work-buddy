@@ -635,7 +635,7 @@ class TestHealthDoesNotInviteADuplicate:
             holder.wait(timeout=30)
 
     def test_start_refuses_to_spawn_alongside_a_wedged_daemon(
-        self, lock_dir, monkeypatch
+        self, lock_dir, monkeypatch, recording_runner
     ):
         """A wedged daemon that holds the lock is reported, not joined by a second.
 
@@ -648,28 +648,20 @@ class TestHealthDoesNotInviteADuplicate:
         holder = _spawn_holder(
             lock_dir / "sidecar.lock", lock_dir / "sidecar.pid", ready_file=ready
         )
-        spawned: list[object] = []
         try:
             monkeypatch.setattr(lifecycle._pid, "check_existing_daemon", lambda: 4242)
             monkeypatch.setattr(lifecycle, "_daemon_health", lambda *a: "wedged")
-            monkeypatch.setattr(
-                lifecycle.subprocess,
-                "Popen",
-                lambda *a, **kw: spawned.append(a) or (_ for _ in ()).throw(
-                    AssertionError("start spawned a second sidecar")
-                ),
-            )
             result = lifecycle.start_sidecar(wait_seconds=0.1)
             assert result["started"] is False
             assert result["already_running"] is True
-            assert spawned == []
+            assert recording_runner.launches == [], "start spawned a second sidecar"
         finally:
             holder.kill()
             holder.wait(timeout=30)
 
 
     def test_a_held_lock_after_spawn_reports_running_not_failure(
-        self, lock_dir, monkeypatch
+        self, lock_dir, monkeypatch, recording_runner
     ):
         """A spawn whose PID file has not confirmed, while the lock is held,
         is reported as running.
@@ -685,14 +677,11 @@ class TestHealthDoesNotInviteADuplicate:
             lock_dir / "sidecar.lock", lock_dir / "sidecar.pid", ready_file=ready
         )
         try:
-            # Force the "down" classification so start proceeds to the spawn,
-            # and make the spawn a no-op: the holder stands in for the daemon
-            # it launched.
+            # Force the "down" classification so start proceeds to the spawn.
+            # The recording runner makes the spawn a no-op: the holder stands
+            # in for the daemon it launched.
             monkeypatch.setattr(lifecycle._pid, "check_existing_daemon", lambda: None)
             monkeypatch.setattr(lifecycle, "_daemon_health", lambda *a: "down")
-            monkeypatch.setattr(
-                lifecycle.subprocess, "Popen", lambda *a, **kw: None
-            )
             result = lifecycle.start_sidecar(wait_seconds=0.5)
             assert result["started"] is True
             assert result["already_running"] is False
@@ -703,14 +692,13 @@ class TestHealthDoesNotInviteADuplicate:
             holder.wait(timeout=30)
 
     def test_a_free_lock_after_spawn_is_a_genuine_failure(
-        self, lock_dir, monkeypatch
+        self, lock_dir, monkeypatch, recording_runner
     ):
         """If nothing holds the lock after the wait, the launched daemon died."""
         from work_buddy.cli import lifecycle
 
         monkeypatch.setattr(lifecycle._pid, "check_existing_daemon", lambda: None)
         monkeypatch.setattr(lifecycle, "_daemon_health", lambda *a: "down")
-        monkeypatch.setattr(lifecycle.subprocess, "Popen", lambda *a, **kw: None)
         result = lifecycle.start_sidecar(wait_seconds=0.5)
         assert result["started"] is False
         assert result["already_running"] is False

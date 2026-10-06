@@ -49,10 +49,10 @@ Every skill is a declaration. The skill loader (`work_buddy/knowledge/skill_load
 
 `work_buddy/mcp_server/op_registry.py` is an in-memory table keyed by op ID:
 
-- `register_op(op_id, fn)` — register a callable; validates the `op.<namespace>.<name>` grammar and rejects duplicate IDs.
-- `get_op(op_id)` / `list_ops()` — lookup.
-- `load_builtin_ops()` — imports the `work_buddy/mcp_server/ops/` package, whose modules register their ops as an import side effect.
-- `register_op_effects(op_id, effects)` / `get_op_effects(op_id)` — for skills with multi-effect manifests. An `EffectSpec` holds a `resolver` callable, so it cannot ride in a data declaration; the ops module registers the manifest and the loader threads it onto the resolved `Skill`.
+- `register_op(op_id, fn, *, replace=False)`: registers a callable. It validates the `op.<namespace>.<name>` grammar and rejects a duplicate ID unless `replace=True`. While `load_builtin_ops` reloads a module, registering the same function again replaces its earlier entry, and any other duplicate still raises.
+- `get_op(op_id)` / `list_ops()`: lookup.
+- `load_builtin_ops()`: imports the `work_buddy/mcp_server/ops/` package, whose modules register their ops as an import side effect. A module that is already imported is reloaded instead, which re-runs its registrations and restores its ops after `clear_ops`.
+- `register_op_effects(op_id, effects)` / `get_op_effects(op_id)`: for skills with multi-effect manifests. An `EffectSpec` holds a `resolver` callable, so it cannot ride in a data declaration. The ops module registers the manifest, and the loader threads it onto the resolved `Skill`.
 
 The Op table (`_OPS`) survives a data-only `reload_skill_data` (no purge — declarations just re-resolve against the same callables). The dormant `invalidate_registry` purges `work_buddy.*` from `sys.modules`, which rebuilds `_OPS` fresh on the next registry build.
 

@@ -97,6 +97,59 @@ class TestBuiltinOps:
         op_registry.load_builtin_ops()  # second call must not raise
         assert op_registry.list_ops() == first
 
+    def test_a_module_imported_directly_does_not_collide_with_itself(self):
+        """Importing an op module directly registers its ops without marking
+        the built-ins loaded. Loading them afterwards reloads that module,
+        which re-runs its registrations: they replace its own earlier ones
+        instead of raising a duplicate error."""
+        import importlib
+        import sys
+
+        name = "work_buddy.mcp_server.ops.sidecar_ops"
+        if name in sys.modules:
+            importlib.reload(sys.modules[name])
+        else:
+            importlib.import_module(name)
+        assert op_registry.get_op("op.wb.sidecar_status") is not None
+
+        op_registry.load_builtin_ops()
+
+        assert op_registry.get_op("op.wb.sidecar_status") is not None
+        assert op_registry.get_op("op.wb.task_read") is not None
+
+    def test_a_duplicate_outside_a_reload_still_raises(self):
+        op_registry.load_builtin_ops()
+
+        with pytest.raises(ValueError, match="already registered"):
+            op_registry.register_op("op.wb.sidecar_status", _noop)
+
+    def test_a_reload_replaces_a_function_it_registers_again(self, monkeypatch):
+        """A reload re-creates each function: the same module and name in a new
+        object. Registering it again replaces the earlier entry."""
+        import types
+
+        op_registry.register_op("op.wb.sample", _noop)
+        reloaded = types.FunctionType(_noop.__code__, _noop.__globals__)
+        monkeypatch.setattr(op_registry, "_reloading", __name__)
+
+        op_registry.register_op("op.wb.sample", reloaded)
+
+        assert op_registry.get_op("op.wb.sample") is reloaded
+
+    def test_a_reload_cannot_take_another_modules_op(self, monkeypatch):
+        """During a reload, a different function under an existing ID is a
+        duplicate like any other."""
+        def impostor(**kwargs):
+            return None
+
+        op_registry.register_op("op.wb.sample", _noop)
+        monkeypatch.setattr(
+            op_registry, "_reloading", "work_buddy.mcp_server.ops.other_ops",
+        )
+
+        with pytest.raises(ValueError, match="already registered"):
+            op_registry.register_op("op.wb.sample", impostor)
+
 
 class TestOptionalDependencyWhitelist:
     """``load_builtin_ops`` skips an op module only when its failure matches

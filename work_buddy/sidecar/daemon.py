@@ -35,14 +35,16 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from work_buddy.compat import (
-    assign_process_to_job,
-    build_child_env,
-    create_kill_on_close_job,
-    resolve_child_python,
-)
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
+from work_buddy.process import (
+    HostRole,
+    ProcessHandle,
+    assign_process_to_job,
+    create_kill_on_close_job,
+    resolve_child_python,
+    start_host,
+)
 from work_buddy.sidecar import instance_lock
 from work_buddy.sidecar.pid import (
     PID_FILE,
@@ -52,6 +54,7 @@ from work_buddy.sidecar.pid import (
 )
 from work_buddy.sidecar.state import (
     STATE_FILE,
+    HostRecord,
     SidecarState,
     ServiceHealth,
     cleanup_state_file,
@@ -140,7 +143,7 @@ class ChildService:
     args: list[str] = field(default_factory=list)  # extra CLI args
     environment: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
-    process: subprocess.Popen | None = None
+    process: ProcessHandle | None = None
     crash_count: int = 0
     last_crash: float = 0.0
     last_healthy: float = 0.0
@@ -267,7 +270,7 @@ def _kill_process_on_port(port: int, *, service_name: str = "") -> bool:
     orphan survived our kill attempts — in which case the caller
     should NOT try to bind because the Popen will silently die.
     """
-    from work_buddy.compat import kill_process_on_port
+    from work_buddy.process import kill_process_on_port
     freed = kill_process_on_port(port, wait_seconds=5.0)
     if not freed:
         logger.error(
@@ -445,17 +448,16 @@ def _oversize_service_logs(log_dir: Path) -> list[tuple[Path, int]]:
 
 
 def _start_child(svc: ChildService) -> None:
-    """Start a child service as a direct subprocess.
+    """Start a child service as a supervised host.
 
-    Launches the project ``.venv`` Python directly (no shell wrapper)
-    so that ``svc.process.pid`` is the actual Python process, not a
-    wrapper. This ensures ``terminate()`` actually stops the service.
+    Launches the pinned interpreter directly (no shell wrapper), so that
+    ``svc.process.pid`` is the service's own Python process and
+    ``terminate()`` actually stops the service.
     """
     # Kill any orphan from a prior sidecar crash and verify the port
     # is actually free before we try to bind our fresh child. Without
-    # this verify step the Popen silently dies when an orphan still
-    # holds the port, and the sidecar logs "Started %s (pid=...)"
-    # even though the child is already dead.
+    # this verify step the child dies on bind while the sidecar logs
+    # "Started %s (pid=...)" as if nothing were wrong.
     if not _kill_process_on_port(svc.port, service_name=svc.name):
         logger.error(
             "Refusing to start %s — port %d not freed. Fix the orphan "
@@ -463,15 +465,8 @@ def _start_child(svc: ChildService) -> None:
         )
         return
 
-    python = resolve_child_python()
-    # ``-u`` forces unbuffered stdio so child output lands in the log
-    # file immediately — critical for debugging slow/silent startups.
-    cmd = [python, "-u", "-m", svc.module] + svc.args
-
-    # Redirect child stdout/stderr to a per-service log file. Previously
-    # we relied on Popen's default (inherit from parent), but with
-    # CREATE_NO_WINDOW on Windows that inheritance can silently drop
-    # output — leaving us blind when a service fails to start.
+    # The child's stdout and stderr go to a per-service log file, so a
+    # service that fails during startup is never silent.
     from work_buddy.paths import data_dir
     log_dir = data_dir("runtime/service_logs")
     log_path = log_dir / f"{svc.name}.log"
@@ -498,22 +493,16 @@ def _start_child(svc: ChildService) -> None:
             cap_mib,
             ", ".join(f"{p.name}={n // (1024 * 1024)}MiB" for p, n in oversize),
         )
-    try:
-        log_fh = open(log_path, "a", encoding="utf-8", buffering=1)
-        log_fh.write(f"\n--- {svc.name} starting at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-        log_fh.flush()
-    except OSError as exc:
-        logger.error("Could not open %s for child stdout: %s", log_path, exc)
-        log_fh = None
 
     try:
-        svc.process = subprocess.Popen(
-            cmd,
-            cwd=str(_REPO_ROOT),
-            env={**build_child_env(), **svc.environment},
-            stdout=log_fh if log_fh else subprocess.DEVNULL,
-            stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        svc.process = start_host(
+            HostRole.SERVICE,
+            svc.module,
+            args=svc.args,
+            log_path=log_path,
+            name=svc.name,
+            extra_env=svc.environment,
+            cwd=_REPO_ROOT,
         )
         logger.info(
             "Started %s (pid=%d, port=%d, log=%s)",
@@ -526,13 +515,6 @@ def _start_child(svc: ChildService) -> None:
         assign_process_to_job(_kill_job, svc.process.pid)
     except OSError as exc:
         logger.error("Failed to start %s: %s", svc.name, exc)
-    finally:
-        # Close the daemon's copy of the child's log handle. The child holds
-        # its own inherited dup, so this does not affect its logging; leaving
-        # the parent copy open leaks a handle per restart and, on Windows,
-        # pins the file against the next startup roll's rename.
-        if log_fh:
-            log_fh.close()
 
 
 def _preflight_dashboard_react_build(
@@ -1025,6 +1007,22 @@ def run(foreground: bool = True) -> None:
         "Children will spawn with: %s (daemon sys.executable=%s)",
         resolved_python, sys.executable,
     )
+    # Record the runtime context this daemon actually has, once, so status
+    # and health can report drift without guessing from logs.
+    try:
+        from work_buddy.process import describe_host_context
+
+        state.host = HostRecord.from_dict(describe_host_context(cfg))
+        if state.host is not None:
+            logger.info(
+                "Host runtime: %s, console %s via %s, services on %s",
+                state.host.executable, state.host.console,
+                state.host.mechanism, state.host.child_python,
+            )
+            for warning in state.host.warnings():
+                logger.warning("Host runtime drift: %s", warning)
+    except Exception:
+        logger.exception("Could not record the host runtime context")
 
     # --- OS-enforced hard-kill reaping (Windows) ---
     # Create the kill-on-close Job Object before spawning any child so each

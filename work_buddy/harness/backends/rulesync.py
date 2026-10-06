@@ -11,9 +11,16 @@ from tempfile import TemporaryDirectory
 from work_buddy.harness.config import load_harness_config
 from work_buddy.harness.model import HarnessSyncResult, HarnessTarget
 from work_buddy.harness.toolchain import rulesync_command
+from work_buddy.process import run_tool
 
 
 _FEATURE_ORDER = ("rules", "mcp", "commands", "skills", "hooks", "permissions")
+
+# rulesync generate() renders from local template files and is normally
+# fast, but rulesync_command() can fall back to `npx -y rulesync@<version>`,
+# which downloads the package on a cold cache. That download gets the same
+# 120 seconds install_rulesync() gives its release download.
+_GENERATE_TIMEOUT_S = 120
 
 
 class RulesyncBackend:
@@ -68,7 +75,7 @@ class RulesyncBackend:
             argv.append("--check")
 
         try:
-            proc = subprocess.run(argv, text=True, capture_output=True, check=False)
+            proc = run_tool(argv, timeout=_GENERATE_TIMEOUT_S)
         except FileNotFoundError as exc:
             return HarnessSyncResult(
                 ok=False,
@@ -80,6 +87,20 @@ class RulesyncBackend:
                 dry_run=dry_run,
                 check=check,
                 error=f"rulesync executable not found: {exc.filename}",
+            )
+        except subprocess.TimeoutExpired as exc:
+            # A hang is reported like every other rulesync launch failure: a
+            # failed HarnessSyncResult, not an exception the caller must catch.
+            return HarnessSyncResult(
+                ok=False,
+                returncode=124,
+                targets=tuple(t.id for t in targets),
+                input_root=input_root,
+                output_root=output_root,
+                command=argv,
+                dry_run=dry_run,
+                check=check,
+                error=f"rulesync did not finish within {exc.timeout:.0f}s",
             )
         data: dict = {}
         error = ""

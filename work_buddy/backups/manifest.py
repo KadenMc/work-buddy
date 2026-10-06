@@ -153,33 +153,35 @@ def build_manifest(
 def _probe_git(repo_root: Path | None) -> tuple[str | None, str | None, bool]:
     """Return ``(commit, branch, dirty)``. Each piece is best-effort.
 
-    Uses ``git`` subprocess. If git isn't installed or the path isn't
-    a repo, returns ``(None, None, False)``.
+    Uses ``git`` through the process launch boundary. If git isn't
+    installed or the path isn't a repo, returns ``(None, None, False)``.
     """
     if repo_root is None:
         from work_buddy.paths import repo_root as _rr
         repo_root = _rr()
+    from work_buddy.process import run_tool
+
     try:
-        commit = subprocess.run(
+        commit = run_tool(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_root), capture_output=True, text=True, timeout=5,
+            cwd=str(repo_root), timeout=5,
         )
         commit_sha = commit.stdout.strip() if commit.returncode == 0 else None
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         logger.debug("manifest: git rev-parse failed: %s", exc)
         commit_sha = None
     try:
-        branch = subprocess.run(
+        branch = run_tool(
             ["git", "symbolic-ref", "--short", "HEAD"],
-            cwd=str(repo_root), capture_output=True, text=True, timeout=5,
+            cwd=str(repo_root), timeout=5,
         )
         branch_name = branch.stdout.strip() if branch.returncode == 0 else None
     except (subprocess.SubprocessError, FileNotFoundError):
         branch_name = None
     try:
-        status = subprocess.run(
+        status = run_tool(
             ["git", "status", "--porcelain"],
-            cwd=str(repo_root), capture_output=True, text=True, timeout=5,
+            cwd=str(repo_root), timeout=5,
         )
         dirty = bool(status.stdout.strip()) if status.returncode == 0 else False
     except (subprocess.SubprocessError, FileNotFoundError):
