@@ -57,6 +57,7 @@ _LOCAL_ERROR_KIND_MAP: dict[str, ErrorKind] = {
     "mcp_fetch_failed": ErrorKind.BACKEND_UNAVAILABLE,
     "server_unreachable": ErrorKind.BACKEND_UNAVAILABLE,
     "lm_link_dropped": ErrorKind.BACKEND_UNAVAILABLE,
+    "response_terminated": ErrorKind.BACKEND_UNAVAILABLE,
     "server_error": ErrorKind.UNKNOWN,
     "bad_request": ErrorKind.BAD_REQUEST,
     "context_exceeded": ErrorKind.CONTEXT_EXCEEDED,
@@ -473,8 +474,16 @@ class LLMRunner:
                 "",
             )
 
-        # Normalize into LLMResponse.
-        error_kind = _classify_error(result.error, None) if result.error else None
+        # Normalize into LLMResponse. A local backend failure carries its
+        # structured kind, which wins over the message heuristics. The
+        # message alone would misread LM Studio outages: the bad-request hint
+        # mentions a "schema mismatch", which the heuristics read as a schema
+        # violation.
+        error_kind = (
+            _classify_error(result.error, getattr(result, "error_kind", None))
+            if result.error
+            else None
+        )
 
         return LLMResponse(
             content=result.content,

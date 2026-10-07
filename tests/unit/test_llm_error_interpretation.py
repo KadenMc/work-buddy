@@ -367,3 +367,64 @@ def test_generic_500_still_falls_through_to_server_error() -> None:
         endpoint="/api/v1/chat",
     )
     assert err.kind == "server_error"
+
+
+# ---------------------------------------------------------------------------
+# Temporary conditions LM Studio reports as HTTP 400
+# ---------------------------------------------------------------------------
+# These bodies were seen from /v1/chat/completions and /v1/embeddings. Each
+# describes the model runtime, not the request, so none of them may be
+# classified as ``bad_request``, which callers treat as permanent.
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        'Failed to load model "google/gemma-4-e4b". Error: Engine protocol startup was aborted.',
+        'Failed to load model "google/gemma-4-e4b". Error: Operation canceled.',
+        "Model was unloaded while the request was still in queue..",
+    ],
+)
+def test_model_load_failures_are_model_not_available(message: str) -> None:
+    err = interpret_httpx_exception(
+        _status_error(400, {"error": message}),
+        model="google/gemma-4-e4b",
+        endpoint="/v1/chat/completions",
+    )
+    assert err.kind == "model_not_available"
+    assert err.is_recoverable
+    # The server's own reason is kept, so the cause is not lost.
+    assert message in str(err)
+
+
+def test_lm_link_drop_reported_as_400_is_classified() -> None:
+    body = {"error": "LM Link connection entered error state peer_keepalive_timeout"}
+    err = interpret_httpx_exception(
+        _status_error(400, body),
+        model="google/gemma-4-e4b",
+        endpoint="/v1/chat/completions",
+    )
+    assert err.kind == "lm_link_dropped"
+
+
+def test_bare_terminated_is_response_terminated() -> None:
+    err = interpret_httpx_exception(
+        _status_error(400, {"error": "terminated"}),
+        model="google/gemma-4-e4b",
+        endpoint="/v1/chat/completions",
+    )
+    assert err.kind == "response_terminated"
+    assert err.is_recoverable
+    assert '"terminated"' in str(err)
+    assert "retry" in err.hint.lower()
+
+
+def test_terminated_inside_a_longer_message_stays_bad_request() -> None:
+    """Only the bare word is the cut-off signal. A request error that
+    happens to contain it is still a request error."""
+    err = interpret_httpx_exception(
+        _status_error(400, {"error": "field 'terminated' is not allowed"}),
+        model="m",
+        endpoint="/v1/chat/completions",
+    )
+    assert err.kind == "bad_request"
