@@ -96,3 +96,163 @@ def test_freshness_fails_for_stale_successful_backup(monkeypatch):
     res = checks.check_github_backup_freshness()
     assert res["ok"] is False
     assert "old" in res["detail"]
+
+
+# ─── Runs that stayed on this computer ──────────────────────────────
+
+
+def _local_only_run(minutes_ago: int, last_upload: dict | None = None) -> dict:
+    run = {
+        "status": "ok",
+        "ts": _iso(datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)),
+        "snapshot_id": "snap-local",
+        "remote": {
+            "status": "local_only",
+            "reason": "private_content_opt_in_required",
+        },
+    }
+    if last_upload is not None:
+        run["last_upload"] = last_upload
+    return run
+
+
+def _check_with(monkeypatch, last_run: dict) -> dict:
+    monkeypatch.setattr("work_buddy.config.load_config", lambda: {})
+    monkeypatch.setattr("work_buddy.backups.remote.read_last_run", lambda: last_run)
+    return checks.check_github_backup_freshness()
+
+
+def test_fresh_local_only_run_is_not_a_github_backup(monkeypatch):
+    """A snapshot that never left this computer used to report "last
+    backup ok", which hid weeks of backups that never reached GitHub."""
+    res = _check_with(monkeypatch, _local_only_run(minutes_ago=5))
+    assert res["ok"] is False
+    assert "staying on this computer" in res["detail"]
+    assert "allow_unencrypted_private_content" in res["detail"]
+    assert "No upload to GitHub is recorded" in res["detail"]
+
+
+def test_local_only_run_passes_while_last_upload_is_fresh(monkeypatch):
+    upload = {
+        "ts": _iso(datetime.now(timezone.utc) - timedelta(minutes=30)),
+        "snapshot_id": "snap-uploaded",
+    }
+    res = _check_with(monkeypatch, _local_only_run(minutes_ago=5, last_upload=upload))
+    assert res["ok"] is True
+    assert "snap-uploaded" in res["detail"]
+    assert "stayed on this computer" in res["detail"]
+
+
+def test_local_only_run_fails_once_last_upload_is_stale(monkeypatch):
+    upload = {"ts": "2026-08-28T14:00:00Z", "snapshot_id": "snap-old"}
+    res = _check_with(monkeypatch, _local_only_run(minutes_ago=5, last_upload=upload))
+    assert res["ok"] is False
+    assert "2026-08-28 14:00 UTC" in res["detail"]
+
+
+# ─── Writer: the last upload is carried forward ─────────────────────
+
+
+def test_carried_last_upload_prefers_the_recorded_marker():
+    from work_buddy.mcp_server.ops.backups_ops import _carried_last_upload
+
+    previous = _local_only_run(
+        minutes_ago=5,
+        last_upload={"ts": "2026-10-06T21:00:00Z", "snapshot_id": "snap-up"},
+    )
+    assert _carried_last_upload(previous) == {
+        "ts": "2026-10-06T21:00:00Z", "snapshot_id": "snap-up",
+    }
+
+
+def test_carried_last_upload_reads_an_older_file_that_uploaded():
+    from work_buddy.mcp_server.ops.backups_ops import _carried_last_upload
+
+    previous = {
+        "status": "ok",
+        "ts": "2026-08-28T14:00:00Z",
+        "snapshot_id": "snap-pushed",
+        "remote": {"status": "ok"},
+    }
+    assert _carried_last_upload(previous) == {
+        "ts": "2026-08-28T14:00:00Z", "snapshot_id": "snap-pushed",
+    }
+
+
+def test_carried_last_upload_is_none_without_an_upload():
+    from work_buddy.mcp_server.ops.backups_ops import _carried_last_upload
+
+    assert _carried_last_upload(None) is None
+    assert _carried_last_upload(_local_only_run(minutes_ago=5)) is None
+    assert _carried_last_upload(
+        {"status": "error", "ts": "2026-10-06T21:00:00Z", "remote": {"status": "gh_network"}},
+    ) is None
+
+
+def _run_policy(monkeypatch, *, push_remote: bool, previous: dict | None,
+                push_status: str = "ok") -> dict:
+    """Run the backup policy with the snapshot and GitHub calls stubbed."""
+    from work_buddy.mcp_server.ops import backups_ops
+
+    written: list[dict] = []
+    monkeypatch.setattr(
+        "work_buddy.backups.local.run_backup",
+        lambda manual: {
+            "snapshot_id": "snap-2026-10-06T22-00-00Z",
+            "tarball_path": "/tmp/snap/backup.tar.gz",
+        },
+    )
+    monkeypatch.setattr(
+        "work_buddy.backups.remote.push_snapshot",
+        lambda snapshot_dir, repo: {"status": push_status},
+    )
+    monkeypatch.setattr(
+        "work_buddy.backups.remote.prune_remote_snapshots",
+        lambda repo: {"pruned": []},
+    )
+    monkeypatch.setattr("work_buddy.backups.remote.read_last_run", lambda: previous)
+    monkeypatch.setattr("work_buddy.backups.remote.write_last_run", written.append)
+    backups_ops._run_backup_with_remote_policy(
+        manual=False,
+        push_remote=push_remote,
+        repo="owner/backups",
+        local_only_reason=None if push_remote else "private_content_opt_in_required",
+    )
+    assert len(written) == 1
+    return written[0]
+
+
+def test_local_only_run_keeps_the_previous_upload(monkeypatch):
+    previous = {
+        "status": "ok",
+        "ts": "2026-10-06T21:00:00Z",
+        "snapshot_id": "snap-up",
+        "remote": {"status": "ok"},
+    }
+    payload = _run_policy(monkeypatch, push_remote=False, previous=previous)
+    assert payload["remote"]["status"] == "local_only"
+    assert payload["last_upload"] == {
+        "ts": "2026-10-06T21:00:00Z", "snapshot_id": "snap-up",
+    }
+
+
+def test_successful_upload_becomes_the_last_upload(monkeypatch):
+    payload = _run_policy(monkeypatch, push_remote=True, previous=None)
+    assert payload["last_upload"] == {
+        "ts": "2026-10-06T22:00:00Z",
+        "snapshot_id": "snap-2026-10-06T22-00-00Z",
+    }
+
+
+def test_failed_upload_keeps_the_previous_upload(monkeypatch):
+    previous = _local_only_run(
+        minutes_ago=5,
+        last_upload={"ts": "2026-10-06T21:00:00Z", "snapshot_id": "snap-up"},
+    )
+    payload = _run_policy(
+        monkeypatch, push_remote=True, previous=previous, push_status="gh_network",
+    )
+    assert payload["status"] == "error"
+    assert payload["last_upload"] == {
+        "ts": "2026-10-06T21:00:00Z", "snapshot_id": "snap-up",
+    }

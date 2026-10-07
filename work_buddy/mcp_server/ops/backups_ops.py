@@ -34,6 +34,30 @@ def _last_run_ts(snapshot_id: str) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else snapshot_id
 
 
+def _carried_last_upload(previous: dict | None) -> dict | None:
+    """Return the most recent upload to GitHub that an earlier run recorded.
+
+    ``last_run.json`` describes only the latest run, so each run copies this
+    marker forward. Without it, a run that stays on this computer would leave
+    no trace of when a backup last reached GitHub. A file written before the
+    marker existed still counts when its own run uploaded successfully.
+    """
+    if not isinstance(previous, dict):
+        return None
+    upload = previous.get("last_upload")
+    if isinstance(upload, dict) and upload.get("ts"):
+        return {"ts": upload["ts"], "snapshot_id": upload.get("snapshot_id")}
+    remote = previous.get("remote")
+    if (
+        previous.get("status") == "ok"
+        and isinstance(remote, dict)
+        and remote.get("status") == "ok"
+        and previous.get("ts")
+    ):
+        return {"ts": previous["ts"], "snapshot_id": previous.get("snapshot_id")}
+    return None
+
+
 def _remote_private_content_prompt(manual: bool, repo: str) -> ConsentPrompt:
     """Bind one remote upload approval to its destination and content class."""
 
@@ -83,11 +107,13 @@ def _run_backup_with_remote_policy(
     from work_buddy.backups.remote import (
         prune_remote_snapshots,
         push_snapshot,
+        read_last_run,
         write_last_run,
     )
 
     result = run_backup(manual=manual)
     snapshot_dir = Path(result["tarball_path"]).parent
+    last_upload = _carried_last_upload(read_last_run())
 
     if push_remote:
         push_result = push_snapshot(snapshot_dir, repo=repo)
@@ -96,6 +122,10 @@ def _run_backup_with_remote_policy(
         if push_result.get("status") == "ok":
             prune_result = prune_remote_snapshots(repo=repo)
             result["remote_pruned"] = prune_result.get("pruned", [])
+            last_upload = {
+                "ts": _last_run_ts(result["snapshot_id"]),
+                "snapshot_id": result["snapshot_id"],
+            }
         # Write last_run.json for the health check (regardless of whether the
         # push succeeded — failure-state visibility is exactly the point).
         write_last_run({
@@ -105,6 +135,7 @@ def _run_backup_with_remote_policy(
             "status":      "ok" if push_result.get("status") == "ok" else "error",
             "error":       push_result.get("error") if push_result.get("status") != "ok" else None,
             "remote":      push_result,
+            "last_upload": last_upload,
         })
     else:
         # Local-only run: still write last_run.json so the health check can
@@ -120,6 +151,7 @@ def _run_backup_with_remote_policy(
             "manual":      manual,
             "status":      "ok",
             "remote":      remote_result,
+            "last_upload": last_upload,
         })
     return result
 
