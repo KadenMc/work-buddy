@@ -619,6 +619,9 @@ def check_github_backup_freshness() -> dict[str, Any]:
 
     - No file yet → ``ok=False`` ("no backup run recorded").
     - Last run failed → ``ok=False`` with the failure detail.
+    - Last run stayed on this computer → judged by the last upload that
+      reached GitHub (``last_upload``), with the reason the run did not
+      upload. A local snapshot is not a GitHub backup.
     - Last run succeeded but is overdue (older than 2 ×
       cadence_minutes) → ``ok=False`` ("backup is overdue").
     - Last run succeeded and is fresh → ``ok=True``.
@@ -651,6 +654,13 @@ def check_github_backup_freshness() -> dict[str, Any]:
         .get("cadence_minutes", 60)
     )
     deadline_seconds = max(1, cadence_min) * 60 * 2
+
+    remote = last.get("remote")
+    if isinstance(remote, dict) and remote.get("status") == "local_only":
+        return _local_only_backup_freshness(
+            last, str(remote.get("reason") or ""), cadence_min, deadline_seconds,
+        )
+
     ts_str = last.get("ts") or last.get("at") or last.get("snapshot_ts")
     if not ts_str:
         return {"ok": True, "detail": "last backup ok (timestamp missing — "
@@ -675,6 +685,67 @@ def check_github_backup_freshness() -> dict[str, Any]:
         "detail": (
             f"last backup ok ({int(age_seconds / 60)}m ago; "
             f"snapshot {last.get('snapshot_id', '?')})"
+        ),
+    }
+
+
+# Why a backup run kept its snapshot on this computer, keyed by the reason the
+# backup op records in ``last_run.json``.
+_LOCAL_ONLY_REASONS = {
+    "private_content_opt_in_required": (
+        "uploading private content is not enabled "
+        "(backups.github.allow_unencrypted_private_content is not true)"
+    ),
+    "remote_repository_unconfigured": (
+        "no GitHub repository is configured (backups.github.repo is empty)"
+    ),
+    "remote_push_explicitly_disabled": "the run was asked not to upload",
+}
+
+
+def _local_only_backup_freshness(
+    last: dict[str, Any],
+    reason_code: str,
+    cadence_min: int,
+    deadline_seconds: int,
+) -> dict[str, Any]:
+    """Judge a run that stayed on this computer by the last upload to GitHub."""
+    from datetime import datetime, timezone
+
+    reason = _LOCAL_ONLY_REASONS.get(
+        reason_code, "uploading was turned off for that run",
+    )
+    upload = last.get("last_upload")
+    upload_dt = (
+        _parse_backup_ts(str(upload.get("ts") or ""))
+        if isinstance(upload, dict)
+        else None
+    )
+    if upload_dt is None:
+        return {
+            "ok": False,
+            "detail": (
+                f"backups are staying on this computer because {reason}. "
+                "No upload to GitHub is recorded."
+            ),
+        }
+    age_seconds = (datetime.now(timezone.utc) - upload_dt).total_seconds()
+    if age_seconds > deadline_seconds:
+        return {
+            "ok": False,
+            "detail": (
+                f"backups are staying on this computer because {reason}. "
+                f"The last upload to GitHub was at "
+                f"{upload_dt:%Y-%m-%d %H:%M} UTC, outside the "
+                f"{cadence_min * 2}m window."
+            ),
+        }
+    return {
+        "ok": True,
+        "detail": (
+            f"last upload to GitHub {int(age_seconds / 60)}m ago "
+            f"(snapshot {upload.get('snapshot_id') or '?'}). The latest "
+            f"backup stayed on this computer because {reason}."
         ),
     }
 

@@ -613,12 +613,12 @@ _register(ComponentDef(
     ],
     check_sequence=[
         CheckStep(
-            description="Last backup succeeded and is within cadence window",
+            description="Last backup reached GitHub within the cadence window",
             check_fn="work_buddy.health.checks.check_github_backup_freshness",
             on_fail=(
-                "The last GitHub backup either failed or is overdue. "
-                "Inspect .data/backups/last_run.json for the error detail, "
-                "or run /wb-backup-now to push a snapshot immediately."
+                "The last GitHub backup failed, is overdue, or stayed on "
+                "this computer. The check's detail names the cause. Fix it, "
+                "then run /wb-backup-now to back up immediately."
             ),
         ),
     ],

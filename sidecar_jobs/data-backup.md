@@ -22,7 +22,8 @@ Pipeline:
 
 The skill handles "stay local unless explicitly opted in" internally.
 Running this job before remote-private-content authorization just produces
-local snapshots, which is the safe default.
+local snapshots, which is the safe default. The Component health check
+reports those runs as not reaching GitHub and names the reason.
 
 Configure the remote target in `config.local.yaml`:
 

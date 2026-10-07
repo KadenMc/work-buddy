@@ -93,7 +93,7 @@ ordinary `data_restore`.
 4. Tar+gzip the directory via Python's `tarfile` standard library.
 5. Sweep retention (see Retention).
 6. Push to GitHub Releases only when a destination repo is configured and the explicit private-content policy allows it (see Remote push). Repository configuration alone never authorizes upload.
-7. Write `.data/backups/last_run.json` with the snapshot and remote-push outcome. The returned result and `MANIFEST.json` carry detailed Truth coverage. Health checks read the last-run sentinel and never hit GitHub on the hot path.
+7. Write the last-run sentinel (`last_run.json` in the backups data directory) with the snapshot, the remote-push outcome, and `last_upload`: the time and snapshot of the most recent upload that reached GitHub. A run that does not upload copies `last_upload` forward from the previous sentinel, so it stays known. The returned result and `MANIFEST.json` carry detailed Truth coverage. Health checks read the last-run sentinel and never hit GitHub on the hot path.
 
 Snapshot IDs are ISO-timestamped: `snap-<utc-isoformat>`. Manual snapshots (triggered via `/wb-backup-now` or `data_backup(manual=True)`) get a `-manual` suffix and live in their own retention bucket.
 
@@ -224,7 +224,7 @@ Registered as a non-core opt-in Component `github_backups` (see `architecture/he
 | `repo-configured` | `input_required` | Form for repo name, calls `gh repo create --private --add-readme` if absent, writes `backups.github.repo` to `config.local.yaml`. |
 | `private-content-opt-in` | `none` | Requires `backups.github.allow_unencrypted_private_content` to be exactly `true`. The user must review the unencrypted archive scope and edit local config deliberately; repository setup does not flip it. |
 
-The Component declares one custom check (`check_github_backup_freshness`) that reads `.data/backups/last_run.json` and returns success/warning/failure based on whether the last snapshot landed inside the configured cadence window. It never polls GitHub directly.
+The Component declares one custom check (`check_github_backup_freshness`) that reads the last-run sentinel and passes only when a backup reached GitHub within twice the configured cadence. A failed upload fails the check with its error. A run that stayed on this computer is judged by `last_upload`, and the check's detail names why the run did not upload, such as the missing private-content opt-in. A local snapshot never counts as a GitHub backup. The check never polls GitHub directly.
 
 A `domain:backups` entry in `work_buddy/control/graph_static.py` makes the Component surface in the Settings tab's domain list. No frontend work beyond adding `"domain:backups"` to `domainOrder` -- the card auto-renders from the control graph (see `architecture/control-graph`).
 
