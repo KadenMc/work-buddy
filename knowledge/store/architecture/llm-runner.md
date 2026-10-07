@@ -110,7 +110,15 @@ MODEL_NOT_AVAILABLE | MODEL_UNSUPPORTED | BAD_REQUEST |
 MALFORMED_RESPONSE | VALIDATION_FAILED | UNKNOWN
 ```
 
-Mirrors `LocalInferenceError.kind` for LM Studio and extends for Anthropic-side failures. Heuristic fallback classifies legacy bare-string errors (`run_task.error`) when no `error_kind` is provided.
+Mirrors `LocalInferenceError.kind` for LM Studio and extends for Anthropic-side failures. A failed local backend call reaches the runner with its kind on `TaskResult.error_kind`, and that kind always wins. The message heuristics classify only bare-string errors (`run_task.error`) that carry no kind. They cannot be trusted with local failures: the generic bad-request hint mentions a schema mismatch, which the heuristics read as `SCHEMA_VIOLATION`.
+
+LM Studio reports several temporary conditions with HTTP 400. The interpreter in `work_buddy/llm/backends/_errors.py` classifies them by their bodies, so only a 400 it cannot explain becomes `bad_request`:
+
+- A failed model load or an unload while the request waited is `model_not_available`.
+- A dropped LM Link connection is `lm_link_dropped`, whatever the status code.
+- A response cut off with the bare message `terminated` is `response_terminated`.
+
+`lm_link_dropped` and `response_terminated` both map to `BACKEND_UNAVAILABLE`, because the same call usually succeeds later.
 
 `MODEL_NOT_AVAILABLE` (renamed from `MODEL_NOT_LOADED`) covers the broader "the model the caller asked for isn't reachable right now" state: model not downloaded, no LM Link device surfaces it, JIT loading disabled, or the linked device just disconnected. The old name implied "loadable but not in memory," which is a narrower (and JIT-handles-this-automatically) condition than what this kind actually represents.
 

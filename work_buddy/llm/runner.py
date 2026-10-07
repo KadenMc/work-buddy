@@ -50,6 +50,9 @@ class TaskResult:
     cached: bool = False  # True if served from cache
     cache_key: str | None = None
     error: str | None = None
+    # ``LocalInferenceError.kind`` when a local backend call failed, so
+    # callers can classify the failure without parsing ``error``.
+    error_kind: str | None = None
 
 
 def _get_llm_config() -> dict[str, Any]:
@@ -535,7 +538,10 @@ def _backend_failure_to_result(
                 backend_id, exc.kind,
             )
         return TaskResult(
-            content="", error=exc.format_caller_message(), model=model,
+            content="",
+            error=exc.format_caller_message(),
+            error_kind=exc.kind,
+            model=model,
         )
 
     logger.exception("Profile %s backend call failed", backend_id)
