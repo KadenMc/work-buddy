@@ -143,7 +143,12 @@ class RetrySweep:
         path: Path,
         now: datetime,
     ) -> dict[str, Any] | None:
-        """Reload and claim one record while holding its cross-process lock."""
+        """Reload and claim one record while holding its cross-process lock.
+
+        A record whose retry window has closed is retired here instead of
+        claimed, because ``_is_ready`` would skip it on every sweep and leave
+        it in the queue forever.
+        """
 
         try:
             with file_lock(path, timeout=0.5, poll=0.02):
@@ -156,19 +161,93 @@ class RetrySweep:
                 # subsequent write uses the canonical ``skill`` type.
                 if record.get("type") == "capability":
                     record["type"] = "skill"
-                if not self._is_ready(record, now):
+                if self._is_expired(record, now):
+                    self._retire_expired(record, now)
+                    _write_record(record)
+                elif not self._is_ready(record, now):
                     return None
-                lease_seconds = int(record.get("lease_seconds") or 90)
-                record["status"] = "running"
-                record["locked_until"] = (
-                    now + timedelta(seconds=lease_seconds)
-                ).isoformat()
-                record["lease_token"] = uuid.uuid4().hex
-                record["attempt"] = record.get("attempt", 1) + 1
-                _write_record(record)
-                return record
+                else:
+                    lease_seconds = int(record.get("lease_seconds") or 90)
+                    record["status"] = "running"
+                    record["locked_until"] = (
+                        now + timedelta(seconds=lease_seconds)
+                    ).isoformat()
+                    record["lease_token"] = uuid.uuid4().hex
+                    record["attempt"] = record.get("attempt", 1) + 1
+                    _write_record(record)
+                    return record
         except TimeoutError:
             return None
+        # Only a retired record reaches this point. Its follow-up runs outside
+        # the lock, as every other outcome's does.
+        self._on_expired(record)
+        return None
+
+    def _is_expired(self, record: dict[str, Any], now: datetime) -> bool:
+        """Whether a queued record's retry window has closed for good.
+
+        ``_is_ready`` never dispatches a record older than
+        ``max_retry_age_minutes``. Internal operations have no age limit, and
+        a record whose lease is still live is mid-replay, so both stay queued.
+        A ``running`` record whose lease has lapsed was abandoned by a replay
+        that never finished, and ages out like a failed one.
+        """
+        if not (record.get("queued") or record.get("queued_for_retry")):
+            return False
+        if record.get("type") == "internal":
+            return False
+        if record.get("status") not in ("failed", "running"):
+            return False
+        locked = record.get("locked_until")
+        if locked:
+            try:
+                if datetime.fromisoformat(locked) > now:
+                    return False
+            except (ValueError, TypeError):
+                pass
+        try:
+            age = now - datetime.fromisoformat(record["created_at"])
+        except (KeyError, ValueError, TypeError):
+            return False
+        return age > timedelta(minutes=self._max_age_minutes)
+
+    def _retire_expired(self, record: dict[str, Any], now: datetime) -> None:
+        """Take a record whose retry window closed out of the queue.
+
+        Like a suppressed record, it is retired without notifications. The
+        window is short (30 minutes by default), so the session that queued
+        the work has usually moved on, and the record keeps the outcome for
+        anyone who checks the operation's status.
+        """
+        stamp = now.isoformat()
+        if record.get("status") == "running" and not record.get("error"):
+            record["error"] = "The retry stopped without recording a result."
+        record["queued"] = False
+        record["queued_for_retry"] = False
+        record["status"] = "failed"
+        record["error_code"] = "retry_window_expired"
+        record["expired_at"] = stamp
+        record["completed_at"] = stamp
+        record["locked_until"] = None
+        record["lease_token"] = None
+
+    def _on_expired(self, record: dict[str, Any]) -> None:
+        """Log a retirement and release any workflow step waiting on it."""
+        logger.info(
+            "Retry window closed for %s (%s). Removed it from the retry queue.",
+            record.get("operation_id"), record.get("name"),
+        )
+        if self._event_log:
+            self._event_log.emit(
+                "retry_expired", record["operation_id"],
+                f"Retry window closed: {record.get('name')} was not retried",
+            )
+        wf_ctx = record.get("workflow_context")
+        if wf_ctx:
+            self._fail_workflow_step(
+                wf_ctx,
+                f"Retry window closed before {record.get('name')} was retried",
+            )
 
     def _is_ready(self, record: dict[str, Any], now: datetime) -> bool:
         """Check whether this operation should be dispatched now."""
