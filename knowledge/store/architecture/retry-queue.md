@@ -114,6 +114,7 @@ dev_notes: |-
 11. **Failure notification** varies by reason:
    - `retry` exhausted → messaging ping to originating session AND loud user notification via all surfaces (Obsidian, Telegram, Dashboard)
    - `deferred_submit` / `scheduled_job` exhausted → messaging ping to originating session only. Agent decides whether to escalate.
+   - Retry window closed → no notification. The sweep never dispatches a queued op older than `max_retry_age_minutes`, so it retires one instead of leaving it queued forever. The record leaves the queue with `status: failed`, `error_code: retry_window_expired`, and `expired_at`, and keeps its original `error`. A waiting workflow step is failed, and the sidecar event log records `retry_expired`. Internal operations have no age limit, and a record whose lease is still live stays queued. A `running` record whose lease lapsed was abandoned mid-replay and is retired the same way.
 
 12. **Workflow integration**: TaskStatus.RETRY_PENDING blocks dependents without killing the workflow. On success → conductor.resume_after_retry() completes the step and unblocks dependents. On exhaustion → conductor.fail_after_retry_exhaustion() fails the step.
 
@@ -124,11 +125,12 @@ dev_notes: |-
 - Post-write-verify recovered (multi-effect): same shape additionally with `effects_verified: <count>`. Every declared effect landed.
 - Disabled skill auto-recovered: wb_run returns the normal skill response with `registry_auto_recovered: true`. The skill was in the disabled registry at dispatch time; the gateway or sweep re-probed and restored it before invoking.
 - Deferred submit: wb_run("llm_submit", ...) returns {operation_id, status: 'queued', hint, queue_reason: 'deferred_submit'}. Check with wb_status(operation_id); messaging ping lands when it completes.
+- No notification ever arrives: check wb_status(operation_id). An op whose retry window closed before it could run ends with `error_code: retry_window_expired` and sends nothing.
 - `retry_success` payload includes the full inner result. For multi-effect skills, inspect `result.verified` per-effect to confirm every effect landed; the sweep already re-enqueued any partial state, so a `retry_success` you receive should show all effects verified.
 
 ## Configuration
 
-config.yaml → sidecar.retry_queue: enabled, max_retries (default 5), default_backoff ('adaptive'), max_retry_age_minutes (30).
+config.yaml → sidecar.retry_queue: enabled, max_retries (default 5), default_backoff ('adaptive'), max_retry_age_minutes (30). A queued op older than `max_retry_age_minutes` is retired rather than retried.
 
 ## Key files
 
