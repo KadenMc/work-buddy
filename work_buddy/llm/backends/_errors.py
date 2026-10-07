@@ -41,6 +41,7 @@ _RECOVERABLE_KINDS: frozenset[str] = frozenset({
     "model_unsupported",
     "context_exceeded",
     "lm_link_dropped",
+    "response_terminated",
     "mcp_gateway_timeout",
     "mcp_fetch_failed",
     "bad_request",
@@ -59,7 +60,9 @@ class LocalInferenceError(Exception):
               the LM Studio catalog, no linked device surfaces it, or LM Link
               is currently disconnected. NOT necessarily "loaded into memory" —
               JIT can usually load a cataloged model on demand. This kind
-              covers the broader "we can't reach this model right now" state.
+              covers the broader "we can't reach this model right now" state,
+              including a load that failed or an unload while the request
+              waited.
             * ``"model_unsupported"`` — server rejected the model for this endpoint
             * ``"bad_request"`` — 4xx with an otherwise unclassified body
             * ``"server_error"`` — 5xx with no matched sub-pattern
@@ -71,6 +74,9 @@ class LocalInferenceError(Exception):
               gateway failed at the transport layer (TCP reset, refused, etc).
             * ``"lm_link_dropped"`` — LM Studio lost its LM Link connection to
               the compute device mid-call.
+            * ``"response_terminated"``: LM Studio cut the response off
+              before it finished and reported only "terminated". The request
+              itself was acceptable, and the same call usually succeeds later.
             * ``"context_exceeded"`` — prompt (+ tool schema + reasoning tokens)
               exceeded the model's configured context window. The effective
               cap is the "Context Length" slider on the loaded model in
@@ -208,21 +214,29 @@ def _interpret_status_error(
     #   "Invalid model identifier '<id>'. There are no downloaded llm models."
     #   "No models loaded. Please load a model in the developer page ..."
     #   "Model '<id>' not found"
+    #   "Failed to load model \"<id>\". Error: Engine protocol startup was aborted."
+    #   "Failed to load model \"<id>\". Error: Operation canceled."
+    #   "Model was unloaded while the request was still in queue.."
     # These all mean the model the caller asked for isn't reachable right
     # now. The model may be downloaded but JIT-loadable, fully missing,
     # or living on a disconnected LM Link device — we can't tell from a
     # single chat error. Use the broader name accordingly so the kind
-    # doesn't imply "just needs to be loaded into memory."
+    # doesn't imply "just needs to be loaded into memory." LM Studio sends
+    # the load and unload failures as HTTP 400, so without these phrases
+    # they would be filed as a permanent bad request.
     if (
         code == "model_not_found"
         or "no models loaded" in msg_lower
         or "no downloaded llm models" in msg_lower
         or "invalid model identifier" in msg_lower
         or "model not found" in msg_lower
+        or "failed to load model" in msg_lower
+        or "model was unloaded" in msg_lower
     ):
         return LocalInferenceError(
             (
                 f"Model {model!r} is not currently available via LM Studio."
+                + (f" Server message: {message}" if message else "")
             ),
             kind="model_not_available",
             hint=(
@@ -232,6 +246,9 @@ def _interpret_status_error(
                 "Discover tab; (2) the model was never downloaded — pull "
                 "it via `lms get <hf-url>` or LM Studio's Discover; "
                 "(3) Just-in-Time loading is disabled in LM Studio settings. "
+                "(4) LM Studio could not load the model, or unloaded it while "
+                "the request waited, for example because the device was short "
+                "of memory. A later retry usually succeeds. "
                 "Verify with `curl <base_url>/v1/models` — the requested id "
                 "should appear in the response."
             ),
@@ -303,6 +320,57 @@ def _interpret_status_error(
             raw=body,
         )
 
+    # --- LM Link dropped (any error status) ---------------------------------
+    # LM Studio reports a dropped LM Link connection as HTTP 500 on
+    # /api/v1/chat and as HTTP 400 on /v1/chat/completions. Either way the
+    # request was fine and the link is the problem.
+    if status >= 400 and (
+        "lm link" in msg_lower
+        or "peer_keepalive_timeout" in msg_lower
+        or "peer keepalive timeout" in msg_lower
+    ):
+        return LocalInferenceError(
+            (
+                "LM Studio's LM Link connection to the compute device "
+                "dropped mid-call (peer keepalive timeout). Inference "
+                "is routed through LM Link, so the main machine can "
+                "serve a model loaded on a remote laptop. If that "
+                "link drops, every call fails until it is re-established."
+            ),
+            kind="lm_link_dropped",
+            hint=(
+                "On the compute device: confirm LM Studio is running, "
+                "the model is loaded, and Tailscale (or whatever "
+                "transport LM Link uses) is connected. On the main "
+                "machine: restart LM Studio's server, then verify "
+                "`curl <base_url>/v1/models` lists the remote model."
+            ),
+            raw=body,
+        )
+
+    # --- Response cut off before it finished --------------------------------
+    # LM Studio answers HTTP 400 with the bare message "terminated" when a
+    # response stops partway through. That is most likely Node's fetch
+    # reporting a connection that closed mid-response. The request itself
+    # was acceptable: the same call succeeds before and after the cut-off,
+    # so a later retry usually works.
+    if status >= 400 and message.strip().rstrip(".").lower() == "terminated":
+        return LocalInferenceError(
+            (
+                f"{server_label} stopped the response at {endpoint} before it "
+                f'finished and reported only "terminated" (HTTP {status}).'
+            ),
+            kind="response_terminated",
+            hint=(
+                "The connection to the model's runtime closed mid-response, "
+                "for example because an LM Link device dropped or the model "
+                "was unloaded. A later retry usually succeeds. If it keeps "
+                "happening, check that the device hosting the model stays "
+                "connected in LM Studio and that the model stays loaded."
+            ),
+            raw=body,
+        )
+
     # --- MCP integrations-path failures (5xx with telling body) ------------
     # When a local model uses LM Studio's `integrations` tool-loop to hit
     # the work-buddy MCP gateway, failures there surface as an HTTP 500
@@ -350,30 +418,6 @@ def _interpret_status_error(
                     "firewall/AV is interfering with localhost:5126; "
                     "(3) if /health responds, the failure was transient — "
                     "a simple retry usually succeeds."
-                ),
-                raw=body,
-            )
-
-        if (
-            "lm link" in msg_lower
-            or "peer_keepalive_timeout" in msg_lower
-            or "peer keepalive timeout" in msg_lower
-        ):
-            return LocalInferenceError(
-                (
-                    "LM Studio's LM Link connection to the compute device "
-                    "dropped mid-call (peer keepalive timeout). Inference "
-                    "is routed through LM Link, so the main machine can "
-                    "serve a model loaded on a remote laptop — if that "
-                    "link drops, every call fails until it's re-established."
-                ),
-                kind="lm_link_dropped",
-                hint=(
-                    "On the compute device: confirm LM Studio is running, "
-                    "the model is loaded, and Tailscale (or whatever "
-                    "transport LM Link uses) is connected. On the main "
-                    "machine: restart LM Studio's server, then verify "
-                    "`curl <base_url>/v1/models` lists the remote model."
                 ),
                 raw=body,
             )

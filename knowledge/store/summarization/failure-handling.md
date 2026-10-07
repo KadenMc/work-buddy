@@ -44,6 +44,18 @@ are item-intrinsic by default and consume the attempt budget. At `max_attempts`
 (default 3), the row becomes a dead letter: excluded from dequeue, retained in
 queue snapshots and health/UI status.
 
+A local LM Studio failure is classified from its structured kind, not its
+message. A failed model load, a dropped LM Link connection, and a response cut
+off partway therefore count as environmental, even though LM Studio reports
+them with HTTP 400 (see `architecture/llm-runner`).
+
+Before a failure is recorded, the summary call escalates through
+`conversation_observability.summaries.model_chain` on `model_not_available`
+and `backend_unavailable`, among other kinds. With a chain such as
+`local_fast` then `frontier_fast`, an LM Studio outage therefore falls through
+to the frontier tier, a paid API whose cost counts against
+`daily_budget_usd`.
+
 Every failure updates `enqueued_at`, preventing one poison item from pinning
 the FIFO head. Re-enqueueing after source change or `summarization_backfill`
 resets attempts and error fields, reviving a dead letter after its cause is
