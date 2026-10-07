@@ -823,6 +823,156 @@ class TestRetrySweepIsReady:
         assert results == []
 
 
+def _age(record, path, minutes=60):
+    """Backdate a queued record past the default 30-minute retry window."""
+    record["created_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    ).isoformat()
+    path.write_text(json.dumps(record, indent=2))
+    return record
+
+
+class TestRetrySweepExpiry:
+    """A queued record whose retry window closed leaves the queue.
+
+    ``_is_ready`` skips such a record on every sweep, so without retirement
+    it would stay queued forever and inflate the queue's count.
+    """
+
+    def test_old_failed_record_is_expired(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        record = _age(*_make_queued_op(sweep_ops_dir))
+        assert RetrySweep()._is_expired(record, datetime.now(timezone.utc)) is True
+
+    def test_recent_record_is_not_expired(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        record, _ = _make_queued_op(sweep_ops_dir)
+        assert RetrySweep()._is_expired(record, datetime.now(timezone.utc)) is False
+
+    def test_internal_record_is_not_expired(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        record = _age(*_make_queued_op(sweep_ops_dir))
+        record["type"] = "internal"
+        assert RetrySweep()._is_expired(record, datetime.now(timezone.utc)) is False
+
+    def test_record_with_live_lease_is_not_expired(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        record = _age(*_make_queued_op(sweep_ops_dir))
+        record["status"] = "running"
+        record["locked_until"] = (
+            datetime.now(timezone.utc) + timedelta(seconds=60)
+        ).isoformat()
+        assert RetrySweep()._is_expired(record, datetime.now(timezone.utc)) is False
+
+    def test_abandoned_running_record_is_expired(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        record = _age(*_make_queued_op(sweep_ops_dir))
+        record["status"] = "running"
+        record["locked_until"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=50)
+        ).isoformat()
+        assert RetrySweep()._is_expired(record, datetime.now(timezone.utc)) is True
+
+    def test_unreadable_creation_time_is_not_expired(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        now = datetime.now(timezone.utc)
+        record, _ = _make_queued_op(sweep_ops_dir)
+        # A timestamp without a zone cannot be compared with an aware one.
+        record["created_at"] = "2026-01-01T00:00:00"
+        assert RetrySweep()._is_expired(record, now) is False
+        record["created_at"] = "not a timestamp"
+        assert RetrySweep()._is_expired(record, now) is False
+        del record["created_at"]
+        assert RetrySweep()._is_expired(record, now) is False
+
+    def test_unqueued_or_finished_record_is_not_expired(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        now = datetime.now(timezone.utc)
+        record = _age(*_make_queued_op(sweep_ops_dir))
+        record["queued_for_retry"] = False
+        assert RetrySweep()._is_expired(record, now) is False
+        record["queued_for_retry"] = True
+        record["status"] = "completed"
+        assert RetrySweep()._is_expired(record, now) is False
+
+    def test_sweep_retires_without_replaying_or_notifying(self, sweep_ops_dir):
+        from work_buddy.mcp_server.tools.gateway import _is_queued
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        event_log = MagicMock()
+        sweep = RetrySweep(event_log=event_log)
+        record, path = _make_queued_op(sweep_ops_dir, op_id="op_stale")
+        _age(record, path)
+
+        with patch.object(sweep, "_replay") as mock_replay, \
+             patch("work_buddy.messaging.client.send_message") as mock_send:
+            results = sweep.sweep()
+
+        assert results == []
+        mock_replay.assert_not_called()
+        mock_send.assert_not_called()
+        updated = json.loads(path.read_text())
+        assert _is_queued(updated) is False
+        assert updated["status"] == "failed"
+        assert updated["error_code"] == "retry_window_expired"
+        # The original failure stays the recorded cause.
+        assert updated["error"] == "TimeoutError: timed out"
+        assert updated["expired_at"] == updated["completed_at"]
+        assert event_log.emit.call_args.args[:2] == ("retry_expired", "op_stale")
+
+    def test_retirement_happens_once(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        event_log = MagicMock()
+        sweep = RetrySweep(event_log=event_log)
+        record, path = _make_queued_op(sweep_ops_dir)
+        _age(record, path)
+        sweep.sweep()
+        sweep.sweep()
+        assert event_log.emit.call_count == 1
+
+    def test_abandoned_running_record_gets_an_explanation(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        record, path = _make_queued_op(sweep_ops_dir, op_id="op_abandoned")
+        record["status"] = "running"
+        record["error"] = None
+        record["locked_until"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=50)
+        ).isoformat()
+        _age(record, path)
+
+        RetrySweep().sweep()
+
+        updated = json.loads(path.read_text())
+        assert updated["status"] == "failed"
+        assert updated["locked_until"] is None
+        assert updated["error"] == "The retry stopped without recording a result."
+
+    def test_expired_workflow_step_is_released(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        wf_ctx = {"workflow_run_id": "wf_test", "step_id": "step_a"}
+        record, path = _make_queued_op(sweep_ops_dir, workflow_context=wf_ctx)
+        _age(record, path)
+        sweep = RetrySweep()
+
+        with patch.object(sweep, "_fail_workflow_step") as mock_fail:
+            sweep.sweep()
+
+        mock_fail.assert_called_once()
+        assert mock_fail.call_args.args[0] == wf_ctx
+
+    def test_live_lease_survives_the_sweep(self, sweep_ops_dir):
+        from work_buddy.sidecar.retry_sweep import RetrySweep
+        record, path = _make_queued_op(sweep_ops_dir)
+        record["status"] = "running"
+        record["locked_until"] = (
+            datetime.now(timezone.utc) + timedelta(seconds=60)
+        ).isoformat()
+        _age(record, path)
+
+        RetrySweep().sweep()
+
+        assert json.loads(path.read_text())["status"] == "running"
+
+
 class TestRetrySweepReplay:
     """Test the sweep's replay execution path."""
 
