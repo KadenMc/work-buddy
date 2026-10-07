@@ -169,6 +169,7 @@ class _FakeTaskResult:
     cached: bool = False
     cache_key: str | None = None
     error: str | None = None
+    error_kind: str | None = None
 
 
 def _fake_run_task_factory(scripted):
@@ -303,6 +304,69 @@ class TestEscalation:
         assert resp.is_error() is True
         assert resp.error_kind is ErrorKind.UNKNOWN
         assert "boom" in (resp.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Local backend failures keep their structured kind
+# ---------------------------------------------------------------------------
+
+
+def _lm_studio_400(message: str):
+    """The error ``run_task`` returns when LM Studio answers 400 with ``message``."""
+    import httpx
+
+    from work_buddy.llm.backends._errors import interpret_httpx_exception
+    from work_buddy.llm.runner import _backend_failure_to_result
+
+    request = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")
+    response = httpx.Response(400, json={"error": message}, request=request)
+    exc = interpret_httpx_exception(
+        httpx.HTTPStatusError("http error", request=request, response=response),
+        model="google/gemma-4-e4b",
+        endpoint="/v1/chat/completions",
+    )
+    return _backend_failure_to_result(
+        exc, backend_id="lmstudio_local", model="google/gemma-4-e4b",
+    )
+
+
+class TestStructuredLocalErrorKind:
+    def test_backend_failure_result_carries_the_kind(self):
+        result = _lm_studio_400('Failed to load model "x". Error: Operation canceled.')
+        assert result.error_kind == "model_not_available"
+
+    def test_structured_kind_beats_the_schema_wording_in_the_hint(self):
+        # A genuine bad request keeps its kind. Its hint mentions a "shape
+        # mismatch" and a "schema", which the message heuristics alone read
+        # as a schema violation.
+        result = _lm_studio_400("something malformed")
+        assert result.error_kind == "bad_request"
+        assert _classify_error(result.error, None) is ErrorKind.SCHEMA_VIOLATION
+        with patch("work_buddy.llm.runner.run_task",
+                   side_effect=_fake_run_task_factory([result])):
+            resp = LLMRunner().call(
+                tier=ModelTier.LOCAL_TOOL_CALLING, system="s", user="u",
+            )
+        assert resp.error_kind is ErrorKind.BAD_REQUEST
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ('Failed to load model "x". Error: Engine protocol startup was aborted.',
+             ErrorKind.MODEL_NOT_AVAILABLE),
+            ("terminated", ErrorKind.BACKEND_UNAVAILABLE),
+            ("LM Link connection entered error state peer_keepalive_timeout",
+             ErrorKind.BACKEND_UNAVAILABLE),
+        ],
+    )
+    def test_lm_studio_outages_are_not_schema_violations(self, message, expected):
+        result = _lm_studio_400(message)
+        with patch("work_buddy.llm.runner.run_task",
+                   side_effect=_fake_run_task_factory([result])):
+            resp = LLMRunner().call(
+                tier=ModelTier.LOCAL_TOOL_CALLING, system="s", user="u",
+            )
+        assert resp.error_kind is expected
 
 
 # ---------------------------------------------------------------------------
