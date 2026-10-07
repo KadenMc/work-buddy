@@ -1,0 +1,18 @@
+/* Work Buddy brand colors — matches logo (#E47150) */
+
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #d87857;
+  --md-primary-fg-color--light: #e09578;
+  --md-primary-fg-color--dark: #c0613f;
+  --md-accent-fg-color: #d87857;
+  --md-accent-fg-color--transparent: #d8785726;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #d87857;
+  --md-primary-fg-color--light: #e09578;
+  --md-primary-fg-color--dark: #c0613f;
+  --md-accent-fg-color: #d87857;
+  --md-accent-fg-color--transparent: #d8785726;
+}
