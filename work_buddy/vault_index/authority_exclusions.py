@@ -565,13 +565,24 @@ def normalized_path(path: str | Path, *, real: bool = False) -> str:
     return os.path.normcase(os.path.normpath(value))
 
 
-def is_within(path: str | Path, root: str | Path, *, real: bool = False) -> bool:
-    candidate = normalized_path(path, real=real)
-    boundary = normalized_path(root, real=real)
+def normalized_within(candidate: str, boundary: str) -> bool:
+    """Containment of two paths already passed through :func:`normalized_path`.
+
+    Lets a caller normalize a fixed boundary once and probe many candidates;
+    ``realpath`` costs a filesystem round trip per call.
+    """
+
     try:
         return os.path.commonpath((candidate, boundary)) == boundary
     except ValueError:
         return False
+
+
+def is_within(path: str | Path, root: str | Path, *, real: bool = False) -> bool:
+    return normalized_within(
+        normalized_path(path, real=real),
+        normalized_path(root, real=real),
+    )
 
 
 __all__ = [
@@ -583,6 +594,7 @@ __all__ = [
     "legacy_root_read_guard",
     "legacy_root_write_guard",
     "normalized_path",
+    "normalized_within",
     "prospective_legacy_roots",
     "sealed_legacy_roots",
 ]

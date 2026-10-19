@@ -189,19 +189,34 @@ class FilesystemSource:
                 allow_default_data_root=configured_implicitly,
             )
         self._authority_exclusions = tuple(Path(path) for path in authority_exclusions)
+        from work_buddy.vault_index.authority_exclusions import normalized_path
 
-    def _excluded(self, path: str | Path, *, real: bool = False) -> bool:
-        from work_buddy.vault_index.authority_exclusions import is_within
+        # Resolve each sealed root once: ``realpath`` costs a filesystem round
+        # trip (about 1 ms on Windows) and discovery probes every walked
+        # directory against every root.
+        self._exclusion_boundaries = tuple(dict.fromkeys(
+            normalized_path(root, real=True) for root in self._authority_exclusions
+        ))
 
+    def _excluded(self, path: str | Path) -> bool:
+        """True when ``path`` resolves (realpath) inside a sealed root."""
+        if not self._exclusion_boundaries:
+            return False
+        from work_buddy.vault_index.authority_exclusions import (
+            normalized_path,
+            normalized_within,
+        )
+
+        candidate = normalized_path(path, real=True)
         return any(
-            is_within(path, root, real=real)
-            for root in self._authority_exclusions
+            normalized_within(candidate, boundary)
+            for boundary in self._exclusion_boundaries
         )
 
     def excludes_path(self, path: str | Path) -> bool:
         """Public read-only probe used by cutover certification."""
 
-        return self._excluded(path, real=True)
+        return self._excluded(path)
 
     def resolve_item_path(self, item_id: str) -> Path | None:
         """Resolve one namespaced item ID without admitting traversal or escape."""
@@ -233,7 +248,7 @@ class FilesystemSource:
         excluded: list[str] = []
         for item_id in item_ids:
             path = self.resolve_item_path(item_id)
-            if path is not None and self._excluded(path, real=True):
+            if path is not None and self._excluded(path):
                 excluded.append(item_id)
         return tuple(excluded)
 
@@ -290,7 +305,7 @@ class FilesystemSource:
         for vault in self._vaults:
             # A separately configured vault may itself point at a sealed archive.
             # Fence it before even probing the directory.
-            if self._excluded(vault.root, real=True):
+            if self._excluded(vault.root):
                 statuses.append(VaultStatus(
                     vault.id, str(vault.root), True, "authority_excluded", 0
                 ))
@@ -321,16 +336,19 @@ class FilesystemSource:
                     if not d.startswith(".")
                     and d.lower() not in vault.dir_excludes
                     and os.path.normcase(str(Path(dirpath) / d)) not in other_roots
-                    and not self._excluded(Path(dirpath) / d, real=True)
+                    and not self._excluded(Path(dirpath) / d)
                 ]
                 for fname in filenames:
+                    # Lexical filters first: most walked files are not indexable,
+                    # and only an admitted candidate should pay for the realpath
+                    # fence (which still catches links into a sealed root).
                     p = Path(dirpath) / fname
-                    if self._excluded(p, real=True):
-                        continue
                     if get_handler(p.suffix) is None:
                         continue
                     rel = p.relative_to(vault.root).as_posix()
                     if not (include_spec.match_file(rel) and not exclude_spec.match_file(rel)):
+                        continue
+                    if self._excluded(p):
                         continue
                     try:
                         st = p.stat()
@@ -383,7 +401,7 @@ class FilesystemSource:
                 # is never sufficient to admit the physical read.
                 if not is_within(p, vc.root, real=True):
                     return []
-                if self._excluded(p, real=True):
+                if self._excluded(p):
                     return []
                 current_exclusions = sealed_legacy_roots(
                     self._cfg,
