@@ -115,6 +115,13 @@ FilesystemSource.discover()   multi-root walk; dot-dir skip; include/exclude glo
 A content-handler registry keys handlers by file extension (Markdown-only by default); an
 unclaimed extension is skipped. `Chunk` is the stable contract between handlers and the rest.
 
+Discovery also fences sealed legacy domain roots (`vault_index/authority_exclusions.py`) by
+real path, so a symlink or junction cannot route around them: a directory that resolves inside
+a sealed root is pruned before descent, and a file is checked after the cheap lexical filters
+(handler extension, include/exclude globs). `realpath` costs a filesystem round trip per call
+(about 1 ms on Windows), so each sealed root is resolved once per `FilesystemSource` and only
+admitted candidates pay for the file-level check.
+
 ## Search
 
 `vault_index.search.search(query, *, top_k, method, vault_id, recency)` returns IR-compatible

@@ -295,6 +295,114 @@ def test_authority_exclusion_prunes_before_descent_and_fences_direct_parse(
     assert source.parse("vault/../outside.md") == []
 
 
+def _norm_real(path) -> str:
+    return os.path.normcase(os.path.normpath(os.path.realpath(path)))
+
+
+def _dir_link(link: Path, target: Path) -> None:
+    """Junction on Windows (no privilege needed), directory symlink elsewhere."""
+    try:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"cannot create a directory link here: {exc}")
+
+
+def test_discovery_realpaths_only_admitted_candidates(tmp_path, monkeypatch):
+    root = tmp_path / "vault"
+    archive = root / "journal"
+    _write(root / "live.md")
+    _write(root / "notes" / "kept.md")
+    _write(root / "notes" / "image.png", "binary-ish")
+    _write(root / "notes" / "data.txt", "not markdown")
+    _write(root / "skipped" / "excluded.md")
+    _write(archive / "archived.md")
+    cfg = _cfg({"vault": {"path": str(root), "exclude": ["skipped/**"]}})
+    source = FilesystemSource(cfg, authority_exclusions=(archive,))
+
+    resolved: list[str] = []
+    real_realpath = os.path.realpath
+
+    def spy(path, *args, **kwargs):
+        resolved.append(os.path.normcase(os.path.abspath(path)))
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", spy)
+    files, _statuses = source.discover()
+
+    assert _ids(files) == {"vault/live.md", "vault/notes/kept.md"}
+    probed = set(resolved)
+    # Files a lexical filter rejects never reach the realpath fence.
+    for name in ("notes/image.png", "notes/data.txt", "skipped/excluded.md"):
+        assert os.path.normcase(str(root / name)) not in probed
+    # The sealed boundary was resolved at construction, not per probe.
+    assert resolved.count(os.path.normcase(str(archive))) == 1  # the pruned dir itself
+    assert len(resolved) == len(probed)  # nothing resolved twice
+
+
+def test_symlinked_file_into_sealed_root_is_excluded(tmp_path):
+    root = tmp_path / "vault"
+    archive = tmp_path / "archive"
+    secret = _write(archive / "secret.md", "# Secret\n\nsealed text\n")
+    _write(root / "live.md")
+    try:
+        (root / "alias.md").symlink_to(secret)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot create a file symlink here: {exc}")
+    source = FilesystemSource(
+        _cfg({"vault": {"path": str(root)}}), authority_exclusions=(archive,)
+    )
+
+    files, _statuses = source.discover()
+
+    assert _ids(files) == {"vault/live.md"}
+    assert source.excludes_path(root / "alias.md")
+
+
+def test_directory_link_into_sealed_root_is_pruned(tmp_path, monkeypatch):
+    root = tmp_path / "vault"
+    archive = tmp_path / "archive"
+    _write(archive / "nested" / "secret.md", "# Secret\n\nsealed text\n")
+    _write(root / "live.md")
+    _dir_link(root / "linked", archive)
+    source = FilesystemSource(
+        _cfg({"vault": {"path": str(root)}}), authority_exclusions=(archive,)
+    )
+
+    real_scandir = os.scandir
+
+    def guarded_scandir(path):
+        if _norm_real(path) == _norm_real(archive):
+            raise AssertionError("sealed archive was enumerated through a link")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    files, _statuses = source.discover()
+
+    assert _ids(files) == {"vault/live.md"}
+
+
+def test_sealed_root_named_through_a_link_still_fences_real_path(tmp_path):
+    root = tmp_path / "vault"
+    _write(root / "live.md")
+    _write(root / "journal" / "archived.md")
+    alias = tmp_path / "alias"
+    _dir_link(alias, root)
+    source = FilesystemSource(
+        _cfg({"vault": {"path": str(root)}}),
+        authority_exclusions=(alias / "journal",),
+    )
+
+    files, _statuses = source.discover()
+
+    assert _ids(files) == {"vault/live.md"}
+    assert source.parse("vault/journal/archived.md") == []
+
+
 def test_partition_revalidates_authority_between_discovery_and_parse(
     tmp_path,
     monkeypatch,
